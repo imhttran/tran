@@ -1,0 +1,89 @@
+CASE 0	How long is the grace period?
+UNANSWERABLE
+CASE 1	When can a late fee be assessed?
+RANK 1	examples/loan-policy.md	Late Fees	2	0.016393
+RANK 2	examples/member-services-guide.md	Fee Waivers	1	0.016129
+CASE 2	How are payments applied to a loan?
+RANK 1	examples/large-loan-policy.md	Payment Processing	5	0.016393
+RANK 2	examples/loan-policy.md	Payments	0	0.015873
+CASE 3	What happens if I don't send the money I owe on time?
+UNANSWERABLE
+CASE 4	What does LP-4827 refer to?
+UNANSWERABLE
+CASE 5	After the allowed waiting period expires, what happens to an unpaid account?
+UNANSWERABLE
+CASE 6	What happens after a borrower misses a scheduled payment?
+UNANSWERABLE
+CASE 7	When does a loan become delinquent?
+RANK 1	examples/loan-policy.md	Missed Payments	1	0.016393
+CASE 8	Can a borrower make a payment during the grace period without being marked delinquent?
+RANK 1	examples/loan-policy.md	Missed Payments	1	0.016393
+CASE 9	What happens if payments remain unpaid for a long time?
+UNANSWERABLE
+CASE 10	What may happen before collection activity begins?
+UNANSWERABLE
+CASE 11	Can a delinquent borrower be offered a payment arrangement?
+RANK 1	examples/large-loan-policy.md	Missed Payments	3	0.016393
+CASE 12	Does a partial payment always satisfy the required monthly payment?
+UNANSWERABLE
+CASE 13	How may a partial payment be applied?
+RANK 1	examples/loan-policy.md	Partial Payments	3	0.016393
+CASE 14	What information is recorded with a payment?
+RANK 1	examples/large-loan-policy.md	Missed Payments	2	0.016393
+RANK 2	examples/commercial-servicing-manual.md	Servicing Transfer Procedures	41	0.016129
+CASE 15	How are duplicate payments detected?
+RANK 1	examples/large-loan-policy.md	Payment Processing	6	0.016393
+CASE 16	Should a duplicate payment be applied twice?
+RANK 1	examples/large-loan-policy.md	Payment Processing	6	0.016393
+CASE 17	When are normal loan payments due?
+UNANSWERABLE
+CASE 18	What order are interest and principal paid in?
+UNANSWERABLE
+CASE 19	What identifier should a borrower provide when asking support about an online payment?
+UNANSWERABLE
+CASE 20	Can I get more time before my payment is late?
+UNANSWERABLE
+CASE 21	Can a late fee be removed?
+RANK 1	examples/member-services-guide.md	Fee Waivers	1	0.016393
+CASE 22	What happens to a partial payment while I wait to pay the rest?
+UNANSWERABLE
+CASE 23	How much do I owe to pay off the loan today?
+UNANSWERABLE
+CASE 24	How can I change how I receive my statements?
+RANK 1	examples/commercial-servicing-manual.md	Collateral and Lien Documentation	38	0.016393
+CASE 25	What happens if I think a payment was applied to the wrong loan?
+UNANSWERABLE
+CASE 26	What is the interest rate on these loans?
+UNANSWERABLE
+CASE 27	What is the borrower's credit score?
+UNANSWERABLE
+CASE 28	What is the loan origination fee?
+UNANSWERABLE
+CASE 29	Is a partial payment applied right away, or held until the full amount is paid?
+UNANSWERABLE
+CASE 30	I was charged twice for the same bill. What should happen?
+UNANSWERABLE
+CASE 31	When can a late fee be charged, and can it be waived?
+RANK 1	examples/member-services-guide.md	Fee Waivers	1	0.016393
+CASE 32	How long is a payoff quote valid, and why?
+UNANSWERABLE
+CASE 33	How long does a dispute review take, and is the disputed amount reported delinquent?
+UNANSWERABLE
+CASE 34	How do I reset my online portal password?
+UNANSWERABLE
+CASE 35	What is the fee for a paper statement?
+UNANSWERABLE
+CASE 36	How is an escrow shortage resolved?
+UNANSWERABLE
+CASE 37	When may the servicer force-place insurance?
+RANK 1	examples/commercial-servicing-manual.md	Insurance Requirements	15	0.016393
+CASE 38	What happens if a property tax becomes delinquent?
+UNANSWERABLE
+CASE 39	When is retainage released on a construction loan?
+RANK 1	examples/commercial-servicing-manual.md	Construction Draw Administration	30	0.016393
+CASE 40	When must a UCC financing statement be continued?
+UNANSWERABLE
+CASE 41	What notice does a borrower receive when servicing is transferred?
+UNANSWERABLE
+CASE 42	How much does force-placed insurance cost?
+UNANSWERABLE

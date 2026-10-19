@@ -1,0 +1,14 @@
+{
+  "chunks": 2,
+  "top_candidate": "fixtures/parity/inputs/text-layer.pdf::Page 1::0",
+  "answer": "PostgreSQL with the pgvector extension stores the vectors [fixtures/parity/inputs/text-layer.pdf - Page 1 - p.1].",
+  "references": [
+    "fixtures/parity/inputs/text-layer.pdf - Page 1 - p.1"
+  ],
+  "rejections": [
+    { "class": "invalid", "kind": "loader" },
+    { "class": "incomplete", "kind": "incomplete" },
+    { "class": "empty", "kind": "no-chunks" },
+    { "class": "oversized", "kind": "loader" }
+  ]
+}

@@ -1,0 +1,14 @@
+[package]
+name = "live-rag-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007E live production RAG. It drives the real Rust
+# `ingest` and `query` binaries against real Ollama and PostgreSQL+pgvector; it
+# contains no RAG logic and uses no mocked generation.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+postgres = "0.19"

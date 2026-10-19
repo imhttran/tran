@@ -1,0 +1,21 @@
+{
+  "sample.md": {
+    "source": "sample.md",
+    "language": "english",
+    "chunk_size": 50,
+    "chunk_overlap": 20,
+    "sections": [
+      { "title": "Introduction", "content": "Welcome to the rag foundation corpus.", "page": null },
+      { "title": "Details", "content": "Chunking splits sections with overlap.", "page": null }
+    ]
+  },
+  "vietnamese.md": {
+    "source": "vietnamese.md",
+    "language": "vietnamese",
+    "chunk_size": 50,
+    "chunk_overlap": 20,
+    "sections": [
+      { "title": "Giới thiệu", "content": "Xin chào thế giới. Đây là một tài liệu tiếng Việt để kiểm tra xử lý ký tự Unicode và phân đoạn chính xác.", "page": null }
+    ]
+  }
+}

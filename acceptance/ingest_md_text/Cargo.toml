@@ -1,0 +1,16 @@
+[package]
+name = "ingest-md-text-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007E production Markdown/plain-text ingestion. It
+# drives the real `ingest` binary against a dedicated PostgreSQL database and a
+# deterministic embedding server; it contains no ingestion logic.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }
+postgres = "0.19"
+serde_json = "1.0"

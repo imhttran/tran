@@ -1,0 +1,62 @@
+{
+  "fixture_id": "en-retrieval",
+  "language": "en",
+  "reference_sha": "d72fb398e8959eea83ed24be03f6df8cdeca86a2",
+  "capture_command": "make ingest FILE=docs/reports/rust-migration/fixtures/en/input.md && make ask Q=\"$(cat docs/reports/rust-migration/fixtures/en/question.txt)\"",
+  "settings": "RUST-001 baseline defaults (see RUST-001-go-baseline.md section 8)",
+  "capture_outcome": "isolated_gap",
+  "capture_outcome_reason": "Requires docker-compose PostgreSQL+pgvector and a reachable Ollama embedder/generator; not confirmed available in the capture environment.",
+  "comparison_rules": "See RUST-001-go-baseline.md section 8 (exact-match fields, float tolerances, tie ordering, thresholds) - frozen before any Rust metric.",
+  "fields": {
+    "sections": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "chunks": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "chunk_content_hash": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "embed_model": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "embed_dim": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "language": {
+      "comparison": "exact",
+      "expected": "en",
+      "status": "specification"
+    },
+    "retrieved_chunk_ids": {
+      "comparison": "order",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "similarity_scores": {
+      "comparison": "float_tol_0.001",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "answer_citations": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "answer_text": {
+      "comparison": "not_compared_generation_dependent",
+      "expected": null,
+      "status": "not_captured"
+    }
+  }
+}

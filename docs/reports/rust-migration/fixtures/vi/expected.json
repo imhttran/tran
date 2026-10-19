@@ -1,0 +1,52 @@
+{
+  "fixture_id": "vi-retrieval",
+  "language": "vi",
+  "reference_sha": "d72fb398e8959eea83ed24be03f6df8cdeca86a2",
+  "capture_command": "ARM=A EVAL_DATASET=docs/reports/rust-migration/fixtures/vi go run ./cmd/expbilingual",
+  "settings": "RUST-001 baseline defaults (see RUST-001-go-baseline.md section 8) plus ARM=A",
+  "capture_outcome": "isolated_gap",
+  "capture_outcome_reason": "Requires docker-compose PostgreSQL+pgvector, a reachable Ollama embedder/generator, and the bilingual dataset; not confirmed available in the capture environment.",
+  "comparison_rules": "See RUST-001-go-baseline.md section 8 (exact-match fields, float tolerances, tie ordering, thresholds) - frozen before any Rust metric.",
+  "fields": {
+    "arm": {
+      "comparison": "exact",
+      "expected": "A",
+      "status": "specification"
+    },
+    "sections": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "chunks": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "language": {
+      "comparison": "exact",
+      "expected": "vi",
+      "status": "specification"
+    },
+    "fts_config": {
+      "comparison": "exact",
+      "expected": "simple",
+      "status": "specification"
+    },
+    "retrieved_chunk_ids": {
+      "comparison": "order",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "retrieval_metrics": {
+      "comparison": "float_tol_0.001",
+      "expected": null,
+      "status": "not_captured"
+    },
+    "answer_text": {
+      "comparison": "not_compared_generation_dependent",
+      "expected": null,
+      "status": "not_captured"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+name: CI
+
+# Rust-only CI. The Go reference was removed by RUST-007C; the frozen Go
+# provenance and fixtures remain in the repository for audit.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust build, tests, and final layout
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://rag:rag@127.0.0.1:5432/rag_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      # rustup honors rust-toolchain.toml at the repository root.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Apply migrations
+        run: |
+          for f in migrations/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Format check
+        run: cargo fmt --check
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # The clean-checkout gate proves the package builds with no Go toolchain.
+      # GitHub's runner image ships Go in /usr/bin, so remove it first instead
+      # of weakening the test's absence assertion.
+      - name: Remove Go from the verification environment
+        run: sudo rm -f /usr/bin/go /usr/local/go/bin/go
+      - name: Final layout and clean checkout without Go
+        run: make transition-evidence
+
+  api-contract:
+    name: Axum API contract
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://rag:rag@127.0.0.1:5432/rag_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Apply migrations
+        run: |
+          for f in migrations/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: API contract
+        run: make rust-acceptance-api-contract
+
+  web:
+    name: Next.js typecheck and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

@@ -1,0 +1,13 @@
+[package]
+name = "final-layout-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007C. Asserts the final Rust-only repository layout,
+# the absence of Go sources/tooling, and the preserved fixtures, provenance, and
+# shared assets.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

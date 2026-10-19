@@ -1,0 +1,37 @@
+{
+  "fixture_id": "page-provenance",
+  "kind": "text-layer PDF",
+  "reference_sha": "d72fb398e8959eea83ed24be03f6df8cdeca86a2",
+  "capture_command": "make ingest FILE=docs/reports/rust-migration/fixtures/page/text-layer.pdf && make ask Q=\"So trang duoc hien thi nhu the nao?\"",
+  "settings": "RUST-001 baseline defaults (see RUST-001-go-baseline.md section 8)",
+  "capture_outcome": "specification_freeze",
+  "capture_outcome_reason": "The 1-based page contract is fixed from docs/operations/page-provenance.md and the RAG-007 loader behavior; end-to-end captured outputs are an isolated gap because the capture environment lacked the pinned Go ingest/ask run (database + Ollama).",
+  "comparison_rules": "See RUST-001-go-baseline.md section 8 - page numbers are exact-match 1-based integers.",
+  "fields": {
+    "sections_per_page": {
+      "comparison": "exact",
+      "expected": 3,
+      "status": "specification"
+    },
+    "section_page_numbers": {
+      "comparison": "exact",
+      "expected": [1, 2, 3],
+      "status": "specification"
+    },
+    "chunk_page_numbers": {
+      "comparison": "exact",
+      "expected": [1, 2, 3],
+      "status": "specification"
+    },
+    "stored_documents_page_column": {
+      "comparison": "exact",
+      "expected": [1, 2, 3],
+      "status": "specification"
+    },
+    "citation_page_renderings": {
+      "comparison": "exact",
+      "expected": null,
+      "status": "not_captured"
+    }
+  }
+}

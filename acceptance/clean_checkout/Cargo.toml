@@ -1,0 +1,13 @@
+[package]
+name = "clean-checkout-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007C. Copies the working tree into a temporary
+# checkout, removes Go from PATH, and verifies the Rust package builds and tests
+# without a Go toolchain.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

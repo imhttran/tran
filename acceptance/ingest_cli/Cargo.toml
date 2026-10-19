@@ -1,0 +1,15 @@
+[package]
+name = "ingest-cli-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for the production ingestion service seam (RUST-005E).
+# It drives the callable service from rag_foundation over recording ports and
+# asserts zero-effect rejection. No binary, config, or real adapters here; that
+# is RUST-005F.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }

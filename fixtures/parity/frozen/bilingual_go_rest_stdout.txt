@@ -1,0 +1,1097 @@
+HEADER arm=B,C,E dataset=evals/retrieval-vi-en-expanded.json embed=parity-embed chat=parity-chat floor=0.30 repeats=1 gen_options=map[num_predict:64 seed:0 temperature:0]
+GEN id=eval-en-en-01 variant=exp source=cache
+GEN id=eval-en-en-01 variant=vi source=cache
+GEN id=eval-en-en-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-01 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3805 examples/member-services-guide.md / Statement Delivery
+DIAG   #2 sim=0.3462 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3074 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-en-en-01 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-02 variant=exp source=cache
+GEN id=eval-en-en-02 variant=vi source=cache
+GEN id=eval-en-en-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-02 kind=en-en guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+CASE arm=B rep=1 id=eval-en-en-02 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-03 variant=exp source=cache
+GEN id=eval-en-en-03 variant=vi source=cache
+GEN id=eval-en-en-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-03 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3918 examples/member-services-guide.md / Statement Delivery
+DIAG   #2 sim=0.3469 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3171 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=B rep=1 id=eval-en-en-03 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-04 variant=exp source=cache
+GEN id=eval-en-en-04 variant=vi source=cache
+GEN id=eval-en-en-04 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-04 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.3317 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.3466 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3270 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3035 examples/member-services-guide.md / Contact Channels
+CASE arm=B rep=1 id=eval-en-en-04 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-05 variant=exp source=cache
+GEN id=eval-en-en-05 variant=vi source=cache
+GEN id=eval-en-en-05 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-05 kind=en-en guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3215 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3126 examples/member-services-guide.md / Contact Channels
+CASE arm=B rep=1 id=eval-en-en-05 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-06 variant=exp source=cache
+GEN id=eval-en-en-06 variant=vi source=cache
+GEN id=eval-en-en-06 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-06 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3973 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/member-services-guide.md / Grace Period Requests
+DIAG   #3 sim=0.3165 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-en-en-06 kind=en-en r1=0.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-07 variant=exp source=cache
+GEN id=eval-en-en-07 variant=vi source=cache
+GEN id=eval-en-en-07 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-07 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.3470 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3191 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3170 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #4 sim=0.3127 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=B rep=1 id=eval-en-en-07 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-08 variant=exp source=cache
+GEN id=eval-en-en-08 variant=vi source=cache
+GEN id=eval-en-en-08 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-08 kind=en-en guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3457 examples/vi/quy-trinh-thu-hoi.md / Xóa nợ
+DIAG   #2 sim=0.3437 examples/member-services-guide.md / Payment Arrangements
+CASE arm=B rep=1 id=eval-en-en-08 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-09 variant=exp source=cache
+GEN id=eval-en-en-09 variant=vi source=cache
+GEN id=eval-en-en-09 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-09 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.0000 examples/commercial-servicing-manual.md / Insurance Requirements
+DIAG   #2 sim=0.3362 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3185 examples/loan-policy.md / Partial Payments
+CASE arm=B rep=1 id=eval-en-en-09 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-10 variant=exp source=cache
+GEN id=eval-en-en-10 variant=vi source=cache
+GEN id=eval-en-en-10 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-en-10 kind=en-en guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3051 examples/loan-policy.md / Collections
+CASE arm=B rep=1 id=eval-en-en-10 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-01 variant=exp source=cache
+GEN id=eval-vi-vi-01 variant=vi source=cache
+GEN id=eval-vi-vi-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-01 kind=vi-vi guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.3580 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3809 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3631 examples/member-services-guide.md / Fee Waivers
+DIAG   #4 sim=0.3485 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=B rep=1 id=eval-vi-vi-01 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-02 variant=exp source=cache
+GEN id=eval-vi-vi-02 variant=vi source=cache
+GEN id=eval-vi-vi-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-02 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.5078 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #2 sim=0.4091 examples/member-services-guide.md / Payoff Requests
+DIAG   #3 sim=0.3829 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3523 examples/member-services-guide.md / Contact Channels
+DIAG   #5 sim=0.3972 examples/loan-policy.md / Payments
+CASE arm=B rep=1 id=eval-vi-vi-02 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-03 variant=exp source=cache
+GEN id=eval-vi-vi-03 variant=vi source=cache
+GEN id=eval-vi-vi-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-03 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.4507 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.4064 examples/member-services-guide.md / Payoff Requests
+DIAG   #3 sim=0.3400 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #4 sim=0.3620 examples/commercial-servicing-manual.md / Property Taxes
+DIAG   #5 sim=0.3316 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #6 sim=0.3551 examples/member-services-guide.md / Statement Delivery
+DIAG   #7 sim=0.3176 examples/member-services-guide.md / Dispute Resolution
+CASE arm=B rep=1 id=eval-vi-vi-03 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-04 variant=exp source=cache
+GEN id=eval-vi-vi-04 variant=vi source=cache
+GEN id=eval-vi-vi-04 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-04 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.4662 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3677 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #3 sim=0.4212 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3488 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.3475 examples/vi/bao-hiem-tai-san.md / Bồi thường
+CASE arm=B rep=1 id=eval-vi-vi-04 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-05 variant=exp source=cache
+GEN id=eval-vi-vi-05 variant=vi source=cache
+GEN id=eval-vi-vi-05 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-05 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3838 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3818 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3874 examples/member-services-guide.md / Payment Arrangements
+DIAG   #4 sim=0.3922 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #5 sim=0.3577 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+DIAG   #6 sim=0.3698 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=B rep=1 id=eval-vi-vi-05 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-06 variant=exp source=cache
+GEN id=eval-vi-vi-06 variant=vi source=cache
+GEN id=eval-vi-vi-06 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-06 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3823 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.4115 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3623 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3909 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #5 sim=0.3533 examples/member-services-guide.md / Contact Channels
+DIAG   #6 sim=0.3876 examples/member-services-guide.md / Statement Delivery
+DIAG   #7 sim=0.3531 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+CASE arm=B rep=1 id=eval-vi-vi-06 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-07 variant=exp source=cache
+GEN id=eval-vi-vi-07 variant=vi source=cache
+GEN id=eval-vi-vi-07 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-07 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3912 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.3951 examples/large-loan-policy.md / Payment Processing
+DIAG   #3 sim=0.4173 examples/member-services-guide.md / Fee Waivers
+DIAG   #4 sim=0.3734 examples/loan-policy.md / Partial Payments
+DIAG   #5 sim=0.4040 examples/member-services-guide.md / Payoff Requests
+DIAG   #6 sim=0.3616 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+CASE arm=B rep=1 id=eval-vi-vi-07 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-08 variant=exp source=cache
+GEN id=eval-vi-vi-08 variant=vi source=cache
+GEN id=eval-vi-vi-08 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-08 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3993 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #2 sim=0.4079 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3729 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3571 examples/loan-policy.md / Late Fees
+DIAG   #5 sim=0.3278 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+CASE arm=B rep=1 id=eval-vi-vi-08 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-09 variant=exp source=cache
+GEN id=eval-vi-vi-09 variant=vi source=cache
+GEN id=eval-vi-vi-09 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-09 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.7075 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #2 sim=0.4380 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3902 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.4194 examples/member-services-guide.md / Grace Period Requests
+DIAG   #5 sim=0.3752 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.4178 examples/member-services-guide.md / Payment Arrangements
+CASE arm=B rep=1 id=eval-vi-vi-09 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-10 variant=exp source=cache
+GEN id=eval-vi-vi-10 variant=vi source=cache
+GEN id=eval-vi-vi-10 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-vi-10 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.7119 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #2 sim=0.4505 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.4267 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.4006 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+DIAG   #5 sim=0.4090 examples/member-services-guide.md / Fee Waivers
+CASE arm=B rep=1 id=eval-vi-vi-10 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-vi-01 variant=exp source=cache
+GEN id=eval-en-vi-01 variant=vi source=cache
+GEN id=eval-en-vi-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-vi-01 kind=en-vi guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3169 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-en-vi-01 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-02 variant=exp source=cache
+GEN id=eval-en-vi-02 variant=vi source=cache
+GEN id=eval-en-vi-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-vi-02 kind=en-vi guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3115 examples/loan-policy.md / Partial Payments
+CASE arm=B rep=1 id=eval-en-vi-02 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-03 variant=exp source=cache
+GEN id=eval-en-vi-03 variant=vi source=cache
+GEN id=eval-en-vi-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-vi-03 kind=en-vi guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3124 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+CASE arm=B rep=1 id=eval-en-vi-03 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-04 variant=exp source=cache
+GEN id=eval-en-vi-04 variant=vi source=cache
+GEN id=eval-en-vi-04 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-vi-04 kind=en-vi guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.4069 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/loan-policy.md / Collections
+DIAG   #3 sim=0.3165 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3130 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-en-vi-04 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-05 variant=exp source=cache
+GEN id=eval-en-vi-05 variant=vi source=cache
+GEN id=eval-en-vi-05 variant=en source=cache
+DIAG arm=B rep=1 id=eval-en-vi-05 kind=en-vi guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3155 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-en-vi-05 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-01 variant=exp source=cache
+GEN id=eval-vi-en-01 variant=vi source=cache
+GEN id=eval-vi-en-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-en-01 kind=vi-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3753 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #2 sim=0.3744 examples/member-services-guide.md / Payoff Requests
+DIAG   #3 sim=0.3619 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3208 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #5 sim=0.3585 examples/loan-policy.md / Payments
+CASE arm=B rep=1 id=eval-vi-en-01 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-02 variant=exp source=cache
+GEN id=eval-vi-en-02 variant=vi source=cache
+GEN id=eval-vi-en-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-en-02 kind=vi-en guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4497 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.4399 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.4327 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3698 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #5 sim=0.4114 examples/member-services-guide.md / Fee Waivers
+DIAG   #6 sim=0.3601 examples/member-services-guide.md / Payoff Requests
+CASE arm=B rep=1 id=eval-vi-en-02 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-03 variant=exp source=cache
+GEN id=eval-vi-en-03 variant=vi source=cache
+GEN id=eval-vi-en-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-en-03 kind=vi-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.4389 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.4639 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.4247 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.4726 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3907 examples/loan-policy.md / Partial Payments
+CASE arm=B rep=1 id=eval-vi-en-03 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-04 variant=exp source=cache
+GEN id=eval-vi-en-04 variant=vi source=cache
+GEN id=eval-vi-en-04 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-en-04 kind=vi-en guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3772 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3629 examples/loan-policy.md / Partial Payments
+DIAG   #3 sim=0.3683 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3544 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3660 examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm
+DIAG   #6 sim=0.3064 examples/loan-policy.md / Late Fees
+CASE arm=B rep=1 id=eval-vi-en-04 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-05 variant=exp source=cache
+GEN id=eval-vi-en-05 variant=vi source=cache
+GEN id=eval-vi-en-05 variant=en source=cache
+DIAG arm=B rep=1 id=eval-vi-en-05 kind=vi-en guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4048 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3679 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3723 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3608 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #5 sim=0.3639 examples/loan-policy.md / Partial Payments
+DIAG   #6 sim=0.3166 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+CASE arm=B rep=1 id=eval-vi-en-05 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-01 variant=exp source=cache
+GEN id=eval-misleading-01 variant=vi source=cache
+GEN id=eval-misleading-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-misleading-01 kind=misleading guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3625 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3769 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3556 examples/loan-policy.md / Payments
+DIAG   #4 sim=0.3520 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #5 sim=0.3026 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+CASE arm=B rep=1 id=eval-misleading-01 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-02 variant=exp source=cache
+GEN id=eval-misleading-02 variant=vi source=cache
+GEN id=eval-misleading-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-misleading-02 kind=misleading guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4050 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3756 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3358 examples/loan-policy.md / Collections
+DIAG   #4 sim=0.3538 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #5 sim=0.3485 examples/large-loan-policy.md / Payment Processing
+DIAG   #6 sim=0.3283 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+CASE arm=B rep=1 id=eval-misleading-02 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-03 variant=exp source=cache
+GEN id=eval-misleading-03 variant=vi source=cache
+GEN id=eval-misleading-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-misleading-03 kind=misleading guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3469 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3072 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+CASE arm=B rep=1 id=eval-misleading-03 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-unanswerable-01 variant=exp source=cache
+GEN id=eval-unanswerable-01 variant=vi source=cache
+GEN id=eval-unanswerable-01 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-01 kind=unanswerable guardOK=true candidates=4 rejected=true
+DIAG   #1 sim=0.4424 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3495 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3961 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3444 examples/member-services-guide.md / Fee Waivers
+CASE arm=B rep=1 id=eval-unanswerable-01 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-02 variant=exp source=cache
+GEN id=eval-unanswerable-02 variant=vi source=cache
+GEN id=eval-unanswerable-02 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-02 kind=unanswerable guardOK=true candidates=4 rejected=true
+DIAG   #1 sim=0.3837 examples/member-services-guide.md / Payoff Requests
+DIAG   #2 sim=0.3720 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3669 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3173 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=B rep=1 id=eval-unanswerable-02 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-03 variant=exp source=cache
+GEN id=eval-unanswerable-03 variant=vi source=cache
+GEN id=eval-unanswerable-03 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-03 kind=unanswerable guardOK=true candidates=5 rejected=true
+DIAG   #1 sim=0.3613 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.4377 examples/member-services-guide.md / Payoff Requests
+DIAG   #3 sim=0.3678 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3497 examples/commercial-servicing-manual.md / Property Taxes
+DIAG   #5 sim=0.3053 examples/member-services-guide.md / Statement Delivery
+CASE arm=B rep=1 id=eval-unanswerable-03 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-04 variant=exp source=cache
+GEN id=eval-unanswerable-04 variant=vi source=cache
+GEN id=eval-unanswerable-04 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-04 kind=unanswerable guardOK=true candidates=4 rejected=true
+DIAG   #1 sim=0.3361 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3288 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3165 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #4 sim=0.3144 examples/member-services-guide.md / Contact Channels
+CASE arm=B rep=1 id=eval-unanswerable-04 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-05 variant=exp source=cache
+GEN id=eval-unanswerable-05 variant=vi source=cache
+GEN id=eval-unanswerable-05 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-05 kind=unanswerable guardOK=true candidates=4 rejected=true
+DIAG   #1 sim=0.3918 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3690 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #3 sim=0.3483 examples/member-services-guide.md / Payment Arrangements
+DIAG   #4 sim=0.3331 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+CASE arm=B rep=1 id=eval-unanswerable-05 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-06 variant=exp source=cache
+GEN id=eval-unanswerable-06 variant=vi source=cache
+GEN id=eval-unanswerable-06 variant=en source=cache
+DIAG arm=B rep=1 id=eval-unanswerable-06 kind=unanswerable guardOK=true candidates=3 rejected=true
+DIAG   #1 sim=0.3995 examples/vi/quy-trinh-thu-hoi.md / Xóa nợ
+DIAG   #2 sim=0.3218 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3197 examples/loan-policy.md / Payment Codes
+CASE arm=B rep=1 id=eval-unanswerable-06 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-en-en-01 variant=exp source=cache
+GEN id=eval-en-en-01 variant=vi source=cache
+GEN id=eval-en-en-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-01 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3805 examples/member-services-guide.md / Statement Delivery
+DIAG   #2 sim=0.3462 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3074 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-en-01 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-02 variant=exp source=cache
+GEN id=eval-en-en-02 variant=vi source=cache
+GEN id=eval-en-en-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-02 kind=en-en guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+CASE arm=C rep=1 id=eval-en-en-02 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-03 variant=exp source=cache
+GEN id=eval-en-en-03 variant=vi source=cache
+GEN id=eval-en-en-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-03 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3469 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3171 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3918 examples/member-services-guide.md / Statement Delivery
+CASE arm=C rep=1 id=eval-en-en-03 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-04 variant=exp source=cache
+GEN id=eval-en-en-04 variant=vi source=cache
+GEN id=eval-en-en-04 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-04 kind=en-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3439 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.3705 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3342 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3104 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3035 examples/member-services-guide.md / Contact Channels
+CASE arm=C rep=1 id=eval-en-en-04 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-05 variant=exp source=cache
+GEN id=eval-en-en-05 variant=vi source=cache
+GEN id=eval-en-en-05 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-05 kind=en-en guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3215 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3126 examples/member-services-guide.md / Contact Channels
+CASE arm=C rep=1 id=eval-en-en-05 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-06 variant=exp source=cache
+GEN id=eval-en-en-06 variant=vi source=cache
+GEN id=eval-en-en-06 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-06 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.4162 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/member-services-guide.md / Grace Period Requests
+DIAG   #3 sim=0.3379 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #4 sim=0.3165 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-en-06 kind=en-en r1=0.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-07 variant=exp source=cache
+GEN id=eval-en-en-07 variant=vi source=cache
+GEN id=eval-en-en-07 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-07 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.3470 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3170 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #3 sim=0.3191 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3127 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=C rep=1 id=eval-en-en-07 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-08 variant=exp source=cache
+GEN id=eval-en-en-08 variant=vi source=cache
+GEN id=eval-en-en-08 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-08 kind=en-en guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3057 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3457 examples/vi/quy-trinh-thu-hoi.md / Xóa nợ
+DIAG   #3 sim=0.3437 examples/member-services-guide.md / Payment Arrangements
+CASE arm=C rep=1 id=eval-en-en-08 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-09 variant=exp source=cache
+GEN id=eval-en-en-09 variant=vi source=cache
+GEN id=eval-en-en-09 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-09 kind=en-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.0000 examples/commercial-servicing-manual.md / Insurance Requirements
+DIAG   #2 sim=0.3362 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3340 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3185 examples/loan-policy.md / Partial Payments
+DIAG   #5 sim=0.3085 examples/member-services-guide.md / Statement Delivery
+CASE arm=C rep=1 id=eval-en-en-09 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-10 variant=exp source=cache
+GEN id=eval-en-en-10 variant=vi source=cache
+GEN id=eval-en-en-10 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-en-10 kind=en-en guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3104 examples/loan-policy.md / Collections
+CASE arm=C rep=1 id=eval-en-en-10 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-01 variant=exp source=cache
+GEN id=eval-vi-vi-01 variant=vi source=cache
+GEN id=eval-vi-vi-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-01 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3633 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3809 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3188 examples/loan-policy.md / Collections
+DIAG   #4 sim=0.3631 examples/member-services-guide.md / Fee Waivers
+DIAG   #5 sim=0.3184 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #6 sim=0.3485 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=C rep=1 id=eval-vi-vi-01 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-02 variant=exp source=cache
+GEN id=eval-vi-vi-02 variant=vi source=cache
+GEN id=eval-vi-vi-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-02 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.5078 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #2 sim=0.3829 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.4091 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3523 examples/member-services-guide.md / Contact Channels
+DIAG   #5 sim=0.3878 examples/loan-policy.md / Partial Payments
+DIAG   #6 sim=0.3972 examples/loan-policy.md / Payments
+DIAG   #7 sim=0.3742 examples/member-services-guide.md / Statement Delivery
+CASE arm=C rep=1 id=eval-vi-vi-02 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-03 variant=exp source=cache
+GEN id=eval-vi-vi-03 variant=vi source=cache
+GEN id=eval-vi-vi-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-03 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.4507 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3504 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #3 sim=0.3451 examples/member-services-guide.md / Dispute Resolution
+DIAG   #4 sim=0.3400 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #5 sim=0.3551 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.4064 examples/member-services-guide.md / Payoff Requests
+DIAG   #7 sim=0.3620 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=C rep=1 id=eval-vi-vi-03 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-04 variant=exp source=cache
+GEN id=eval-vi-vi-04 variant=vi source=cache
+GEN id=eval-vi-vi-04 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-04 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4662 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3793 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #3 sim=0.4212 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3475 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #5 sim=0.3655 examples/member-services-guide.md / Payment Arrangements
+DIAG   #6 sim=0.3488 examples/member-services-guide.md / Statement Delivery
+CASE arm=C rep=1 id=eval-vi-vi-04 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-05 variant=exp source=cache
+GEN id=eval-vi-vi-05 variant=vi source=cache
+GEN id=eval-vi-vi-05 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-05 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3838 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3818 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.4171 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3834 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+DIAG   #5 sim=0.3874 examples/member-services-guide.md / Payment Arrangements
+DIAG   #6 sim=0.3698 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=C rep=1 id=eval-vi-vi-05 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-06 variant=exp source=cache
+GEN id=eval-vi-vi-06 variant=vi source=cache
+GEN id=eval-vi-vi-06 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-06 kind=vi-vi guardOK=true candidates=8 rejected=false
+DIAG   #1 sim=0.3883 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.3839 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #3 sim=0.3863 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+DIAG   #4 sim=0.3533 examples/member-services-guide.md / Contact Channels
+DIAG   #5 sim=0.3915 examples/loan-policy.md / Payment Codes
+DIAG   #6 sim=0.4115 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #7 sim=0.3909 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #8 sim=0.3876 examples/member-services-guide.md / Statement Delivery
+CASE arm=C rep=1 id=eval-vi-vi-06 kind=vi-vi r1=0.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-07 variant=exp source=cache
+GEN id=eval-vi-vi-07 variant=vi source=cache
+GEN id=eval-vi-vi-07 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-07 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3912 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.3913 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+DIAG   #3 sim=0.3875 examples/loan-policy.md / Partial Payments
+DIAG   #4 sim=0.3951 examples/large-loan-policy.md / Payment Processing
+DIAG   #5 sim=0.4040 examples/member-services-guide.md / Payoff Requests
+DIAG   #6 sim=0.4173 examples/member-services-guide.md / Fee Waivers
+DIAG   #7 sim=0.3746 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=C rep=1 id=eval-vi-vi-07 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-08 variant=exp source=cache
+GEN id=eval-vi-vi-08 variant=vi source=cache
+GEN id=eval-vi-vi-08 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-08 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3993 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #2 sim=0.4079 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3729 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3523 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #5 sim=0.3571 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-vi-vi-08 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-09 variant=exp source=cache
+GEN id=eval-vi-vi-09 variant=vi source=cache
+GEN id=eval-vi-vi-09 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-09 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.7075 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #2 sim=0.4380 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3902 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3752 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.4194 examples/member-services-guide.md / Grace Period Requests
+DIAG   #6 sim=0.4178 examples/member-services-guide.md / Payment Arrangements
+CASE arm=C rep=1 id=eval-vi-vi-09 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-10 variant=exp source=cache
+GEN id=eval-vi-vi-10 variant=vi source=cache
+GEN id=eval-vi-vi-10 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-vi-10 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.7119 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #2 sim=0.4505 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.4267 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.4171 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+DIAG   #5 sim=0.4090 examples/member-services-guide.md / Fee Waivers
+CASE arm=C rep=1 id=eval-vi-vi-10 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-vi-01 variant=exp source=cache
+GEN id=eval-en-vi-01 variant=vi source=cache
+GEN id=eval-en-vi-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-vi-01 kind=en-vi guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3169 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-vi-01 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-02 variant=exp source=cache
+GEN id=eval-en-vi-02 variant=vi source=cache
+GEN id=eval-en-vi-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-vi-02 kind=en-vi guardOK=true candidates=3 rejected=false
+DIAG   #1 sim=0.3115 examples/loan-policy.md / Partial Payments
+DIAG   #2 sim=0.3144 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.3100 examples/loan-policy.md / Payments
+CASE arm=C rep=1 id=eval-en-vi-02 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-03 variant=exp source=cache
+GEN id=eval-en-vi-03 variant=vi source=cache
+GEN id=eval-en-vi-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-vi-03 kind=en-vi guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+DIAG   #2 sim=0.3124 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-vi-03 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-04 variant=exp source=cache
+GEN id=eval-en-vi-04 variant=vi source=cache
+GEN id=eval-en-vi-04 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-vi-04 kind=en-vi guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.4069 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/loan-policy.md / Collections
+DIAG   #3 sim=0.3165 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3130 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-vi-04 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-05 variant=exp source=cache
+GEN id=eval-en-vi-05 variant=vi source=cache
+GEN id=eval-en-vi-05 variant=en source=cache
+DIAG arm=C rep=1 id=eval-en-vi-05 kind=en-vi guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3155 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-en-vi-05 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-01 variant=exp source=cache
+GEN id=eval-vi-en-01 variant=vi source=cache
+GEN id=eval-vi-en-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-en-01 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3619 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3753 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #3 sim=0.3296 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #4 sim=0.3744 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3381 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.3380 examples/member-services-guide.md / Fee Waivers
+DIAG   #7 sim=0.3585 examples/loan-policy.md / Payments
+CASE arm=C rep=1 id=eval-vi-en-01 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-02 variant=exp source=cache
+GEN id=eval-vi-en-02 variant=vi source=cache
+GEN id=eval-vi-en-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-en-02 kind=vi-en guardOK=true candidates=8 rejected=false
+DIAG   #1 sim=0.4399 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.4497 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3698 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.4114 examples/member-services-guide.md / Fee Waivers
+DIAG   #5 sim=0.3601 examples/member-services-guide.md / Payoff Requests
+DIAG   #6 sim=0.3995 examples/loan-policy.md / Partial Payments
+DIAG   #7 sim=0.4327 examples/member-services-guide.md / Statement Delivery
+DIAG   #8 sim=0.3920 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+CASE arm=C rep=1 id=eval-vi-en-02 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-03 variant=exp source=cache
+GEN id=eval-vi-en-03 variant=vi source=cache
+GEN id=eval-vi-en-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-en-03 kind=vi-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.4389 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.4628 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.4639 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.4258 examples/loan-policy.md / Partial Payments
+DIAG   #5 sim=0.4726 examples/member-services-guide.md / Payoff Requests
+CASE arm=C rep=1 id=eval-vi-en-03 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-04 variant=exp source=cache
+GEN id=eval-vi-en-04 variant=vi source=cache
+GEN id=eval-vi-en-04 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-en-04 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3772 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3637 examples/loan-policy.md / Partial Payments
+DIAG   #3 sim=0.3714 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3064 examples/loan-policy.md / Late Fees
+DIAG   #5 sim=0.3683 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #6 sim=0.3688 examples/loan-policy.md / Payments
+DIAG   #7 sim=0.3660 examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm
+CASE arm=C rep=1 id=eval-vi-en-04 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-05 variant=exp source=cache
+GEN id=eval-vi-en-05 variant=vi source=cache
+GEN id=eval-vi-en-05 variant=en source=cache
+DIAG arm=C rep=1 id=eval-vi-en-05 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.4091 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.4128 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #3 sim=0.3679 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3456 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #5 sim=0.3723 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.3451 examples/commercial-servicing-manual.md / Insurance Requirements
+DIAG   #7 sim=0.3639 examples/loan-policy.md / Partial Payments
+CASE arm=C rep=1 id=eval-vi-en-05 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-01 variant=exp source=cache
+GEN id=eval-misleading-01 variant=vi source=cache
+GEN id=eval-misleading-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-misleading-01 kind=misleading guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4072 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3769 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3783 examples/loan-policy.md / Payments
+DIAG   #4 sim=0.3026 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #5 sim=0.3392 examples/loan-policy.md / Late Fees
+DIAG   #6 sim=0.3520 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=C rep=1 id=eval-misleading-01 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-02 variant=exp source=cache
+GEN id=eval-misleading-02 variant=vi source=cache
+GEN id=eval-misleading-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-misleading-02 kind=misleading guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4139 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.4050 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3965 examples/loan-policy.md / Collections
+DIAG   #4 sim=0.3687 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+DIAG   #5 sim=0.3538 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #6 sim=0.3485 examples/large-loan-policy.md / Payment Processing
+CASE arm=C rep=1 id=eval-misleading-02 kind=misleading r1=0.00 r4=1.00 evidence=0.00 n/a
+GEN id=eval-misleading-03 variant=exp source=cache
+GEN id=eval-misleading-03 variant=vi source=cache
+GEN id=eval-misleading-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-misleading-03 kind=misleading guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3469 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3072 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+CASE arm=C rep=1 id=eval-misleading-03 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-unanswerable-01 variant=exp source=cache
+GEN id=eval-unanswerable-01 variant=vi source=cache
+GEN id=eval-unanswerable-01 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-01 kind=unanswerable guardOK=true candidates=6 rejected=true
+DIAG   #1 sim=0.4424 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.4204 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3961 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3428 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #5 sim=0.3310 examples/commercial-servicing-manual.md / Property Taxes
+DIAG   #6 sim=0.3444 examples/member-services-guide.md / Fee Waivers
+CASE arm=C rep=1 id=eval-unanswerable-01 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-02 variant=exp source=cache
+GEN id=eval-unanswerable-02 variant=vi source=cache
+GEN id=eval-unanswerable-02 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-02 kind=unanswerable guardOK=true candidates=5 rejected=true
+DIAG   #1 sim=0.3837 examples/member-services-guide.md / Payoff Requests
+DIAG   #2 sim=0.3659 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3720 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3142 examples/large-loan-policy.md / Payment Processing
+DIAG   #5 sim=0.3669 examples/loan-policy.md / Late Fees
+CASE arm=C rep=1 id=eval-unanswerable-02 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-03 variant=exp source=cache
+GEN id=eval-unanswerable-03 variant=vi source=cache
+GEN id=eval-unanswerable-03 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-03 kind=unanswerable guardOK=true candidates=5 rejected=true
+DIAG   #1 sim=0.3906 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.3793 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.4377 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3335 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.3497 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=C rep=1 id=eval-unanswerable-03 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-04 variant=exp source=cache
+GEN id=eval-unanswerable-04 variant=vi source=cache
+GEN id=eval-unanswerable-04 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-04 kind=unanswerable guardOK=true candidates=5 rejected=true
+DIAG   #1 sim=0.3165 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #2 sim=0.3288 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3361 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3757 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3144 examples/member-services-guide.md / Contact Channels
+CASE arm=C rep=1 id=eval-unanswerable-04 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-05 variant=exp source=cache
+GEN id=eval-unanswerable-05 variant=vi source=cache
+GEN id=eval-unanswerable-05 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-05 kind=unanswerable guardOK=true candidates=6 rejected=true
+DIAG   #1 sim=0.3918 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3483 examples/member-services-guide.md / Payment Arrangements
+DIAG   #3 sim=0.3690 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #4 sim=0.3446 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.3199 examples/loan-policy.md / Late Fees
+DIAG   #6 sim=0.3331 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+CASE arm=C rep=1 id=eval-unanswerable-05 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-06 variant=exp source=cache
+GEN id=eval-unanswerable-06 variant=vi source=cache
+GEN id=eval-unanswerable-06 variant=en source=cache
+DIAG arm=C rep=1 id=eval-unanswerable-06 kind=unanswerable guardOK=true candidates=4 rejected=true
+DIAG   #1 sim=0.3580 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3476 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3995 examples/vi/quy-trinh-thu-hoi.md / Xóa nợ
+DIAG   #4 sim=0.3056 examples/vi/quy-trinh-thu-hoi.md / Chuyển hồ sơ thu hồi
+CASE arm=C rep=1 id=eval-unanswerable-06 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-en-en-01 variant=exp source=cache
+GEN id=eval-en-en-01 variant=vi source=cache
+GEN id=eval-en-en-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-01 kind=en-en guardOK=false candidates=3 rejected=false
+DIAG   #1 sim=0.3805 examples/member-services-guide.md / Statement Delivery
+DIAG   #2 sim=0.3462 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3074 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-en-01 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-02 variant=exp source=cache
+GEN id=eval-en-en-02 variant=vi source=cache
+GEN id=eval-en-en-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-02 kind=en-en guardOK=false candidates=1 rejected=false
+DIAG   #1 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+CASE arm=E rep=1 id=eval-en-en-02 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-03 variant=exp source=cache
+GEN id=eval-en-en-03 variant=vi source=cache
+GEN id=eval-en-en-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-03 kind=en-en guardOK=false candidates=3 rejected=false
+DIAG   #1 sim=0.3469 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3171 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3918 examples/member-services-guide.md / Statement Delivery
+CASE arm=E rep=1 id=eval-en-en-03 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-04 variant=exp source=cache
+GEN id=eval-en-en-04 variant=vi source=cache
+GEN id=eval-en-en-04 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-04 kind=en-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3439 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.3705 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3342 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3104 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3035 examples/member-services-guide.md / Contact Channels
+CASE arm=E rep=1 id=eval-en-en-04 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-05 variant=exp source=cache
+GEN id=eval-en-en-05 variant=vi source=cache
+GEN id=eval-en-en-05 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-05 kind=en-en guardOK=false candidates=2 rejected=false
+DIAG   #1 sim=0.3215 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3126 examples/member-services-guide.md / Contact Channels
+CASE arm=E rep=1 id=eval-en-en-05 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-06 variant=exp source=cache
+GEN id=eval-en-en-06 variant=vi source=cache
+GEN id=eval-en-en-06 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-06 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.4162 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/member-services-guide.md / Grace Period Requests
+DIAG   #3 sim=0.3379 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #4 sim=0.3165 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-en-06 kind=en-en r1=0.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-07 variant=exp source=cache
+GEN id=eval-en-en-07 variant=vi source=cache
+GEN id=eval-en-en-07 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-07 kind=en-en guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.3470 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3170 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #3 sim=0.3191 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3127 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=E rep=1 id=eval-en-en-07 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-08 variant=exp source=cache
+GEN id=eval-en-en-08 variant=vi source=cache
+GEN id=eval-en-en-08 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-08 kind=en-en guardOK=false candidates=3 rejected=false
+DIAG   #1 sim=0.3057 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3457 examples/vi/quy-trinh-thu-hoi.md / Xóa nợ
+DIAG   #3 sim=0.3437 examples/member-services-guide.md / Payment Arrangements
+CASE arm=E rep=1 id=eval-en-en-08 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-en-09 variant=exp source=cache
+GEN id=eval-en-en-09 variant=vi source=cache
+GEN id=eval-en-en-09 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-09 kind=en-en guardOK=false candidates=5 rejected=false
+DIAG   #1 sim=0.0000 examples/commercial-servicing-manual.md / Insurance Requirements
+DIAG   #2 sim=0.3362 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3340 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.3185 examples/loan-policy.md / Partial Payments
+DIAG   #5 sim=0.3085 examples/member-services-guide.md / Statement Delivery
+CASE arm=E rep=1 id=eval-en-en-09 kind=en-en r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-en-10 variant=exp source=cache
+GEN id=eval-en-en-10 variant=vi source=cache
+GEN id=eval-en-en-10 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-en-10 kind=en-en guardOK=true candidates=1 rejected=false
+DIAG   #1 sim=0.3104 examples/loan-policy.md / Collections
+CASE arm=E rep=1 id=eval-en-en-10 kind=en-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-01 variant=exp source=cache
+GEN id=eval-vi-vi-01 variant=vi source=cache
+GEN id=eval-vi-vi-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-01 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3633 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3809 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3188 examples/loan-policy.md / Collections
+DIAG   #4 sim=0.3631 examples/member-services-guide.md / Fee Waivers
+DIAG   #5 sim=0.3184 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #6 sim=0.3485 examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm
+CASE arm=E rep=1 id=eval-vi-vi-01 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-02 variant=exp source=cache
+GEN id=eval-vi-vi-02 variant=vi source=cache
+GEN id=eval-vi-vi-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-02 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.5078 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #2 sim=0.3829 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.4091 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3523 examples/member-services-guide.md / Contact Channels
+DIAG   #5 sim=0.3878 examples/loan-policy.md / Partial Payments
+DIAG   #6 sim=0.3972 examples/loan-policy.md / Payments
+DIAG   #7 sim=0.3742 examples/member-services-guide.md / Statement Delivery
+CASE arm=E rep=1 id=eval-vi-vi-02 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-03 variant=exp source=cache
+GEN id=eval-vi-vi-03 variant=vi source=cache
+GEN id=eval-vi-vi-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-03 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.4507 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3504 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #3 sim=0.3451 examples/member-services-guide.md / Dispute Resolution
+DIAG   #4 sim=0.3400 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #5 sim=0.3551 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.4064 examples/member-services-guide.md / Payoff Requests
+DIAG   #7 sim=0.3620 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=E rep=1 id=eval-vi-vi-03 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-04 variant=exp source=cache
+GEN id=eval-vi-vi-04 variant=vi source=cache
+GEN id=eval-vi-vi-04 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-04 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4662 examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán
+DIAG   #2 sim=0.3793 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #3 sim=0.4212 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3475 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #5 sim=0.3655 examples/member-services-guide.md / Payment Arrangements
+DIAG   #6 sim=0.3488 examples/member-services-guide.md / Statement Delivery
+CASE arm=E rep=1 id=eval-vi-vi-04 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-05 variant=exp source=cache
+GEN id=eval-vi-vi-05 variant=vi source=cache
+GEN id=eval-vi-vi-05 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-05 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.3838 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.3818 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.4171 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3834 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+DIAG   #5 sim=0.3874 examples/member-services-guide.md / Payment Arrangements
+DIAG   #6 sim=0.3698 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=E rep=1 id=eval-vi-vi-05 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-06 variant=exp source=cache
+GEN id=eval-vi-vi-06 variant=vi source=cache
+GEN id=eval-vi-vi-06 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-06 kind=vi-vi guardOK=true candidates=8 rejected=false
+DIAG   #1 sim=0.3883 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.3839 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #3 sim=0.3863 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+DIAG   #4 sim=0.3533 examples/member-services-guide.md / Contact Channels
+DIAG   #5 sim=0.3915 examples/loan-policy.md / Payment Codes
+DIAG   #6 sim=0.4115 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #7 sim=0.3909 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #8 sim=0.3876 examples/member-services-guide.md / Statement Delivery
+CASE arm=E rep=1 id=eval-vi-vi-06 kind=vi-vi r1=0.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-07 variant=exp source=cache
+GEN id=eval-vi-vi-07 variant=vi source=cache
+GEN id=eval-vi-vi-07 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-07 kind=vi-vi guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3912 examples/member-services-guide.md / Payment Arrangements
+DIAG   #2 sim=0.3913 examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán
+DIAG   #3 sim=0.3875 examples/loan-policy.md / Partial Payments
+DIAG   #4 sim=0.3951 examples/large-loan-policy.md / Payment Processing
+DIAG   #5 sim=0.4040 examples/member-services-guide.md / Payoff Requests
+DIAG   #6 sim=0.4173 examples/member-services-guide.md / Fee Waivers
+DIAG   #7 sim=0.3746 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=E rep=1 id=eval-vi-vi-07 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-08 variant=exp source=cache
+GEN id=eval-vi-vi-08 variant=vi source=cache
+GEN id=eval-vi-vi-08 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-08 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.3993 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #2 sim=0.4079 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3729 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.3523 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #5 sim=0.3571 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-vi-vi-08 kind=vi-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-vi-09 variant=exp source=cache
+GEN id=eval-vi-vi-09 variant=vi source=cache
+GEN id=eval-vi-vi-09 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-09 kind=vi-vi guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.7075 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #2 sim=0.4380 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3902 examples/loan-policy.md / Payment Codes
+DIAG   #4 sim=0.3752 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.4194 examples/member-services-guide.md / Grace Period Requests
+DIAG   #6 sim=0.4178 examples/member-services-guide.md / Payment Arrangements
+CASE arm=E rep=1 id=eval-vi-vi-09 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-vi-vi-10 variant=exp source=cache
+GEN id=eval-vi-vi-10 variant=vi source=cache
+GEN id=eval-vi-vi-10 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-vi-10 kind=vi-vi guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.7119 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #2 sim=0.4505 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.4267 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #4 sim=0.4171 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+DIAG   #5 sim=0.4090 examples/member-services-guide.md / Fee Waivers
+CASE arm=E rep=1 id=eval-vi-vi-10 kind=vi-vi r1=1.00 r4=1.00 evidence=1.00 n/a
+GEN id=eval-en-vi-01 variant=exp source=cache
+GEN id=eval-en-vi-01 variant=vi source=cache
+GEN id=eval-en-vi-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-vi-01 kind=en-vi guardOK=false candidates=1 rejected=false
+DIAG   #1 sim=0.3169 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-vi-01 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-02 variant=exp source=cache
+GEN id=eval-en-vi-02 variant=vi source=cache
+GEN id=eval-en-vi-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-vi-02 kind=en-vi guardOK=false candidates=3 rejected=false
+DIAG   #1 sim=0.3115 examples/loan-policy.md / Partial Payments
+DIAG   #2 sim=0.3144 examples/member-services-guide.md / Statement Delivery
+DIAG   #3 sim=0.3100 examples/loan-policy.md / Payments
+CASE arm=E rep=1 id=eval-en-vi-02 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-03 variant=exp source=cache
+GEN id=eval-en-vi-03 variant=vi source=cache
+GEN id=eval-en-vi-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-vi-03 kind=en-vi guardOK=false candidates=2 rejected=false
+DIAG   #1 sim=0.0000 examples/member-services-guide.md / Fee Waivers
+DIAG   #2 sim=0.3124 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-vi-03 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-04 variant=exp source=cache
+GEN id=eval-en-vi-04 variant=vi source=cache
+GEN id=eval-en-vi-04 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-vi-04 kind=en-vi guardOK=true candidates=4 rejected=false
+DIAG   #1 sim=0.4069 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.0000 examples/loan-policy.md / Collections
+DIAG   #3 sim=0.3165 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.3130 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-vi-04 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-en-vi-05 variant=exp source=cache
+GEN id=eval-en-vi-05 variant=vi source=cache
+GEN id=eval-en-vi-05 variant=en source=cache
+DIAG arm=E rep=1 id=eval-en-vi-05 kind=en-vi guardOK=false candidates=1 rejected=false
+DIAG   #1 sim=0.3155 examples/loan-policy.md / Late Fees
+CASE arm=E rep=1 id=eval-en-vi-05 kind=en-vi r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-01 variant=exp source=cache
+GEN id=eval-vi-en-01 variant=vi source=cache
+GEN id=eval-vi-en-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-en-01 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3619 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3753 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #3 sim=0.3296 examples/commercial-servicing-manual.md / Construction Draw Administration
+DIAG   #4 sim=0.3744 examples/member-services-guide.md / Payoff Requests
+DIAG   #5 sim=0.3381 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.3380 examples/member-services-guide.md / Fee Waivers
+DIAG   #7 sim=0.3585 examples/loan-policy.md / Payments
+CASE arm=E rep=1 id=eval-vi-en-01 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-02 variant=exp source=cache
+GEN id=eval-vi-en-02 variant=vi source=cache
+GEN id=eval-vi-en-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-en-02 kind=vi-en guardOK=true candidates=8 rejected=false
+DIAG   #1 sim=0.4399 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #2 sim=0.4497 examples/loan-policy.md / Late Fees
+DIAG   #3 sim=0.3698 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #4 sim=0.4114 examples/member-services-guide.md / Fee Waivers
+DIAG   #5 sim=0.3601 examples/member-services-guide.md / Payoff Requests
+DIAG   #6 sim=0.3995 examples/loan-policy.md / Partial Payments
+DIAG   #7 sim=0.4327 examples/member-services-guide.md / Statement Delivery
+DIAG   #8 sim=0.3920 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+CASE arm=E rep=1 id=eval-vi-en-02 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-03 variant=exp source=cache
+GEN id=eval-vi-en-03 variant=vi source=cache
+GEN id=eval-vi-en-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-en-03 kind=vi-en guardOK=true candidates=5 rejected=false
+DIAG   #1 sim=0.4389 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.4628 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.4639 examples/member-services-guide.md / Statement Delivery
+DIAG   #4 sim=0.4258 examples/loan-policy.md / Partial Payments
+DIAG   #5 sim=0.4726 examples/member-services-guide.md / Payoff Requests
+CASE arm=E rep=1 id=eval-vi-en-03 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-04 variant=exp source=cache
+GEN id=eval-vi-en-04 variant=vi source=cache
+GEN id=eval-vi-en-04 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-en-04 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.3772 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.3637 examples/loan-policy.md / Partial Payments
+DIAG   #3 sim=0.3714 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3064 examples/loan-policy.md / Late Fees
+DIAG   #5 sim=0.3683 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #6 sim=0.3688 examples/loan-policy.md / Payments
+DIAG   #7 sim=0.3660 examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm
+CASE arm=E rep=1 id=eval-vi-en-04 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-vi-en-05 variant=exp source=cache
+GEN id=eval-vi-en-05 variant=vi source=cache
+GEN id=eval-vi-en-05 variant=en source=cache
+DIAG arm=E rep=1 id=eval-vi-en-05 kind=vi-en guardOK=true candidates=7 rejected=false
+DIAG   #1 sim=0.4091 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.4128 examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả
+DIAG   #3 sim=0.3679 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3456 examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán
+DIAG   #5 sim=0.3723 examples/member-services-guide.md / Statement Delivery
+DIAG   #6 sim=0.3451 examples/commercial-servicing-manual.md / Insurance Requirements
+DIAG   #7 sim=0.3639 examples/loan-policy.md / Partial Payments
+CASE arm=E rep=1 id=eval-vi-en-05 kind=vi-en r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-01 variant=exp source=cache
+GEN id=eval-misleading-01 variant=vi source=cache
+GEN id=eval-misleading-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-misleading-01 kind=misleading guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4072 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3769 examples/member-services-guide.md / Contact Channels
+DIAG   #3 sim=0.3783 examples/loan-policy.md / Payments
+DIAG   #4 sim=0.3026 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #5 sim=0.3392 examples/loan-policy.md / Late Fees
+DIAG   #6 sim=0.3520 examples/member-services-guide.md / Partial Payment Handling
+CASE arm=E rep=1 id=eval-misleading-01 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-misleading-02 variant=exp source=cache
+GEN id=eval-misleading-02 variant=vi source=cache
+GEN id=eval-misleading-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-misleading-02 kind=misleading guardOK=true candidates=6 rejected=false
+DIAG   #1 sim=0.4139 examples/member-services-guide.md / Contact Channels
+DIAG   #2 sim=0.4050 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.3965 examples/loan-policy.md / Collections
+DIAG   #4 sim=0.3687 examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí
+DIAG   #5 sim=0.3538 examples/vi/bao-hiem-tai-san.md / Bồi thường
+DIAG   #6 sim=0.3485 examples/large-loan-policy.md / Payment Processing
+CASE arm=E rep=1 id=eval-misleading-02 kind=misleading r1=0.00 r4=1.00 evidence=0.00 n/a
+GEN id=eval-misleading-03 variant=exp source=cache
+GEN id=eval-misleading-03 variant=vi source=cache
+GEN id=eval-misleading-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-misleading-03 kind=misleading guardOK=true candidates=2 rejected=false
+DIAG   #1 sim=0.3469 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3072 examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn
+CASE arm=E rep=1 id=eval-misleading-03 kind=misleading r1=0.00 r4=0.00 evidence=0.00 n/a
+GEN id=eval-unanswerable-01 variant=exp source=cache
+GEN id=eval-unanswerable-01 variant=vi source=cache
+GEN id=eval-unanswerable-01 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-01 kind=unanswerable guardOK=true candidates=6 rejected=true
+DIAG   #1 sim=0.4424 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.4204 examples/member-services-guide.md / Partial Payment Handling
+DIAG   #3 sim=0.3961 examples/loan-policy.md / Late Fees
+DIAG   #4 sim=0.3428 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+DIAG   #5 sim=0.3310 examples/commercial-servicing-manual.md / Property Taxes
+DIAG   #6 sim=0.3444 examples/member-services-guide.md / Fee Waivers
+CASE arm=E rep=1 id=eval-unanswerable-01 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-02 variant=exp source=cache
+GEN id=eval-unanswerable-02 variant=vi source=cache
+GEN id=eval-unanswerable-02 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-02 kind=unanswerable guardOK=false candidates=0 rejected=true
+CASE arm=E rep=1 id=eval-unanswerable-02 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 reject
+GEN id=eval-unanswerable-03 variant=exp source=cache
+GEN id=eval-unanswerable-03 variant=vi source=cache
+GEN id=eval-unanswerable-03 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-03 kind=unanswerable guardOK=true candidates=5 rejected=true
+DIAG   #1 sim=0.3906 examples/loan-policy.md / Late Fees
+DIAG   #2 sim=0.3793 examples/loan-policy.md / Payment Codes
+DIAG   #3 sim=0.4377 examples/member-services-guide.md / Payoff Requests
+DIAG   #4 sim=0.3335 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.3497 examples/commercial-servicing-manual.md / Property Taxes
+CASE arm=E rep=1 id=eval-unanswerable-03 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-04 variant=exp source=cache
+GEN id=eval-unanswerable-04 variant=vi source=cache
+GEN id=eval-unanswerable-04 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-04 kind=unanswerable guardOK=false candidates=0 rejected=true
+CASE arm=E rep=1 id=eval-unanswerable-04 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 reject
+GEN id=eval-unanswerable-05 variant=exp source=cache
+GEN id=eval-unanswerable-05 variant=vi source=cache
+GEN id=eval-unanswerable-05 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-05 kind=unanswerable guardOK=true candidates=6 rejected=true
+DIAG   #1 sim=0.3918 examples/loan-policy.md / Payment Codes
+DIAG   #2 sim=0.3483 examples/member-services-guide.md / Payment Arrangements
+DIAG   #3 sim=0.3690 examples/commercial-servicing-manual.md / Escrow Administration
+DIAG   #4 sim=0.3446 examples/member-services-guide.md / Statement Delivery
+DIAG   #5 sim=0.3199 examples/loan-policy.md / Late Fees
+DIAG   #6 sim=0.3331 examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực
+CASE arm=E rep=1 id=eval-unanswerable-05 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 FALSE_POSITIVE
+GEN id=eval-unanswerable-06 variant=exp source=cache
+GEN id=eval-unanswerable-06 variant=vi source=cache
+GEN id=eval-unanswerable-06 variant=en source=cache
+DIAG arm=E rep=1 id=eval-unanswerable-06 kind=unanswerable guardOK=false candidates=0 rejected=true
+CASE arm=E rep=1 id=eval-unanswerable-06 kind=unanswerable r1=0.00 r4=0.00 evidence=0.00 reject
+FOOTER wall=3.536s generated_queries=0 cache=/tmp/bilingual-parity-185022-1792441363946160035/query-cache.json

@@ -1,0 +1,18 @@
+# Rust build artifacts (Cargo.lock is committed for the binaries).
+# Unanchored so nested acceptance-crate target directories are ignored too.
+target/
+
+# Local environment overrides (configuration is read from env vars)
+.env
+.env.*
+!.env.example
+*.Local.*
+
+# Editor and OS files
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Over-engineering audit report, written by .agents/scripts/audit-agent.sh
+AUDIT.md*

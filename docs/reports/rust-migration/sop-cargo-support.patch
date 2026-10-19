@@ -1,0 +1,977 @@
+diff --git a/docs/plans/ACCEPTANCE-CHECKS-AUTHORING.md b/docs/plans/ACCEPTANCE-CHECKS-AUTHORING.md
+index 3601cf1..b8a423d 100644
+--- a/docs/plans/ACCEPTANCE-CHECKS-AUTHORING.md
++++ b/docs/plans/ACCEPTANCE-CHECKS-AUTHORING.md
+@@ -98,6 +98,57 @@ is then actually required to exist. Nothing in this guidance enables gating; the
+ check-less warning path preserves the required-deliverable contract so it stays
+ enforceable when gating lands.
+ 
++## Cargo (Rust) acceptance checks
++
++A Rust stage can prove its criteria with a cargo command, but cargo is
++approval-only by default. The operator opts in per project:
++
++```yaml
++validation:
++  acceptance_checks:
++    cargo: true
++```
++
++With the switch on, a cargo check is accepted only under a **default-deny
++argument policy** — the subcommand and every flag must match an allow-list, so an
++unknown or future flag is refused:
++
++| Command | Allowed arguments (each at most once) |
++| ------- | ------------------------------------- |
++| `cargo build` / `cargo test` / `cargo clippy` | `--locked`, `--all-targets`, `--manifest-path PATH` |
++| `cargo clippy` | the above, optionally ending in the exact suffix `-- -D warnings` |
++| `cargo fmt` | `--manifest-path PATH`, `--all`, and a **required** `--check` |
++
++Everything else stays `REQUIRES_APPROVAL`: `cargo run`/`install`/`publish`/`add`/
++`remove`/`fix`, `--target` (which also names a custom target-spec path),
++`--target-dir`, `--artifact-dir`, `--config`, `-Z`, unknown flags, a `+toolchain`
++override, positional arguments, a repeated flag, and any argument after `--` other
++than clippy's exact `-- -D warnings` suffix. Because cargo executes project code
++(build scripts, proc-macros, the test harness), enabling this is a trust
++escalation. A project `Approve`/`Deny` prefix, when one is supplied, can only
++tighten further; no project configuration currently supplies one, so the
++default-deny allow-list above is the restriction in force today.
++
++Commands run without a shell, so `cargo test` runs in the repository root; for a
++package in a subdirectory use `--manifest-path`:
++
++```markdown
++- **Acceptance Checks:** `cargo test --manifest-path rust/Cargo.toml`
++- **Acceptance Checks:** `cargo fmt --manifest-path rust/Cargo.toml --check`
++```
++
++`--manifest-path` (both `--manifest-path VALUE` and `--manifest-path=VALUE`) is
++**confined to the repository root**: an empty value, an absolute path, a `..`
++component, or a path whose nearest existing ancestor symlink-resolves outside the
++root is refused before the check runs.
++
++**Containment is not a sandbox.** It only limits *which manifest file* a check may
++name. A confined crate still runs its build scripts and proc-macros
++(`cargo build`/`clippy`), still runs its test harness (`cargo test`), and still
++fetches its dependencies from crates.io — none of that is confined by the
++manifest-path check. Treat an enabled cargo acceptance check as arbitrary project
++code.
++
+ ## Summary
+ 
+ | Concern | Behaviour |
+diff --git a/docs/specs/SECURITY.md b/docs/specs/SECURITY.md
+index c23c5bf..3dd3649 100644
+--- a/docs/specs/SECURITY.md
++++ b/docs/specs/SECURITY.md
+@@ -38,6 +38,22 @@ The terms MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
+   MUST require approval; a force-push MUST be `DENIED`.
+ - Project rules MAY only tighten the defaults — they MUST NOT loosen them, and a
+   denied command MUST NOT be overridable by project configuration.
++- Acceptance checks run operator-declared project code at verification time: a
++  `go test` or `cargo test` executes the project's tests, and a `cargo build` runs
++  build scripts and proc-macros. They are not read-only the way `go vet`
++  arguably is, and MUST be labeled as code execution wherever they are described.
++- Non-Go verification is opt-in and scoped: `cargo build|test|clippy` and
++  `cargo fmt --check` MAY classify `SAFE` ONLY when the operator sets
++  `validation.acceptance_checks.cargo: true`. With the switch off the go/git
++  policy is byte-identical, the opt-in MUST NOT exceed this scoped set, the
++  accepted forms MUST be validated by a default-deny allow-list (an unlisted flag
++  is refused), and an operator-supplied project `Approve`/`Deny` policy MUST be
++  honored when present (it can only tighten). No project configuration currently
++  supplies an `Approve`/`Deny` policy for acceptance checks, so it MUST NOT be
++  described as enforced today.
++- Confining a cargo check's `--manifest-path` to the repository root limits which
++  manifest file is named. It MUST NOT be described as a sandbox: the crate's build
++  scripts, proc-macros, tests, and dependency downloads are unaffected.
+ 
+ ## 2. Command Execution
+ 
+diff --git a/internal/cli/cargo_acceptance_check_test.go b/internal/cli/cargo_acceptance_check_test.go
+new file mode 100644
+index 0000000..666b681
+--- /dev/null
++++ b/internal/cli/cargo_acceptance_check_test.go
+@@ -0,0 +1,188 @@
++package cli
++
++import (
++	"os"
++	"path/filepath"
++	"runtime"
++	"testing"
++
++	"github.com/imhttran/agentic-sop/internal/config"
++	"github.com/imhttran/agentic-sop/internal/quality"
++	"github.com/imhttran/agentic-sop/internal/taskfile"
++)
++
++func cargoOnConfig() config.Config {
++	cfg := config.Config{}
++	cfg.Validation.AcceptanceChecks.Cargo = true
++	return cfg
++}
++
++func cargoTestGate() quality.Result { return quality.Result{Decision: quality.Pass} }
++
++func TestAuthorizeCargoAcceptanceCommand(t *testing.T) {
++	root := t.TempDir()
++	on := cargoOnConfig()
++	off := config.Config{}
++
++	for _, cmd := range []string{
++		"cargo build --manifest-path rust/Cargo.toml",
++		"cargo test --locked",
++		"cargo clippy --all-targets",
++		"cargo fmt --check",
++	} {
++		if _, err := authorizeAcceptanceCommand(cmd, acceptanceCheckPolicy(on), root); err != nil {
++			t.Errorf("opted-in %q should authorize, got %v", cmd, err)
++		}
++	}
++	if !on.CargoAcceptanceChecksEnabled() {
++		t.Error("opt-in accessor should be true")
++	}
++	if off.CargoAcceptanceChecksEnabled() {
++		t.Error("opt-in must default to false")
++	}
++	if _, err := authorizeAcceptanceCommand("cargo test", acceptanceCheckPolicy(off), root); err == nil {
++		t.Error("cargo test must remain unauthorized when not opted in")
++	}
++	for _, cmd := range []string{
++		"cargo fmt", "cargo run", "cargo install", "cargo publish", "cargo add serde", "cargo fix",
++		"cargo build --config net.offline=true", "cargo build -Z unstable-options",
++		"cargo build --target-dir /tmp/x", "cargo build --target ./evil.json",
++		"cargo build --release", "cargo test --", "cargo clippy -- -D allow",
++		"cd rust && cargo test", "cargo test | tee out", "cargo test $(pwd)",
++		`cargo test --manifest-path " escape/Cargo.toml"`, // surrounding whitespace
++	} {
++		if _, err := authorizeAcceptanceCommand(cmd, acceptanceCheckPolicy(on), root); err == nil {
++			t.Errorf("opted-in %q must NOT authorize", cmd)
++		}
++	}
++}
++
++// TestAuthorizeCargoManifestPathContainment is portable: it exercises only the
++// path rules that need no symlink support (absolute, parent traversal, empty,
++// missing value). Symlink behaviour lives in its own test below.
++func TestAuthorizeCargoManifestPathContainment(t *testing.T) {
++	root := t.TempDir()
++	pol := acceptanceCheckPolicy(cargoOnConfig())
++
++	allowed := []string{
++		"cargo test --manifest-path Cargo.toml",
++		"cargo test --manifest-path=rust/Cargo.toml",
++		"cargo build --manifest-path rust/Cargo.toml",
++		"cargo clippy --manifest-path=rust/Cargo.toml",
++		"cargo fmt --manifest-path rust/Cargo.toml --check",
++		"cargo fmt --manifest-path=rust/Cargo.toml --check",
++	}
++	for _, cmd := range allowed {
++		if _, err := authorizeAcceptanceCommand(cmd, pol, root); err != nil {
++			t.Errorf("in-repo %q should authorize, got %v", cmd, err)
++		}
++	}
++
++	rejected := []string{
++		"cargo test --manifest-path /etc/Cargo.toml",      // absolute (space form)
++		"cargo test --manifest-path=/etc/Cargo.toml",      // absolute (= form)
++		"cargo test --manifest-path ../Cargo.toml",        // parent traversal
++		"cargo test --manifest-path=../../etc/Cargo.toml", // parent traversal (=)
++		"cargo test --manifest-path rust/../../Cargo.toml",
++		"cargo test --manifest-path=", // empty value
++		"cargo test --manifest-path",  // missing value
++	}
++	for _, cmd := range rejected {
++		if _, err := authorizeAcceptanceCommand(cmd, pol, root); err == nil {
++			t.Errorf("%q must be rejected (path containment)", cmd)
++		}
++	}
++}
++
++// TestContainedRepoPathRejectsWhitespace pins that the value validated is the exact
++// value that runs: surrounding whitespace is refused, never trimmed.
++func TestContainedRepoPathRejectsWhitespace(t *testing.T) {
++	root := t.TempDir()
++	for _, bad := range []string{" escape/x", "escape/x ", "\tescape/x", "  "} {
++		if err := containedRepoPath(root, bad); err == nil {
++			t.Errorf("containedRepoPath(%q) = nil, want an error", bad)
++		}
++	}
++	if err := containedRepoPath(root, "rust/Cargo.toml"); err != nil {
++		t.Errorf("in-repo path errored: %v", err)
++	}
++}
++
++// TestCargoManifestPathSymlinkEscapeRejected covers the symlink escape, including a
++// whitespace-prefixed one. Symlink creation is unavailable on some platforms (for
++// example Windows without Developer Mode); that is handled explicitly by skipping.
++func TestCargoManifestPathSymlinkEscapeRejected(t *testing.T) {
++	root := t.TempDir()
++	outside := t.TempDir()
++	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
++		t.Skipf("symlink support unavailable on this platform: %v", err)
++	}
++	pol := acceptanceCheckPolicy(cargoOnConfig())
++
++	// The direct check does not depend on command tokenization.
++	if err := containedRepoPath(root, " escape/Cargo.toml"); err == nil {
++		t.Error("a whitespace-prefixed escape path must be rejected")
++	}
++
++	for _, cmd := range []string{
++		"cargo test --manifest-path escape/Cargo.toml",    // symlink escape
++		`cargo test --manifest-path " escape/Cargo.toml"`, // whitespace-prefixed symlink escape
++		`cargo test --manifest-path=" escape/Cargo.toml"`, // whitespace-prefixed (= form)
++	} {
++		if _, err := authorizeAcceptanceCommand(cmd, pol, root); err == nil {
++			t.Errorf("%q must be rejected (symlink/whitespace escape)", cmd)
++		}
++	}
++}
++
++// TestRejectedCargoCommandNeverExecutes puts a fake `cargo` on PATH that writes a
++// marker when invoked, then proves a rejected command never runs it while an
++// allowed command does. The fake is a POSIX shell script, so the test is skipped
++// explicitly on platforms without POSIX execution semantics (Windows).
++func TestRejectedCargoCommandNeverExecutes(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("the fake `#!/bin/sh` cargo is not executable on Windows; this check is POSIX-only")
++	}
++	dir := t.TempDir()
++	marker := filepath.Join(dir, "ran")
++	bin := filepath.Join(dir, "bin")
++	if err := os.MkdirAll(bin, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	script := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
++	if err := os.WriteFile(filepath.Join(bin, "cargo"), []byte(script), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
++	cfg := cargoOnConfig()
++
++	// Control: an allowed command executes (marker appears).
++	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
++		t.Fatal(err)
++	}
++	res := deriveOutcome(cfg, &taskfile.Spec{ID: "OK", AcceptanceChecks: []string{"cargo test"}}, dir, cargoTestGate())
++	if res == nil {
++		t.Fatal("nil outcome")
++	}
++	if _, err := os.Stat(marker); err != nil {
++		t.Fatalf("allowed cargo check did not execute (no marker): %v; outcome=%+v", err, res)
++	}
++
++	// Rejected forms must NOT execute.
++	for _, cmd := range []string{
++		"cargo run",
++		"cargo build --config x=y",
++		"cargo build --target ./evil.json",
++		"cargo build --release",
++		"cargo test --manifest-path ../Cargo.toml",
++		`cargo test --manifest-path " escape/Cargo.toml"`,
++	} {
++		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
++			t.Fatal(err)
++		}
++		deriveOutcome(cfg, &taskfile.Spec{ID: "X", AcceptanceChecks: []string{cmd}}, dir, cargoTestGate())
++		if _, err := os.Stat(marker); err == nil {
++			t.Errorf("rejected %q executed the command (marker present)", cmd)
++		}
++	}
++}
+diff --git a/internal/cli/cargo_acceptance_flow_test.go b/internal/cli/cargo_acceptance_flow_test.go
+new file mode 100644
+index 0000000..565f4bc
+--- /dev/null
++++ b/internal/cli/cargo_acceptance_flow_test.go
+@@ -0,0 +1,145 @@
++//go:build acceptance
++
++// Native Cargo acceptance-check flow through the production outcome seam, using a
++// real cargo against a crate nested in a repository subdirectory. Proves: each
++// supported command shape (build/test/clippy/fmt --check) yields VERIFIED, a
++// failing test yields PARTIAL, a missing check stays unverified, rejected
++// commands keep the boundary/HOLD behavior, the opt-in defaults off, and Go
++// checks are unchanged. Skips (never fails) when cargo is unavailable.
++
++package cli
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"testing"
++
++	"github.com/imhttran/agentic-sop/internal/config"
++	"github.com/imhttran/agentic-sop/internal/outcome"
++	"github.com/imhttran/agentic-sop/internal/taskfile"
++)
++
++func accOpCargoRoot(t *testing.T, testBody string) string {
++	t.Helper()
++	root := t.TempDir()
++	write := func(rel, content string) {
++		p := filepath.Join(root, rel)
++		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
++			t.Fatal(err)
++		}
++	}
++	write("rust/Cargo.toml", "[package]\nname = \"acccrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
++	write("rust/src/lib.rs", "pub fn ok() -> bool {\n    true\n}\n")
++	write("rust/tests/it.rs", testBody)
++	return root
++}
++
++func accOpCargoSpec(checks ...string) *taskfile.Spec {
++	if checks == nil {
++		return &taskfile.Spec{ID: "CARGO", Title: "cargo", AcceptanceCriteria: []string{"crate tests pass"}}
++	}
++	return &taskfile.Spec{
++		ID:                 "CARGO",
++		Title:              "cargo",
++		AcceptanceCriteria: []string{"crate tests pass"},
++		AcceptanceChecks:   checks,
++	}
++}
++
++func accOpHasCriterion(res *outcomeArtifact, id string, met bool) bool {
++	for _, c := range res.Criteria {
++		if c.ID == id && c.Met == met {
++			return true
++		}
++	}
++	return false
++}
++
++func TestCargoNestedCrateCommandsVerify(t *testing.T) {
++	if _, err := exec.LookPath("cargo"); err != nil {
++		t.Skip("cargo not on PATH")
++	}
++	cfg := cargoOnConfig()
++	pass := accOpCargoRoot(t, "#[test]\nfn it_works() {\n    assert!(acccrate::ok());\n}\n")
++
++	commands := []string{
++		"cargo build --manifest-path rust/Cargo.toml",
++		"cargo test --manifest-path rust/Cargo.toml",
++		"cargo test --manifest-path=rust/Cargo.toml",
++		"cargo clippy --manifest-path=rust/Cargo.toml",
++		"cargo fmt --manifest-path rust/Cargo.toml --check",
++		"cargo fmt --manifest-path=rust/Cargo.toml --check",
++	}
++	for _, cmd := range commands {
++		res := deriveOutcome(cfg, accOpCargoSpec(cmd), pass, accOpPassGate())
++		if res == nil || res.Status != outcome.Verified {
++			t.Errorf("%q: outcome = %+v, want VERIFIED", cmd, res)
++			continue
++		}
++		if c := accOpCheck(t, res, cmd); !c.Met || c.ExitCode != 0 {
++			t.Errorf("%q: criterion lacks met+exit0 evidence: %+v", cmd, c)
++		}
++	}
++}
++
++func TestCargoAcceptanceCheckOutcomeFlow(t *testing.T) {
++	if _, err := exec.LookPath("cargo"); err != nil {
++		t.Skip("cargo not on PATH; skipping native cargo acceptance-check flow")
++	}
++	cfg := cargoOnConfig()
++	passing := accOpCargoRoot(t, "#[test]\nfn it_works() {\n    assert!(acccrate::ok());\n}\n")
++
++	// Failing check -> PARTIAL, check unmet.
++	failing := accOpCargoRoot(t, "#[test]\nfn it_fails() {\n    assert!(!acccrate::ok());\n}\n")
++	res := deriveOutcome(cfg, accOpCargoSpec("cargo test --manifest-path rust/Cargo.toml"), failing, accOpPassGate())
++	if res == nil || res.Status != outcome.Partial {
++		t.Fatalf("failing cargo check: status = %+v, want PARTIAL", res)
++	}
++	if c := accOpCheck(t, res, "cargo test --manifest-path rust/Cargo.toml"); c.Met {
++		t.Fatalf("failing check marked met: %+v", c)
++	}
++
++	// No check -> unverified (PARTIAL, objective-acceptance unmet).
++	res = deriveOutcome(cfg, accOpCargoSpec(), passing, accOpPassGate())
++	if res == nil || res.Status != outcome.Partial || !accOpHasCriterion(res, "objective-acceptance", false) {
++		t.Fatalf("no check: outcome = %+v, want PARTIAL with unmet objective-acceptance", res)
++	}
++
++	// Rejected commands -> HOLD boundary, never run.
++	for _, cmd := range []string{
++		"cargo run",
++		"cargo install",
++		"cargo fmt",
++		"cargo test --manifest-path ../Cargo.toml",
++		"cargo test --manifest-path /etc/Cargo.toml",
++		"cd rust && cargo test",
++	} {
++		res = deriveOutcome(cfg, accOpCargoSpec(cmd), passing, accOpPassGate())
++		if res == nil || res.Status != outcome.Hold {
++			t.Fatalf("rejected %q: status = %+v, want HOLD", cmd, res)
++		}
++		if c := accOpCheck(t, res, cmd); !c.Boundary || c.Met {
++			t.Fatalf("rejected %q: Boundary=%v Met=%v, want an unmet boundary", cmd, c.Boundary, c.Met)
++		}
++	}
++
++	// Default-off: an otherwise-allowed cargo check is a boundary too.
++	res = deriveOutcome(config.Config{}, accOpCargoSpec("cargo test --manifest-path rust/Cargo.toml"), passing, accOpPassGate())
++	if res == nil || res.Status != outcome.Hold {
++		t.Fatalf("un-opted-in cargo check: status = %+v, want HOLD", res)
++	}
++
++	// Go checks unchanged.
++	goDir := accOpModule(t, map[string]string{
++		"pass/pass.go":      "package pass\n\n// V is a value.\nconst V = 1\n",
++		"pass/pass_test.go": "package pass\n\nimport \"testing\"\n\nfunc TestPass(t *testing.T) {}\n",
++	})
++	res = deriveOutcome(config.Config{}, accOpCargoSpec("go test ./pass/..."), goDir, accOpPassGate())
++	if res == nil || res.Status != outcome.Verified {
++		t.Fatalf("go check must stay unaffected by the cargo opt-in: %+v", res)
++	}
++}
+diff --git a/internal/cli/outcome.go b/internal/cli/outcome.go
+index 3660681..4f5f5b5 100644
+--- a/internal/cli/outcome.go
++++ b/internal/cli/outcome.go
+@@ -90,7 +90,7 @@ type outcomeArtifact struct {
+ // deliverable-only or free-text-only specification whose quality gate passed is
+ // held at PARTIAL, so a PASS is never equated with verified objective completion.
+ // It returns nil only when there is no specification.
+-func deriveOutcome(spec *taskfile.Spec, dir string, gate quality.Result) *outcomeArtifact {
++func deriveOutcome(cfg config.Config, spec *taskfile.Spec, dir string, gate quality.Result) *outcomeArtifact {
+ 	if spec == nil {
+ 		return nil
+ 	}
+@@ -148,7 +148,7 @@ func deriveOutcome(spec *taskfile.Spec, dir string, gate quality.Result) *outcom
+ 	for i, command := range spec.AcceptanceChecks {
+ 		cmd := command
+ 		id := fmt.Sprintf("check-%d", i+1)
+-		argv, aerr := authorizeAcceptanceCommand(cmd)
++		argv, aerr := authorizeAcceptanceCommand(cmd, acceptanceCheckPolicy(cfg), dir)
+ 		if aerr != nil {
+ 			err := aerr
+ 			criteria = append(criteria, outcome.Criterion{
+@@ -284,7 +284,7 @@ func applyLifecycleGateWithWaiver(cfg config.Config, spec *taskfile.Spec, res *o
+ // lifecycle path that records an outcome verdict routes through here, so the flag-on
+ // acceptance behavior is exercised in a real run rather than only in unit tests.
+ func deriveGatedOutcome(cfg config.Config, spec *taskfile.Spec, dir string, gate quality.Result) *outcomeArtifact {
+-	res := deriveOutcome(spec, dir, gate)
++	res := deriveOutcome(cfg, spec, dir, gate)
+ 	// A recorded, designated-approver waiver is the only input that can resolve a
+ 	// gated PARTIAL-with-unmet-required to LOCAL_DONE. It is read from the task's
+ 	// append-only audit; absent one, the gate fails closed (waiver == nil).
+@@ -309,7 +309,7 @@ var rejectedGoFlagForms = []string{"exec", "toolexec", "vettool", "o", "overlay"
+ // authorization validates the same structure that runs — never a shell. A
+ // classification error, a non-SAFE class, or a rejected dangerous form is returned
+ // before execution, so an unauthorized command never runs.
+-func authorizeAcceptanceCommand(command string) ([]string, error) {
++func authorizeAcceptanceCommand(command string, policy commandpolicy.Policy, root string) ([]string, error) {
+ 	argv, err := toolharness.SplitCommand(command)
+ 	if err != nil {
+ 		return nil, err
+@@ -317,7 +317,10 @@ func authorizeAcceptanceCommand(command string) ([]string, error) {
+ 	if err := rejectDangerousForm(argv); err != nil {
+ 		return nil, err
+ 	}
+-	class, err := commandpolicy.Classify(argv)
++	if err := rejectUnsafeCargoPaths(argv, root); err != nil {
++		return nil, err
++	}
++	class, err := policy.Classify(argv)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -366,6 +369,91 @@ func rejectDangerousForm(argv []string) error {
+ 	return nil
+ }
+ 
++// acceptanceCheckPolicy builds the command policy used to authorize a plan's
++// acceptance checks. It sets only the operator-opted-in extensions (cargo); with
++// no opt-in it is the zero Policy, so the default SAFE set (go, read-only git) is
++// unchanged.
++func acceptanceCheckPolicy(cfg config.Config) commandpolicy.Policy {
++	return commandpolicy.Policy{AllowCargo: cfg.CargoAcceptanceChecksEnabled()}
++}
++
++// rejectUnsafeCargoPaths confines a cargo acceptance check's --manifest-path to the
++// repository root. Under the default-deny argument policy in internal/commandpolicy,
++// --manifest-path is the only path-selecting argument that can reach execution, and
++// it may appear as "--manifest-path VALUE" or "--manifest-path=VALUE". An absolute
++// path, a ".." traversal, or a path whose symlink-resolved form escapes root is
++// refused before the check runs.
++func rejectUnsafeCargoPaths(argv []string, root string) error {
++	if len(argv) == 0 || filepath.Base(argv[0]) != "cargo" {
++		return nil
++	}
++	for i := 1; i < len(argv); i++ {
++		a := argv[i]
++		var value string
++		switch {
++		case a == "--manifest-path":
++			if i+1 >= len(argv) {
++				return fmt.Errorf("acceptance check %q: --manifest-path needs a value", strings.Join(argv, " "))
++			}
++			value = argv[i+1]
++			i++
++		case strings.HasPrefix(a, "--manifest-path="):
++			value = strings.TrimPrefix(a, "--manifest-path=")
++		default:
++			continue
++		}
++		if err := containedRepoPath(root, value); err != nil {
++			return fmt.Errorf("acceptance check %q: --manifest-path %q %s", strings.Join(argv, " "), value, err)
++		}
++	}
++	return nil
++}
++
++// containedRepoPath reports whether value names a path inside root. It validates the
++// exact argument execution receives - never a trimmed copy - and refuses an empty
++// value, surrounding whitespace, an absolute path, any ".." component, and a path
++// whose symlink-resolved form escapes root.
++func containedRepoPath(root, value string) error {
++	if value == "" {
++		return errors.New("is empty")
++	}
++	// Reject surrounding whitespace rather than trimming it, so the value checked is
++	// the value that runs (a trimmed check could diverge from the executed argument).
++	if value != strings.TrimSpace(value) {
++		return errors.New("has surrounding whitespace")
++	}
++	if filepath.IsAbs(value) {
++		return errors.New("is absolute")
++	}
++	for _, part := range strings.Split(filepath.ToSlash(value), "/") {
++		if part == ".." {
++			return errors.New("traverses to a parent directory")
++		}
++	}
++	rootReal := root
++	if r, err := filepath.EvalSymlinks(root); err == nil {
++		rootReal = r
++	}
++	// A symlink in any existing ancestor must not let the path escape root; the
++	// final component may legitimately not exist yet, so resolve the nearest
++	// existing ancestor and confine that.
++	for dir := filepath.Join(root, value); ; {
++		if real, err := filepath.EvalSymlinks(dir); err == nil {
++			rel, rerr := filepath.Rel(rootReal, real)
++			if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++				return errors.New("resolves outside the repository")
++			}
++			break
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			break
++		}
++		dir = parent
++	}
++	return nil
++}
++
+ // flagName extracts the flag name from an argument in any of the -f, -f=v, --f and
+ // --f=v spellings, returning "" for a non-flag argument. The leading dashes are
+ // stripped and any "=value" suffix removed (so -o=x yields "o" and -o yields "o").
+diff --git a/internal/cli/rag025_regression_test.go b/internal/cli/rag025_regression_test.go
+index 9ddc8ac..82200f7 100644
+--- a/internal/cli/rag025_regression_test.go
++++ b/internal/cli/rag025_regression_test.go
+@@ -63,7 +63,7 @@ func TestDeliverablePathsRejectsCommandsAndProse(t *testing.T) {
+ func TestRAG025EDeliverableAbsentPartialsAndGates(t *testing.T) {
+ 	dir := t.TempDir()
+ 	spec := &taskfile.Spec{ID: "T1", Deliverables: []string{"docs/operations/platform-support.md"}}
+-	res := deriveOutcome(spec, dir, quality.Result{Decision: quality.Pass})
++	res := deriveOutcome(config.Config{}, spec, dir, quality.Result{Decision: quality.Pass})
+ 	if res == nil || res.Status != outcome.Partial {
+ 		t.Fatalf("absent required deliverable: status=%v, want PARTIAL", res)
+ 	}
+@@ -82,7 +82,7 @@ func TestRAG025EDeliverableAbsentPartialsAndGates(t *testing.T) {
+ func TestRAG025AProseCriteriaAreInformational(t *testing.T) {
+ 	dir := t.TempDir()
+ 	spec := &taskfile.Spec{ID: "T1", AcceptanceChecks: []string{"go vet ./..."}, AcceptanceCriteria: []string{"prose criterion"}}
+-	res := deriveOutcome(spec, dir, quality.Result{Decision: quality.Pass})
++	res := deriveOutcome(config.Config{}, spec, dir, quality.Result{Decision: quality.Pass})
+ 	var found bool
+ 	for _, cr := range res.Criteria {
+ 		if cr.Description == "prose criterion" {
+@@ -116,7 +116,7 @@ func TestRAG025AInformationalOnlyPartialDoesNotGate(t *testing.T) {
+ func TestRAG025CUnavailableValidationRequiresWaiver(t *testing.T) {
+ 	dir := t.TempDir() // no Go files: `go build ./...` cannot succeed here
+ 	spec := &taskfile.Spec{ID: "T1", AcceptanceChecks: []string{"go build ./..."}}
+-	res := deriveOutcome(spec, dir, quality.Result{Decision: quality.Pass})
++	res := deriveOutcome(config.Config{}, spec, dir, quality.Result{Decision: quality.Pass})
+ 	if res.Status != outcome.Partial {
+ 		t.Fatalf("unavailable required check: status=%v, want PARTIAL", res.Status)
+ 	}
+diff --git a/internal/cli/zz_operator_acceptance_acc008_test.go b/internal/cli/zz_operator_acceptance_acc008_test.go
+index b94d695..5f91065 100644
+--- a/internal/cli/zz_operator_acceptance_acc008_test.go
++++ b/internal/cli/zz_operator_acceptance_acc008_test.go
+@@ -13,6 +13,7 @@ import (
+ 	"reflect"
+ 	"testing"
+ 
++	"github.com/imhttran/agentic-sop/internal/config"
+ 	"github.com/imhttran/agentic-sop/internal/outcome"
+ 	"github.com/imhttran/agentic-sop/internal/taskfile"
+ )
+@@ -197,18 +198,18 @@ func TestOperatorAcceptanceACC008DeliverablesAloneNeverVerified(t *testing.T) {
+ 	dir := t.TempDir()
+ 	accOpWrite(t, dir, "out.md", "report\n")
+ 	only := &taskfile.Spec{ID: "D", Title: "deliverable only", Deliverables: []string{"out.md"}}
+-	if res := deriveOutcome(only, dir, accOpPassGate()); res == nil || res.Status == outcome.Verified {
++	if res := deriveOutcome(config.Config{}, only, dir, accOpPassGate()); res == nil || res.Status == outcome.Verified {
+ 		t.Fatalf("deliverable-only spec with a passing gate = %+v, want not VERIFIED", res)
+ 	}
+ 	withCriteria := &taskfile.Spec{ID: "D", Title: "deliverable + criteria", Deliverables: []string{"out.md"}, AcceptanceCriteria: []string{"it is written"}}
+-	if res := deriveOutcome(withCriteria, dir, accOpPassGate()); res == nil || res.Status == outcome.Verified {
++	if res := deriveOutcome(config.Config{}, withCriteria, dir, accOpPassGate()); res == nil || res.Status == outcome.Verified {
+ 		t.Fatalf("deliverable + free-text spec with a passing gate = %+v, want not VERIFIED", res)
+ 	}
+ 	// Control: an executed passing acceptance check alongside the deliverable verifies.
+ 	mod := accOp008Module(t)
+ 	accOpWrite(t, mod, "out.md", "report\n")
+ 	withCheck := &taskfile.Spec{ID: "D", Title: "deliverable + check", Deliverables: []string{"out.md"}, AcceptanceChecks: []string{"go vet ./pass/"}}
+-	if res := deriveOutcome(withCheck, mod, accOpPassGate()); res == nil || res.Status != outcome.Verified {
++	if res := deriveOutcome(config.Config{}, withCheck, mod, accOpPassGate()); res == nil || res.Status != outcome.Verified {
+ 		t.Fatalf("deliverable + passing check = %+v, want VERIFIED", res)
+ 	}
+ }
+diff --git a/internal/cli/zz_operator_acceptance_acc010_test.go b/internal/cli/zz_operator_acceptance_acc010_test.go
+index dbd2058..f659f64 100644
+--- a/internal/cli/zz_operator_acceptance_acc010_test.go
++++ b/internal/cli/zz_operator_acceptance_acc010_test.go
+@@ -11,6 +11,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/imhttran/agentic-sop/internal/config"
+ 	"github.com/imhttran/agentic-sop/internal/outcome"
+ 	"github.com/imhttran/agentic-sop/internal/planner"
+ 	"github.com/imhttran/agentic-sop/internal/taskfile"
+@@ -70,7 +71,7 @@ func TestOperatorAcceptanceACC010EachDeliverableVerifiedIndividually(t *testing.
+ 	})
+ 	spec := &taskfile.Spec{ID: stage.ID, Title: stage.Title, Deliverables: stage.Deliverables,
+ 		AcceptanceCriteria: stage.AcceptanceCriteria, AcceptanceChecks: stage.AcceptanceChecks}
+-	res := deriveOutcome(spec, dir, accOpPassGate())
++	res := deriveOutcome(config.Config{}, spec, dir, accOpPassGate())
+ 	if res == nil || res.Status != outcome.Verified {
+ 		t.Fatalf("outcome = %+v, want VERIFIED with every deliverable present", res)
+ 	}
+@@ -93,7 +94,7 @@ func TestOperatorAcceptanceACC010EachDeliverableVerifiedIndividually(t *testing.
+ 		"b/z.go": "package b\n\n// Z is a value.\nconst Z = 3\n",
+ 		"b/w.go": "package b\n\n// W is a value.\nconst W = 4\n",
+ 	})
+-	res = deriveOutcome(spec, missing, accOpPassGate())
++	res = deriveOutcome(config.Config{}, spec, missing, accOpPassGate())
+ 	if res == nil || res.Status == outcome.Verified {
+ 		t.Fatalf("outcome with a/y.go missing = %+v, want not VERIFIED", res)
+ 	}
+diff --git a/internal/cli/zz_operator_acceptance_helpers_test.go b/internal/cli/zz_operator_acceptance_helpers_test.go
+index 7cb9414..7cfcb9e 100644
+--- a/internal/cli/zz_operator_acceptance_helpers_test.go
++++ b/internal/cli/zz_operator_acceptance_helpers_test.go
+@@ -13,6 +13,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/imhttran/agentic-sop/internal/config"
+ 	"github.com/imhttran/agentic-sop/internal/outcome"
+ 	"github.com/imhttran/agentic-sop/internal/quality"
+ 	"github.com/imhttran/agentic-sop/internal/taskfile"
+@@ -58,7 +59,7 @@ func accOpOutcome(t *testing.T, dir string, checks ...string) *outcomeArtifact {
+ 		AcceptanceCriteria: []string{"free-text criterion"},
+ 		AcceptanceChecks:   checks,
+ 	}
+-	res := deriveOutcome(spec, dir, accOpPassGate())
++	res := deriveOutcome(config.Config{}, spec, dir, accOpPassGate())
+ 	if res == nil {
+ 		t.Fatal("deriveOutcome returned nil for a non-nil spec")
+ 	}
+diff --git a/internal/commandpolicy/commandpolicy.go b/internal/commandpolicy/commandpolicy.go
+index 44c6a9a..2fdff2e 100644
+--- a/internal/commandpolicy/commandpolicy.go
++++ b/internal/commandpolicy/commandpolicy.go
+@@ -48,6 +48,103 @@ var safeGo = map[string]bool{
+ 	"test": true, "build": true, "vet": true, "fmt": true, "list": true,
+ }
+ 
++// cargoFlagPolicy is the default-deny argument policy for one cargo subcommand:
++// only the listed flags are accepted, each at most once. A cargo acceptance check
++// naming any other flag or argument is refused. This is a default-deny allow-list,
++// not a denylist, so an unknown or future cargo flag - for example --target, which
++// also accepts a custom target-spec path - can never reach execution.
++type cargoFlagPolicy struct {
++	// flags are the allowed flags, written with their leading dashes.
++	flags map[string]bool
++	// requireCheck (fmt only) requires --check to be present.
++	requireCheck bool
++}
++
++var cargoPolicies = map[string]cargoFlagPolicy{
++	"build":  {flags: map[string]bool{"--locked": true, "--all-targets": true, "--manifest-path": true}},
++	"test":   {flags: map[string]bool{"--locked": true, "--all-targets": true, "--manifest-path": true}},
++	"clippy": {flags: map[string]bool{"--locked": true, "--all-targets": true, "--manifest-path": true}},
++	"fmt": {
++		flags:        map[string]bool{"--check": true, "--all": true, "--manifest-path": true},
++		requireCheck: true,
++	},
++}
++
++// isAllowedCargo reports whether argv is one of the scoped cargo verification
++// shapes under the default-deny argument policy: `cargo build|test|clippy ...`
++// (optionally ending in the exact suffix `-- -D warnings` for clippy) or
++// `cargo fmt ... --check`. Only the flags in cargoPolicies are accepted, each at
++// most once, so unknown flags, --target and other path/toolchain selectors,
++// positional arguments (including a `+toolchain` override), and anything after
++// `--` other than clippy's exact suffix are refused. Plain `cargo fmt` (which
++// rewrites files) is refused because --check is required.
++func isAllowedCargo(argv []string) bool {
++	if len(argv) < 2 || filepath.Base(argv[0]) != "cargo" {
++		return false
++	}
++	sub := argv[1]
++	pol, ok := cargoPolicies[sub]
++	if !ok {
++		return false
++	}
++	rest := argv[2:]
++
++	// clippy may end with the exact suffix `-- -D warnings`; any other use of `--`
++	// is refused by cargoFlagsAllowed.
++	if sub == "clippy" {
++		if n := len(rest); n >= 3 && rest[n-3] == "--" && rest[n-2] == "-D" && rest[n-1] == "warnings" {
++			rest = rest[:n-3]
++		}
++	}
++	return cargoFlagsAllowed(rest, pol)
++}
++
++// cargoFlagsAllowed checks a subcommand's arguments against its policy. Every
++// argument must be an allowed flag, at most once; --manifest-path takes exactly one
++// non-empty value, either separated ("--manifest-path PATH") or attached
++// ("--manifest-path=PATH"); a leading "-" value, a missing value, and a value on a
++// flag that takes none are all refused, as are `--` and positional arguments.
++func cargoFlagsAllowed(args []string, pol cargoFlagPolicy) bool {
++	seen := make(map[string]bool, len(args))
++	hasCheck := false
++	for i := 0; i < len(args); i++ {
++		a := args[i]
++		if a == "--" || !strings.HasPrefix(a, "-") {
++			return false
++		}
++		name, value, hasValue := a, "", false
++		if j := strings.IndexByte(a, '='); j >= 0 {
++			name, value, hasValue = a[:j], a[j+1:], true
++		}
++		if !pol.flags[name] || seen[name] {
++			return false
++		}
++		seen[name] = true
++		if name == "--manifest-path" {
++			if !hasValue {
++				if i+1 >= len(args) {
++					return false
++				}
++				i++
++				value = args[i]
++			}
++			// Validate the exact value that runs: reject empty, surrounding
++			// whitespace (never trimmed), and a flag-looking value.
++			if value == "" || value != strings.TrimSpace(value) || strings.HasPrefix(value, "-") {
++				return false
++			}
++			continue
++		}
++		if hasValue {
++			return false // this flag takes no value
++		}
++		if name == "--check" {
++			hasCheck = true
++		}
++	}
++	return !pol.requireCheck || hasCheck
++}
++
+ // gitGlobalWithValue are git global options that consume the next argument, so
+ // the subcommand can still be located after them.
+ var gitGlobalWithValue = map[string]bool{
+@@ -126,13 +223,19 @@ func hasForceFlag(args []string) bool {
+ 	return false
+ }
+ 
+-// Policy is project configuration that tightens the default classes. It can
+-// raise a command's strictness but never lower it.
++// Policy is project configuration. Tightening fields (Approve/Deny) can raise a
++// command's strictness; the opt-in AllowCargo field is the one deliberate,
++// scoped widening.
+ type Policy struct {
+ 	// Deny lists argv prefixes that are always denied.
+ 	Deny [][]string
+ 	// Approve lists argv prefixes that always require approval.
+ 	Approve [][]string
++	// AllowCargo widens the default policy to classify the scoped cargo
++	// verification shapes (see isAllowedCargo) as SAFE. It is OFF by default:
++	// enabling it is a trust escalation because cargo executes project code
++	// (build scripts, proc-macros, and the test harness) at verification time.
++	AllowCargo bool
+ }
+ 
+ // Classify applies the defaults and then any tightening from the policy.
+@@ -143,6 +246,13 @@ func (p Policy) Classify(argv []string) (Class, error) {
+ 	}
+ 
+ 	class := base
++	// AllowCargo widens - never tightens - the default classification, and only
++	// for the scoped verification shapes. A tightening Approve/Deny prefix below
++	// still applies, so an operator can force a given cargo command back to
++	// REQUIRES_APPROVAL or DENIED.
++	if p.AllowCargo && isAllowedCargo(argv) {
++		class = Safe
++	}
+ 	if matchesAny(argv, p.Approve) {
+ 		class = tighten(class, RequiresApproval)
+ 	}
+diff --git a/internal/commandpolicy/commandpolicy_test.go b/internal/commandpolicy/commandpolicy_test.go
+index e21c0c9..46bf40f 100644
+--- a/internal/commandpolicy/commandpolicy_test.go
++++ b/internal/commandpolicy/commandpolicy_test.go
+@@ -101,3 +101,103 @@ func TestPolicyTightens(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestPolicyAllowCargo(t *testing.T) {
++	cases := []struct {
++		name  string
++		allow bool
++		argv  []string
++		want  Class
++	}{
++		// Allowed forms.
++		{"build --locked", true, []string{"cargo", "build", "--locked"}, Safe},
++		{"build --all-targets", true, []string{"cargo", "build", "--all-targets"}, Safe},
++		{"build manifest space", true, []string{"cargo", "build", "--manifest-path", "rust/Cargo.toml"}, Safe},
++		{"build manifest equals", true, []string{"cargo", "build", "--manifest-path=rust/Cargo.toml"}, Safe},
++		{"test locked + manifest", true, []string{"cargo", "test", "--locked", "--manifest-path", "rust/Cargo.toml"}, Safe},
++		{"test bare", true, []string{"cargo", "test"}, Safe},
++		{"clippy all-targets", true, []string{"cargo", "clippy", "--all-targets"}, Safe},
++		{"clippy -D warnings suffix", true, []string{"cargo", "clippy", "--all-targets", "--", "-D", "warnings"}, Safe},
++		{"clippy bare -D warnings suffix", true, []string{"cargo", "clippy", "--", "-D", "warnings"}, Safe},
++		{"fmt check", true, []string{"cargo", "fmt", "--check"}, Safe},
++		{"fmt all + check", true, []string{"cargo", "fmt", "--all", "--check"}, Safe},
++		{"fmt check + manifest", true, []string{"cargo", "fmt", "--manifest-path", "rust/Cargo.toml", "--check"}, Safe},
++
++		// Not opted in.
++		{"not opted in", false, []string{"cargo", "test"}, RequiresApproval},
++
++		// Rejected subcommands.
++		{"run", true, []string{"cargo", "run"}, RequiresApproval},
++		{"install", true, []string{"cargo", "install"}, RequiresApproval},
++		{"publish", true, []string{"cargo", "publish"}, RequiresApproval},
++		{"add", true, []string{"cargo", "add", "serde"}, RequiresApproval},
++		{"fix", true, []string{"cargo", "fix"}, RequiresApproval},
++		{"bare cargo", true, []string{"cargo"}, RequiresApproval},
++
++		// Rejected flags and selectors (default-deny).
++		{"target triple", true, []string{"cargo", "build", "--target", "x86_64-unknown-linux-gnu"}, RequiresApproval},
++		{"target spec path", true, []string{"cargo", "build", "--target", "./evil.json"}, RequiresApproval},
++		{"target dir", true, []string{"cargo", "build", "--target-dir", "/tmp/x"}, RequiresApproval},
++		{"config", true, []string{"cargo", "build", "--config", "x=y"}, RequiresApproval},
++		{"unstable -Z", true, []string{"cargo", "build", "-Z", "unstable-options"}, RequiresApproval},
++		{"artifact-dir", true, []string{"cargo", "build", "--artifact-dir", "/tmp/x"}, RequiresApproval},
++		{"unknown long flag", true, []string{"cargo", "build", "--release"}, RequiresApproval},
++		{"unknown short flag", true, []string{"cargo", "test", "-q"}, RequiresApproval},
++		{"toolchain override", true, []string{"cargo", "+nightly", "test"}, RequiresApproval},
++		{"positional arg", true, []string{"cargo", "test", "sometest"}, RequiresApproval},
++
++		// Malformed values.
++		{"manifest empty equals", true, []string{"cargo", "test", "--manifest-path="}, RequiresApproval},
++		{"manifest missing value", true, []string{"cargo", "test", "--manifest-path"}, RequiresApproval},
++		{"manifest value looks like flag", true, []string{"cargo", "test", "--manifest-path", "--locked"}, RequiresApproval},
++		{"manifest leading space", true, []string{"cargo", "test", "--manifest-path", " x/Cargo.toml"}, RequiresApproval},
++		{"manifest trailing space", true, []string{"cargo", "test", "--manifest-path", "x/Cargo.toml "}, RequiresApproval},
++		{"manifest equals leading space", true, []string{"cargo", "test", "--manifest-path= x/Cargo.toml"}, RequiresApproval},
++		{"locked with value", true, []string{"cargo", "build", "--locked=true"}, RequiresApproval},
++		{"check with value", true, []string{"cargo", "fmt", "--check=1"}, RequiresApproval},
++		{"fmt without check", true, []string{"cargo", "fmt"}, RequiresApproval},
++		{"fmt all without check", true, []string{"cargo", "fmt", "--all"}, RequiresApproval},
++
++		// Repeated flags.
++		{"repeated locked", true, []string{"cargo", "build", "--locked", "--locked"}, RequiresApproval},
++		{"repeated manifest", true, []string{"cargo", "test", "--manifest-path", "a/Cargo.toml", "--manifest-path", "b/Cargo.toml"}, RequiresApproval},
++		{"repeated check", true, []string{"cargo", "fmt", "--check", "--check"}, RequiresApproval},
++
++		// `--` handling.
++		{"build with --", true, []string{"cargo", "build", "--", "x"}, RequiresApproval},
++		{"fmt with --", true, []string{"cargo", "fmt", "--check", "--", "x"}, RequiresApproval},
++		{"clippy -- not the suffix", true, []string{"cargo", "clippy", "--", "-D", "warnings", "--all-targets"}, RequiresApproval},
++		{"clippy suffix plus trailing", true, []string{"cargo", "clippy", "--", "-D", "warnings", "extra"}, RequiresApproval},
++		{"clippy wrong denial", true, []string{"cargo", "clippy", "--", "-D", "allow"}, RequiresApproval},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got, err := Policy{AllowCargo: tc.allow}.Classify(tc.argv)
++			if err != nil {
++				t.Fatalf("Classify(%v) error: %v", tc.argv, err)
++			}
++			if got != tc.want {
++				t.Errorf("Classify(%v) AllowCargo=%v = %s, want %s", tc.argv, tc.allow, got, tc.want)
++			}
++		})
++	}
++}
++
++func TestPolicyAllowCargoOnlyWidensScopedShapes(t *testing.T) {
++	// A tightening rule must still win over the cargo opt-in.
++	p := Policy{AllowCargo: true, Deny: [][]string{{"cargo", "test"}}}
++	if got, _ := p.Classify([]string{"cargo", "test"}); got != Denied {
++		t.Errorf("Deny must win over AllowCargo: got %s, want %s", got, Denied)
++	}
++	ap := Policy{AllowCargo: true, Approve: [][]string{{"cargo", "build"}}}
++	if got, _ := ap.Classify([]string{"cargo", "build"}); got != RequiresApproval {
++		t.Errorf("Approve must tighten an allowed cargo command: got %s, want %s", got, RequiresApproval)
++	}
++}
++
++func TestDefaultClassifyNeverWidens(t *testing.T) {
++	// The bare default classifier (no Policy) keeps cargo approval-only.
++	if got, _ := Classify([]string{"cargo", "test"}); got != RequiresApproval {
++		t.Errorf("default Classify(cargo test) = %s, want %s", got, RequiresApproval)
++	}
++}
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 97085dc..82bf703 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -257,6 +257,26 @@ type Validation struct {
+ 	// accepted as proof. The category is kept strictly separate from retrieval
+ 	// quality. Empty by default, so a project without a database is unaffected.
+ 	Integration []string `yaml:"integration"`
++	// AcceptanceChecks configures which non-Go verification commands the
++	// acceptance-check authorizer may run. Every field defaults to false, so
++	// behavior is unchanged unless an operator opts in.
++	AcceptanceChecks AcceptanceChecks `yaml:"acceptance_checks"`
++}
++
++// AcceptanceChecks configures the opt-in, non-Go acceptance-check commands.
++// Enabling a field is a trust escalation: the command executes project code at
++// verification time.
++type AcceptanceChecks struct {
++	// Cargo permits the scoped cargo verification shapes (`build`, `test`,
++	// `clippy`, and `fmt --check`) as acceptance checks. OFF by default, so a
++	// project that does not opt in keeps the byte-identical go/git policy.
++	Cargo bool `yaml:"cargo"`
++}
++
++// CargoAcceptanceChecksEnabled reports whether the operator has opted in to cargo
++// acceptance checks (validation.acceptance_checks.cargo). OFF by default.
++func (c Config) CargoAcceptanceChecksEnabled() bool {
++	return c.Validation.AcceptanceChecks.Cargo
+ }
+ 
+ // ContextEfficiency configures the opt-in Phase 8 context-efficiency facilities on the

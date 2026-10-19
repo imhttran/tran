@@ -1,0 +1,219 @@
+Loaded 39 evaluation cases
+
+Question: How are loan payments handled?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/large-loan-policy.md / Payment Processing / chunk 5
+    #2  0.0161  examples/large-loan-policy.md / Missed Payments / chunk 3
+    #3  0.0159  examples/loan-policy.md / Payments / chunk 0
+
+Question: When is a late fee charged?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0325  examples/member-services-guide.md / Fee Waivers / chunk 1
+    #2  0.0164  examples/loan-policy.md / Late Fees / chunk 2
+    #3  0.0159  examples/commercial-servicing-manual.md / Property Taxes / chunk 21
+
+Question: Can I make a partial payment?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/loan-policy.md / Partial Payments / chunk 3
+    #2  0.0161  examples/member-services-guide.md / Partial Payment Handling / chunk 3
+    #3  0.0159  examples/member-services-guide.md / Payment Arrangements / chunk 2
+
+Question: When does a loan go to collections?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/loan-policy.md / Collections / chunk 4
+    #2  0.0161  examples/large-loan-policy.md / Missed Payments / chunk 4
+    #3  0.0159  examples/loan-policy.md / Payments / chunk 0
+
+Question: What do the payment codes mean?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/member-services-guide.md / Contact Channels / chunk 7
+    #2  0.0161  examples/loan-policy.md / Payment Codes / chunk 5
+    #3  0.0159  examples/large-loan-policy.md / Payment Processing / chunk 5
+
+Question: How do I request a grace period?
+  Recall@3=1.00  Precision@3=0.50
+    #1  0.0325  examples/member-services-guide.md / Grace Period Requests / chunk 0
+    #2  0.0164  examples/large-loan-policy.md / Missed Payments / chunk 0
+    #3  0.0159  examples/large-loan-policy.md / Missed Payments / chunk 1
+
+Question: How do I request a payoff statement?
+  Recall@3=1.00  Precision@3=1.00
+    #1  0.0164  examples/member-services-guide.md / Payoff Requests / chunk 6
+
+Question: How do I dispute a charge?
+  Recall@3=1.00  Precision@3=1.00
+    #1  0.0164  examples/member-services-guide.md / Dispute Resolution / chunk 5
+
+Question: What insurance is required?
+  Recall@3=1.00  Precision@3=1.00
+    #1  0.0328  examples/commercial-servicing-manual.md / Insurance Requirements / chunk 14
+    #2  0.0323  examples/commercial-servicing-manual.md / Insurance Requirements / chunk 15
+    #3  0.0315  examples/commercial-servicing-manual.md / Insurance Requirements / chunk 12
+
+Question: Who handles property taxes?
+  Recall@3=1.00  Precision@3=1.00
+    #1  0.0164  examples/commercial-servicing-manual.md / Property Taxes / chunk 20
+    #2  0.0161  examples/commercial-servicing-manual.md / Property Taxes / chunk 25
+
+Question: Thời hạn gia hạn là bao lâu?
+  Recall@3=1.00  Precision@3=0.50
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+    #3  0.0159  examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm / chunk 0
+
+Question: Thanh toán được áp dụng như thế nào?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Xử lý thanh toán / chunk 3
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm / chunk 2
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+
+Question: Tôi có thể liên hệ bằng cách nào?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #2  0.0161  examples/vi/dich-vu-thanh-vien.md / Kênh liên hệ / chunk 0
+    #3  0.0159  examples/vi/quy-trinh-thu-hoi.md / Chuyển hồ sơ thu hồi / chunk 2
+
+Question: Yêu cầu tất toán mất bao lâu?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán / chunk 1
+    #2  0.0161  examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí / chunk 2
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+
+Question: Khi chậm trả thì được thông báo thế nào?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả / chunk 0
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm / chunk 2
+
+Question: Tôi có thể lập kế hoạch thanh toán không?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+    #3  0.0159  examples/vi/quy-trinh-thu-hoi.md / Thông báo chậm trả / chunk 0
+
+Question: Khi nào hồ sơ bị chuyển cho bộ phận thu hồi?
+  Recall@3=1.00  Precision@3=0.50
+    #1  0.0164  examples/vi/quy-trinh-thu-hoi.md / Chuyển hồ sơ thu hồi / chunk 2
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+
+Question: Tôi có phải mua bảo hiểm tài sản không?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm / chunk 0
+    #2  0.0161  examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực / chunk 1
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+
+Question: Chứng nhận bảo hiểm có hiệu lực bao lâu?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/bao-hiem-tai-san.md / Thời hạn hiệu lực / chunk 1
+    #2  0.0161  examples/vi/bao-hiem-tai-san.md / Bồi thường / chunk 2
+    #3  0.0159  examples/vi/bao-hiem-tai-san.md / Yêu cầu bảo hiểm / chunk 0
+
+Question: Yêu cầu bồi thường được xử lý trong bao lâu?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/bao-hiem-tai-san.md / Bồi thường / chunk 2
+    #2  0.0161  examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán / chunk 1
+    #3  0.0159  examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí / chunk 2
+
+Question: When is a debt written off?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/commercial-servicing-manual.md / Collateral and Lien Documentation / chunk 36
+    #2  0.0161  examples/commercial-servicing-manual.md / Servicing Transfer Procedures / chunk 45
+    #3  0.0159  examples/loan-policy.md / Collections / chunk 4
+
+Question: When is a late fee applied?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/loan-policy.md / Late Fees / chunk 2
+    #2  0.0161  examples/member-services-guide.md / Fee Waivers / chunk 1
+    #3  0.0159  examples/commercial-servicing-manual.md / Property Taxes / chunk 21
+
+Question: Can fees be waived?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0328  examples/member-services-guide.md / Fee Waivers / chunk 1
+    #2  0.0161  examples/loan-policy.md / Late Fees / chunk 2
+
+Question: How is a delinquency noticed?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0323  examples/loan-policy.md / Collections / chunk 4
+    #2  0.0164  examples/large-loan-policy.md / Missed Payments / chunk 2
+    #3  0.0161  examples/large-loan-policy.md / Missed Payments / chunk 3
+
+Question: How long does a claim take?
+  Recall@3=0.00  Precision@3=0.00
+  (no candidates)
+
+Question: Làm sao để thay đổi cách nhận sao kê?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/bao-hiem-tai-san.md / Bồi thường / chunk 2
+    #2  0.0161  examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán / chunk 1
+    #3  0.0159  examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán / chunk 1
+
+Question: Tôi có thể sắp xếp kế hoạch thanh toán không?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+    #3  0.0159  examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán / chunk 1
+
+Question: Điều gì xảy ra khi hồ sơ được chuyển giao?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/quy-trinh-thu-hoi.md / Xóa nợ / chunk 3
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #3  0.0159  examples/vi/quy-trinh-thu-hoi.md / Chuyển hồ sơ thu hồi / chunk 2
+
+Question: Khoản vay lớn xử lý thanh toán ra sao?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #2  0.0161  examples/vi/dich-vu-thanh-vien.md / Yêu cầu tất toán / chunk 1
+    #3  0.0159  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 0
+
+Question: Hồ sơ thế chấp được quản lý thế nào?
+  Recall@3=0.00  Precision@3=0.00
+    #1  0.0164  examples/vi/quy-trinh-thu-hoi.md / Xóa nợ / chunk 3
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Thời hạn gia hạn / chunk 1
+    #3  0.0159  examples/vi/quy-trinh-thu-hoi.md / Kế hoạch thanh toán / chunk 1
+
+Question: What is the grace period under the standard loan policy?
+  Recall@3=1.00  Precision@3=0.50
+    #1  0.0164  examples/large-loan-policy.md / Missed Payments / chunk 0
+    #2  0.0161  examples/loan-policy.md / Missed Payments / chunk 1
+    #3  0.0159  examples/large-loan-policy.md / Missed Payments / chunk 1
+
+Question: Làm sao để được miễn giảm phí?
+  Recall@3=1.00  Precision@3=0.33
+    #1  0.0164  examples/vi/dich-vu-thanh-vien.md / Miễn giảm phí / chunk 2
+    #2  0.0161  examples/vi/chinh-sach-khoan-vay.md / Phí trả chậm / chunk 2
+    #3  0.0159  examples/vi/bao-hiem-tai-san.md / Bồi thường / chunk 2
+
+Question: How do I set up a payment plan?
+  Recall@3=0.00  Precision@3=0.00
+  (no candidates)
+
+Question: What is the cryptocurrency payment policy?
+  Correct rejection
+  (no candidates)
+
+Question: How do I reset my online banking password?
+  Correct rejection
+  (no candidates)
+
+Question: What are the holiday customer service hours?
+  Correct rejection
+  (no candidates)
+
+Question: Is there a mobile app for members?
+  FALSE POSITIVE
+    #1  0.0164  examples/member-services-guide.md / Contact Channels / chunk 7
+
+Question: What is the interest rate for auto loans?
+  FALSE POSITIVE
+    #1  0.0164  examples/loan-policy.md / Payments / chunk 0
+
+Question: How do I close my account?
+  Correct rejection
+  (no candidates)
+
+Overall:
+  cases=39  answerable=33  Avg Recall@3=0.64  Avg Precision@3=0.31
+  dataset=evals/retrieval-vi-en-expanded.json
+  corpus=rust-007d-live-20261018
+  top_k=4  final_k=3  expand_limit=20

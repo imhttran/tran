@@ -1,0 +1,45 @@
+#!/bin/sh
+# Pre-commit checks for this Rust-only repository.
+#
+# Enabled with:  git config core.hooksPath .githooks
+# Bypass once:   git commit --no-verify
+#
+# Requires jq on PATH for the JSON syntax check. The Makefile targets are the
+# single source of truth for the Rust and web checks.
+set -e
+
+# Load the repository .env (if present) so database checks get DATABASE_URL
+# without repeated manual exports. Values are never printed.
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
+# Every tracked JSON file is validated here rather than at push time: a broken
+# evals/retrieval.json or .zed/settings.json still compiles and only fails when
+# the command that reads it runs.
+if command -v jq >/dev/null 2>&1; then
+	echo "pre-commit: jq (json syntax)"
+	for file in $(git ls-files -- '*.json'); do
+		if ! jq empty "$file"; then
+			echo "pre-commit: $file is not valid json" >&2
+			exit 1
+		fi
+	done
+else
+	echo "pre-commit: jq not found, skipping json syntax check (install jq)"
+fi
+
+echo "pre-commit: make rust-fmt"
+make rust-fmt
+
+echo "pre-commit: make rust-acceptance-evidence"
+make rust-acceptance-evidence
+
+echo "pre-commit: make rust-acceptance-final-layout"
+make rust-acceptance-final-layout
+
+echo "pre-commit: make web-check-env"
+make web-check-env
+
+echo "pre-commit: make web-typecheck"
+make web-typecheck
+
+echo "pre-commit: ok"

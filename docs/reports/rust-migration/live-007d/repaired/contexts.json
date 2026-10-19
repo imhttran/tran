@@ -1,0 +1,668 @@
+{
+  "eval-en-en-01": [
+    {
+      "content": "When a borrower misses a scheduled loan payment, the account enters a grace period. During this period the borrower may submit the required payment without the account immediately being classified as delinquent. The grace period lasts fifteen days. The servicing system continues to track the outstanding payment during this time.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    },
+    {
+      "content": "as delinquent. The grace period lasts fifteen days. The servicing system continues to track the outstanding payment during this time. The borrower may receive reminders explaining that payment is still required and providing information about available payment methods. If the required payment is not received before the grace period expires,",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    },
+    {
+      "content": "required and providing information about available payment methods. If the required payment is not received before the grace period expires, the account becomes delinquent. The servicing system records the delinquency and may generate additional notifications for the borrower. A delinquent borrower may be contacted by the servicing team. The borrower",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    }
+  ],
+  "eval-en-en-02": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-en-03": [
+    {
+      "content": "Loan payments are due on the scheduled due date listed in the borrower agreement. Payments are applied first to outstanding interest, then to principal, unless otherwise required by the loan agreement.",
+      "page": null,
+      "section": "Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "If a borrower misses a payment, the loan enters a 10-day grace period. During the grace period, the borrower may make the payment without the loan being marked delinquent. If payment is not received by the end of the grace period, the loan becomes delinquent.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "A late fee may be assessed after the grace period has expired. The amount of the late fee depends on the loan agreement and applicable rules.",
+      "page": null,
+      "section": "Late Fees",
+      "source": "examples/loan-policy.md"
+    }
+  ],
+  "eval-en-en-04": [
+    {
+      "content": "Loan payments are due on the scheduled due date listed in the borrower agreement. Payments are applied first to outstanding interest, then to principal, unless otherwise required by the loan agreement.",
+      "page": null,
+      "section": "Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "If a borrower misses a payment, the loan enters a 10-day grace period. During the grace period, the borrower may make the payment without the loan being marked delinquent. If payment is not received by the end of the grace period, the loan becomes delinquent.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "A late fee may be assessed after the grace period has expired. The amount of the late fee depends on the loan agreement and applicable rules.",
+      "page": null,
+      "section": "Late Fees",
+      "source": "examples/loan-policy.md"
+    }
+  ],
+  "eval-en-en-05": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-en-06": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-en-07": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-en-08": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-en-09": [
+    {
+      "content": "Escrow accounts are established to collect and hold funds for property taxes, hazard insurance premiums, and other recurring obligations identified in the loan agreement. Each escrow account is analyzed at least once every twelve months to determine whether the collected amounts are sufficient to cover the anticipated disbursements for the",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "least once every twelve months to determine whether the collected amounts are sufficient to cover the anticipated disbursements for the coming escrow period. The analysis compares the projected annual disbursements, the lowest projected balance, and the permitted cushion. A cushion is the amount the servicer may require the borrower to",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "the lowest projected balance, and the permitted cushion. A cushion is the amount the servicer may require the borrower to hold above the anticipated disbursements. The permitted cushion is generally one-sixth of the total annual escrow disbursements, subject to the terms of the loan agreement and applicable requirements. A shortage",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    }
+  ],
+  "eval-en-en-10": [
+    {
+      "content": "Escrow accounts are established to collect and hold funds for property taxes, hazard insurance premiums, and other recurring obligations identified in the loan agreement. Each escrow account is analyzed at least once every twelve months to determine whether the collected amounts are sufficient to cover the anticipated disbursements for the",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "least once every twelve months to determine whether the collected amounts are sufficient to cover the anticipated disbursements for the coming escrow period. The analysis compares the projected annual disbursements, the lowest projected balance, and the permitted cushion. A cushion is the amount the servicer may require the borrower to",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "the lowest projected balance, and the permitted cushion. A cushion is the amount the servicer may require the borrower to hold above the anticipated disbursements. The permitted cushion is generally one-sixth of the total annual escrow disbursements, subject to the terms of the loan agreement and applicable requirements. A shortage",
+      "page": null,
+      "section": "Escrow Administration",
+      "source": "examples/commercial-servicing-manual.md"
+    }
+  ],
+  "eval-vi-vi-01": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-vi-02": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-vi-03": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-vi-04": [
+    {
+      "content": "Thành viên có thể liên hệ với chúng tôi qua điện thoại, thư điện tử, hoặc cổng thông tin trực tuyến vào giờ làm việc.",
+      "page": null,
+      "section": "Kênh liên hệ",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    },
+    {
+      "content": "Yêu cầu tất toán khoản vay được xử lý trong vòng năm ngày làm việc kể từ khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Yêu cầu tất toán",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    },
+    {
+      "content": "Yêu cầu miễn giảm phí được xem xét theo từng trường hợp và cần phê duyệt của quản lý.",
+      "page": null,
+      "section": "Miễn giảm phí",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    }
+  ],
+  "eval-vi-vi-05": [
+    {
+      "content": "Sau khi khoản vay trở thành chậm trả, hệ thống gửi thông báo đầu tiên trong vòng ba ngày làm việc.",
+      "page": null,
+      "section": "Thông báo chậm trả",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Người vay có thể đề nghị một kế hoạch thanh toán trong vòng ba mươi ngày kể từ ngày khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Kế hoạch thanh toán",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Nếu các khoản thanh toán vẫn chưa được thanh toán trong chín mươi ngày, hồ sơ có thể được chuyển cho bộ phận thu hồi.",
+      "page": null,
+      "section": "Chuyển hồ sơ thu hồi",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    }
+  ],
+  "eval-vi-vi-06": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-vi-07": [
+    {
+      "content": "Sau khi khoản vay trở thành chậm trả, hệ thống gửi thông báo đầu tiên trong vòng ba ngày làm việc.",
+      "page": null,
+      "section": "Thông báo chậm trả",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Người vay có thể đề nghị một kế hoạch thanh toán trong vòng ba mươi ngày kể từ ngày khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Kế hoạch thanh toán",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Nếu các khoản thanh toán vẫn chưa được thanh toán trong chín mươi ngày, hồ sơ có thể được chuyển cho bộ phận thu hồi.",
+      "page": null,
+      "section": "Chuyển hồ sơ thu hồi",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    }
+  ],
+  "eval-vi-vi-08": [
+    {
+      "content": "Người vay phải duy trì bảo hiểm tài sản trong suốt thời hạn của khoản vay.",
+      "page": null,
+      "section": "Yêu cầu bảo hiểm",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Chứng nhận bảo hiểm có hiệu lực trong mười hai tháng kể từ ngày cấp.",
+      "page": null,
+      "section": "Thời hạn hiệu lực",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Yêu cầu bồi thường được xử lý trong vòng mười lăm ngày làm việc sau khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Bồi thường",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    }
+  ],
+  "eval-vi-vi-09": [
+    {
+      "content": "Người vay phải duy trì bảo hiểm tài sản trong suốt thời hạn của khoản vay.",
+      "page": null,
+      "section": "Yêu cầu bảo hiểm",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Chứng nhận bảo hiểm có hiệu lực trong mười hai tháng kể từ ngày cấp.",
+      "page": null,
+      "section": "Thời hạn hiệu lực",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Yêu cầu bồi thường được xử lý trong vòng mười lăm ngày làm việc sau khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Bồi thường",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    }
+  ],
+  "eval-vi-vi-10": [
+    {
+      "content": "Người vay phải duy trì bảo hiểm tài sản trong suốt thời hạn của khoản vay.",
+      "page": null,
+      "section": "Yêu cầu bảo hiểm",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Chứng nhận bảo hiểm có hiệu lực trong mười hai tháng kể từ ngày cấp.",
+      "page": null,
+      "section": "Thời hạn hiệu lực",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Yêu cầu bồi thường được xử lý trong vòng mười lăm ngày làm việc sau khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Bồi thường",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    }
+  ],
+  "eval-en-vi-01": [
+    {
+      "content": "insurance and charge the borrower for its cost. Force-placed insurance protects the servicer's interest in the collateral; it does not replace the borrower's obligation to maintain coverage, and it may provide less protection than a policy the borrower would obtain independently. When a borrower's policy lapses and the servicer has",
+      "page": null,
+      "section": "Insurance Requirements",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "provide less protection than a policy the borrower would obtain independently. When a borrower's policy lapses and the servicer has already placed coverage, the servicer must cancel that coverage and refund any related premium for the overlapping period once the borrower provides evidence of continuous coverage. Premium refunds are credited",
+      "page": null,
+      "section": "Insurance Requirements",
+      "source": "examples/commercial-servicing-manual.md"
+    },
+    {
+      "content": "refund any related premium for the overlapping period once the borrower provides evidence of continuous coverage. Premium refunds are credited to the escrow account or applied to the outstanding balance, depending on the loan agreement. A change in the annual premium affects the escrow analysis. An increase in the premium",
+      "page": null,
+      "section": "Insurance Requirements",
+      "source": "examples/commercial-servicing-manual.md"
+    }
+  ],
+  "eval-en-vi-02": [
+    {
+      "content": "Loan payments are due on the scheduled due date listed in the borrower agreement. Payments are applied first to outstanding interest, then to principal, unless otherwise required by the loan agreement.",
+      "page": null,
+      "section": "Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "If a borrower misses a payment, the loan enters a 10-day grace period. During the grace period, the borrower may make the payment without the loan being marked delinquent. If payment is not received by the end of the grace period, the loan becomes delinquent.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "A late fee may be assessed after the grace period has expired. The amount of the late fee depends on the loan agreement and applicable rules.",
+      "page": null,
+      "section": "Late Fees",
+      "source": "examples/loan-policy.md"
+    }
+  ],
+  "eval-en-vi-03": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-en-vi-04": [
+    {
+      "content": "Loan payments are due on the scheduled due date listed in the borrower agreement. Payments are applied first to outstanding interest, then to principal, unless otherwise required by the loan agreement.",
+      "page": null,
+      "section": "Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "If a borrower misses a payment, the loan enters a 10-day grace period. During the grace period, the borrower may make the payment without the loan being marked delinquent. If payment is not received by the end of the grace period, the loan becomes delinquent.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "A late fee may be assessed after the grace period has expired. The amount of the late fee depends on the loan agreement and applicable rules.",
+      "page": null,
+      "section": "Late Fees",
+      "source": "examples/loan-policy.md"
+    }
+  ],
+  "eval-en-vi-05": [],
+  "eval-vi-en-01": [
+    {
+      "content": "Người vay phải duy trì bảo hiểm tài sản trong suốt thời hạn của khoản vay.",
+      "page": null,
+      "section": "Yêu cầu bảo hiểm",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Chứng nhận bảo hiểm có hiệu lực trong mười hai tháng kể từ ngày cấp.",
+      "page": null,
+      "section": "Thời hạn hiệu lực",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    },
+    {
+      "content": "Yêu cầu bồi thường được xử lý trong vòng mười lăm ngày làm việc sau khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Bồi thường",
+      "source": "examples/vi/bao-hiem-tai-san.md"
+    }
+  ],
+  "eval-vi-en-02": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-en-03": [
+    {
+      "content": "Sau khi khoản vay trở thành chậm trả, hệ thống gửi thông báo đầu tiên trong vòng ba ngày làm việc.",
+      "page": null,
+      "section": "Thông báo chậm trả",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Người vay có thể đề nghị một kế hoạch thanh toán trong vòng ba mươi ngày kể từ ngày khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Kế hoạch thanh toán",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Nếu các khoản thanh toán vẫn chưa được thanh toán trong chín mươi ngày, hồ sơ có thể được chuyển cho bộ phận thu hồi.",
+      "page": null,
+      "section": "Chuyển hồ sơ thu hồi",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    }
+  ],
+  "eval-vi-en-04": [
+    {
+      "content": "Nếu người vay bỏ lỡ một kỳ thanh toán, khoản vay bước vào thời hạn gia hạn 10 ngày. Trong thời gian gia hạn, người vay có thể thanh toán mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "mà khoản vay chưa bị coi là chậm trả. Nếu không nhận được thanh toán trước khi hết thời hạn gia hạn, khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Thời hạn gia hạn",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    },
+    {
+      "content": "Phí trả chậm được áp dụng khi khoản thanh toán không được nhận trước ngày đến hạn. Mức phí được ghi trong thỏa thuận khoản vay.",
+      "page": null,
+      "section": "Phí trả chậm",
+      "source": "examples/vi/chinh-sach-khoan-vay.md"
+    }
+  ],
+  "eval-vi-en-05": [
+    {
+      "content": "Sau khi khoản vay trở thành chậm trả, hệ thống gửi thông báo đầu tiên trong vòng ba ngày làm việc.",
+      "page": null,
+      "section": "Thông báo chậm trả",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Người vay có thể đề nghị một kế hoạch thanh toán trong vòng ba mươi ngày kể từ ngày khoản vay trở thành chậm trả.",
+      "page": null,
+      "section": "Kế hoạch thanh toán",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    },
+    {
+      "content": "Nếu các khoản thanh toán vẫn chưa được thanh toán trong chín mươi ngày, hồ sơ có thể được chuyển cho bộ phận thu hồi.",
+      "page": null,
+      "section": "Chuyển hồ sơ thu hồi",
+      "source": "examples/vi/quy-trinh-thu-hoi.md"
+    }
+  ],
+  "eval-misleading-01": [
+    {
+      "content": "When a borrower misses a scheduled loan payment, the account enters a grace period. During this period the borrower may submit the required payment without the account immediately being classified as delinquent. The grace period lasts fifteen days. The servicing system continues to track the outstanding payment during this time.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    },
+    {
+      "content": "as delinquent. The grace period lasts fifteen days. The servicing system continues to track the outstanding payment during this time. The borrower may receive reminders explaining that payment is still required and providing information about available payment methods. If the required payment is not received before the grace period expires,",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    },
+    {
+      "content": "required and providing information about available payment methods. If the required payment is not received before the grace period expires, the account becomes delinquent. The servicing system records the delinquency and may generate additional notifications for the borrower. A delinquent borrower may be contacted by the servicing team. The borrower",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/large-loan-policy.md"
+    }
+  ],
+  "eval-misleading-02": [
+    {
+      "content": "Thành viên có thể liên hệ với chúng tôi qua điện thoại, thư điện tử, hoặc cổng thông tin trực tuyến vào giờ làm việc.",
+      "page": null,
+      "section": "Kênh liên hệ",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    },
+    {
+      "content": "Yêu cầu tất toán khoản vay được xử lý trong vòng năm ngày làm việc kể từ khi nhận đủ hồ sơ.",
+      "page": null,
+      "section": "Yêu cầu tất toán",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    },
+    {
+      "content": "Yêu cầu miễn giảm phí được xem xét theo từng trường hợp và cần phê duyệt của quản lý.",
+      "page": null,
+      "section": "Miễn giảm phí",
+      "source": "examples/vi/dich-vu-thanh-vien.md"
+    }
+  ],
+  "eval-misleading-03": [],
+  "eval-unanswerable-01": [],
+  "eval-unanswerable-02": [],
+  "eval-unanswerable-03": [],
+  "eval-unanswerable-04": [
+    {
+      "content": "A borrower who cannot meet an upcoming due date may request an extended grace period. An approved extension moves the date on which the account would otherwise become delinquent, but it is not granted automatically and does not reduce any amount owed.",
+      "page": null,
+      "section": "Grace Period Requests",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A late fee may be waived at the servicer's discretion. A waiver request must be submitted before the fee is assessed; a fee that has already been charged is not removed automatically.",
+      "page": null,
+      "section": "Fee Waivers",
+      "source": "examples/member-services-guide.md"
+    },
+    {
+      "content": "A borrower whose account has become delinquent may agree to a payment arrangement that spreads the past-due amount across future scheduled payments. An arrangement does not change the original due dates.",
+      "page": null,
+      "section": "Payment Arrangements",
+      "source": "examples/member-services-guide.md"
+    }
+  ],
+  "eval-unanswerable-05": [
+    {
+      "content": "Loan payments are due on the scheduled due date listed in the borrower agreement. Payments are applied first to outstanding interest, then to principal, unless otherwise required by the loan agreement.",
+      "page": null,
+      "section": "Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "If a borrower misses a payment, the loan enters a 10-day grace period. During the grace period, the borrower may make the payment without the loan being marked delinquent. If payment is not received by the end of the grace period, the loan becomes delinquent.",
+      "page": null,
+      "section": "Missed Payments",
+      "source": "examples/loan-policy.md"
+    },
+    {
+      "content": "A late fee may be assessed after the grace period has expired. The amount of the late fee depends on the loan agreement and applicable rules.",
+      "page": null,
+      "section": "Late Fees",
+      "source": "examples/loan-policy.md"
+    }
+  ],
+  "eval-unanswerable-06": []
+}

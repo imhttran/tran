@@ -1,0 +1,511 @@
+Loaded 43 evaluation cases
+
+Question: How long is the grace period?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: When can a late fee be assessed?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=0.50
+Hybrid K=3  Recall@3=1.00  Precision@3=0.50
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: How are payments applied to a loan?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.50  Precision@1=1.00
+Hybrid K=2  Recall@2=0.50  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: What happens if I don't send the money I owe on time?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What does LP-4827 refer to?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: After the allowed waiting period expires, what happens to an unpaid account?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What happens after a borrower misses a scheduled payment?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: When does a loan become delinquent?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.50  Precision@1=1.00
+Hybrid K=2  Recall@2=0.50  Precision@2=1.00
+Hybrid K=3  Recall@3=0.50  Precision@3=1.00
+Evidence Recall: before expansion=0.50  after expansion=0.50
+
+Question: Can a borrower make a payment during the grace period without being marked delinquent?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.50  Precision@1=1.00
+Hybrid K=2  Recall@2=0.50  Precision@2=1.00
+Hybrid K=3  Recall@3=0.50  Precision@3=1.00
+Evidence Recall: before expansion=0.50  after expansion=0.50
+
+Question: What happens if payments remain unpaid for a long time?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What may happen before collection activity begins?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: Can a delinquent borrower be offered a payment arrangement?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.50  Precision@1=1.00
+Hybrid K=2  Recall@2=0.50  Precision@2=1.00
+Hybrid K=3  Recall@3=0.50  Precision@3=1.00
+Evidence Recall: before expansion=0.50  after expansion=0.50
+
+Question: Does a partial payment always satisfy the required monthly payment?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How may a partial payment be applied?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: What information is recorded with a payment?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How are duplicate payments detected?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: Should a duplicate payment be applied twice?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: When are normal loan payments due?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What order are interest and principal paid in?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What identifier should a borrower provide when asking support about an online payment?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: Can I get more time before my payment is late?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: Can a late fee be removed?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: What happens to a partial payment while I wait to pay the rest?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How much do I owe to pay off the loan today?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How can I change how I receive my statements?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What happens if I think a payment was applied to the wrong loan?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What is the interest rate on these loans?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Question: What is the borrower's credit score?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Question: What is the loan origination fee?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Question: Is a partial payment applied right away, or held until the full amount is paid?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: I was charged twice for the same bill. What should happen?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: When can a late fee be charged, and can it be waived?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.50  Precision@1=1.00
+Hybrid K=2  Recall@2=0.50  Precision@2=1.00
+Hybrid K=3  Recall@3=0.50  Precision@3=1.00
+Evidence Recall: before expansion=0.50  after expansion=0.50
+
+Question: How long is a payoff quote valid, and why?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How long does a dispute review take, and is the disputed amount reported delinquent?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How do I reset my online portal password?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Question: What is the fee for a paper statement?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Question: How is an escrow shortage resolved?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: When may the servicer force-place insurance?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: What happens if a property tax becomes delinquent?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: When is retainage released on a construction loan?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=1.00  Precision@1=1.00
+Hybrid K=2  Recall@2=1.00  Precision@2=1.00
+Hybrid K=3  Recall@3=1.00  Precision@3=1.00
+Evidence Recall: before expansion=1.00  after expansion=1.00
+
+Question: When must a UCC financing statement be continued?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: What notice does a borrower receive when servicing is transferred?
+K=1  Recall@1=0.00  Precision@1=0.00
+  Retrieval miss:
+K=2  Recall@2=0.00  Precision@2=0.00
+  Retrieval miss:
+K=3  Recall@3=0.00  Precision@3=0.00
+  Retrieval miss:
+Hybrid K=1  Recall@1=0.00  Precision@1=0.00
+Hybrid K=2  Recall@2=0.00  Precision@2=0.00
+Hybrid K=3  Recall@3=0.00  Precision@3=0.00
+Evidence Recall: before expansion=0.00  after expansion=0.00
+
+Question: How much does force-placed insurance cost?
+K=1  Correct rejection
+K=2  Correct rejection
+K=3  Correct rejection
+Hybrid K=1  Correct rejection
+Hybrid K=2  Correct rejection
+Hybrid K=3  Correct rejection
+
+Overall:
+Vector retrieval:
+K=1  Avg Recall@1=0.00  Avg Precision@1=0.00
+K=2  Avg Recall@2=0.00  Avg Precision@2=0.00
+K=3  Avg Recall@3=0.00  Avg Precision@3=0.00
+
+Hybrid retrieval:
+K=1  Avg Recall@1=0.26  Avg Precision@1=0.32
+K=2  Avg Recall@2=0.26  Avg Precision@2=0.31
+K=3  Avg Recall@3=0.27  Avg Precision@3=0.31
+Avg Evidence Recall: before expansion=0.27  after expansion=0.27
+Rerank latency:
+  off      avg=0s  (baseline, no rerank call)
+  lexical  unavailable (EVAL_LEXICAL_RERANK=false)
+  llm      unavailable (EVAL_LLM_RERANK=false)
+  cross-encoder  unavailable (no cross-encoder provider registered)
+Similarity-only rejection=6/6 (1.00), False-positive rate=0.00

@@ -1,0 +1,17 @@
+[package]
+name = "eval-parity-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007: drives the production Rust `eval` binary and
+# the frozen Go output captured from the pinned reference, dataset,
+# configuration, and embeddings. It intentionally contains no evaluation logic.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }
+postgres = "0.19"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

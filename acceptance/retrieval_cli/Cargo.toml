@@ -1,0 +1,15 @@
+[package]
+name = "retrieval-cli-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-006B: drives the production AnswerService and the
+# real `query` binary. It intentionally imports the production library rather
+# than reimplementing retrieval or answering.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }
+postgres = "0.19"

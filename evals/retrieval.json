@@ -1,0 +1,638 @@
+[
+  {
+    "question": "How long is the grace period?",
+    "expected_facts": [
+      "loan-policy.md has a 10-day grace period",
+      "large-loan-policy.md has a 15-day grace period",
+      "the sources disagree"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["10-day grace period"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["grace period lasts fifteen days"]
+      }
+    ]
+  },
+  {
+    "question": "When can a late fee be assessed?",
+    "expected_facts": [
+      "a late fee can be assessed once the grace period expires"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Late Fees",
+        "evidence": [
+          "A late fee may be assessed after the grace period has expired"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "How are payments applied to a loan?",
+    "expected_facts": [
+      "payments are applied to interest before principal",
+      "both sources agree on the payment application order"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Payments",
+        "evidence": ["applied first to outstanding interest, then to principal"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "applied first to outstanding interest and then to principal"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What happens if I don't send the money I owe on time?",
+    "expected_facts": [
+      "a missed payment starts a grace period",
+      "the sources disagree on how long the grace period is"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["10-day grace period"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["grace period lasts fifteen days"]
+      }
+    ]
+  },
+  {
+    "question": "What does LP-4827 refer to?",
+    "expected_facts": ["LP-4827 is the payment code for online payments"],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Payment Codes",
+        "evidence": ["transaction code LP-4827"]
+      }
+    ]
+  },
+  {
+    "question": "After the allowed waiting period expires, what happens to an unpaid account?",
+    "expected_facts": [
+      "the loan becomes delinquent once the grace period expires",
+      "a late fee may be assessed after the grace period"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["the loan becomes delinquent"]
+      },
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Late Fees",
+        "evidence": [
+          "A late fee may be assessed after the grace period has expired"
+        ]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["the account becomes delinquent"]
+      }
+    ]
+  },
+
+  {
+    "question": "What happens after a borrower misses a scheduled payment?",
+    "expected_facts": [
+      "a missed payment starts a grace period before the loan becomes delinquent"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["the loan enters a 10-day grace period"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["the account enters a grace period"]
+      }
+    ]
+  },
+  {
+    "question": "When does a loan become delinquent?",
+    "expected_facts": [
+      "loan-policy.md says the loan becomes delinquent after the 10-day grace period",
+      "large-loan-policy.md says the loan becomes delinquent after the 15-day grace period",
+      "the sources disagree"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["10-day grace period"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["grace period lasts fifteen days"]
+      }
+    ]
+  },
+  {
+    "question": "Can a borrower make a payment during the grace period without being marked delinquent?",
+    "expected_facts": [
+      "a borrower may pay during the grace period without being marked delinquent"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["without the loan being marked delinquent"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": [
+          "without the account immediately being classified as delinquent"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What happens if payments remain unpaid for a long time?",
+    "expected_facts": [
+      "a loan unpaid for a long time may become eligible for collection activity"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Collections",
+        "evidence": ["referred to collections"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["eligible for collection activity"]
+      }
+    ]
+  },
+  {
+    "question": "What may happen before collection activity begins?",
+    "expected_facts": [
+      "before collection begins the borrower may receive notices or a chance to set up a payment arrangement"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Collections",
+        "evidence": [
+          "receive notices or opportunities to establish a payment arrangement"
+        ]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": ["additional notices may be sent to the borrower"]
+      }
+    ]
+  },
+  {
+    "question": "Can a delinquent borrower be offered a payment arrangement?",
+    "expected_facts": [
+      "a delinquent borrower may be offered a payment arrangement"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Collections",
+        "evidence": ["opportunities to establish a payment arrangement"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Missed Payments",
+        "evidence": [
+          "offered an opportunity to establish a payment arrangement"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "Does a partial payment always satisfy the required monthly payment?",
+    "expected_facts": [
+      "a partial payment does not necessarily satisfy the required monthly payment"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Partial Payments",
+        "evidence": [
+          "does not necessarily satisfy the required monthly payment"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "How may a partial payment be applied?",
+    "expected_facts": [
+      "a partial payment may be applied to interest and principal per the loan agreement"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Partial Payments",
+        "evidence": [
+          "may be applied to outstanding interest and principal according to the loan agreement"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What information is recorded with a payment?",
+    "expected_facts": [
+      "each payment records an amount, date, method, and a unique identifier"
+    ],
+    "expected": [
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "Each payment includes an amount, payment date, payment method, and unique payment identifier"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "How are duplicate payments detected?",
+    "expected_facts": ["duplicate payments are detected using the payment ID"],
+    "expected": [
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "Duplicate payments should be detected using the payment identifier"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "Should a duplicate payment be applied twice?",
+    "expected_facts": [
+      "a duplicate payment should not be applied to the same obligation twice"
+    ],
+    "expected": [
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "should not automatically be applied to the same obligation twice"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "When are normal loan payments due?",
+    "expected_facts": [
+      "loan payments are due on the scheduled due date in the borrower agreement"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Payments",
+        "evidence": [
+          "due on the scheduled due date listed in the borrower agreement"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What order are interest and principal paid in?",
+    "expected_facts": ["interest is applied before principal"],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Payments",
+        "evidence": ["applied first to outstanding interest, then to principal"]
+      },
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "applied first to outstanding interest and then to principal"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What identifier should a borrower provide when asking support about an online payment?",
+    "expected_facts": [
+      "a borrower should provide LP-4827 when asking about an online payment"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Payment Codes",
+        "evidence": [
+          "include LP-4827 when contacting support about an online payment"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "Can I get more time before my payment is late?",
+    "expected_facts": ["a grace period extension may be requested"],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Grace Period Requests",
+        "evidence": ["request an extended grace period"]
+      }
+    ]
+  },
+  {
+    "question": "Can a late fee be removed?",
+    "expected_facts": [
+      "a late fee may be waived at the servicer's discretion",
+      "a waiver must be requested before the fee is assessed"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Fee Waivers",
+        "evidence": ["may be waived"]
+      }
+    ]
+  },
+  {
+    "question": "What happens to a partial payment while I wait to pay the rest?",
+    "expected_facts": [
+      "a partial payment is held until the full scheduled amount is received",
+      "interest continues to accrue while a partial payment is held"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Partial Payment Handling",
+        "evidence": ["held and applied once the full scheduled amount"]
+      }
+    ]
+  },
+  {
+    "question": "How much do I owe to pay off the loan today?",
+    "expected_facts": [
+      "a payoff quote is valid for ten days",
+      "interest continues to accrue"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Payoff Requests",
+        "evidence": ["request a payoff quote"]
+      }
+    ]
+  },
+  {
+    "question": "How can I change how I receive my statements?",
+    "expected_facts": [
+      "statements are issued monthly",
+      "a change to the delivery method takes effect with the next billing cycle"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Statement Delivery",
+        "evidence": ["choose paper or electronic delivery"]
+      }
+    ]
+  },
+  {
+    "question": "What happens if I think a payment was applied to the wrong loan?",
+    "expected_facts": [
+      "the servicer responds within thirty days",
+      "a disputed amount is not reported as delinquent while the review is open"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Dispute Resolution",
+        "evidence": ["believes a payment was misapplied"]
+      }
+    ]
+  },
+  {
+    "question": "What is the interest rate on these loans?",
+    "expected": []
+  },
+  {
+    "question": "What is the borrower's credit score?",
+    "expected": []
+  },
+  {
+    "question": "What is the loan origination fee?",
+    "expected": []
+  },
+  {
+    "question": "Is a partial payment applied right away, or held until the full amount is paid?",
+    "expected_facts": [
+      "the sources describe partial-payment handling differently",
+      "member-services-guide.md holds a partial payment until the full scheduled amount is received"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Partial Payments",
+        "evidence": [
+          "Partial payments may be applied to outstanding interest and principal according to the loan agreement"
+        ]
+      },
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Partial Payment Handling",
+        "evidence": [
+          "held and applied once the full scheduled amount is received"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "I was charged twice for the same bill. What should happen?",
+    "expected_facts": [
+      "a duplicate payment is detected using the payment identifier",
+      "a duplicate payment is not applied to the same obligation twice"
+    ],
+    "expected": [
+      {
+        "source": "examples/large-loan-policy.md",
+        "section": "Payment Processing",
+        "evidence": [
+          "Duplicate payments should be detected using the payment identifier"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "When can a late fee be charged, and can it be waived?",
+    "expected_facts": [
+      "a late fee can be assessed after the grace period expires",
+      "a waiver must be requested before the fee is assessed",
+      "an already-charged fee is not removed automatically"
+    ],
+    "expected": [
+      {
+        "source": "examples/loan-policy.md",
+        "section": "Late Fees",
+        "evidence": [
+          "A late fee may be assessed after the grace period has expired"
+        ]
+      },
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Fee Waivers",
+        "evidence": ["must be submitted before the fee is assessed"]
+      }
+    ]
+  },
+  {
+    "question": "How long is a payoff quote valid, and why?",
+    "expected_facts": [
+      "a payoff quote is valid for ten days",
+      "because interest continues to accrue"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Payoff Requests",
+        "evidence": ["valid for ten days", "interest continues to accrue"]
+      }
+    ]
+  },
+  {
+    "question": "How long does a dispute review take, and is the disputed amount reported delinquent?",
+    "expected_facts": [
+      "the servicer responds within thirty days",
+      "a disputed amount is not reported as delinquent while the review is open"
+    ],
+    "expected": [
+      {
+        "source": "examples/member-services-guide.md",
+        "section": "Dispute Resolution",
+        "evidence": [
+          "responds within thirty days",
+          "not reported as delinquent while the review is open"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "How do I reset my online portal password?",
+    "expected": []
+  },
+  {
+    "question": "What is the fee for a paper statement?",
+    "expected": []
+  },
+  {
+    "question": "How is an escrow shortage resolved?",
+    "expected_facts": [
+      "a shortage may be repaid in equal monthly installments over at least twelve months"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Escrow Administration",
+        "evidence": [
+          "repay the shortage in equal monthly installments over at least twelve months"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "When may the servicer force-place insurance?",
+    "expected_facts": [
+      "the servicer may force-place insurance if the borrower does not provide evidence of coverage"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Insurance Requirements",
+        "evidence": [
+          "obtain force-placed insurance and charge the borrower for its cost"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "What happens if a property tax becomes delinquent?",
+    "expected_facts": [
+      "the servicer may advance the amount needed to cure the tax delinquency"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Property Taxes",
+        "evidence": [
+          "advance the amount necessary to cure the delinquency to protect the lien"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "When is retainage released on a construction loan?",
+    "expected_facts": [
+      "retainage is released only when the servicer confirms the work is complete"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Construction Draw Administration",
+        "evidence": [
+          "released only when the servicer confirms the work is complete"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "When must a UCC financing statement be continued?",
+    "expected_facts": [
+      "a continuation must be filed within the six months before the financing statement expires"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Collateral and Lien Documentation",
+        "evidence": ["within the six months before its expiration"]
+      }
+    ]
+  },
+  {
+    "question": "What notice does a borrower receive when servicing is transferred?",
+    "expected_facts": [
+      "the borrower receives a notice of transfer identifying the transferee and the transfer effective date"
+    ],
+    "expected": [
+      {
+        "source": "examples/commercial-servicing-manual.md",
+        "section": "Servicing Transfer Procedures",
+        "evidence": [
+          "notice of transfer that identifies the transferee",
+          "address and contact information for payments and inquiries after the transfer"
+        ]
+      }
+    ]
+  },
+  {
+    "question": "How much does force-placed insurance cost?",
+    "expected": []
+  }
+]

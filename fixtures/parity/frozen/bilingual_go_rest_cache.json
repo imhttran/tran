@@ -1,0 +1,317 @@
+{
+  "model": "parity-chat",
+  "entries": {
+    "eval-en-en-01": {
+      "question": "How are loan payments handled?",
+      "variants": {
+        "en": "How are loan payments handled?",
+        "exp": "How are loan payments handled? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How are loan payments handled? tiếng Việt"
+      }
+    },
+    "eval-en-en-02": {
+      "question": "When is a late fee charged?",
+      "variants": {
+        "en": "When is a late fee charged?",
+        "exp": "When is a late fee charged? \u0026 \u003cchính sách\u003e policy",
+        "vi": "When is a late fee charged? tiếng Việt"
+      }
+    },
+    "eval-en-en-03": {
+      "question": "Can I make a partial payment?",
+      "variants": {
+        "en": "Can I make a partial payment?",
+        "exp": "Can I make a partial payment? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Can I make a partial payment? tiếng Việt"
+      }
+    },
+    "eval-en-en-04": {
+      "question": "When does a loan go to collections?",
+      "variants": {
+        "en": "When does a loan go to collections?",
+        "exp": "When does a loan go to collections? \u0026 \u003cchính sách\u003e policy",
+        "vi": "When does a loan go to collections? tiếng Việt"
+      }
+    },
+    "eval-en-en-05": {
+      "question": "What do the payment codes mean?",
+      "variants": {
+        "en": "What do the payment codes mean?",
+        "exp": "What do the payment codes mean? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What do the payment codes mean? tiếng Việt"
+      }
+    },
+    "eval-en-en-06": {
+      "question": "How do I request a grace period?",
+      "variants": {
+        "en": "How do I request a grace period?",
+        "exp": "How do I request a grace period? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I request a grace period? tiếng Việt"
+      }
+    },
+    "eval-en-en-07": {
+      "question": "How do I request a payoff statement?",
+      "variants": {
+        "en": "How do I request a payoff statement?",
+        "exp": "How do I request a payoff statement? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I request a payoff statement? tiếng Việt"
+      }
+    },
+    "eval-en-en-08": {
+      "question": "How do I dispute a charge?",
+      "variants": {
+        "en": "How do I dispute a charge?",
+        "exp": "How do I dispute a charge? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I dispute a charge? tiếng Việt"
+      }
+    },
+    "eval-en-en-09": {
+      "question": "What insurance is required?",
+      "variants": {
+        "en": "What insurance is required?",
+        "exp": "What insurance is required? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What insurance is required? tiếng Việt"
+      }
+    },
+    "eval-en-en-10": {
+      "question": "Who handles property taxes?",
+      "variants": {
+        "en": "Who handles property taxes?",
+        "exp": "Who handles property taxes? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Who handles property taxes? tiếng Việt"
+      }
+    },
+    "eval-en-vi-01": {
+      "question": "When is a debt written off?",
+      "variants": {
+        "en": "When is a debt written off?",
+        "exp": "When is a debt written off? \u0026 \u003cchính sách\u003e policy",
+        "vi": "When is a debt written off? tiếng Việt"
+      }
+    },
+    "eval-en-vi-02": {
+      "question": "When is a late fee applied?",
+      "variants": {
+        "en": "When is a late fee applied?",
+        "exp": "When is a late fee applied? \u0026 \u003cchính sách\u003e policy",
+        "vi": "When is a late fee applied? tiếng Việt"
+      }
+    },
+    "eval-en-vi-03": {
+      "question": "Can fees be waived?",
+      "variants": {
+        "en": "Can fees be waived?",
+        "exp": "Can fees be waived? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Can fees be waived? tiếng Việt"
+      }
+    },
+    "eval-en-vi-04": {
+      "question": "How is a delinquency noticed?",
+      "variants": {
+        "en": "How is a delinquency noticed?",
+        "exp": "How is a delinquency noticed? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How is a delinquency noticed? tiếng Việt"
+      }
+    },
+    "eval-en-vi-05": {
+      "question": "How long does a claim take?",
+      "variants": {
+        "en": "How long does a claim take?",
+        "exp": "How long does a claim take? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How long does a claim take? tiếng Việt"
+      }
+    },
+    "eval-misleading-01": {
+      "question": "What is the grace period under the standard loan policy?",
+      "variants": {
+        "en": "What is the grace period under the standard loan policy?",
+        "exp": "What is the grace period under the standard loan policy? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What is the grace period under the standard loan policy? tiếng Việt"
+      }
+    },
+    "eval-misleading-02": {
+      "question": "Làm sao để được miễn giảm phí?",
+      "variants": {
+        "en": "Làm sao để được miễn giảm phí?",
+        "exp": "Làm sao để được miễn giảm phí? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Làm sao để được miễn giảm phí? tiếng Việt"
+      }
+    },
+    "eval-misleading-03": {
+      "question": "How do I set up a payment plan?",
+      "variants": {
+        "en": "How do I set up a payment plan?",
+        "exp": "How do I set up a payment plan? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I set up a payment plan? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-01": {
+      "question": "What is the cryptocurrency payment policy?",
+      "variants": {
+        "en": "What is the cryptocurrency payment policy?",
+        "exp": "What is the cryptocurrency payment policy? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What is the cryptocurrency payment policy? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-02": {
+      "question": "How do I reset my online banking password?",
+      "variants": {
+        "en": "How do I reset my online banking password?",
+        "exp": "How do I reset my online banking password? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I reset my online banking password? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-03": {
+      "question": "What are the holiday customer service hours?",
+      "variants": {
+        "en": "What are the holiday customer service hours?",
+        "exp": "What are the holiday customer service hours? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What are the holiday customer service hours? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-04": {
+      "question": "Is there a mobile app for members?",
+      "variants": {
+        "en": "Is there a mobile app for members?",
+        "exp": "Is there a mobile app for members? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Is there a mobile app for members? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-05": {
+      "question": "What is the interest rate for auto loans?",
+      "variants": {
+        "en": "What is the interest rate for auto loans?",
+        "exp": "What is the interest rate for auto loans? \u0026 \u003cchính sách\u003e policy",
+        "vi": "What is the interest rate for auto loans? tiếng Việt"
+      }
+    },
+    "eval-unanswerable-06": {
+      "question": "How do I close my account?",
+      "variants": {
+        "en": "How do I close my account?",
+        "exp": "How do I close my account? \u0026 \u003cchính sách\u003e policy",
+        "vi": "How do I close my account? tiếng Việt"
+      }
+    },
+    "eval-vi-en-01": {
+      "question": "Làm sao để thay đổi cách nhận sao kê?",
+      "variants": {
+        "en": "Làm sao để thay đổi cách nhận sao kê?",
+        "exp": "Làm sao để thay đổi cách nhận sao kê? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Làm sao để thay đổi cách nhận sao kê? tiếng Việt"
+      }
+    },
+    "eval-vi-en-02": {
+      "question": "Tôi có thể sắp xếp kế hoạch thanh toán không?",
+      "variants": {
+        "en": "Tôi có thể sắp xếp kế hoạch thanh toán không?",
+        "exp": "Tôi có thể sắp xếp kế hoạch thanh toán không? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Tôi có thể sắp xếp kế hoạch thanh toán không? tiếng Việt"
+      }
+    },
+    "eval-vi-en-03": {
+      "question": "Điều gì xảy ra khi hồ sơ được chuyển giao?",
+      "variants": {
+        "en": "Điều gì xảy ra khi hồ sơ được chuyển giao?",
+        "exp": "Điều gì xảy ra khi hồ sơ được chuyển giao? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Điều gì xảy ra khi hồ sơ được chuyển giao? tiếng Việt"
+      }
+    },
+    "eval-vi-en-04": {
+      "question": "Khoản vay lớn xử lý thanh toán ra sao?",
+      "variants": {
+        "en": "Khoản vay lớn xử lý thanh toán ra sao?",
+        "exp": "Khoản vay lớn xử lý thanh toán ra sao? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Khoản vay lớn xử lý thanh toán ra sao? tiếng Việt"
+      }
+    },
+    "eval-vi-en-05": {
+      "question": "Hồ sơ thế chấp được quản lý thế nào?",
+      "variants": {
+        "en": "Hồ sơ thế chấp được quản lý thế nào?",
+        "exp": "Hồ sơ thế chấp được quản lý thế nào? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Hồ sơ thế chấp được quản lý thế nào? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-01": {
+      "question": "Thời hạn gia hạn là bao lâu?",
+      "variants": {
+        "en": "Thời hạn gia hạn là bao lâu?",
+        "exp": "Thời hạn gia hạn là bao lâu? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Thời hạn gia hạn là bao lâu? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-02": {
+      "question": "Thanh toán được áp dụng như thế nào?",
+      "variants": {
+        "en": "Thanh toán được áp dụng như thế nào?",
+        "exp": "Thanh toán được áp dụng như thế nào? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Thanh toán được áp dụng như thế nào? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-03": {
+      "question": "Tôi có thể liên hệ bằng cách nào?",
+      "variants": {
+        "en": "Tôi có thể liên hệ bằng cách nào?",
+        "exp": "Tôi có thể liên hệ bằng cách nào? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Tôi có thể liên hệ bằng cách nào? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-04": {
+      "question": "Yêu cầu tất toán mất bao lâu?",
+      "variants": {
+        "en": "Yêu cầu tất toán mất bao lâu?",
+        "exp": "Yêu cầu tất toán mất bao lâu? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Yêu cầu tất toán mất bao lâu? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-05": {
+      "question": "Khi chậm trả thì được thông báo thế nào?",
+      "variants": {
+        "en": "Khi chậm trả thì được thông báo thế nào?",
+        "exp": "Khi chậm trả thì được thông báo thế nào? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Khi chậm trả thì được thông báo thế nào? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-06": {
+      "question": "Tôi có thể lập kế hoạch thanh toán không?",
+      "variants": {
+        "en": "Tôi có thể lập kế hoạch thanh toán không?",
+        "exp": "Tôi có thể lập kế hoạch thanh toán không? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Tôi có thể lập kế hoạch thanh toán không? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-07": {
+      "question": "Khi nào hồ sơ bị chuyển cho bộ phận thu hồi?",
+      "variants": {
+        "en": "Khi nào hồ sơ bị chuyển cho bộ phận thu hồi?",
+        "exp": "Khi nào hồ sơ bị chuyển cho bộ phận thu hồi? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Khi nào hồ sơ bị chuyển cho bộ phận thu hồi? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-08": {
+      "question": "Tôi có phải mua bảo hiểm tài sản không?",
+      "variants": {
+        "en": "Tôi có phải mua bảo hiểm tài sản không?",
+        "exp": "Tôi có phải mua bảo hiểm tài sản không? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Tôi có phải mua bảo hiểm tài sản không? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-09": {
+      "question": "Chứng nhận bảo hiểm có hiệu lực bao lâu?",
+      "variants": {
+        "en": "Chứng nhận bảo hiểm có hiệu lực bao lâu?",
+        "exp": "Chứng nhận bảo hiểm có hiệu lực bao lâu? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Chứng nhận bảo hiểm có hiệu lực bao lâu? tiếng Việt"
+      }
+    },
+    "eval-vi-vi-10": {
+      "question": "Yêu cầu bồi thường được xử lý trong bao lâu?",
+      "variants": {
+        "en": "Yêu cầu bồi thường được xử lý trong bao lâu?",
+        "exp": "Yêu cầu bồi thường được xử lý trong bao lâu? \u0026 \u003cchính sách\u003e policy",
+        "vi": "Yêu cầu bồi thường được xử lý trong bao lâu? tiếng Việt"
+      }
+    }
+  }
+}

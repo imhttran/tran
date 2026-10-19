@@ -1,0 +1,510 @@
+{
+  "provenance": {
+    "commit": "d72fb398e8959eea83ed24be03f6df8cdeca86a2",
+    "commit_short": "d72fb39",
+    "generated_at": "2026-10-17T17:54:04Z",
+    "generator": "tools/genfixtures (Go reference)",
+    "go_version": "go1.27.1",
+    "module": "rag-template",
+    "note": "Expected section/chunk output from the pinned Go reference; never edited to match Rust.",
+    "source_repository": "https://github.com/imhttran/rag-template-rust"
+  },
+  "cases": [
+    {
+      "name": "md-english-sections",
+      "kind": "markdown",
+      "input": "## Alpha\none two three four five\n## Beta\nsix seven eight\n## Gamma\nnine ten",
+      "source": "sample.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "one two three four five",
+          "page": 0
+        },
+        {
+          "title": "Beta",
+          "content": "six seven eight",
+          "page": 0
+        },
+        {
+          "title": "Gamma",
+          "content": "nine ten",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "one two three four five",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Beta",
+          "content": "six seven eight",
+          "index": 1,
+          "page": 0
+        },
+        {
+          "section": "Gamma",
+          "content": "nine ten",
+          "index": 2,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-vietnamese-sections",
+      "kind": "markdown",
+      "input": "## Giới thiệu\nXin chào thế giới đây là văn bản kiểm thử\n## Hợp đồng\nĐiều khoản thanh toán và lãi suất",
+      "source": "vi.md",
+      "language": "vietnamese",
+      "chunk_size": 5,
+      "overlap": 2,
+      "sections": [
+        {
+          "title": "Giới thiệu",
+          "content": "Xin chào thế giới đây là văn bản kiểm thử",
+          "page": 0
+        },
+        {
+          "title": "Hợp đồng",
+          "content": "Điều khoản thanh toán và lãi suất",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Giới thiệu",
+          "content": "Xin chào thế giới đây",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Giới thiệu",
+          "content": "giới đây là văn bản",
+          "index": 1,
+          "page": 0
+        },
+        {
+          "section": "Giới thiệu",
+          "content": "văn bản kiểm thử",
+          "index": 2,
+          "page": 0
+        },
+        {
+          "section": "Hợp đồng",
+          "content": "Điều khoản thanh toán và",
+          "index": 3,
+          "page": 0
+        },
+        {
+          "section": "Hợp đồng",
+          "content": "toán và lãi suất",
+          "index": 4,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-empty",
+      "kind": "markdown",
+      "source": "empty.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [],
+      "chunks": [],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-whitespace-only",
+      "kind": "markdown",
+      "input": "   \n\t\n  ",
+      "source": "ws.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [],
+      "chunks": [],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-leading-block",
+      "kind": "markdown",
+      "input": "preamble line before any heading\n## Alpha\none two three four",
+      "source": "lead.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "one two three four",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "one two three four",
+          "index": 0,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-boundary-exact-size",
+      "kind": "markdown",
+      "input": "## Alpha\nw1 w2 w3 w4 w5 w6 w7 w8 w9 w10",
+      "source": "exact.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10",
+          "index": 0,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-boundary-one-over",
+      "kind": "markdown",
+      "input": "## Alpha\nw1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11",
+      "source": "over.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Alpha",
+          "content": "w8 w9 w10 w11",
+          "index": 1,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-multi-chunk-overlap",
+      "kind": "markdown",
+      "input": "## Alpha\nw1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25",
+      "source": "multi.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Alpha",
+          "content": "w8 w9 w10 w11 w12 w13 w14 w15 w16 w17",
+          "index": 1,
+          "page": 0
+        },
+        {
+          "section": "Alpha",
+          "content": "w15 w16 w17 w18 w19 w20 w21 w22 w23 w24",
+          "index": 2,
+          "page": 0
+        },
+        {
+          "section": "Alpha",
+          "content": "w22 w23 w24 w25",
+          "index": 3,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-repeated-title",
+      "kind": "markdown",
+      "input": "## Alpha\na1 a2 a3 a4 a5 a6 a7 a8 a9 a10\n## Alpha\nb1 b2 b3 b4 b5",
+      "source": "repeat.md",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "a1 a2 a3 a4 a5 a6 a7 a8 a9 a10",
+          "page": 0
+        },
+        {
+          "title": "Alpha",
+          "content": "b1 b2 b3 b4 b5",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "a1 a2 a3 a4 a5 a6 a7 a8 a9 a10",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Alpha",
+          "content": "b1 b2 b3 b4 b5",
+          "index": 1,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-heading-edge",
+      "kind": "markdown",
+      "input": "## Alpha\n# not a section\n### also not",
+      "source": "edge.md",
+      "language": "english",
+      "chunk_size": 50,
+      "overlap": 20,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "# not a section\n### also not",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Alpha",
+          "content": "# not a section ### also not",
+          "index": 0,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-unicode-words",
+      "kind": "markdown",
+      "input": "## Tiêu đề\nmột hai ba bốn năm sáu bảy tám chín mười",
+      "source": "uni.md",
+      "language": "vietnamese",
+      "chunk_size": 4,
+      "overlap": 1,
+      "sections": [
+        {
+          "title": "Tiêu đề",
+          "content": "một hai ba bốn năm sáu bảy tám chín mười",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Tiêu đề",
+          "content": "một hai ba bốn",
+          "index": 0,
+          "page": 0
+        },
+        {
+          "section": "Tiêu đề",
+          "content": "bốn năm sáu bảy",
+          "index": 1,
+          "page": 0
+        },
+        {
+          "section": "Tiêu đề",
+          "content": "bảy tám chín mười",
+          "index": 2,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-zero-size",
+      "kind": "markdown",
+      "input": "## Alpha\nw1 w2 w3 w4 w5",
+      "source": "zero.md",
+      "language": "english",
+      "chunk_size": 0,
+      "overlap": 0,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "w1 w2 w3 w4 w5",
+          "page": 0
+        }
+      ],
+      "chunks": [],
+      "incomplete_pages": []
+    },
+    {
+      "name": "md-overlap-equals-size",
+      "kind": "markdown",
+      "input": "## Alpha\nw1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12",
+      "source": "oeeq.md",
+      "language": "english",
+      "chunk_size": 5,
+      "overlap": 5,
+      "sections": [
+        {
+          "title": "Alpha",
+          "content": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12",
+          "page": 0
+        }
+      ],
+      "chunks": [],
+      "incomplete_pages": []
+    },
+    {
+      "name": "txt-single-section",
+      "kind": "text",
+      "input_file": "plain.txt",
+      "source": "plain.txt",
+      "language": "vietnamese",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [
+        {
+          "title": "plain.txt",
+          "content": "Xin chào thế giới\n\nĐây là văn bản thuần túy.",
+          "page": 0
+        }
+      ],
+      "chunks": [
+        {
+          "section": "plain.txt",
+          "content": "Xin chào thế giới Đây là văn bản thuần túy.",
+          "index": 0,
+          "page": 0
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "txt-empty",
+      "kind": "text",
+      "input_file": "empty.txt",
+      "source": "empty.txt",
+      "language": "english",
+      "chunk_size": 10,
+      "overlap": 3,
+      "sections": [],
+      "chunks": [],
+      "incomplete_pages": []
+    },
+    {
+      "name": "pdf-text-layer",
+      "kind": "pdf",
+      "input_file": "text-layer.pdf",
+      "source": "text-layer.pdf",
+      "language": "english",
+      "chunk_size": 50,
+      "overlap": 20,
+      "sections": [
+        {
+          "title": "Page 1",
+          "content": "This is page one.",
+          "page": 1
+        },
+        {
+          "title": "Page 2",
+          "content": "This is page two.",
+          "page": 2
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Page 1",
+          "content": "This is page one.",
+          "index": 0,
+          "page": 1
+        },
+        {
+          "section": "Page 2",
+          "content": "This is page two.",
+          "index": 1,
+          "page": 2
+        }
+      ],
+      "incomplete_pages": []
+    },
+    {
+      "name": "pdf-mixed",
+      "kind": "pdf",
+      "input_file": "mixed-text-scan.pdf",
+      "source": "mixed-text-scan.pdf",
+      "language": "english",
+      "chunk_size": 50,
+      "overlap": 20,
+      "sections": [
+        {
+          "title": "Page 1",
+          "content": "Readable page one.",
+          "page": 1
+        }
+      ],
+      "chunks": [
+        {
+          "section": "Page 1",
+          "content": "Readable page one.",
+          "index": 0,
+          "page": 1
+        }
+      ],
+      "load_error": "pdf rust/fixtures/parity/inputs/mixed-text-scan.pdf: no text layer on page(s) 2: OCR is required for those pages",
+      "incomplete_pages": [
+        2
+      ]
+    },
+    {
+      "name": "pdf-no-text-layer",
+      "kind": "pdf",
+      "input_file": "no-text-layer.pdf",
+      "source": "no-text-layer.pdf",
+      "language": "english",
+      "chunk_size": 50,
+      "overlap": 20,
+      "sections": [],
+      "chunks": [],
+      "load_error": "pdf rust/fixtures/parity/inputs/no-text-layer.pdf has no extractable text layer: OCR is required",
+      "incomplete_pages": []
+    }
+  ]
+}

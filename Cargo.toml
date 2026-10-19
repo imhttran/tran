@@ -1,0 +1,59 @@
+[package]
+name = "rag-foundation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rag_foundation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ingest"
+path = "src/bin/ingest.rs"
+
+[[bin]]
+name = "smoke"
+path = "src/bin/smoke.rs"
+
+[[bin]]
+name = "query"
+path = "src/bin/query.rs"
+
+[[bin]]
+name = "eval"
+path = "src/bin/eval.rs"
+
+[[bin]]
+name = "expbilingual"
+path = "src/bin/expbilingual.rs"
+
+[[bin]]
+name = "api"
+path = "src/bin/api.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+# HTTP: established client for the shared Ollama transport. Replaces the
+# hand-rolled std::net HTTP/1.1 code in src/bin/smoke.rs. `rustls-tls` avoids a
+# system OpenSSL dependency; `blocking` matches the current synchronous pipeline
+# (the async runtime is decided for the DB/ingestion tasks, see
+# docs/reports/rust-migration/dependency-decisions.md).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# PDF: text-layer extraction (retained; page-provenance parity is checked against
+# the Go fixtures before this is relied on).
+lopdf = "0.34"
+# PostgreSQL storage client (RUST-005C): the established sync stack the
+# storage module was designed around (r2d2 pool + postgres driver).
+postgres = "0.19"
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
+# HTTP API (RUST-008A): Axum serves the browser-facing contract; Tokio provides
+# the runtime. Blocking database/Ollama work runs through spawn_blocking so it
+# never occupies an async executor thread.
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"

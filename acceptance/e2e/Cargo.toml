@@ -1,0 +1,24 @@
+[package]
+name = "e2e-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-006C: drives the real production path end to end.
+# Ingest a real corpus document through the production ingestion entry point
+# (`IngestService`), retrieve with the production retrieval implementation and
+# produce a cited answer through the production question-answer entry point
+# (`AnswerService`). Fixture and mocked-model comparisons are checked against a
+# frozen baseline deterministically; live-model variability is reported
+# separately. Nothing here reimplements production logic.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }
+# Direct Postgres access for test-owned row snapshots, preservation checks and
+# cleanup. The production store lives behind `rag-foundation`; this crate only
+# reads/deletes its own rows so a rejected ingest is proven to write nothing.
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

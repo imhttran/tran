@@ -1,0 +1,18 @@
+[package]
+name = "bilingual-parity-acceptance"
+version = "0.1.0"
+edition = "2021"
+
+# Acceptance crate for RUST-007D: drives the production Rust `expbilingual`
+# binary and the frozen Go bilingual output captured from the pinned reference
+# corpus, dataset, configuration, embeddings, and generated queries. It
+# intentionally contains no retrieval, arm, or metric logic.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rag-foundation = { path = "../..", package = "rag-foundation" }
+postgres = "0.19"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

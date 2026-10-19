@@ -1,0 +1,29 @@
+#!/bin/sh
+# Pre-push checks for this Rust-only repository.
+#
+# Enabled with:  git config core.hooksPath .githooks
+# Bypass once:   git push --no-verify
+#
+# The Makefile targets are the single source of truth. The full Rust suite runs
+# here (it needs the configured database for the integration tests), followed by
+# the final-layout and clean-checkout acceptance and the web production build.
+set -e
+
+# Load the repository .env (if present) so database checks get DATABASE_URL
+# without repeated manual exports. Values are never printed.
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
+echo "pre-push: Rust build/test/clippy (make rust-build rust-test rust-clippy)"
+make rust-build rust-test rust-clippy
+
+echo "pre-push: final layout and clean checkout without Go (make transition-evidence)"
+make transition-evidence
+
+echo "pre-push: make web-check-env"
+make web-check-env
+
+echo "pre-push: web production build (make web-build)"
+make web-build
+
+echo
+echo "pre-push: ok"
