@@ -210,12 +210,7 @@ impl Drop for TestAuth {
     }
 }
 
-fn mint_rs256(
-    issuer: &str,
-    audience: &str,
-    subject: &str,
-    key_pair: &RsaKeyPair,
-) -> String {
+fn mint_rs256(issuer: &str, audience: &str, subject: &str, key_pair: &RsaKeyPair) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
@@ -236,12 +231,7 @@ fn mint_rs256(
     let rng = SystemRandom::new();
     let mut signature = vec![0u8; key_pair.public().modulus_len()];
     key_pair
-        .sign(
-            &RSA_PKCS1_SHA256,
-            &rng,
-            signing.as_bytes(),
-            &mut signature,
-        )
+        .sign(&RSA_PKCS1_SHA256, &rng, signing.as_bytes(), &mut signature)
         .expect("sign the test RS256 token");
     format!("{}.{}", signing, URL_SAFE_NO_PAD.encode(signature))
 }
@@ -254,12 +244,15 @@ pub fn seed_api_contract_admin(dsn: &str, issuer: &str, subject: &str, corpus: &
     client
         .execute(
             "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
-             ON CONFLICT (subject) DO UPDATE SET issuer = EXCLUDED.issuer",
+             ON CONFLICT (issuer, subject) DO UPDATE SET updated_at = now(), deactivated_at = NULL",
             &[&subject, &issuer],
         )
         .expect("seed user");
     let user_id: i64 = client
-        .query_one("SELECT id FROM users WHERE subject = $1", &[&subject])
+        .query_one(
+            "SELECT id FROM users WHERE subject = $1 AND issuer = $2",
+            &[&subject, &issuer],
+        )
         .expect("read seeded user")
         .get(0);
     client

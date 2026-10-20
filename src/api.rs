@@ -16,7 +16,7 @@ use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -37,6 +37,7 @@ use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
+use crate::onboarding::{self, CandidatePreview, PreviewSummary};
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
@@ -189,10 +190,18 @@ impl AppState {
             )
             .route("/api/genealogy/nominations/{id}", post(decide_nomination))
             .route("/api/genealogy/appointments/{id}", post(end_head_of_family))
+            .route(
+                "/api/admin/family-members/candidates",
+                get(family_member_candidates),
+            )
             .route("/api/admin/users", post(provision_user))
             .route(
                 "/api/admin/users/{subject}/deactivate",
                 post(deactivate_user),
+            )
+            .route(
+                "/api/admin/users/{issuer}/{subject}/deactivate",
+                post(deactivate_user_scoped),
             )
             // Multipart framing adds a small overhead; the file payload itself
             // is checked against MAX_UPLOAD_BYTES in the handler.
@@ -535,6 +544,10 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response 
 struct RoleChangeRequest {
     subject: String,
     role: String,
+    /// The issuer that owns the target account. Identity is keyed on
+    /// `(issuer, subject)`, so a same-subject account under another issuer is
+    /// never touched.
+    issuer: String,
     #[serde(default)]
     revoke: bool,
 }
@@ -589,17 +602,26 @@ async fn change_role(
             "subject must not be empty",
         );
     }
+    let issuer = request.issuer.trim().to_string();
+    if issuer.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_issuer",
+            "issuer must not be empty",
+        );
+    }
     let store = state.store.clone();
     let actor = identity.subject().to_string();
     let revoke = request.revoke;
     let task_subject = subject.clone();
+    let task_issuer = issuer.clone();
     let result = tokio::task::spawn_blocking(move || {
         let client = identity_client(&store)?;
         let mut store = IdentityStore::new(client);
         if revoke {
-            store.revoke_role(&task_subject, role, &actor)
+            store.revoke_role(&task_subject, &task_issuer, role, &actor)
         } else {
-            store.grant_role(&task_subject, role, &actor)
+            store.grant_role(&task_subject, &task_issuer, role, &actor)
         }
     })
     .await;
@@ -1627,21 +1649,55 @@ async fn provision_user(
     }
 }
 
+#[derive(Deserialize)]
+struct DeactivateQuery {
+    /// The issuer that owns the target account. Identity is keyed on
+    /// `(issuer, subject)`, so a same-subject account under another issuer is
+    /// never deactivated.
+    issuer: String,
+}
+
 async fn deactivate_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(subject): Path<String>,
+    Query(query): Query<DeactivateQuery>,
+) -> Response {
+    let issuer = query.issuer.trim().to_string();
+    deactivate_identity(state, headers, subject, issuer).await
+}
+
+async fn deactivate_user_scoped(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((issuer, subject)): Path<(String, String)>,
+) -> Response {
+    deactivate_identity(state, headers, subject, issuer).await
+}
+
+async fn deactivate_identity(
+    state: AppState,
+    headers: HeaderMap,
+    subject: String,
+    issuer: String,
 ) -> Response {
     let identity = match authorize(&state, &headers, Operation::RoleChange) {
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    if issuer.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_issuer",
+            "issuer must not be empty",
+        );
+    }
     let store = state.store.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let client = identity_client(&store)?;
         let mut store = IdentityStore::new(client);
-        store.client().deactivate_user(&subject, &actor)
+        store.client().deactivate_user(&subject, &issuer, &actor)
     })
     .await;
     match result {
@@ -1656,6 +1712,101 @@ async fn deactivate_user(
             )
         }
     }
+}
+
+// --- onboarding preview ----------------------------------------------------
+
+/// The privacy-safe summary of one preview. Counts only; never a person.
+#[derive(Serialize)]
+struct PreviewSummaryBody {
+    eligible_for_invite: usize,
+    needs_review: usize,
+    already_linked: usize,
+    invited: usize,
+    not_eligible: usize,
+}
+
+/// One classified candidate for the wire. Carries the opaque key and reason
+/// codes only.
+#[derive(Serialize)]
+struct PreviewRowBody {
+    person_key: String,
+    classification: &'static str,
+    reasons: Vec<&'static str>,
+}
+
+/// The full response envelope.
+#[derive(Serialize)]
+struct PreviewBody {
+    ok: bool,
+    rows: Vec<PreviewRowBody>,
+    summary: PreviewSummaryBody,
+}
+
+/// An admin-only, strictly read-only preview of living-person candidates.
+///
+/// Authorization runs before any database connection. The genealogy read runs
+/// in a blocking task. Rows are never logged; the response carries opaque keys
+/// and reason codes only.
+async fn family_member_candidates(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingPreview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let dsn = resolve_genealogy_dsn(&config).map_err(|err| err.to_string())?;
+        let mut client =
+            postgres::Client::connect(&dsn, postgres::NoTls).map_err(|err| err.to_string())?;
+        onboarding::preview_candidates(&mut client).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => preview_response(&preview),
+        Ok(Err(message)) => {
+            // No row detail is logged. The message names a rule or a
+            // destination, never a person.
+            eprintln!("api: onboarding preview unavailable: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: onboarding preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "preview_failed",
+                "the candidate preview failed",
+            )
+        }
+    }
+}
+
+/// Maps a preview to the wire body. The summary is derived from the preview.
+fn preview_response(preview: &CandidatePreview) -> Response {
+    let summary = PreviewSummary::from_preview(preview);
+    let rows = preview
+        .rows
+        .iter()
+        .map(|row| PreviewRowBody {
+            person_key: row.person_key.clone(),
+            classification: row.classification.as_str(),
+            reasons: row.reasons.iter().map(|reason| reason.as_str()).collect(),
+        })
+        .collect();
+    let body = PreviewBody {
+        ok: true,
+        rows,
+        summary: PreviewSummaryBody {
+            eligible_for_invite: summary.eligible_for_invite,
+            needs_review: summary.needs_review,
+            already_linked: summary.already_linked,
+            invited: summary.invited,
+            not_eligible: summary.not_eligible,
+        },
+    };
+    Json(body).into_response()
 }
 
 #[cfg(test)]
@@ -1699,6 +1850,25 @@ mod tests {
     fn extension_detection_is_case_insensitive() {
         assert_eq!(extension("Policy.MD"), Some("md".to_string()));
         assert_eq!(extension("no-extension"), None);
+    }
+
+    #[test]
+    fn onboarding_preview_is_admin_only() {
+        let viewer = VerifiedIdentity::new("sub-1", "https://issuer", vec![Role::Viewer], vec![]);
+        let editor = VerifiedIdentity::new("sub-2", "https://issuer", vec![Role::Editor], vec![]);
+        let admin = VerifiedIdentity::new("sub-3", "https://issuer", vec![Role::Admin], vec![]);
+        assert_eq!(
+            identity::decide(Some(&viewer), Operation::OnboardingPreview),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            identity::decide(Some(&editor), Operation::OnboardingPreview),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            identity::decide(Some(&admin), Operation::OnboardingPreview),
+            Decision::Allow
+        );
     }
 
     #[test]

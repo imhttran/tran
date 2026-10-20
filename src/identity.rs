@@ -128,6 +128,8 @@ pub enum Operation {
     GenealogyNominate,
     /// Head of Family approval APIs.
     HeadOfFamilyApproval,
+    /// Reading the living-person onboarding candidate preview.
+    OnboardingPreview,
 }
 
 impl Operation {
@@ -139,9 +141,10 @@ impl Operation {
                 Some(Role::Viewer)
             }
             Operation::Ingest | Operation::GenealogyNominate => Some(Role::Editor),
-            Operation::Account | Operation::RoleChange | Operation::HeadOfFamilyApproval => {
-                Some(Role::Admin)
-            }
+            Operation::Account
+            | Operation::RoleChange
+            | Operation::HeadOfFamilyApproval
+            | Operation::OnboardingPreview => Some(Role::Admin),
         }
     }
 
@@ -165,6 +168,7 @@ impl Operation {
             Operation::DocumentStatus => "document_status",
             Operation::Account => "account",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
+            Operation::OnboardingPreview => "onboarding_preview",
         }
     }
 }

@@ -4,6 +4,10 @@
 //! action, writes the user, the admin role assignment, and the audit event in one
 //! transaction, and refuses to run when an admin already exists. It is not
 //! reachable from any HTTP route and is not a configuration switch.
+//!
+//! Identity is keyed on `(issuer, subject)`. Every state-changing command takes
+//! `--issuer` so it can never resolve a same-subject account under another
+//! issuer.
 
 use rag_foundation::identity::Role;
 use rag_foundation::identity_store::IdentityStore;
@@ -13,12 +17,12 @@ fn usage() -> String {
     [
         "usage:",
         "  admin bootstrap --subject <sub> --issuer <issuer> [--corpus <corpus>] [--actor <actor>]",
-        "  admin grant     --subject <sub> --role viewer|editor|admin [--actor <actor>]",
-        "  admin revoke    --subject <sub> --role viewer|editor|admin [--actor <actor>]",
-        "  admin grant-corpus  --subject <sub> --corpus <corpus> [--actor <actor>]",
-        "  admin revoke-corpus --subject <sub> --corpus <corpus> [--actor <actor>]",
+        "  admin grant     --subject <sub> --issuer <issuer> --role viewer|editor|admin [--actor <actor>]",
+        "  admin revoke    --subject <sub> --issuer <issuer> --role viewer|editor|admin [--actor <actor>]",
+        "  admin grant-corpus  --subject <sub> --issuer <issuer> --corpus <corpus> [--actor <actor>]",
+        "  admin revoke-corpus --subject <sub> --issuer <issuer> --corpus <corpus> [--actor <actor>]",
         "  admin provision      --subject <sub> --issuer <issuer> [--actor <actor>]",
-        "  admin deactivate     --subject <sub> [--actor <actor>]",
+        "  admin deactivate     --subject <sub> --issuer <issuer> [--actor <actor>]",
     ]
     .join("\n")
 }
@@ -41,6 +45,7 @@ fn main() -> Result<(), String> {
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
     let subject = flag(&args, "--subject").ok_or_else(|| "--subject is required".to_string())?;
+    let issuer = flag(&args, "--issuer").ok_or_else(|| "--issuer is required".to_string())?;
     let actor = flag(&args, "--actor").unwrap_or_else(|| "cli-operator".to_string());
 
     let client = PgIdentityClient::connect(&database_url).map_err(|err| err.to_string())?;
@@ -48,15 +53,13 @@ fn main() -> Result<(), String> {
 
     match command.as_str() {
         "bootstrap" => {
-            let issuer =
-                flag(&args, "--issuer").ok_or_else(|| "--issuer is required".to_string())?;
             store
                 .bootstrap_initial_admin(&subject, &issuer, &actor)
                 .map_err(|err| err.to_string())?;
             if let Some(corpus) = flag(&args, "--corpus") {
                 store
                     .client()
-                    .grant_corpus(&subject, &corpus, &actor)
+                    .grant_corpus(&subject, &issuer, &corpus, &actor)
                     .map_err(|err| err.to_string())?;
                 println!("initial admin created for {subject} with corpus {corpus}");
             } else {
@@ -70,11 +73,11 @@ fn main() -> Result<(), String> {
                 .ok_or_else(|| "role must be viewer, editor, or admin".to_string())?;
             if command == "grant" {
                 store
-                    .grant_role(&subject, role, &actor)
+                    .grant_role(&subject, &issuer, role, &actor)
                     .map_err(|err| err.to_string())?;
             } else {
                 store
-                    .revoke_role(&subject, role, &actor)
+                    .revoke_role(&subject, &issuer, role, &actor)
                     .map_err(|err| err.to_string())?;
             }
             println!("{command} {role_name} for {subject}");
@@ -85,19 +88,17 @@ fn main() -> Result<(), String> {
             if command == "grant-corpus" {
                 store
                     .client()
-                    .grant_corpus(&subject, &corpus, &actor)
+                    .grant_corpus(&subject, &issuer, &corpus, &actor)
                     .map_err(|err| err.to_string())?;
             } else {
                 store
                     .client()
-                    .revoke_corpus(&subject, &corpus, &actor)
+                    .revoke_corpus(&subject, &issuer, &corpus, &actor)
                     .map_err(|err| err.to_string())?;
             }
             println!("{command} {corpus} for {subject}");
         }
         "provision" => {
-            let issuer =
-                flag(&args, "--issuer").ok_or_else(|| "--issuer is required".to_string())?;
             let user_id = store
                 .client()
                 .provision_user(&subject, &issuer, &actor)
@@ -107,7 +108,7 @@ fn main() -> Result<(), String> {
         "deactivate" => {
             store
                 .client()
-                .deactivate_user(&subject, &actor)
+                .deactivate_user(&subject, &issuer, &actor)
                 .map_err(|err| err.to_string())?;
             println!("deactivated {subject}");
         }

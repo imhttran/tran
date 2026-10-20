@@ -4,6 +4,11 @@
 //! `role_assignments` row and the `audit_events` row together. There is no
 //! other code path that creates a role assignment.
 //!
+//! Identity is immutable on the pair `(issuer, subject)`. Two accounts with the
+//! same subject string under different issuers are distinct users. Every
+//! state-changing operation resolves the user by `(issuer, subject)`; there is
+//! no subject-only state-changing path.
+//!
 //! The initial-admin bootstrap is an explicit, one-time, audited operation
 //! exposed through [`IdentityStore::bootstrap_initial_admin`] and the CLI in
 //! `src/bin/admin.rs`. It is not reachable from any HTTP route and is not a
@@ -48,7 +53,7 @@ pub mod identity_client {
 
     /// Transaction-capable identity client.
     pub trait Client {
-        /// Reads a user by subject and issuer.
+        /// Reads a user by the immutable (issuer, subject) pair.
         fn user_by_subject(
             &self,
             subject: &str,
@@ -62,9 +67,13 @@ pub mod identity_client {
         fn effective_grants(&self, user_id: i64) -> Result<Vec<String>, IdentityStoreError>;
 
         /// Single transactional role change with an audit row.
+        ///
+        /// The user is resolved by immutable (issuer, subject). There is no
+        /// subject-only role change path.
         fn change_role(
             &mut self,
             subject: &str,
+            issuer: &str,
             role: Role,
             actor: &str,
             grant: bool,
@@ -117,20 +126,22 @@ where
     pub fn grant_role(
         &mut self,
         subject: &str,
+        issuer: &str,
         role: Role,
         actor: &str,
     ) -> Result<(), IdentityStoreError> {
-        self.client.change_role(subject, role, actor, true)
+        self.client.change_role(subject, issuer, role, actor, true)
     }
 
     /// Revokes a role and writes the audit event in the same transaction.
     pub fn revoke_role(
         &mut self,
         subject: &str,
+        issuer: &str,
         role: Role,
         actor: &str,
     ) -> Result<(), IdentityStoreError> {
-        self.client.change_role(subject, role, actor, false)
+        self.client.change_role(subject, issuer, role, actor, false)
     }
 
     /// Creates the first user and admin role assignment, audited, once.
@@ -204,6 +215,7 @@ mod tests {
         fn change_role(
             &mut self,
             subject: &str,
+            issuer: &str,
             role: Role,
             actor: &str,
             grant: bool,
@@ -211,7 +223,7 @@ mod tests {
             let Some(user) = self
                 .users
                 .iter()
-                .find(|user| user.subject == subject)
+                .find(|user| user.subject == subject && user.issuer == issuer)
                 .cloned()
             else {
                 return Err(IdentityStoreError::UnknownUser(subject.to_string()));
@@ -281,7 +293,7 @@ mod tests {
     fn grant_role_records_audit_event() {
         let mut store = store();
         store
-            .grant_role("subject-1", Role::Editor, "admin-1")
+            .grant_role("subject-1", "https://issuer", Role::Editor, "admin-1")
             .unwrap();
         let user = store
             .user_by_subject("subject-1", "https://issuer")
@@ -297,7 +309,7 @@ mod tests {
         let mut store = store();
         store.client.fail_after_assignment = true;
         assert!(store
-            .grant_role("subject-1", Role::Admin, "admin-1")
+            .grant_role("subject-1", "https://issuer", Role::Admin, "admin-1")
             .is_err());
         let user = store
             .user_by_subject("subject-1", "https://issuer")
@@ -331,9 +343,28 @@ mod tests {
     fn unknown_user_cannot_receive_a_role() {
         let mut store = store();
         assert!(matches!(
-            store.grant_role("nobody", Role::Viewer, "admin-1"),
+            store.grant_role("nobody", "https://issuer", Role::Viewer, "admin-1"),
             Err(IdentityStoreError::UnknownUser(_))
         ));
         assert!(store.client.audit.is_empty());
+    }
+
+    #[test]
+    fn same_subject_under_another_issuer_is_a_distinct_account() {
+        let mut store = store();
+        store
+            .grant_role("subject-1", "https://issuer", Role::Editor, "admin-1")
+            .unwrap();
+        // Same subject string, different issuer: no such user, no role touched.
+        assert!(matches!(
+            store.grant_role("subject-1", "https://other", Role::Admin, "admin-1"),
+            Err(IdentityStoreError::UnknownUser(_))
+        ));
+        let user = store
+            .user_by_subject("subject-1", "https://issuer")
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.effective_roles(user.id).unwrap(), vec![Role::Editor]);
+        assert_eq!(store.client.audit.len(), 1);
     }
 }

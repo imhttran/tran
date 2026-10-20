@@ -6,6 +6,12 @@
 //! statement fails the transaction is rolled back, so neither row survives.
 //!
 //! There is no other code path that creates a role assignment.
+//!
+//! Identity is immutable on the pair `(issuer, subject)` (see migration 008).
+//! Every state-changing lookup below filters on `subject = $1 AND issuer = $2`.
+//! There is no subject-only mutation path. A subject string that arrives from a
+//! different issuer resolves to no row and fails with
+//! [`IdentityStoreError::UnknownUser`]; it can never touch an existing account.
 
 use std::cell::RefCell;
 use std::ops::DerefMut;
@@ -45,9 +51,13 @@ impl PgIdentityClient {
     }
 
     /// Grants one corpus to an existing user and records the audit event.
+    ///
+    /// The user is resolved by immutable (issuer, subject). There is no
+    /// subject-only corpus path.
     pub fn grant_corpus(
         &mut self,
         subject: &str,
+        issuer: &str,
         corpus: &str,
         actor: &str,
     ) -> Result<(), IdentityStoreError> {
@@ -56,7 +66,10 @@ impl PgIdentityClient {
             .transaction()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let row = tx
-            .query_opt("SELECT id FROM users WHERE subject = $1", &[&subject])
+            .query_opt(
+                "SELECT id FROM users WHERE subject = $1 AND issuer = $2",
+                &[&subject, &issuer],
+            )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let Some(row) = row else {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
@@ -72,16 +85,20 @@ impl PgIdentityClient {
             &[&user_id, &corpus, &actor],
         )
         .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
-        audit(&mut tx, actor, "corpus.grant", subject)?;
+        audit(&mut tx, actor, "corpus.grant", subject, issuer)?;
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
     }
 
     /// Revokes one corpus grant and records the audit event.
+    ///
+    /// The user is resolved by immutable (issuer, subject). There is no
+    /// subject-only corpus path.
     pub fn revoke_corpus(
         &mut self,
         subject: &str,
+        issuer: &str,
         corpus: &str,
         actor: &str,
     ) -> Result<(), IdentityStoreError> {
@@ -90,7 +107,10 @@ impl PgIdentityClient {
             .transaction()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let row = tx
-            .query_opt("SELECT id FROM users WHERE subject = $1", &[&subject])
+            .query_opt(
+                "SELECT id FROM users WHERE subject = $1 AND issuer = $2",
+                &[&subject, &issuer],
+            )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let Some(row) = row else {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
@@ -102,13 +122,18 @@ impl PgIdentityClient {
             &[&user_id, &corpus],
         )
         .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
-        audit(&mut tx, actor, "corpus.revoke", subject)?;
+        audit(&mut tx, actor, "corpus.revoke", subject, issuer)?;
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
     }
 
     /// Provisions or reactivates an account by immutable issuer + subject.
+    ///
+    /// The row is inserted only when `(issuer, subject)` is absent. When it is
+    /// present, only that matching row is reactivated. The statement never
+    /// assigns `issuer`, so a provision call for a new issuer cannot rewrite or
+    /// reactivate an existing account.
     pub fn provision_user(
         &mut self,
         subject: &str,
@@ -127,23 +152,27 @@ impl PgIdentityClient {
         let user_id: i64 = tx
             .query_one(
                 "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
-                 ON CONFLICT (subject) DO UPDATE \
-                   SET issuer = EXCLUDED.issuer, deactivated_at = NULL, updated_at = now() \
+                 ON CONFLICT (issuer, subject) DO UPDATE \
+                   SET deactivated_at = NULL, updated_at = now() \
                  RETURNING id",
                 &[&subject, &issuer],
             )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?
             .get(0);
-        audit(&mut tx, actor, "user.provision", subject)?;
+        audit(&mut tx, actor, "user.provision", subject, issuer)?;
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(user_id)
     }
 
     /// Deactivates an account without deleting its audit history.
+    ///
+    /// The user is resolved by immutable (issuer, subject), so deactivating one
+    /// identity leaves any other account with the same subject string active.
     pub fn deactivate_user(
         &mut self,
         subject: &str,
+        issuer: &str,
         actor: &str,
     ) -> Result<(), IdentityStoreError> {
         let mut guard = self.client.borrow_mut();
@@ -152,8 +181,8 @@ impl PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let row = tx
             .query_opt(
-                "SELECT id FROM users WHERE subject = $1 FOR UPDATE",
-                &[&subject],
+                "SELECT id FROM users WHERE subject = $1 AND issuer = $2 FOR UPDATE",
+                &[&subject, &issuer],
             )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let Some(row) = row else {
@@ -178,7 +207,7 @@ impl PgIdentityClient {
             &[&user_id],
         )
         .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
-        audit(&mut tx, actor, "user.deactivate", subject)?;
+        audit(&mut tx, actor, "user.deactivate", subject, issuer)?;
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
@@ -210,16 +239,23 @@ fn ensure_not_last_admin(tx: &mut Transaction<'_>) -> Result<(), IdentityStoreEr
     Ok(())
 }
 
+/// Inserts the audit row inside the caller's transaction.
+///
+/// `audit_events` keys on `subject` only (a pre-existing schema limit). To keep
+/// two accounts with the same subject string apart, the issuer is recorded in
+/// the `detail` JSONB as `detail.issuer`. The audit row always commits with the
+/// change it describes.
 fn audit(
     tx: &mut Transaction<'_>,
     actor: &str,
     action: &str,
     subject: &str,
+    issuer: &str,
 ) -> Result<(), IdentityStoreError> {
     tx.execute(
         "INSERT INTO audit_events (actor, action, subject, detail) \
-         VALUES ($1, $2, $3, '{}'::jsonb)",
-        &[&actor, &action, &subject],
+         VALUES ($1, $2, $3, jsonb_build_object('issuer', $4::text))",
+        &[&actor, &action, &subject, &issuer],
     )
     .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
     Ok(())
@@ -281,6 +317,7 @@ impl IdentityClient for PgIdentityClient {
     fn change_role(
         &mut self,
         subject: &str,
+        issuer: &str,
         role: Role,
         actor: &str,
         grant: bool,
@@ -291,7 +328,10 @@ impl IdentityClient for PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
 
         let row = tx
-            .query_opt("SELECT id FROM users WHERE subject = $1", &[&subject])
+            .query_opt(
+                "SELECT id FROM users WHERE subject = $1 AND issuer = $2",
+                &[&subject, &issuer],
+            )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         let Some(row) = row else {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
@@ -322,7 +362,7 @@ impl IdentityClient for PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         }
 
-        audit(&mut tx, actor, action, subject)?;
+        audit(&mut tx, actor, action, subject, issuer)?;
 
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
@@ -353,7 +393,7 @@ impl IdentityClient for PgIdentityClient {
         let user_id: i64 = tx
             .query_one(
                 "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
-                 ON CONFLICT (subject) DO UPDATE SET updated_at = now() \
+                 ON CONFLICT (issuer, subject) DO UPDATE SET updated_at = now() \
                  RETURNING id",
                 &[&subject, &issuer],
             )
@@ -367,7 +407,7 @@ impl IdentityClient for PgIdentityClient {
         )
         .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
 
-        audit(&mut tx, actor, "bootstrap.initial_admin", subject)?;
+        audit(&mut tx, actor, "bootstrap.initial_admin", subject, issuer)?;
 
         tx.commit()
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
