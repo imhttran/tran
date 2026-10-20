@@ -12,6 +12,8 @@
 
 use thiserror::Error;
 
+use crate::onboarding::account_map::IdentityAccount;
+
 /// Profile fields the owner may propose in this slice.
 pub const ALLOWED_PROFILE_FIELDS: [&str; 3] = ["display_name", "preferred_name", "biography"];
 
@@ -155,6 +157,17 @@ pub struct ApprovedProfileValue {
     pub approved_revision_id: Option<i64>,
 }
 
+/// The owner-visible profile: approved values and owner-private open revisions
+/// are returned separately so callers cannot confuse pending content with the
+/// last approved value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerProfile {
+    pub person_key: String,
+    pub display_name: String,
+    pub approved: Vec<ApprovedProfileValue>,
+    pub pending: Vec<ProfileRevision>,
+}
+
 /// Errors raised by profile revision operations.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RevisionError {
@@ -164,6 +177,8 @@ pub enum RevisionError {
     UnknownRevision,
     #[error("an open draft or pending revision already exists for this field")]
     OpenRevisionExists,
+    #[error("the authenticated account has no reviewed person link")]
+    Unlinked,
     #[error("only the revision owner may modify or submit it")]
     NotOwner,
     #[error("a submitter cannot review their own revision")]
@@ -370,10 +385,20 @@ pub fn revision_by_id(
         .ok_or(RevisionError::UnknownRevision)
 }
 
-/// Creates an owner-private draft. The prior approved value is captured so a
-/// later approval can detect a version conflict.
-pub fn create_draft(
-    client: &mut postgres::Client,
+fn owner_person_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    account: &IdentityAccount,
+) -> Result<i64, RevisionError> {
+    let row = tx.query_opt(
+        "SELECT person_id FROM onboarding_person_account_link \
+          WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
+        &[&account.account_id, &account.identity_fingerprint],
+    )?;
+    row.map(|row| row.get(0)).ok_or(RevisionError::Unlinked)
+}
+
+fn create_draft_in_tx(
+    tx: &mut postgres::Transaction<'_>,
     person_id: i64,
     actor: &str,
     field_key: &str,
@@ -384,8 +409,7 @@ pub fn create_draft(
     let field_key = clean_field(field_key)?;
     let value_text = clean_value(&field_key, value_text)?;
 
-    let mut tx = client.transaction()?;
-    lock_field(&mut tx, person_id, &field_key)?;
+    lock_field(tx, person_id, &field_key)?;
 
     let person_exists: bool = tx
         .query_one(
@@ -411,7 +435,7 @@ pub fn create_draft(
         return Err(RevisionError::OpenRevisionExists);
     }
 
-    let prior_value_text = current_approved_value(&mut tx, person_id, &field_key)?;
+    let prior_value_text = current_approved_value(tx, person_id, &field_key)?;
 
     // The revision number is allocated inside the same statement as the insert,
     // while the per-field advisory lock is held. Concurrent creates for the same
@@ -442,28 +466,71 @@ pub fn create_draft(
         .map_err(RevisionError::from)
         .and_then(row_to_revision)?;
     append_event(
-        &mut tx,
+        tx,
         &revision,
         RevisionStatus::Draft,
         &actor,
         Some("draft created"),
     )?;
+    Ok(revision)
+}
+
+/// Creates an owner-private draft. The prior approved value is captured so a
+/// later approval can detect a version conflict.
+pub fn create_draft(
+    client: &mut postgres::Client,
+    person_id: i64,
+    actor: &str,
+    field_key: &str,
+    value_text: &str,
+    visibility: ProfileVisibility,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let revision =
+        create_draft_in_tx(&mut tx, person_id, actor, field_key, value_text, visibility)?;
     tx.commit()?;
     Ok(revision)
 }
 
-/// Updates a draft's proposed value. Only the owner may edit, and only before
-/// submission. The revision number and immutable provenance are preserved.
-pub fn update_draft(
+/// Creates a draft only for the person linked to `account`. The link is
+/// rechecked and share-locked inside the same transaction as the write. The
+/// actor is the issuer-scoped identity fingerprint, never a bare subject.
+pub fn create_owned_draft(
     client: &mut postgres::Client,
+    account: &IdentityAccount,
+    field_key: &str,
+    value_text: &str,
+    visibility: ProfileVisibility,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let person_id = owner_person_in_tx(&mut tx, account)?;
+    let revision = create_draft_in_tx(
+        &mut tx,
+        person_id,
+        &account.identity_fingerprint,
+        field_key,
+        value_text,
+        visibility,
+    )?;
+    tx.commit()?;
+    Ok(revision)
+}
+
+fn update_draft_in_tx(
+    tx: &mut postgres::Transaction<'_>,
     revision_id: i64,
     actor: &str,
     value_text: &str,
     visibility: ProfileVisibility,
+    required_person: Option<i64>,
 ) -> Result<ProfileRevision, RevisionError> {
     let actor = clean_actor(actor)?;
-    let mut tx = client.transaction()?;
-    let revision = revision_by_id_in_tx(&mut tx, revision_id, true)?;
+    let revision = revision_by_id_in_tx(tx, revision_id, true)?;
+    if let Some(person_id) = required_person {
+        if revision.person_id != person_id {
+            return Err(RevisionError::NotOwner);
+        }
+    }
     if revision.changed_by != actor {
         return Err(RevisionError::NotOwner);
     }
@@ -471,7 +538,7 @@ pub fn update_draft(
         return Err(RevisionError::InvalidTransition);
     }
     let value_text = clean_value(&revision.field_key, value_text)?;
-    lock_field(&mut tx, revision.person_id, &revision.field_key)?;
+    lock_field(tx, revision.person_id, &revision.field_key)?;
 
     let sql = format!(
         "UPDATE onboarding_profile_revision \
@@ -485,25 +552,65 @@ pub fn update_draft(
         .transpose()?
         .ok_or(RevisionError::InvalidTransition)?;
     append_event(
-        &mut tx,
+        tx,
         &revision,
         RevisionStatus::Draft,
         &actor,
         Some("draft updated"),
     )?;
+    Ok(revision)
+}
+
+/// Updates a draft's proposed value. Only the owner may edit, and only before
+/// submission. The revision number and immutable provenance are preserved.
+pub fn update_draft(
+    client: &mut postgres::Client,
+    revision_id: i64,
+    actor: &str,
+    value_text: &str,
+    visibility: ProfileVisibility,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let revision = update_draft_in_tx(&mut tx, revision_id, actor, value_text, visibility, None)?;
     tx.commit()?;
     Ok(revision)
 }
 
-/// Submits an owner draft for independent review.
-pub fn submit_revision(
+/// Updates a draft only when it belongs to the person linked to `account`.
+pub fn update_owned_draft(
     client: &mut postgres::Client,
+    account: &IdentityAccount,
+    revision_id: i64,
+    value_text: &str,
+    visibility: ProfileVisibility,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let person_id = owner_person_in_tx(&mut tx, account)?;
+    let revision = update_draft_in_tx(
+        &mut tx,
+        revision_id,
+        &account.identity_fingerprint,
+        value_text,
+        visibility,
+        Some(person_id),
+    )?;
+    tx.commit()?;
+    Ok(revision)
+}
+
+fn submit_revision_in_tx(
+    tx: &mut postgres::Transaction<'_>,
     revision_id: i64,
     actor: &str,
+    required_person: Option<i64>,
 ) -> Result<ProfileRevision, RevisionError> {
     let actor = clean_actor(actor)?;
-    let mut tx = client.transaction()?;
-    let revision = revision_by_id_in_tx(&mut tx, revision_id, true)?;
+    let revision = revision_by_id_in_tx(tx, revision_id, true)?;
+    if let Some(person_id) = required_person {
+        if revision.person_id != person_id {
+            return Err(RevisionError::NotOwner);
+        }
+    }
     if revision.changed_by != actor {
         return Err(RevisionError::NotOwner);
     }
@@ -511,8 +618,8 @@ pub fn submit_revision(
         return Err(RevisionError::InvalidTransition);
     }
     clean_value(&revision.field_key, &revision.new_value_text)?;
-    lock_field(&mut tx, revision.person_id, &revision.field_key)?;
-    let current = current_approved_value(&mut tx, revision.person_id, &revision.field_key)?;
+    lock_field(tx, revision.person_id, &revision.field_key)?;
+    let current = current_approved_value(tx, revision.person_id, &revision.field_key)?;
     if !prior_matches(
         &current,
         revision.prior_value_text.as_deref(),
@@ -532,12 +639,35 @@ pub fn submit_revision(
         .map(row_to_revision)
         .transpose()?
         .ok_or(RevisionError::InvalidTransition)?;
-    append_event(
+    append_event(tx, &revision, RevisionStatus::PendingReview, &actor, None)?;
+    Ok(revision)
+}
+
+/// Submits an owner draft for independent review.
+pub fn submit_revision(
+    client: &mut postgres::Client,
+    revision_id: i64,
+    actor: &str,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let revision = submit_revision_in_tx(&mut tx, revision_id, actor, None)?;
+    tx.commit()?;
+    Ok(revision)
+}
+
+/// Submits a draft only when it belongs to the person linked to `account`.
+pub fn submit_owned_revision(
+    client: &mut postgres::Client,
+    account: &IdentityAccount,
+    revision_id: i64,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let person_id = owner_person_in_tx(&mut tx, account)?;
+    let revision = submit_revision_in_tx(
         &mut tx,
-        &revision,
-        RevisionStatus::PendingReview,
-        &actor,
-        None,
+        revision_id,
+        &account.identity_fingerprint,
+        Some(person_id),
     )?;
     tx.commit()?;
     Ok(revision)
@@ -559,6 +689,18 @@ pub fn review_revision(
         return Err(RevisionError::InvalidTransition);
     }
     if revision.changed_by == reviewer {
+        return Err(RevisionError::SelfReview);
+    }
+    let reviewer_owns_person: bool = tx
+        .query_one(
+            "SELECT EXISTS (\
+                SELECT 1 FROM onboarding_person_account_link \
+                 WHERE person_id = $1 AND identity_fingerprint = $2\
+             )",
+            &[&revision.person_id, &reviewer],
+        )?
+        .get(0);
+    if reviewer_owns_person {
         return Err(RevisionError::SelfReview);
     }
     let note = clean_note(note)?;
@@ -623,9 +765,8 @@ pub fn review_revision(
     Ok(revision)
 }
 
-/// Lists the owner's open drafts and pending submissions.
-pub fn list_open_revisions(
-    client: &mut postgres::Client,
+fn open_revisions_in_tx(
+    tx: &mut postgres::Transaction<'_>,
     person_id: i64,
 ) -> Result<Vec<ProfileRevision>, RevisionError> {
     let sql = format!(
@@ -633,10 +774,21 @@ pub fn list_open_revisions(
           WHERE person_id = $1 AND status IN ('draft', 'pending_review') \
           ORDER BY field_key, revision_number"
     );
-    let rows = client.query(&sql, &[&person_id])?;
+    let rows = tx.query(&sql, &[&person_id])?;
     rows.into_iter()
         .map(row_to_revision)
         .collect::<Result<Vec<_>, _>>()
+}
+
+/// Lists the owner's open drafts and pending submissions.
+pub fn list_open_revisions(
+    client: &mut postgres::Client,
+    person_id: i64,
+) -> Result<Vec<ProfileRevision>, RevisionError> {
+    let mut tx = client.transaction()?;
+    let rows = open_revisions_in_tx(&mut tx, person_id)?;
+    tx.commit()?;
+    Ok(rows)
 }
 
 /// Lists all revisions for one person, newest first. This is owner-private
@@ -660,14 +812,12 @@ pub fn list_revision_history(
         .collect::<Result<Vec<_>, _>>()
 }
 
-/// Reads the current approved values for the requested audience. Family
-/// responses never include owner-private values; the owner sees both.
-pub fn read_approved_values(
-    client: &mut postgres::Client,
+fn approved_values_in_tx(
+    tx: &mut postgres::Transaction<'_>,
     person_id: i64,
     audience: ProfileAudience,
 ) -> Result<Vec<ApprovedProfileValue>, RevisionError> {
-    let rows = client.query(
+    let rows = tx.query(
         "SELECT field_key, value_text, visibility, updated_by, updated_at::text, \
                 approved_revision_number, approved_revision_id \
            FROM onboarding_profile_value \
@@ -690,6 +840,56 @@ pub fn read_approved_values(
             })
         })
         .collect()
+}
+
+/// Reads the current approved values for the requested audience. Family
+/// responses never include owner-private values; the owner sees both.
+pub fn read_approved_values(
+    client: &mut postgres::Client,
+    person_id: i64,
+    audience: ProfileAudience,
+) -> Result<Vec<ApprovedProfileValue>, RevisionError> {
+    let mut tx = client.transaction()?;
+    let rows = approved_values_in_tx(&mut tx, person_id, audience)?;
+    tx.commit()?;
+    Ok(rows)
+}
+
+/// Reads the authenticated owner's profile in one transaction. The reviewed
+/// link row is share-locked before the data read, so a concurrent revoke or
+/// replacement cannot land between the ownership check and the approved or
+/// pending data. Approved values and owner-private pending revisions are
+/// returned separately.
+pub fn read_owner_profile(
+    client: &mut postgres::Client,
+    account: &IdentityAccount,
+) -> Result<Option<OwnerProfile>, RevisionError> {
+    let mut tx = client.transaction()?;
+    let Some(row) = tx.query_opt(
+        "SELECT person_id FROM onboarding_person_account_link \
+          WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
+        &[&account.account_id, &account.identity_fingerprint],
+    )?
+    else {
+        return Ok(None);
+    };
+    let person_id: i64 = row.get(0);
+    let Some(person) = tx.query_opt(
+        "SELECT person_key, display_name FROM person WHERE person_id = $1",
+        &[&person_id],
+    )?
+    else {
+        return Ok(None);
+    };
+    let approved = approved_values_in_tx(&mut tx, person_id, ProfileAudience::Owner)?;
+    let pending = open_revisions_in_tx(&mut tx, person_id)?;
+    tx.commit()?;
+    Ok(Some(OwnerProfile {
+        person_key: person.get(0),
+        display_name: person.get(1),
+        approved,
+        pending,
+    }))
 }
 
 /// Reports whether a revision is in a terminal state. Kept public so callers do
