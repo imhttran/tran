@@ -292,5 +292,39 @@ fn import_atomicity_provenance_hash_reopen_transitions_and_eligibility_inputs() 
     assert_eq!(decision.reason_code, ReasonCode::ContestedFirstBorn);
     assert!(decision.requires_succession_policy);
 
+    // Deceased first-born is loaded independently and also blocks succession.
+    let deceased_id: i64 = client
+        .query_one(
+            "INSERT INTO person (person_key, display_name)
+             VALUES ('eligibility-deceased', 'Eligibility Deceased')
+             RETURNING person_id",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    insert_verified(
+        &mut client,
+        deceased_id,
+        "branch_claim",
+        "branch",
+        "branch-3",
+    );
+    insert_verified(&mut client, deceased_id, "gender", "sex", "male");
+    insert_verified(&mut client, deceased_id, "birth_order", "order", "1");
+    insert_verified(&mut client, deceased_id, "vital_status", "living", "living");
+    insert_verified(
+        &mut client,
+        deceased_id,
+        "deceased_first_born",
+        "deceased",
+        "deceased",
+    );
+    let deceased_input = eligibility::load_input(&mut client, "eligibility-deceased", "branch-3")
+        .expect("load deceased eligibility input");
+    assert!(deceased_input.deceased_first_born.is_some());
+    let deceased_decision = eligibility::decide(&deceased_input);
+    assert_eq!(deceased_decision.reason_code, ReasonCode::DeceasedFirstBorn);
+    assert!(deceased_decision.requires_succession_policy);
+
     reset_schema(&mut client);
 }
