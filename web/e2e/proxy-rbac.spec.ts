@@ -96,15 +96,16 @@ test.describe("role enforcement through both paths", () => {
     // 200 or a backend 5xx is fine; RBAC must not reject a viewer on query.
     expect([200, 503]).toContain(query.status());
 
-    const admin = await request.get(`${WEB_URL}/api/account`, {
+    const account = await request.get(`${WEB_URL}/api/account`, {
       headers: { authorization: `Bearer ${VIEWER_TOKEN}` },
     });
-    expect(admin.status()).toBe(403);
+    expect(account.status()).toBe(200);
 
-    const direct = await request.get(`${API_URL}/api/account`, {
+    const roleChange = await request.post(`${API_URL}/api/admin/roles`, {
       headers: { authorization: `Bearer ${VIEWER_TOKEN}` },
+      data: { subject: "e2e-viewer", role: "admin", revoke: false },
     });
-    expect(direct.status()).toBe(403);
+    expect(roleChange.status()).toBe(403);
   });
 
   test("admin token reaches the admin account endpoint", async ({ request }) => {

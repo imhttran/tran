@@ -28,6 +28,9 @@ pub enum IdentityStoreError {
     /// The initial admin already exists.
     #[error("an initial admin already exists")]
     AlreadyBootstrapped,
+    /// Removing this role would leave no active administrator.
+    #[error("refusing to remove the last active administrator")]
+    LastAdmin,
 }
 
 /// A stored user row.

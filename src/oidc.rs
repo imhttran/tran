@@ -33,8 +33,9 @@ use crate::identity::VerifiedIdentity;
 
 /// The approved asymmetric JWKS algorithm set. Symmetric (`HS*`) and `none`
 /// algorithms are never accepted.
-pub const APPROVED_ALGORITHMS: &[&str] =
-    &["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256"];
+pub const APPROVED_ALGORITHMS: &[&str] = &[
+    "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256",
+];
 
 /// Errors returned by token verification.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -160,10 +161,7 @@ fn parse_jwk(key: &serde_json::Value) -> Result<Jwk, AuthError> {
             "symmetric JWK keys are not accepted for verification".into(),
         ));
     }
-    let alg = key
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    let alg = key.get("alg").and_then(|v| v.as_str()).map(str::to_string);
     match kty {
         "RSA" => {
             let modulus = decode_b64url("n", required_str(key, "n")?)?;
@@ -403,12 +401,9 @@ fn verify_signature(
             point.push(0x04);
             point.extend_from_slice(&key.x);
             point.extend_from_slice(&key.y);
-            signature::UnparsedPublicKey::new(
-                &signature::ECDSA_P256_SHA256_FIXED,
-                point.as_slice(),
-            )
-            .verify(signing_input, signature)
-            .map_err(|_| AuthError::BadSignature)
+            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, point.as_slice())
+                .verify(signing_input, signature)
+                .map_err(|_| AuthError::BadSignature)
         }
     }
 }
@@ -537,7 +532,6 @@ pub fn sign_rs256(
     claims: serde_json::Value,
 ) -> String {
     use ring::rand::SystemRandom;
-    use ring::signature::KeyPair;
     let header = serde_json::json!({"alg": "RS256", "kid": kid, "typ": "JWT"});
     let header_b64 = base64url_encode(&serde_json::to_vec(&header).unwrap_or_default());
     let claims_b64 = base64url_encode(&serde_json::to_vec(&claims).unwrap_or_default());

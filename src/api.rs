@@ -27,6 +27,9 @@ use crate::config::Config;
 use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
+use crate::genealogy::{
+    appointments, query as genealogy_query, resolve_genealogy_dsn, GenealogyError,
+};
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
@@ -139,6 +142,27 @@ impl AppState {
             .route(
                 "/api/admin/head-of-family/approvals",
                 post(approve_head_of_family),
+            )
+            .route("/api/genealogy/records", get(genealogy_records))
+            .route(
+                "/api/genealogy/head-of-family",
+                get(genealogy_head_of_family),
+            )
+            .route("/api/genealogy/person/{key}", get(genealogy_person))
+            .route(
+                "/api/genealogy/relationship/{from}/{to}",
+                get(genealogy_relationship),
+            )
+            .route(
+                "/api/genealogy/nominations",
+                get(list_nominations).post(nominate_head_of_family),
+            )
+            .route("/api/genealogy/nominations/{id}", post(decide_nomination))
+            .route("/api/genealogy/appointments/{id}", post(end_head_of_family))
+            .route("/api/admin/users", post(provision_user))
+            .route(
+                "/api/admin/users/{subject}/deactivate",
+                post(deactivate_user),
             )
             // Multipart framing adds a small overhead; the file payload itself
             // is checked against MAX_UPLOAD_BYTES in the handler.
@@ -334,7 +358,11 @@ fn authorize(
 fn operation_requires_corpus(operation: Operation) -> bool {
     matches!(
         operation,
-        Operation::Ingest | Operation::Query | Operation::DocumentStatus
+        Operation::Ingest
+            | Operation::Query
+            | Operation::DocumentStatus
+            | Operation::GenealogyRead
+            | Operation::GenealogyNominate
     )
 }
 
@@ -466,6 +494,11 @@ fn identity_store_error(err: IdentityStoreError) -> Response {
             StatusCode::BAD_REQUEST,
             "invalid_role",
             "role must be viewer, editor, or admin",
+        ),
+        IdentityStoreError::LastAdmin => error(
+            StatusCode::CONFLICT,
+            "last_admin",
+            "refusing to remove the last active administrator",
         ),
         _ => error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -942,6 +975,523 @@ async fn query(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_failed",
                 "the query task failed",
+            )
+        }
+    }
+}
+
+// --- genealogy reads and Head of Family -----------------------------------
+
+fn open_genealogy(config: &Config) -> Result<postgres::Client, String> {
+    let dsn = resolve_genealogy_dsn(config).map_err(|err| err.to_string())?;
+    postgres::Client::connect(&dsn, postgres::NoTls).map_err(|err| err.to_string())
+}
+
+fn genealogy_error(err: GenealogyError) -> Response {
+    eprintln!("api: genealogy operation failed: {err}");
+    match err {
+        GenealogyError::Domain(message) => {
+            error(StatusCode::CONFLICT, "genealogy_rejected", &message)
+        }
+        GenealogyError::Guard(_) | GenealogyError::Config(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "genealogy_unavailable",
+            "the genealogy store is not configured for this operation",
+        ),
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "genealogy_unavailable",
+            "the genealogy store is unavailable",
+        ),
+    }
+}
+
+fn evidence_json(citations: &[genealogy_query::Citation]) -> Vec<serde_json::Value> {
+    citations
+        .iter()
+        .map(|citation| {
+            serde_json::json!({
+                "evidence_id": format!("{}#{}", citation.document_ref, citation.page),
+                "citation": format!("{} p.{}", citation.document_ref, citation.page),
+            })
+        })
+        .collect()
+}
+
+async fn genealogy_records(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        genealogy_query::list_records(&mut client, 100, 0).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(rows)) => {
+            let records: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "record_id": row.person_key,
+                        "person_label": row.display_name,
+                        "relationship": row.relationship,
+                        "evidence": evidence_json(&row.citations),
+                        "evidence_status": row.evidence_status,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "records": records })).into_response()
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: genealogy records failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: genealogy records task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
+async fn genealogy_head_of_family(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        let appointments =
+            appointments::list_active_appointments(&mut client).map_err(|err| err.to_string())?;
+        let mut conclusions = Vec::with_capacity(appointments.len());
+        for appointment in &appointments {
+            let citations = appointments::citations_for_assertions(
+                &mut client,
+                &appointment.evidence_assertion_ids,
+            )
+            .map_err(|err| err.to_string())?;
+            conclusions.push(serde_json::json!({
+                "conclusion": "Head of Family",
+                "record_id": appointment.person_key,
+                "appointment_id": appointment.appointment_id,
+                "head_label": appointment.display_name,
+                "evidence": evidence_json(&citations),
+                "evidence_status": "verified",
+            }));
+        }
+        Ok::<_, String>(conclusions)
+    })
+    .await;
+    match result {
+        Ok(Ok(conclusions)) => Json(serde_json::json!({
+            "catalog": "available",
+            "conclusions": conclusions,
+        }))
+        .into_response(),
+        Ok(Err(message)) => {
+            eprintln!("api: head of family read failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: head of family task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
+async fn genealogy_person(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        genealogy_query::lookup_person(&mut client, &key).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(person))) => {
+            let assertions: Vec<serde_json::Value> = person
+                .assertions
+                .iter()
+                .map(|assertion| {
+                    serde_json::json!({
+                        "assertion_id": assertion.assertion_id,
+                        "kind": assertion.kind,
+                        "key": assertion.key,
+                        "value_text": assertion.value_text,
+                        "review_status": assertion.review_status,
+                        "evidence": evidence_json(&assertion.citations),
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "record_id": person.person_key,
+                "person_label": person.display_name,
+                "assertions": assertions,
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => error(
+            StatusCode::NOT_FOUND,
+            "genealogy_not_found",
+            "no authorized record exists",
+        ),
+        Ok(Err(message)) => {
+            eprintln!("api: genealogy person failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: genealogy person task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
+async fn genealogy_relationship(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((from, to)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        genealogy_query::lookup_relationship(&mut client, &from, &to).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(relationship)) => Json(serde_json::json!({
+            "record_id": relationship.to_person_key,
+            "person_label": relationship.from_person_key,
+            "relationship": relationship.relationship_kind,
+            "evidence_status": relationship.status,
+            "evidence": evidence_json(&relationship.citations),
+        }))
+        .into_response(),
+        Ok(Err(message)) => {
+            eprintln!("api: genealogy relationship failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: genealogy relationship task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
+async fn list_nominations(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        appointments::list_pending_nominations(&mut client).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(rows)) => {
+            let nominations: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "nomination_id": row.nomination_id,
+                        "record_id": row.person_key,
+                        "status": row.status,
+                        "created_at": row.created_at,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "nominations": nominations })).into_response()
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: nomination list failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: nomination list task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NominationBody {
+    #[serde(alias = "person_key")]
+    record_id: String,
+}
+
+async fn nominate_head_of_family(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NominationBody>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::GenealogyNominate) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let branch = match state.config.hof_third_branch_key() {
+        Ok(branch) => branch.to_string(),
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "third_branch_not_configured",
+                "the verified third branch is not configured",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let person_key = body.record_id.trim().to_string();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(GenealogyError::Guard)?;
+        appointments::nominate(&mut client, &person_key, &branch, &actor)
+    })
+    .await;
+    match result {
+        Ok(Ok(nomination_id)) => Json(serde_json::json!({
+            "ok": true,
+            "nomination_id": nomination_id,
+            "status": "pending",
+        }))
+        .into_response(),
+        Ok(Err(err)) => genealogy_error(err),
+        Err(err) => {
+            eprintln!("api: nomination task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "nomination_failed",
+                "the nomination task failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NominationDecision {
+    #[serde(default)]
+    approve: Option<bool>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn decide_nomination(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<NominationDecision>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::HeadOfFamilyApproval) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let branch = match state.config.hof_third_branch_key() {
+        Ok(branch) => branch.to_string(),
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "third_branch_not_configured",
+                "the verified third branch is not configured",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let approve = body.approve.unwrap_or(true);
+    let note = body.note;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(GenealogyError::Guard)?;
+        if approve {
+            appointments::approve(&mut client, id, &branch, &actor)
+                .map(|appointment| (true, appointment.appointment_id))
+        } else {
+            appointments::reject(&mut client, id, &actor, note.as_deref()).map(|_| (false, 0))
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok((true, appointment_id))) => Json(serde_json::json!({
+            "ok": true,
+            "appointment_id": appointment_id,
+            "status": "approved",
+        }))
+        .into_response(),
+        Ok(Ok((false, _))) => Json(serde_json::json!({
+            "ok": true,
+            "status": "rejected",
+        }))
+        .into_response(),
+        Ok(Err(err)) => genealogy_error(err),
+        Err(err) => {
+            eprintln!("api: nomination decision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "nomination_failed",
+                "the nomination decision task failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AppointmentEndBody {
+    reason: String,
+    #[serde(default)]
+    suspend: Option<bool>,
+}
+
+async fn end_head_of_family(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<AppointmentEndBody>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::HeadOfFamilyApproval) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let suspend = body.suspend.unwrap_or(false);
+    let reason = body.reason;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(GenealogyError::Guard)?;
+        appointments::end_appointment(&mut client, id, &actor, &reason, suspend)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({
+            "ok": true,
+            "status": if suspend { "suspended" } else { "revoked" },
+        }))
+        .into_response(),
+        Ok(Err(err)) => genealogy_error(err),
+        Err(err) => {
+            eprintln!("api: appointment end task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "appointment_failed",
+                "the appointment task failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ProvisionUserBody {
+    subject: String,
+    issuer: String,
+}
+
+async fn provision_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProvisionUserBody>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::RoleChange) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let subject = body.subject.trim().to_string();
+    let issuer = body.issuer.trim().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let mut store = IdentityStore::new(client);
+        store.client().provision_user(&subject, &issuer, &actor)
+    })
+    .await;
+    match result {
+        Ok(Ok(user_id)) => {
+            Json(serde_json::json!({ "ok": true, "user_id": user_id })).into_response()
+        }
+        Ok(Err(err)) => identity_store_error(err),
+        Err(err) => {
+            eprintln!("api: provision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provision_failed",
+                "the provisioning task failed",
+            )
+        }
+    }
+}
+
+async fn deactivate_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(subject): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::RoleChange) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let mut store = IdentityStore::new(client);
+        store.client().deactivate_user(&subject, &actor)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true, "deactivated": true })).into_response(),
+        Ok(Err(err)) => identity_store_error(err),
+        Err(err) => {
+            eprintln!("api: deactivate task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "deactivate_failed",
+                "the deactivation task failed",
             )
         }
     }

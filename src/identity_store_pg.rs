@@ -100,6 +100,69 @@ impl PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
     }
+
+    /// Provisions or reactivates an account by immutable issuer + subject.
+    pub fn provision_user(
+        &mut self,
+        subject: &str,
+        issuer: &str,
+        actor: &str,
+    ) -> Result<i64, IdentityStoreError> {
+        if subject.trim().is_empty() || issuer.trim().is_empty() {
+            return Err(IdentityStoreError::Database(
+                "subject and issuer are required".into(),
+            ));
+        }
+        let mut guard = self.client.borrow_mut();
+        let mut tx = guard
+            .transaction()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let user_id: i64 = tx
+            .query_one(
+                "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
+                 ON CONFLICT (subject) DO UPDATE \
+                   SET issuer = EXCLUDED.issuer, deactivated_at = NULL, updated_at = now() \
+                 RETURNING id",
+                &[&subject, &issuer],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?
+            .get(0);
+        audit(&mut tx, actor, "user.provision", subject)?;
+        tx.commit()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(user_id)
+    }
+
+    /// Deactivates an account without deleting its audit history.
+    pub fn deactivate_user(
+        &mut self,
+        subject: &str,
+        actor: &str,
+    ) -> Result<(), IdentityStoreError> {
+        let mut guard = self.client.borrow_mut();
+        let mut tx = guard
+            .transaction()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let row = tx
+            .query_opt(
+                "SELECT id FROM users WHERE subject = $1 FOR UPDATE",
+                &[&subject],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let Some(row) = row else {
+            return Err(IdentityStoreError::UnknownUser(subject.to_string()));
+        };
+        let user_id: i64 = row.get(0);
+        tx.execute(
+            "UPDATE users SET deactivated_at = now(), updated_at = now() WHERE id = $1",
+            &[&user_id],
+        )
+        .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        audit(&mut tx, actor, "user.deactivate", subject)?;
+        tx.commit()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(())
+    }
 }
 
 fn audit(
@@ -127,7 +190,7 @@ impl IdentityClient for PgIdentityClient {
             .client
             .borrow_mut()
             .query_opt(
-                "SELECT id, subject, issuer FROM users WHERE subject = $1 AND issuer = $2",
+                "SELECT id, subject, issuer FROM users WHERE subject = $1 AND issuer = $2 AND deactivated_at IS NULL",
                 &[&subject, &issuer],
             )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
@@ -143,7 +206,8 @@ impl IdentityClient for PgIdentityClient {
             .client
             .borrow_mut()
             .query(
-                "SELECT role FROM role_assignments WHERE user_id = $1 AND revoked_at IS NULL",
+                "SELECT r.role FROM role_assignments r JOIN users u ON u.id = r.user_id \
+                  WHERE r.user_id = $1 AND r.revoked_at IS NULL AND u.deactivated_at IS NULL",
                 &[&user_id],
             )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
@@ -161,7 +225,8 @@ impl IdentityClient for PgIdentityClient {
             .client
             .borrow_mut()
             .query(
-                "SELECT corpus FROM corpus_grants WHERE user_id = $1 AND revoked_at IS NULL",
+                "SELECT g.corpus FROM corpus_grants g JOIN users u ON u.id = g.user_id \
+                  WHERE g.user_id = $1 AND g.revoked_at IS NULL AND u.deactivated_at IS NULL",
                 &[&user_id],
             )
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
@@ -189,6 +254,26 @@ impl IdentityClient for PgIdentityClient {
         let user_id: i64 = row.get(0);
 
         let action = if grant { "role.grant" } else { "role.revoke" };
+        if !grant && role == Role::Admin {
+            // Serialize with other admin changes so two concurrent revocations
+            // cannot both observe two admins and leave zero.
+            tx.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('role:admin')::bigint)",
+                &[],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+            let active: i64 = tx
+                .query_one(
+                    "SELECT count(*) FROM role_assignments \
+                      WHERE role = 'admin' AND revoked_at IS NULL",
+                    &[],
+                )
+                .map_err(|err| IdentityStoreError::Database(err.to_string()))?
+                .get(0);
+            if active <= 1 {
+                return Err(IdentityStoreError::LastAdmin);
+            }
+        }
         if grant {
             tx.execute(
                 "INSERT INTO role_assignments (user_id, role, granted_by) \

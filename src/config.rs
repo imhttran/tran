@@ -54,6 +54,9 @@ pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 /// default, so a genealogy command can never silently target the RAG database.
 pub const GENEALOGY_DATABASE_URL_VAR: &str = "GENEALOGY_DATABASE_URL";
 
+/// Name of the verified third-branch key used by Head of Family writes.
+pub const HOF_THIRD_BRANCH_KEY_VAR: &str = "HOF_THIRD_BRANCH_KEY";
+
 /// Error returned by [`Config::load`]. The message names the offending variable
 /// so an invalid setting is never silently replaced with a default.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -73,6 +76,9 @@ pub struct Config {
     /// Explicit genealogy database DSN. `None` when the variable is unset or
     /// blank; there is deliberately no fallback to the RAG `database_url`.
     pub genealogy_database_url: Option<String>,
+    /// Explicit verified third-branch key. `None` when unset; Head of Family
+    /// writes fail closed rather than guessing a branch.
+    pub hof_third_branch_key: Option<String>,
     pub question: String,
     pub embed_provider: String,
     pub gen_provider: String,
@@ -148,6 +154,9 @@ impl Config {
         // RAG default. A caller that needs the genealogy database must treat
         // `None` as a configuration error naming the variable.
         let genealogy_database_url = get(GENEALOGY_DATABASE_URL_VAR);
+        let hof_third_branch_key = get(HOF_THIRD_BRANCH_KEY_VAR)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
@@ -157,6 +166,7 @@ impl Config {
             chat_model: get("OLLAMA_CHAT_MODEL").unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
             database_url: get("DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string()),
             genealogy_database_url,
+            hof_third_branch_key,
             question: get("QUESTION").unwrap_or_default(),
             embed_provider,
             gen_provider,
@@ -231,6 +241,19 @@ impl Config {
             Some(dsn) => Ok(dsn),
             None => Err(ConfigError::Invalid(format!(
                 "{GENEALOGY_DATABASE_URL_VAR} must be set to an explicit genealogy database DSN"
+            ))),
+        }
+    }
+
+    /// Returns the explicitly configured verified third-branch key.
+    ///
+    /// Head of Family writes fail closed when this is unset; there is no
+    /// generation-3 or name-based fallback.
+    pub fn hof_third_branch_key(&self) -> Result<&str, ConfigError> {
+        match self.hof_third_branch_key.as_deref() {
+            Some(value) => Ok(value),
+            None => Err(ConfigError::Invalid(format!(
+                "{HOF_THIRD_BRANCH_KEY_VAR} must be set to the verified third-branch key"
             ))),
         }
     }
