@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::answer::service::{Answer, AnswerService, RetrievalSource};
 use crate::config::Config;
+use crate::corpus::Corpus;
 use crate::document::Chunk;
 use crate::embedding::{Embedder, OllamaEmbedder};
 use crate::generation::OllamaGenerator;
@@ -105,6 +106,8 @@ impl QueryService {
         store: Arc<PgStore>,
         corpus: impl Into<String>,
     ) -> Result<Self, String> {
+        let corpus: String = corpus.into();
+        let corpus = Corpus::new(&corpus).map_err(|err| err.to_string())?;
         let embed_transport = Arc::new(HttpTransport::new(config.request_timeout));
         let embed_client = OllamaClient::new(
             config.ollama_url.clone(),
@@ -131,7 +134,7 @@ impl QueryService {
             store,
             embedder,
             generator,
-            corpus: corpus.into(),
+            corpus: corpus.as_str().to_string(),
             min_similarity: config.min_similarity,
             final_k: config.final_k.max(1) as usize,
             candidate_k: config.top_k.max(1) as usize,

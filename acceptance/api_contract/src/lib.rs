@@ -14,6 +14,11 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
 use rag_foundation::storage::EMBEDDING_DIM;
 
 /// Repository root, two levels above this crate's manifest directory.
@@ -112,6 +117,153 @@ pub fn free_port() -> u16 {
     listener.local_addr().expect("read the port").port()
 }
 
+/// A local HS256 OIDC issuer for the acceptance test. The API verifies the
+/// signed token against this JWKS, so the test exercises the real auth path
+/// without an external identity provider and without an auth-bypass switch.
+pub struct TestAuth {
+    issuer: String,
+    audience: String,
+    token: String,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl TestAuth {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the test JWKS server");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking JWKS listener");
+        let addr = listener.local_addr().expect("test JWKS address");
+        let issuer = format!("http://{addr}");
+        let secret = b"api-contract-test-secret";
+        let jwks = format!(
+            r#"{{"keys":[{{"kid":"test","alg":"HS256","k":"{}"}}]}}"#,
+            String::from_utf8_lossy(secret)
+        );
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        let handle = thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buffer = [0u8; 4096];
+                        let _ = stream.read(&mut buffer);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            jwks.len(),
+                            jwks
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let audience = "api-contract".to_string();
+        let token = mint_hs256(&issuer, &audience, "api-contract-admin", secret);
+        Self {
+            issuer,
+            audience,
+            token,
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    pub fn audience(&self) -> &str {
+        &self.audience
+    }
+
+    pub fn jwks_url(&self) -> String {
+        format!("{}/jwks", self.issuer)
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for TestAuth {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn mint_hs256(issuer: &str, audience: &str, subject: &str, secret: &[u8]) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    let header = serde_json::json!({"alg": "HS256", "kid": "test", "typ": "JWT"});
+    let payload = serde_json::json!({
+        "iss": issuer,
+        "aud": audience,
+        "sub": subject,
+        "iat": now,
+        "exp": now + 3600,
+    });
+    let signing = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(header.to_string().as_bytes()),
+        URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes())
+    );
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key");
+    mac.update(signing.as_bytes());
+    let signature = mac.finalize().into_bytes();
+    format!("{}.{}", signing, URL_SAFE_NO_PAD.encode(signature))
+}
+
+/// Seeds the accepted admin identity and corpus grant used by the contract run.
+/// The API loads roles from the database; the token only proves the subject.
+pub fn seed_api_contract_admin(dsn: &str, issuer: &str, subject: &str, corpus: &str) {
+    let mut client =
+        postgres::Client::connect(dsn, postgres::NoTls).expect("connect to seed identity");
+    client
+        .execute(
+            "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
+             ON CONFLICT (subject) DO UPDATE SET issuer = EXCLUDED.issuer",
+            &[&subject, &issuer],
+        )
+        .expect("seed user");
+    let user_id: i64 = client
+        .query_one("SELECT id FROM users WHERE subject = $1", &[&subject])
+        .expect("read seeded user")
+        .get(0);
+    client
+        .execute(
+            "DELETE FROM role_assignments WHERE user_id = $1",
+            &[&user_id],
+        )
+        .expect("clear role assignments");
+    client
+        .execute(
+            "INSERT INTO role_assignments (user_id, role, granted_by) VALUES ($1, 'admin', 'api-contract')",
+            &[&user_id],
+        )
+        .expect("seed admin role");
+    client
+        .execute("DELETE FROM corpus_grants WHERE user_id = $1", &[&user_id])
+        .expect("clear corpus grants");
+    client
+        .execute(
+            "INSERT INTO corpus_grants (user_id, corpus, granted_by) VALUES ($1, $2, 'api-contract')",
+            &[&user_id, &corpus],
+        )
+        .expect("seed corpus grant");
+}
+
 /// A running API process. Killed on drop.
 pub struct ApiProcess {
     child: Child,
@@ -120,7 +272,7 @@ pub struct ApiProcess {
 
 impl ApiProcess {
     /// Starts the API with the test configuration and waits for health.
-    pub fn start(dsn: &str, corpus: &str, ollama_url: &str) -> Self {
+    pub fn start(dsn: &str, corpus: &str, ollama_url: &str, auth: &TestAuth) -> Self {
         let binary = build_api();
         let port = free_port();
         let child = Command::new(&binary)
@@ -138,6 +290,12 @@ impl ApiProcess {
             .env("FINAL_K", "10")
             .env("EXPAND_LIMIT", "20")
             .env("CORPUS_LANGUAGE", "english")
+            .env("AUTH_ISSUER", auth.issuer())
+            .env("AUTH_AUDIENCE", auth.audience())
+            .env("JWKS_URL", auth.jwks_url())
+            .env("AUTH_RATE_LIMIT", "10000")
+            .env("AUTH_CLOCK_SKEW_SECS", "60")
+            .env("JWKS_CACHE_TTL_SECS", "60")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()

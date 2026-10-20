@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use rag_foundation::config::Config;
+use rag_foundation::corpus::Corpus;
 use rag_foundation::query_service::QueryService;
 use rag_foundation::storage_pg::PgStore;
 
@@ -36,6 +37,7 @@ fn run() -> Result<ExitCode, String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_CORPUS.to_string());
+    let corpus = Corpus::new(corpus).map_err(|err| format!("invalid RAG_CORPUS: {err}"))?;
 
     let store = Arc::new(
         PgStore::connect(&config.database_url)

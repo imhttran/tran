@@ -10,26 +10,37 @@
 //! embedding ([`embedding`]) and generation ([`generation`]) request ports, and
 //! provider registration/resolution ([`provider`]), and the evaluation-only
 //! bilingual experiment harness ([`bilingual`]).
+//!
+//! Phase 2 adds the identity layer: [`identity`] (verified identity, roles, and
+//! the central permission policy), [`oidc`] (token verification with a cached
+//! JWKS), [`identity_store`] (transactional, audited role changes), and
+//! [`ratelimit`].
 
 pub mod answer;
 pub mod api;
 pub mod bilingual;
 pub mod chunker;
 pub mod config;
+pub mod corpus;
 pub mod document;
 pub mod embedding;
 pub mod evaluation;
 pub mod fingerprint;
 pub mod genealogy;
 pub mod generation;
+pub mod identity;
+pub mod identity_store;
+pub mod identity_store_pg;
 pub mod ingest;
 pub mod inventory;
 pub mod loader;
+pub mod oidc;
 pub mod ollama;
 pub mod pdf_assessment;
 pub mod pipeline;
 pub mod provider;
 pub mod query_service;
+pub mod ratelimit;
 pub mod retrieval;
 pub mod retrieval_pg;
 pub mod section;

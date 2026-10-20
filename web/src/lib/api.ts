@@ -64,10 +64,29 @@ export class ApiRequestError extends Error {
   }
 }
 
+function csrfToken(): string | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const entry = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("rag_csrf="));
+  return entry ? decodeURIComponent(entry.slice("rag_csrf=".length)) : null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method || "GET").toUpperCase();
+  const headers = new Headers(init?.headers);
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken();
+    if (token) {
+      headers.set("x-csrf-token", token);
+    }
+  }
   let response: Response;
   try {
-    response = await fetch(path, init);
+    response = await fetch(path, { ...init, headers });
   } catch (error) {
     throw new ApiRequestError(
       0,

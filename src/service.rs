@@ -73,6 +73,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::corpus::Corpus;
     use crate::fingerprint::ChunkerConfig;
     use crate::ingest::IngestRejection;
     use crate::pipeline::RecordingEmbedder;
@@ -88,6 +89,7 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            _corpus: &Corpus,
             _content_hash: &str,
             _source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {

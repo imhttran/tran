@@ -29,6 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use rag_foundation::config::Config;
+use rag_foundation::corpus::Corpus;
 use rag_foundation::embedding::OllamaEmbedder;
 use rag_foundation::fingerprint::{fingerprint, ChunkerConfig};
 use rag_foundation::ingest::IngestRejection;
@@ -66,6 +67,7 @@ fn run() -> Result<ExitCode, String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_CORPUS.to_string());
+    let corpus = Corpus::new(corpus).map_err(|err| format!("invalid RAG_CORPUS: {err}"))?;
 
     // Real embedding adapter: `reqwest`-backed transport, configured URL,
     // model, dimension, and request timeout.
