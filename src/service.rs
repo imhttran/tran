@@ -88,6 +88,7 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            _corpus: &str,
             _content_hash: &str,
             _source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {

@@ -224,9 +224,10 @@ where
         content_hash: &str,
         chunks: Vec<Chunk>,
     ) -> Result<IngestOutcome, PipelineError> {
-        let decision = unchanged_source(self.reader, source, content_hash).map_err(|_| {
-            PipelineError::Fingerprint(format!("unchanged-source read failed for {source}"))
-        })?;
+        let decision = unchanged_source(self.reader, &self.config.corpus, source, content_hash)
+            .map_err(|_| {
+                PipelineError::Fingerprint(format!("unchanged-source read failed for {source}"))
+            })?;
         if let UnchangedSource::Unchanged { rows } = decision {
             return Ok(IngestOutcome::Unchanged {
                 fingerprint: content_hash.to_string(),
@@ -257,7 +258,8 @@ where
 
         // Fail before the transaction starts when an embedding width is wrong.
         validate_all_dims(&stored).map_err(PipelineError::Replace)?;
-        self.replacer.replace_source(source, &stored)?;
+        self.replacer
+            .replace_source(&self.config.corpus, source, &stored)?;
         Ok(IngestOutcome::Replaced {
             fingerprint: content_hash.to_string(),
             chunks: stored.len(),
@@ -356,6 +358,7 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            _corpus: &str,
             _content_hash: &str,
             _source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {
@@ -375,11 +378,12 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            corpus: &str,
             content_hash: &str,
             source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {
             *self.queries.borrow_mut() += 1;
-            if content_hash == self.hash && source == self.source {
+            if corpus == "trusted" && content_hash == self.hash && source == self.source {
                 Ok(vec![stored_row(&self.hash, &self.source)])
             } else {
                 Ok(Vec::new())
@@ -524,7 +528,7 @@ mod tests {
         assert_eq!(embedder.calls(), chunks);
         assert_eq!(replacer.counts().replacements, 1);
         assert_eq!(replacer.counts().rows_written, chunks);
-        assert_eq!(replacer.rows_for("text-layer.pdf").len(), chunks);
+        assert_eq!(replacer.rows_for("trusted", "text-layer.pdf").len(), chunks);
     }
 
     #[test]
@@ -545,7 +549,7 @@ mod tests {
         assert_eq!(chunks, 2);
         assert_eq!(embedder.calls(), 2);
         assert_eq!(replacer.counts().replacements, 1);
-        let rows = replacer.rows_for("policy.md");
+        let rows = replacer.rows_for("trusted", "policy.md");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].section.as_deref(), Some("Intro"));
         assert_eq!(rows[1].section.as_deref(), Some("Fees"));
@@ -574,7 +578,7 @@ mod tests {
             panic!("expected a replacement, got {outcome:?}");
         };
         assert_eq!(chunks, 1);
-        let rows = replacer.rows_for("note.txt");
+        let rows = replacer.rows_for("trusted", "note.txt");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].section.as_deref(), Some("note.txt"));
         assert_eq!(rows[0].content, "## not a heading plain body");

@@ -40,7 +40,7 @@ use thiserror::Error;
 use crate::storage::{
     validate_embedding_dim, DimensionMismatchError, DocumentStore, StoredChunk, EMBEDDING_DIM,
 };
-use crate::transaction::{validate_all_dims, ReplaceError, SourceReplacer};
+use crate::transaction::{validate_all_dims, validate_corpus, ReplaceError, SourceReplacer};
 
 type PgPoolManager = PostgresConnectionManager<NoTls>;
 
@@ -245,27 +245,35 @@ impl PgStore {
         content_hash: &str,
         source: Option<&str>,
     ) -> Result<Vec<StoredChunkRow>, PgStoreError> {
+        self.rows_by_content_hash(None, content_hash, source)
+    }
+
+    /// Reads every row matching `(corpus, content_hash, source)`.
+    ///
+    /// `corpus` and `source` are optional filters. When `corpus` is given, a
+    /// legacy row with a NULL corpus never matches, which is what makes the
+    /// unchanged-source decision corpus-scoped.
+    pub(crate) fn rows_by_content_hash(
+        &self,
+        corpus: Option<&str>,
+        content_hash: &str,
+        source: Option<&str>,
+    ) -> Result<Vec<StoredChunkRow>, PgStoreError> {
         let mut conn = self.connection()?;
 
-        // When `source` is given, only rows with that source are returned; a
-        // NULL `source` never equals a bound text value.
-        let rows = match source {
-            Some(src) => conn.query(
+        let rows = conn
+            .query(
                 "SELECT id, content, source, section, chunk_index, language, page, corpus, \
-                 content_hash, embed_model, embedding_dim, chunker_config, \
-                 ingested_at::text, embedding::text \
-                 FROM documents WHERE content_hash = $1 AND source = $2 ORDER BY id",
-                &[&content_hash, &src],
-            ),
-            None => conn.query(
-                "SELECT id, content, source, section, chunk_index, language, page, corpus, \
-                 content_hash, embed_model, embedding_dim, chunker_config, \
-                 ingested_at::text, embedding::text \
-                 FROM documents WHERE content_hash = $1 ORDER BY id",
-                &[&content_hash],
-            ),
-        }
-        .map_err(|err| PgStoreError::Query(err.to_string()))?;
+             content_hash, embed_model, embedding_dim, chunker_config, \
+             ingested_at::text, embedding::text \
+             FROM documents \
+             WHERE ($1::text IS NULL OR corpus = $1) \
+               AND content_hash = $2 \
+               AND ($3::text IS NULL OR source = $3) \
+             ORDER BY id",
+                &[&corpus, &content_hash, &source],
+            )
+            .map_err(|err| PgStoreError::Query(err.to_string()))?;
 
         rows.iter().map(row_to_chunk).collect()
     }
@@ -533,16 +541,22 @@ impl DocumentStore for PgStore {
 }
 
 impl SourceReplacer for PgStore {
-    /// Replaces every stored row of `source` with `chunks` in one transaction.
+    /// Replaces every stored row of `(corpus, source)` with `chunks` in one transaction.
     ///
-    /// The embedding dimension guard ([`validate_all_dims`]) runs first: a
-    /// mismatch returns [`ReplaceError::Dimension`] and no connection or
-    /// statement is touched. Otherwise the delete and every insert run inside a
+    /// The embedding dimension guard ([`validate_all_dims`]) and the corpus guard
+    /// ([`validate_corpus`]) run first: a mismatch returns an error and no connection
+    /// or statement is touched. Otherwise the delete and every insert run inside a
     /// single `BEGIN` / `DELETE` / `INSERT` / `COMMIT` transaction; a failure at
     /// any point rolls the whole transaction back, so the previous rows remain
     /// and no new row survives.
-    fn replace_source(&self, source: &str, chunks: &[StoredChunk]) -> Result<(), ReplaceError> {
+    fn replace_source(
+        &self,
+        corpus: &str,
+        source: &str,
+        chunks: &[StoredChunk],
+    ) -> Result<(), ReplaceError> {
         validate_all_dims(chunks)?;
+        validate_corpus(corpus, chunks)?;
 
         let mut conn = self
             .connection()
@@ -551,8 +565,11 @@ impl SourceReplacer for PgStore {
             .transaction()
             .map_err(|err| ReplaceError::Store(err.to_string()))?;
 
-        tx.execute("DELETE FROM documents WHERE source = $1", &[&source])
-            .map_err(|err| ReplaceError::Store(err.to_string()))?;
+        tx.execute(
+            "DELETE FROM documents WHERE corpus = $1 AND source = $2",
+            &[&corpus, &source],
+        )
+        .map_err(|err| ReplaceError::Store(err.to_string()))?;
 
         for chunk in chunks {
             let embedding_literal = format_vector(&chunk.embedding);
