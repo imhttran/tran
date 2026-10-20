@@ -15,6 +15,7 @@ BEGIN
     DELETE FROM head_of_family_appointment;
     DELETE FROM head_of_family_nomination;
     DELETE FROM person WHERE person_key = 'synthetic-e2e-person';
+    DELETE FROM person WHERE person_key LIKE 'synthetic-spouse-%';
     DELETE FROM source_document WHERE relative_path = 'synthetic/e2e.pdf';
 
     INSERT INTO person (person_key, display_name)
@@ -56,4 +57,69 @@ BEGIN
                reviewed_at = now()
          WHERE assertion_id = v_assertion_id;
     END LOOP;
-END $$;
+
+    -- Two direction-sensitive spouse cases for the read-only graph:
+    -- pair A/B: B->A verified, A->B disputed => needs_review
+    -- pair C/D: D->C verified only => verified with a citation.
+    INSERT INTO person (person_key, display_name)
+    VALUES
+      ('synthetic-spouse-a', 'Synthetic Partner A'),
+      ('synthetic-spouse-b', 'Synthetic Partner B'),
+      ('synthetic-spouse-c', 'Synthetic Partner C'),
+      ('synthetic-spouse-d', 'Synthetic Partner D');
+
+    INSERT INTO spouse_link (person_id, spouse_id, source_order)
+    SELECT a.person_id, b.person_id, 1
+      FROM person a CROSS JOIN person b
+     WHERE a.person_key = 'synthetic-spouse-a'
+       AND b.person_key = 'synthetic-spouse-b';
+
+    INSERT INTO spouse_link (person_id, spouse_id, source_order)
+    SELECT a.person_id, b.person_id, 1
+      FROM person a CROSS JOIN person b
+     WHERE a.person_key = 'synthetic-spouse-c'
+       AND b.person_key = 'synthetic-spouse-d';
+
+    INSERT INTO assertion
+      (person_id, object_person_id, assertion_kind, assertion_key,
+       value_text, review_status)
+    SELECT b.person_id, a.person_id, 'spouse', 'reverse_verified',
+           a.person_key, 'unverified'
+      FROM person a CROSS JOIN person b
+     WHERE a.person_key = 'synthetic-spouse-a'
+       AND b.person_key = 'synthetic-spouse-b'
+    RETURNING assertion_id INTO v_assertion_id;
+    INSERT INTO assertion_evidence
+      (assertion_id, source_evidence_id, document_ref, page)
+    VALUES (v_assertion_id, v_evidence_id, 'synthetic/e2e.pdf', 1);
+    UPDATE assertion
+       SET review_status = 'verified',
+           reviewed_by = 'synthetic-reviewer', reviewed_at = now()
+     WHERE assertion_id = v_assertion_id;
+
+    INSERT INTO assertion
+      (person_id, object_person_id, assertion_kind, assertion_key,
+       value_text, review_status)
+    SELECT a.person_id, b.person_id, 'spouse', 'forward_disputed',
+           b.person_key, 'disputed'
+      FROM person a CROSS JOIN person b
+     WHERE a.person_key = 'synthetic-spouse-a'
+       AND b.person_key = 'synthetic-spouse-b';
+
+    INSERT INTO assertion
+      (person_id, object_person_id, assertion_kind, assertion_key,
+       value_text, review_status)
+    SELECT d.person_id, c.person_id, 'spouse', 'reverse_only',
+           c.person_key, 'unverified'
+      FROM person c CROSS JOIN person d
+     WHERE c.person_key = 'synthetic-spouse-c'
+       AND d.person_key = 'synthetic-spouse-d'
+    RETURNING assertion_id INTO v_assertion_id;
+    INSERT INTO assertion_evidence
+      (assertion_id, source_evidence_id, document_ref, page)
+    VALUES (v_assertion_id, v_evidence_id, 'synthetic/e2e.pdf', 1);
+    UPDATE assertion
+       SET review_status = 'verified',
+           reviewed_by = 'synthetic-reviewer', reviewed_at = now()
+     WHERE assertion_id = v_assertion_id;
+END $;

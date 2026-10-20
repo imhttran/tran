@@ -34,13 +34,35 @@ test.describe.serial("genealogy API integration", () => {
     const treeBody = (await tree.json()) as {
       people: Array<{ record_id: string; person_label: string;
         evidence_status: string; aliases: string[] }>;
-      links: unknown[];
+      links: Array<{
+        from_id: string; to_id: string; kind: string;
+        evidence_status: string;
+        evidence: Array<{ evidence_id: string; citation: string }>;
+      }>;
       truncated: boolean;
     };
     expect(treeBody.people.some((p) => p.record_id === "synthetic-e2e-person")).toBeTruthy();
     expect(treeBody.people.every((p) => Array.isArray(p.aliases))).toBeTruthy();
     expect(Array.isArray(treeBody.links)).toBeTruthy();
     expect(typeof treeBody.truncated).toBe("boolean");
+    // A spouse link is unordered for matching reviewed assertions.
+    // Verified reverse evidence plus a forward dispute is NOT verified.
+    const disputedPair = treeBody.links.find((link) =>
+      link.kind === "spouse" &&
+      link.from_id === "synthetic-spouse-a" &&
+      link.to_id === "synthetic-spouse-b");
+    expect(disputedPair?.evidence_status).toBe("needs_review");
+    expect(disputedPair?.evidence).toEqual([]);
+
+    // Reverse-only verified evidence must still support an undirected spouse edge.
+    const verifiedPair = treeBody.links.find((link) =>
+      link.kind === "spouse" &&
+      link.from_id === "synthetic-spouse-c" &&
+      link.to_id === "synthetic-spouse-d");
+    expect(verifiedPair?.evidence_status).toBe("verified");
+    expect(verifiedPair?.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ citation: "synthetic/e2e.pdf p.1" }),
+    ]));
 
     const nomination = await request.post(`${API_URL}/api/genealogy/nominations`, {
       headers: auth(ADMIN_TOKEN!),

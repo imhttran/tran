@@ -68,6 +68,37 @@ test("collapsing a lineage does not delete catalog records", async ({ page }) =>
   await expect(page.getByTestId("family-person")).toHaveCount(4);
 });
 
+test("a rooted component with an attached ancestor cycle still renders every person", async ({ page }) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  const people = ["A", "B", "C", "D"].map((id) => ({
+    record_id: id, person_label: "Person " + id, evidence_status: "unverified", aliases: [],
+  }));
+  const edge = (from_id: string, to_id: string) => ({
+    from_id, to_id, kind: "parent_child",
+    evidence_status: "unverified", evidence: [],
+  });
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        people,
+        links: [edge("A", "B"), edge("B", "A"), edge("B", "C"), edge("D", "C")],
+        truncated: false,
+      }),
+    }));
+  await page.route("**/api/genealogy/person/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        record_id: route.request().url().split("/").pop(),
+        person_label: "Synthetic person", assertions: [],
+      }),
+    }));
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(4);
+  await expect(page.getByTestId("family-relationship")).toHaveCount(4);
+  await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
+});
+
 test("a 403 denies the tree before any person details render", async ({ page }) => {
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
