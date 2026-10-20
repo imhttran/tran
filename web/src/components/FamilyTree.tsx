@@ -1,0 +1,369 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
+
+import { DenialView } from "@/components/DenialView";
+import { EvidenceBadge } from "@/components/EvidenceBadge";
+import { ExperienceShell } from "@/components/ExperienceShell";
+import { PageHeader } from "@/components/PageHeader";
+import { PageTitle } from "@/components/PageTitle";
+import type { EvidenceRef, Role } from "@/lib/experience-contract";
+import {
+  CARD_HEIGHT, CARD_WIDTH, layoutTree, normalizedName, parseTreeGraph,
+} from "@/lib/family-tree";
+import type { TreeGraph, TreeLink } from "@/lib/family-tree";
+
+type PersonAssertion = {
+  assertion_id: number;
+  kind: string;
+  key: string;
+  value_text: string | null;
+  review_status: string;
+  evidence: EvidenceRef[];
+};
+type PersonDetail = {
+  record_id: string;
+  person_label: string | null;
+  assertions: PersonAssertion[];
+};
+type View = { x: number; y: number; width: number; height: number };
+type Denial = { kind: "denied" | "no_access"; reason: string };
+
+function statusClass(status: string) {
+  return status === "verified" ? "verified" : status === "needs_review" ? "review" : "unverified";
+}
+function edgeClass(link: TreeLink) {
+  return "family-edge family-edge-" + statusClass(link.evidence_status) +
+    (link.kind === "spouse" ? " family-edge-spouse" : "");
+}
+
+export default function GenealogyPage() {
+  return (
+    <ExperienceShell>
+      {(role) => <FamilyTree role={role} />}
+    </ExperienceShell>
+  );
+}
+
+function FamilyTree({ role }: { role: Role | null }) {
+  const [graph, setGraph] = useState<TreeGraph | null>(null);
+  const [denial, setDenial] = useState<Denial | null>(null);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [view, setView] = useState<View>({ x: 0, y: 0, width: 850, height: 530 });
+  const [detail, setDetail] = useState<PersonDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/genealogy/tree", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (response.status === 401 || response.status === 403) {
+          setDenial({ kind: "denied", reason: "Your account is not authorized to view this family tree." });
+          return;
+        }
+        if (response.status === 404) {
+          setDenial({ kind: "no_access", reason: "No authorized family tree is available." });
+          return;
+        }
+        if (!response.ok) throw new Error("Family tree service returned HTTP " + response.status);
+        const parsed = parseTreeGraph(await response.json());
+        if (!controller.signal.aborted) {
+          setGraph(parsed);
+          setSelected(parsed.people[0]?.record_id ?? null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setDenial({
+            kind: "denied",
+            reason: error instanceof Error ? error.message : "Family tree is unavailable.",
+          });
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  const layout = useMemo(() => graph ? layoutTree(graph, collapsed) : null, [graph, collapsed]);
+  const byId = useMemo(() => new Map(layout?.people.map((p) => [p.record_id, p]) ?? []), [layout]);
+  const matches = useMemo(() => {
+    const term = normalizedName(search.trim());
+    if (!graph || !term) return [];
+    return graph.people.filter((p) => (normalizedName(p.person_label).includes(term) ||
+      p.aliases.some((alias) => normalizedName(alias).includes(term)))).slice(0, 25);
+  }, [graph, search]);
+  const selectedPerson = graph?.people.find((p) => p.record_id === selected) ?? null;
+
+  useEffect(() => {
+    if (!layout) return;
+    setView({ x: 0, y: 0, width: Math.max(layout.width, 600), height: Math.max(layout.height, 370) });
+  }, [graph]); // Only reset the camera when source data changes, not on collapse.
+
+  useEffect(() => {
+    if (!selected) {
+      setDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    setDetail(null);
+    setDetailError(null);
+    fetch("/api/genealogy/person/" + encodeURIComponent(selected), {
+      cache: "no-store", signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(
+        response.status === 401 || response.status === 403
+          ? "Person details are not authorized."
+          : "Person details are unavailable.");
+      const body = await response.json() as PersonDetail;
+      if (!controller.signal.aborted && body.record_id === selected &&
+          Array.isArray(body.assertions)) setDetail(body);
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) {
+        setDetailError(error instanceof Error ? error.message : "Person details are unavailable.");
+      }
+    });
+    return () => controller.abort();
+  }, [selected]);
+
+  function selectPerson(id: string) {
+    // Open all branches on selection so search results are never hidden.
+    setCollapsed(new Set());
+    setSelected(id);
+    setSearch("");
+    const positioned = layoutTree(graph ?? { people: [], links: [], truncated: false }, new Set())
+      .people.find((p) => p.record_id === id);
+    if (positioned) {
+      setView({
+        x: Math.max(0, positioned.x - 260), y: Math.max(0, positioned.y - 180),
+        width: 800, height: 490,
+      });
+    }
+  }
+
+  function scaleView(factor: number) {
+    setView((old) => {
+      const width = Math.max(280, Math.min(9000, old.width * factor));
+      const height = Math.max(175, Math.min(6000, old.height * factor));
+      return { x: old.x + (old.width - width) / 2,
+        y: old.y + (old.height - height) / 2, width, height };
+    });
+  }
+  function onPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
+    dragging.current = { x: event.clientX, y: event.clientY, view };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function onPointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!dragging.current || !svgRef.current) return;
+    const bounds = svgRef.current.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    const start = dragging.current;
+    setView({ ...start.view,
+      x: start.view.x - (event.clientX - start.x) * start.view.width / bounds.width,
+      y: start.view.y - (event.clientY - start.y) * start.view.height / bounds.height });
+  }
+  function onWheel(event: ReactWheelEvent<SVGSVGElement>) {
+    if (event.ctrlKey || event.metaKey) return;
+    scaleView(event.deltaY > 0 ? 1.12 : 0.89);
+  }
+
+  return (
+    <>
+      <PageTitle title="Family tree" />
+      <PageHeader title="Family tree"
+        subtitle={"Read-only family relationships for " +
+          (role ?? "an unauthenticated visitor") + ". Evidence status is not inferred."} />
+      {denial ? <DenialView kind={denial.kind} reason={denial.reason} /> : !graph || !layout ? (
+        <p className="hint" data-testid="genealogy-loading">Loading family tree…</p>
+      ) : (
+        <section className="family-workspace" data-testid="genealogy-tree">
+          <div className="family-toolbar">
+            <div className="family-search">
+              <label htmlFor="family-person-search">Find a person</label>
+              <input id="family-person-search" type="search" value={search}
+                placeholder="Search Vietnamese names or aliases…"
+                onChange={(event) => setSearch(event.target.value)}
+                data-testid="family-search" />
+              {search.trim() && (
+                <ul className="family-suggestions" data-testid="family-search-results">
+                  {matches.length ? matches.map((person) => (
+                    <li key={person.record_id}>
+                      <button type="button" onClick={() => selectPerson(person.record_id)}>
+                        {person.person_label}
+                      </button>
+                    </li>
+                  )) : <li className="hint">No matching authorized people.</li>}
+                </ul>
+              )}
+            </div>
+            <div className="family-controls">
+              <button type="button" onClick={() => scaleView(0.8)} aria-label="Zoom in">＋</button>
+              <button type="button" onClick={() => scaleView(1.25)} aria-label="Zoom out">−</button>
+              <button type="button" onClick={() => layout &&
+                setView({ x: 0, y: 0, width: Math.max(600, layout.width),
+                  height: Math.max(370, layout.height) })}>Fit</button>
+              <button type="button" onClick={() => setCollapsed(new Set())}>Expand all</button>
+            </div>
+          </div>
+          {graph.truncated && (
+            <p role="status" className="family-limit">
+              Showing the first 500 authorized people. This is a partial graph; not all relatives are shown.
+            </p>
+          )}
+          {graph.people.length === 0 ? (
+            <p className="hint" data-testid="genealogy-empty">No genealogy records are available to your role.</p>
+          ) : (
+            <div className="family-main">
+              <div className="family-canvas">
+                <svg ref={svgRef} role="group" aria-label="Interactive family tree"
+                  data-testid="family-tree-canvas" viewBox={[
+                    view.x, view.y, view.width, view.height,
+                  ].join(" ")} onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+                  onPointerUp={(event) => { dragging.current = null;
+                    if (event.currentTarget.hasPointerCapture(event.pointerId))
+                      event.currentTarget.releasePointerCapture(event.pointerId); }}
+                  onPointerCancel={() => { dragging.current = null; }}
+                  onWheel={onWheel}>
+                  <rect x={view.x} y={view.y} width={view.width} height={view.height} fill="transparent"
+                    pointerEvents="all" />
+                  {layout.links.map((edge, i) => {
+                    const from = byId.get(edge.from_id);
+                    const to = byId.get(edge.to_id);
+                    if (!from || !to) return null;
+                    const x1 = from.x + CARD_WIDTH / 2;
+                    const y1 = edge.kind === "spouse" ? from.y + CARD_HEIGHT / 2 : from.y + CARD_HEIGHT;
+                    const x2 = to.x + CARD_WIDTH / 2;
+                    const y2 = edge.kind === "spouse" ? to.y + CARD_HEIGHT / 2 : to.y;
+                    return (
+                      <path key={edge.kind + ":" + edge.from_id + ":" + edge.to_id + ":" + i}
+                        d={"M " + x1 + " " + y1 + " C " + x1 + " " + ((y1 + y2) / 2) +
+                          ", " + x2 + " " + ((y1 + y2) / 2) + ", " + x2 + " " + y2}
+                        className={edgeClass(edge)} data-testid="family-relationship"
+                        data-status={edge.evidence_status} data-kind={edge.kind}>
+                        <title>{edge.kind.replace("_", " ") + " — " +
+                          edge.evidence_status.replace("_", " ")}</title>
+                      </path>
+                    );
+                  })}
+                  {layout.people.map((person) => (
+                    <g key={person.record_id} className="family-node"
+                      role="button" tabIndex={0}
+                      aria-label={"Select " + person.person_label}
+                      aria-pressed={selected === person.record_id}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => setSelected(person.record_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault(); setSelected(person.record_id);
+                        }
+                      }}
+                      data-testid="family-person">
+                      <rect x={person.x} y={person.y} rx="11"
+                        width={CARD_WIDTH} height={CARD_HEIGHT}
+                        className={selected === person.record_id ? "family-node-selected" : ""} />
+                      <text x={person.x + 12} y={person.y + 26}
+                        className="family-node-name">
+                        {person.person_label.length > 23
+                          ? person.person_label.slice(0, 22) + "…" : person.person_label}
+                      </text>
+                      <text x={person.x + 12} y={person.y + 51}
+                        className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
+                        {person.evidence_status.replace("_", " ")}
+                      </text>
+                      <title>{person.person_label}</title>
+                    </g>
+                  ))}
+                </svg>
+                <p className="family-canvas-help">Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom.</p>
+                {selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
+                  <button type="button" data-testid="family-collapse" onClick={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current);
+                      if (next.has(selected)) next.delete(selected);
+                      else next.add(selected);
+                      return next;
+                    })}>{collapsed.has(selected) ? "Expand descendants" : "Collapse descendants"}</button>
+                )}
+              </div>
+              <aside className="family-detail" data-testid="family-person-details">
+                {selectedPerson ? (
+                  <>
+                    <h2>{selectedPerson.person_label}</h2>
+                    <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
+                    <EvidenceBadge status={selectedPerson.evidence_status} />
+                    <h3>Relationships</h3>
+                    {graph.links.filter((link) =>
+                      link.from_id === selected || link.to_id === selected).length === 0 ? (
+                      <p className="hint">No stored relationships are available.</p>
+                    ) : (
+                      <ul className="family-detail-list">
+                        {graph.links.filter((link) =>
+                          link.from_id === selected || link.to_id === selected).map((link, i) => {
+                          const other = graph.people.find((p) => p.record_id ===
+                            (link.from_id === selected ? link.to_id : link.from_id));
+                          return (
+                            <li key={i}>
+                              <button type="button" className="family-text-button"
+                                onClick={() => { if (other) selectPerson(other.record_id); }}>
+                                {other?.person_label ?? "Unknown"}
+                              </button>
+                              <span className="meta"> {link.kind.replace("_", " ")} · </span>
+                              <span className="meta">{link.evidence_status.replace("_", " ")}</span>
+                              {link.evidence.map((ev) => (
+                                <p className="meta" key={ev.evidence_id}>{ev.citation}</p>
+                              ))}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    <h3>Recorded assertions</h3>
+                    {detailError && <p role="alert" className="hint">{detailError}</p>}
+                    {!detail && !detailError && <p className="hint">Loading evidence…</p>}
+                    {detail && detail.assertions.length === 0 && (
+                      <p className="hint">No assertions available.</p>
+                    )}
+                    {detail && (
+                      <ul className="family-detail-list" data-testid="family-assertions">
+                        {detail.assertions.map((assertion) => (
+                          <li key={assertion.assertion_id}>
+                            <strong>{assertion.kind.replace("_", " ")}</strong>
+                            {assertion.value_text && <p>{assertion.value_text}</p>}
+                            <span className="meta">{assertion.review_status.replace("_", " ")}</span>
+                            {assertion.evidence.map((ev) => (
+                              <p className="meta" key={ev.evidence_id}>{ev.citation}</p>
+                            ))}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : <p className="hint">Select a person.</p>}
+              </aside>
+            </div>
+          )}
+          <p className="family-legend">
+            <span className="family-key family-key-verified" /> Verified
+            <span className="family-key family-key-review" /> Needs review
+            <span className="family-key family-key-unverified" /> Unverified
+          </p>
+          <section className="card">
+            <h2>Catalog view</h2>
+            <ul className="family-catalog" data-testid="genealogy-records">
+              {graph.people.map((person) => (
+                <li key={person.record_id} data-testid="genealogy-record">
+                  <button type="button" className="family-text-button"
+                    onClick={() => selectPerson(person.record_id)}>{person.person_label}</button>
+                  <EvidenceBadge status={person.evidence_status} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        </section>
+      )}
+    </>
+  );
+}

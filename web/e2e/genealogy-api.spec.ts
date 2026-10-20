@@ -27,6 +27,21 @@ test.describe.serial("genealogy API integration", () => {
     expect(synthetic).toBeTruthy();
     expect(synthetic?.evidence_status).toBe("verified");
 
+    const tree = await request.get(API_URL + "/api/genealogy/tree", {
+      headers: auth(ADMIN_TOKEN!),
+    });
+    expect(tree.status()).toBe(200);
+    const treeBody = (await tree.json()) as {
+      people: Array<{ record_id: string; person_label: string;
+        evidence_status: string; aliases: string[] }>;
+      links: unknown[];
+      truncated: boolean;
+    };
+    expect(treeBody.people.some((p) => p.record_id === "synthetic-e2e-person")).toBeTruthy();
+    expect(treeBody.people.every((p) => Array.isArray(p.aliases))).toBeTruthy();
+    expect(Array.isArray(treeBody.links)).toBeTruthy();
+    expect(typeof treeBody.truncated).toBe("boolean");
+
     const nomination = await request.post(`${API_URL}/api/genealogy/nominations`, {
       headers: auth(ADMIN_TOKEN!),
       data: { record_id: "synthetic-e2e-person" },
