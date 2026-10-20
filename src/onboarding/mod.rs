@@ -17,6 +17,7 @@ pub mod candidate;
 pub mod invitation;
 pub mod link;
 pub mod profile;
+pub mod profile_revisions;
 pub mod reservation;
 pub mod username;
 
@@ -31,5 +32,12 @@ pub use link::{
     LinkRecord,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
+pub use profile_revisions::{
+    create_draft, is_allowed_profile_field, is_terminal, list_open_revisions,
+    list_revision_history, read_approved_values, review_revision, revision_by_id, submit_revision,
+    update_draft, ApprovedProfileValue, ProfileAudience, ProfileRevision, ProfileVisibility,
+    ReviewDecision, RevisionError, RevisionStatus, ALLOWED_PROFILE_FIELDS, BIOGRAPHY_MAX_CHARS,
+    NAME_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
+};
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
 pub use username::NameParts;
