@@ -163,3 +163,61 @@ fn deactivated_user_is_not_resolved() {
         .expect("lookup")
         .is_none());
 }
+
+#[test]
+fn last_active_admin_cannot_be_deactivated() {
+    let Some(base) = base_dsn() else {
+        return;
+    };
+    let database = "rag_identity_deactivate_admin_test";
+    ensure_database(&with_database(&base, "postgres"), database);
+    let dsn = with_database(&base, database);
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    reset_and_migrate(&mut client);
+    seed_user(&mut client, "synthetic-admin", "admin");
+    seed_user(&mut client, "synthetic-viewer", "viewer");
+
+    let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
+    let err = identity
+        .deactivate_user("synthetic-admin", "synthetic-admin")
+        .expect_err("deactivating the last admin must fail");
+    assert!(matches!(err, IdentityStoreError::LastAdmin));
+    assert!(
+        identity
+            .user_by_subject("synthetic-admin", "https://issuer.example")
+            .expect("lookup")
+            .is_some(),
+        "the refused deactivation must leave the admin active"
+    );
+
+    identity
+        .deactivate_user("synthetic-viewer", "synthetic-admin")
+        .expect("a non-admin can still be deactivated");
+}
+
+#[test]
+fn deactivated_admin_does_not_count_toward_the_last_admin() {
+    let Some(base) = base_dsn() else {
+        return;
+    };
+    let database = "rag_identity_deactivated_admin_count_test";
+    ensure_database(&with_database(&base, "postgres"), database);
+    let dsn = with_database(&base, database);
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    reset_and_migrate(&mut client);
+    seed_user(&mut client, "synthetic-admin-a", "admin");
+    seed_user(&mut client, "synthetic-admin-b", "admin");
+
+    let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
+    identity
+        .deactivate_user("synthetic-admin-a", "synthetic-admin-b")
+        .expect("one of two admins can be deactivated");
+    let err = identity
+        .change_role("synthetic-admin-b", Role::Admin, "synthetic-admin-b", false)
+        .expect_err("the remaining active admin must not be revocable");
+    assert!(matches!(err, IdentityStoreError::LastAdmin));
+    let err = identity
+        .deactivate_user("synthetic-admin-b", "synthetic-admin-b")
+        .expect_err("the remaining active admin must not be deactivatable");
+    assert!(matches!(err, IdentityStoreError::LastAdmin));
+}

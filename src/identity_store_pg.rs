@@ -153,6 +153,19 @@ impl PgIdentityClient {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
         };
         let user_id: i64 = row.get(0);
+        let is_active_admin: bool = tx
+            .query_one(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM role_assignments r JOIN users u ON u.id = r.user_id \
+                      WHERE r.user_id = $1 AND r.role = 'admin' AND r.revoked_at IS NULL \
+                        AND u.deactivated_at IS NULL)",
+                &[&user_id],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?
+            .get(0);
+        if is_active_admin {
+            ensure_not_last_admin(&mut tx)?;
+        }
         tx.execute(
             "UPDATE users SET deactivated_at = now(), updated_at = now() WHERE id = $1",
             &[&user_id],
@@ -163,6 +176,31 @@ impl PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
     }
+}
+
+/// Fails with [`IdentityStoreError::LastAdmin`] when at most one active
+/// administrator remains. Call it before removing an admin by revocation or
+/// deactivation. It serializes admin changes so two concurrent removals cannot
+/// both observe two admins and leave zero. A deactivated user's unrevoked admin
+/// role does not count.
+fn ensure_not_last_admin(tx: &mut Transaction<'_>) -> Result<(), IdentityStoreError> {
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('role:admin')::bigint)",
+        &[],
+    )
+    .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+    let active: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM role_assignments r JOIN users u ON u.id = r.user_id \
+              WHERE r.role = 'admin' AND r.revoked_at IS NULL AND u.deactivated_at IS NULL",
+            &[],
+        )
+        .map_err(|err| IdentityStoreError::Database(err.to_string()))?
+        .get(0);
+    if active <= 1 {
+        return Err(IdentityStoreError::LastAdmin);
+    }
+    Ok(())
 }
 
 fn audit(
@@ -255,24 +293,7 @@ impl IdentityClient for PgIdentityClient {
 
         let action = if grant { "role.grant" } else { "role.revoke" };
         if !grant && role == Role::Admin {
-            // Serialize with other admin changes so two concurrent revocations
-            // cannot both observe two admins and leave zero.
-            tx.execute(
-                "SELECT pg_advisory_xact_lock(hashtext('role:admin')::bigint)",
-                &[],
-            )
-            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
-            let active: i64 = tx
-                .query_one(
-                    "SELECT count(*) FROM role_assignments \
-                      WHERE role = 'admin' AND revoked_at IS NULL",
-                    &[],
-                )
-                .map_err(|err| IdentityStoreError::Database(err.to_string()))?
-                .get(0);
-            if active <= 1 {
-                return Err(IdentityStoreError::LastAdmin);
-            }
+            ensure_not_last_admin(&mut tx)?;
         }
         if grant {
             tx.execute(
