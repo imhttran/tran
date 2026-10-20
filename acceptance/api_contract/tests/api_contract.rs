@@ -12,7 +12,7 @@ use api_contract_acceptance::{
     dsn, repo_root, seed_api_contract_admin, unique_tag, ApiProcess, CorpusCleanup, FakeOllama,
     TestAuth,
 };
-use rag_foundation::api::{default_host, default_port, MAX_UPLOAD_BYTES};
+use rag_foundation::api::{DEFAULT_HOST, DEFAULT_PORT, MAX_UPLOAD_BYTES};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
@@ -127,8 +127,8 @@ fn api_contract_upload_status_query_health_and_refusal() {
     let client = client(auth.token());
 
     // Loopback defaults are part of the contract.
-    assert_eq!(default_host(), "127.0.0.1");
-    assert_eq!(default_port(), 8080);
+    assert_eq!(DEFAULT_HOST, "127.0.0.1");
+    assert_eq!(DEFAULT_PORT, 8080);
     assert_eq!(MAX_UPLOAD_BYTES, 10 * 1024 * 1024);
 
     // Health: healthy, structured, and free of credentials.
