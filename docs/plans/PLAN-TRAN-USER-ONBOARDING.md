@@ -73,6 +73,20 @@ User-proposed initial password: `[FirstName][MMDDYYYY birthday][tr@n]`.
 - Do not invent a real OIDC provider or its management API. Provider-specific provisioning and delivery remain deployment gates. Fully synthetic invitations/accounts are permitted in tests.
 - Date of birth must not be required to generate account credentials. Retain only minimum private verification data where explicitly approved.
 
+## Simple admin password reset and member notifications
+
+Keep the MVP deliberately small. **Admin > Family Members** shows each member's verified contact email and invitation/account status, with only these supported actions: **Send invitation**, **Resend invitation**, and **Send password reset email**. The last action is available only for an active account with a verified, explicitly authorized email address and a reset-capable configured OIDC identity provider. Admins do not type, see, generate, or email a member's password.
+
+- **Reset flow:** after an admin confirms the target account/email, request the provider's managed password-reset/recovery flow. The **provider** delivers a short-lived, single-use reset link to the verified email; the member chooses a new password with the provider. Do not create a separate application password database or issue home-grown password-reset tokens. A provider without an administrative reset-email capability must show a clear *not configured* state and the supported self-service recovery route rather than claim an email was sent.
+- **Email delivery:** use the configured OIDC provider's reset-email delivery when supported; use a configured email adapter (e.g. transactional email/SMTP) only for **invitations and review-status notifications** with provider-approved invitation links. No email service or provider is assumed to exist. Verify delivery integration in a synthetic sandbox before operational enabling. Never send a reset password or access token in plaintext.
+- **Notification fallback:** for signed-in members, show a small **Notifications** area for `profile_change_approved`, `profile_change_rejected`, `needs_changes`, and other assigned review outcomes. Branch reviewers/admins may see a pending-review count within authorized scopes. This is optional for MVP; an in-app notification alone must **not** be represented as password recovery for a member who cannot sign in.
+- **Minimal delivery states:** `not_configured`, `requested`, `queued`, `sent`, `failed`. UI and audit events must distinguish an accepted request from confirmed dispatch/delivery. Allow a rate-limited retry on failure; avoid duplicate sends on double click and reruns.
+- **Security and privacy:** only admins may request another user's reset. Require an explicit confirmation, verified recipient address, allowlisted provider/redirect destinations, CSRF protection, short cooldown/rate limits, and audit `actor_id`, `target_user_id`, `action`, `timestamp`, and non-sensitive delivery state. Never log an email body, reset link, token, or private family profile data. Reject sending to guessed addresses extracted from genealogy records. Do not expose a reset link or provider recovery secret to the admin.
+- **Member-facing feedback:** a member may also use the provider's *Forgot password?* flow on the sign-in screen, if supported. Provide only a generic request acknowledgment that does not expose whether a named account/email exists.
+- **Testing:** fake provider and mail adapters; verify admin-only access, incorrect/unverified email, unconfigured provider, throttling/duplicate requests, failed delivery, retry, no plaintext credentials or token leaks, and that review notifications are scoped to their actual recipient. Never send real reset/invitation mail from CI.
+
+There is no need for a full messaging center, arbitrary admin broadcast feature, custom reset-token service, or member-to-member messages for the MVP. Implement the admin reset button first, with provider-backed email. Add only lightweight review notifications as needed.
+
 ## Identity and link lifecycle
 
 `candidate -> admin-reviewed invitation draft -> invited -> provider-activated -> identity-claimed -> linked/active`.
@@ -100,13 +114,13 @@ Support member-managed fields with per-field grants and visibility, e.g. display
 
 ## API and screen contract
 
-**Admin /family-members**: private eligible-living inventory (preview only); evidence flags; explicit batch invite confirmation; collision resolution; pending/active status; linked genealogy person; role/grant assignment; expiring/resend/revoke invitations; last-admin guard. No real names/PII in operational logs.
+**Admin /family-members**: private eligible-living inventory (preview only); evidence flags; explicit batch invite confirmation; collision resolution; pending/active status; linked genealogy person; role/grant assignment; expiring/resend/revoke invitations; **Send password reset email** (provider-backed, admin confirmation, verified recipient), reset delivery state, and last-admin guard. No real names/PII in operational logs.
 
 **Member /profile**: edit own approved personal fields; upload/replace one photo and one personal document; manage private visibility; view current verified versus draft versions and review decisions; request/confirm person link; no branch/global edits.
 
 **Branch /branch-review**: list only assigned branch's queued submissions, with citations/diff; approve/reject/request changes for another person's submitted revisions; propose shared branch corrections; report ambiguous cross-branch claims for admin review.
 
-**Rust API**: endpoints for eligible preview (admin only); invite lifecycle (admin only); self-account/person link request; own-profile reads/writes; media upload; submission review; branch-grant management; decision/audit history. Explicitly define contracts with stable IDs, cursor pagination, authz before DB reads, and `401/403/404/409` safe error behavior. Never trust client-provided role, branch, person key, reviewer, or approval status as authorization.
+**Rust API**: endpoints for eligible preview (admin only); invite lifecycle (admin only); admin-authorized provider reset request/status (never a reset token); self-account/person link request; own-profile reads/writes; media upload; submission review; branch-grant management; scoped member notification status; decision/audit history. Explicitly define contracts with stable IDs, cursor pagination, authz before DB reads, and `401/403/404/409` safe error behavior. Never trust client-provided role, branch, person key, reviewer, or approval status as authorization.
 
 The Next.js proxy and OIDC session remain the trust boundaries. Use CSRF validation on cookie-authenticated mutations and avoid sensitive PII in analytics, screenshots, CI, URLs, and error bodies.
 
@@ -114,10 +128,10 @@ The Next.js proxy and OIDC session remain the trust boundaries. Use CSRF validat
 
 1. **USR-001 — Preflight/security prerequisite:** inspect latest `origin/main`, existing plans, open SOP executions and merged fixes; verify issuer+subject immutability and admin-deactivation safety; preserve dirty trees and historical runs.
 2. **USR-002 — Living candidates and dry-run:** implement evidence-based candidate query, exclusion/review reasons, privacy-safe preview, idempotent reservation, synthetic tests. **No real account side effects.**
-3. **USR-003 — Invitations/accounts and linking:** additive migrations, username policy, provider-independent invitations, synthetic activation, immutable OIDC link with audit, expiry, collision handling, admin seed procedure.
+3. **USR-003 — Invitations/accounts and linking:** additive migrations, username policy, provider-independent invitations, **simple admin Send password reset email and resend-invitation controls**, provider-managed reset delivery, synthetic activation, immutable OIDC link with audit, expiry, collision handling, admin seed procedure.
 4. **USR-004 — Self-service profile and assets:** reuse `PLAN-TRAN-FAMILY-TREE.md` versioned asset and ownership model; implement draft read/write, photo and personal document control, private access tests.
 5. **USR-005 — Scoped branch review:** explicit branch reviewer grants, query/mutation scoping, no self-approval, cross-branch conflicts, audit and tests; retain genealogical title separation.
-6. **USR-006 — Review and publication:** field-level changes, cited original evidence, approval/rejection/needs-changes, verification/version snapshots, notifications/status, Head of Family evidence re-evaluation; ensure approved-only indexing.
+6. **USR-006 — Review and publication:** field-level changes, cited original evidence, approval/rejection/needs-changes, verification/version snapshots, **lightweight per-member review notifications (email when configured, otherwise signed-in notification)**, Head of Family evidence re-evaluation; ensure approved-only indexing.
 7. **USR-007 — UI and end-to-end acceptance:** admin invitation list, member profile, branch-review queue, browser and Rust integration with synthetic people and a synthetic OIDC authority, zero-leak negative tests, docs, and PR.
 
 Decompose these tasks according to SOP's supported plan format; this document is the canonical feature requirements, **not** a re-open of any historical SOP run. Execute in an isolated worktree and new feature PR. Review the current status of `PLAN-TRAN-FAMILY-TREE.md` to avoid two teams implementing the same profile/asset system.
@@ -126,8 +140,9 @@ Decompose these tasks according to SOP's supported plan format; this document is
 
 - Living inventory distinguishes verified living, deceased, disputed, conflicting, already-linked, ambiguous, and not-yet-verified people. A missing exact birth date must **not** itself disqualify a verified living adult from an invitation; age or guardian-consent uncertainty blocks activation only when it is necessary to establish eligibility. No real person is automatically activated without identity verification and explicit invitation approval.
 - Dry-run makes zero account changes. Admin-approved invitation is repeatable without duplication. No invitations or real account activations run until the operator approves both identity provider and recipient list.
-- Username alias algorithm passes Vietnamese/ASCII normalization, missing/compound name, collision and idempotent retry tests. No password is generated from birthday or surname; authentication is provider-managed.
+- Username alias algorithm passes Vietnamese/ASCII normalization, missing/compound name, collision and idempotent retry tests. No password is generated from birthday or surname; authentication and password resets are provider-managed.
 - Identity linking prevents cross-issuer privilege transfer and person-link hijacking. Non-members and impersonators cannot edit another person's profile.
+- Admin can trigger a provider-managed password reset email to a verified recipient without ever seeing or setting a password; unsupported providers fail closed. Request/dispatch states, throttling, retries, CSRF, no secret disclosure, and synthetic notification delivery are tested. CI sends no real messages.
 - Branch reviewers can verify another person's submissions **inside assigned scope only**; they cannot self-approve, cross branches, change system roles, access private photos/contact fields without explicit delegation, or create/revoke a Head of Family designation.
 - Admin manages users, invitations, reviewer assignments and audit, but actual family facts still require cited evidence and a distinct reviewer.
 - Verified family facts and RAG results never incorporate unapproved submissions, owner-private materials, or fabricated genealogy.
