@@ -99,49 +99,266 @@ from a missing death year or a model answer.
 - `cargo test --locked`
 - `cargo fmt --check`
 
-## USR-003 — Usernames, invitations, and account linking
+## USR-002B — Admin living-candidate preview endpoint
 
-Implement the username policy and the provider-independent invitation/link lifecycle.
-Usernames follow `[lastInitial][MiddleInitial][FirstName]`, normalize Vietnamese diacritics
-(with a documented `Đ/đ` rule), preserve the original display name, and never mutate
-`person_key`. Missing or compound name components use a documented parse rule and an admin
-confirmation path; ambiguous parses are not silently accepted. Enforce case-insensitive
-uniqueness and deterministic numeric collision suffixes (`nvan2`) with no birthday-derived
-content. Invitations store only a hash of a cryptographically random one-time activation
-token, expire promptly, are single-use, and are never logged. Linking binds the authenticated
-OIDC `(issuer, subject)` to a person only after explicit review, one active link per person,
-with audited revoke/replace and no cross-issuer privilege transfer. Date of birth is never
-required to generate credentials, and no deterministic birthday-derived password is
-implemented.
+Wire the existing `onboarding::candidate` classifier to an admin-only, read-only HTTP
+endpoint. The endpoint returns opaque person keys, classifications, and reasons only. It never
+returns display names, dates, source excerpts, hashes, or counts of real people. Authorization
+runs before any genealogy database read, and the endpoint performs no writes.
+
+### Dependencies
+
+- USR-002
+
+### Discovery Iterations
+
+- 6
 
 ### Deliverables
 
-- A username module with normalization, initials extraction, validation, and collision
-  resolution, covered by unit tests for Vietnamese, ASCII, missing and compound names.
-- Invitation create/resend/expire/cancel/revoke operations with hashed single-use tokens and
-  explicit status transitions.
-- A person-account link workflow with a unique active link per person, audited replacement,
-  and rejection of unverified claims.
-- Admin-only API endpoints for the invitation lifecycle and link review, with authorization
-  before database reads.
-- Synthetic tests for collision retries, token expiry/reuse, cross-issuer attempts, and
-  duplicate-link rejection.
+- `GET /api/admin/family-members/candidates` returning `{rows, summary}` with opaque
+  `person_key`, `classification`, and `reasons`.
+- Admin authorization before opening the genealogy database; a non-admin receives `403`
+  without a read.
+- Integration test `tests/onboarding_preview_api.rs` using synthetic people only.
+- Privacy-safe logging and error bodies.
 
 ### Acceptance Criteria
 
-- `Nguyen Van An` produces display `NVAn` and case-insensitive key `nvan`; diacritics and
-  `Đ/đ` are handled deterministically.
-- Collisions resolve deterministically with an approved numeric suffix and remain stable
-  after profile edits.
-- A token is usable at most once, expires, and is stored only as a hash.
-- No password is generated from a name, surname, or birthday.
-- A link cannot be claimed by display name, email, username, or birthday alone.
-- One person has at most one active account link; replacement is audited.
+- An admin receives classified rows; a non-admin receives `403` before any database read.
+- The response contains no display names, birth dates, source excerpts, or private hashes.
+- A zero-candidate database returns an empty list and a review backlog, not an error.
+- The endpoint performs no write.
 
 ### Acceptance Checks
 
 - `cargo test --locked`
 - `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+- criterion 4: check 1
+
+## USR-003 — Invitation and linking closure
+
+Integration closure for the four USR-003 slices. Verify that the slices compose into one
+idempotent flow: eligible preview, transactional username reservation, hashed single-use
+invitation, reviewed identity link, and audit history. This stage adds no new product behavior;
+it proves the slices fit together and that no slice weakened a privacy or authorization rule.
+
+### Dependencies
+
+- USR-002B
+- USR-003A
+- USR-003B
+- USR-003C
+- USR-003D
+
+### Deliverables
+
+- `tests/onboarding_flow.rs` covering the full synthetic flow and a repeated run with no
+  duplicate reservation, invitation, link, or audit row.
+- A short integration note in `docs/architecture/ONBOARDING-IDENTITY.md` linking the slices.
+
+### Acceptance Criteria
+
+- The full synthetic flow succeeds with only synthetic identities and fixtures.
+- Re-running the flow is idempotent and creates no duplicate rows.
+- No slice bypasses admin authorization, cross-issuer checks, or hash-only token storage.
+
+### Acceptance Checks
+
+- `cargo test --locked`
+- `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+
+## USR-003A — Username normalization and transactional reservation
+
+Implement transactional reservation of the candidate username for one person. The display
+username follows `[lastInitial][MiddleInitial][FirstName]` from verified structured parts and
+keeps the original Unicode display form; the canonical key is ASCII, case-insensitive, and
+folds Vietnamese diacritics including `Đ/đ`. Reservation enforces a case-insensitive unique
+key in the genealogy database, resolves collisions with the smallest numeric suffix (`nvan2`),
+is idempotent for the same person, and never uses a date of birth.
+
+### Dependencies
+
+- USR-002
+
+### Discovery Iterations
+
+- 6
+
+### Deliverables
+
+- `src/onboarding/reservation.rs` with reserve, claim, and release operations in one
+  transaction.
+- Additive `genealogy/migrations/0008_onboarding_identity.sql` adding a canonical
+  `username_key` with a unique index to `onboarding_username_reservation`.
+- `tests/onboarding_reservation.rs` using synthetic person rows only.
+- Wire the module into `src/onboarding/mod.rs`.
+
+### Acceptance Criteria
+
+- `Nguyen Van An` reserves display `NVAn` with key `nvan`.
+- A taken `nvan` reserves `nvan2`; an existing `nvan` and `nvan2` reserve `nvan3`;
+  comparison is case-insensitive.
+- Repeating the same reservation for the same person returns the existing row and writes no
+  duplicate.
+- Releasing a reservation allows the key to be reused; no birthday is stored or used.
+
+### Acceptance Checks
+
+- `cargo test --locked`
+- `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+- criterion 4: check 1
+
+## USR-003B — Random, expiring, single-use invitation tokens
+
+Implement the invitation token lifecycle with provider-independent credentials. Generate a
+cryptographically random 32-byte token, return the plaintext exactly once to the caller, and
+persist only its SHA-256 hash. Tokens expire promptly, are single-use, and have explicit
+pending/accepted/revoked/expired transitions. No plaintext token, password, or birth date is
+stored, logged, or placed in an audit row.
+
+### Dependencies
+
+- USR-003A
+
+### Discovery Iterations
+
+- 6
+
+### Deliverables
+
+- `src/onboarding/invitation.rs` with token creation, hash verification, expiry, consumption,
+  and revoke/cancel transitions.
+- Additive `genealogy/migrations/0008_onboarding_identity.sql` adding `token_hash` (unique),
+  `expires_at`, `used_at`, and making the legacy plaintext column nullable and unused.
+- `tests/onboarding_invitation.rs` covering expiry, reuse, wrong token, and idempotent create.
+
+### Acceptance Criteria
+
+- A token is usable at most once and cannot be reused after acceptance or expiry.
+- Only the hash is persisted; the plaintext is never written to the database or logs.
+- An expired or revoked token fails verification with a safe error.
+- Creating an invitation for a person with a pending invitation is idempotent.
+
+### Acceptance Checks
+
+- `cargo test --locked`
+- `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+- criterion 4: check 1
+
+## USR-003C — Reviewed OIDC account-to-person linking
+
+Implement reviewed linking between an authenticated OIDC identity and a genealogy person. The
+genealogy database stores only an opaque account id plus an identity fingerprint; the identity
+database remains the authority for `(issuer, subject)`. A link requires an explicit admin
+review decision, is limited to one active link per person and per account, is audited, and
+rejects unknown, deactivated, or cross-issuer-ambiguous identities. No client-supplied account
+id can select the identity.
+
+### Dependencies
+
+- USR-003B
+
+### Discovery Iterations
+
+- 6
+
+### Deliverables
+
+- `src/onboarding/link.rs` implementing review, link, revoke, and replacement with audit rows.
+- `src/onboarding/account_map.rs` resolving `(issuer, subject)` to the identity account id and
+  rejecting cross-issuer ambiguity, unknown users, and deactivated users.
+- `docs/architecture/ONBOARDING-IDENTITY.md` defining the cross-database mapping and failure
+  rules.
+- Additive `genealogy/migrations/0008_onboarding_identity.sql` adding an identity fingerprint
+  column and uniqueness indexes.
+- `tests/onboarding_link.rs` with synthetic identities and people.
+
+### Acceptance Criteria
+
+- A link is created only after an explicit review decision and an existing active identity.
+- A same-subject identity from another issuer is rejected as ambiguous and never linked.
+- One person has at most one active link; replacement is audited and does not merge records.
+- Deleting or deactivating an identity does not silently transfer or preserve access.
+
+### Acceptance Checks
+
+- `cargo test --locked`
+- `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+- criterion 4: check 1
+
+## USR-003D — Admin-only invitation and linking API
+
+Expose the invitation and linking slices through admin-only HTTP endpoints. Authorization runs
+before any database read, response bodies carry stable ids and safe errors (`401/403/404/409`),
+and no names, tokens, hashes, or identity claims appear in logs. The Next.js proxy remains the
+CSRF trust boundary; the browser never supplies a role, account id, or approval status.
+
+### Dependencies
+
+- USR-003A
+- USR-003B
+- USR-003C
+
+### Discovery Iterations
+
+- 6
+
+### Deliverables
+
+- Admin routes for invitation create/resend/cancel/revoke and link review/revoke.
+- Handlers in `src/api.rs` delegating to the slice modules; no duplicated business logic.
+- `tests/onboarding_admin_api.rs` proving admin-only access, safe errors, and no PII leakage.
+- Reuse the existing idempotency and audit behavior.
+
+### Acceptance Criteria
+
+- A non-admin receives `403` before any database read on every onboarding route.
+- Unknown ids return `404`; duplicate or conflicting transitions return `409`.
+- Responses and logs contain no plaintext token, hash, display name, or identity claim.
+- Invitation and link operations are idempotent under retry.
+
+### Acceptance Checks
+
+- `cargo test --locked`
+- `cargo fmt --check`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+- criterion 4: check 1
 
 ## USR-004 — Self-service profile, photo, and personal document
 
