@@ -23,6 +23,11 @@ account. Preserve the last-active-admin guard and the existing audit behavior. R
 stage evidence that open PR #16 (read-only family tree) and PR #17 (this plan) exist and that
 no profile/asset engine has been merged, so this work must not duplicate them.
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - An additive migration that replaces global `subject` uniqueness with uniqueness on
@@ -62,6 +67,11 @@ Provide an admin-only preview with classification reasons and a dry-run that mak
 account or invitation changes. Never publish names or counts, and never infer living status
 from a missing death year or a model answer.
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - Additive `genealogy/migrations/0007_onboarding.sql` (or the next free version) for
@@ -88,14 +98,6 @@ from a missing death year or a model answer.
 
 - `cargo test --locked`
 - `cargo fmt --check`
-
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: check 1
-- criterion 3: manual: inspect the admin authorization test and that authorize() runs before the database read
-- criterion 4: check 1
-- criterion 5: manual: inspect committed fixtures and log/error output for private data
 
 ## USR-003 — Usernames, invitations, and account linking
 
@@ -141,15 +143,6 @@ implemented.
 - `cargo test --locked`
 - `cargo fmt --check`
 
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: check 1
-- criterion 3: check 1
-- criterion 4: manual: inspect credential generation and the diff for any birthday-derived secret
-- criterion 5: check 1
-- criterion 6: check 1
-
 ## USR-004 — Self-service profile, photo, and personal document
 
 Implement member-managed profile submissions using the additive tables from USR-002. A member
@@ -187,13 +180,6 @@ the profile/revision/media tables and reuse the existing review and authorizatio
 - `cargo test --locked`
 - `cargo fmt --check`
 
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: check 1
-- criterion 3: manual: inspect the retrieval/index guard and private media access tests
-- criterion 4: check 1
-
 ## USR-005 — Branch-scoped reviewer grants
 
 Add explicit application grants for branch review, independent of the genealogical Head of
@@ -225,13 +211,6 @@ claims require both applicable grants or an admin decision.
 
 - `cargo test --locked`
 - `cargo fmt --check`
-
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: check 1
-- criterion 3: manual: inspect that no authorization path reads the genealogical title
-- criterion 4: check 1
 
 ## USR-006 — Review decisions, publication, and audit
 
@@ -268,14 +247,6 @@ Family eligibility without appointing a successor.
 
 - `cargo test --locked`
 - `cargo fmt --check`
-
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: check 1
-- criterion 3: check 1
-- criterion 4: manual: inspect the retrieval guard and negative indexing test
-- criterion 5: check 1
 
 ## USR-007 — Admin/member/branch UI and end-to-end acceptance
 
@@ -314,9 +285,3 @@ authority for every test.
 - `cargo test --locked`
 - `git diff --check`
 
-### Acceptance Mapping
-
-- criterion 1: check 1
-- criterion 2: manual: inspect the Playwright synthetic-fixture assertions and authorization denials
-- criterion 3: manual: inspect git ls-files docs/tran/ and the staged diff
-- criterion 4: manual: run cargo gates, web typecheck/build, and the focused e2e suite
