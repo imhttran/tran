@@ -220,4 +220,19 @@ fn deactivated_admin_does_not_count_toward_the_last_admin() {
         .deactivate_user("synthetic-admin-b", "synthetic-admin-b")
         .expect_err("the remaining active admin must not be deactivatable");
     assert!(matches!(err, IdentityStoreError::LastAdmin));
+
+    // The deactivated admin's dormant role can still be revoked: it does not
+    // reduce the active-admin count.
+    identity
+        .change_role("synthetic-admin-a", Role::Admin, "synthetic-admin-b", false)
+        .expect("a deactivated user's admin role can be revoked");
+    let dormant: i64 = client
+        .query_one(
+            "SELECT count(*) FROM role_assignments r JOIN users u ON u.id = r.user_id \
+              WHERE u.subject = 'synthetic-admin-a' AND r.role = 'admin' AND r.revoked_at IS NULL",
+            &[],
+        )
+        .expect("count dormant admin roles")
+        .get(0);
+    assert_eq!(dormant, 0, "the dormant admin role must be revoked");
 }

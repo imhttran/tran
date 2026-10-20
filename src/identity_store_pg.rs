@@ -153,17 +153,7 @@ impl PgIdentityClient {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
         };
         let user_id: i64 = row.get(0);
-        let is_active_admin: bool = tx
-            .query_one(
-                "SELECT EXISTS ( \
-                     SELECT 1 FROM role_assignments r JOIN users u ON u.id = r.user_id \
-                      WHERE r.user_id = $1 AND r.role = 'admin' AND r.revoked_at IS NULL \
-                        AND u.deactivated_at IS NULL)",
-                &[&user_id],
-            )
-            .map_err(|err| IdentityStoreError::Database(err.to_string()))?
-            .get(0);
-        if is_active_admin {
+        if is_active_admin(&mut tx, user_id)? {
             ensure_not_last_admin(&mut tx)?;
         }
         tx.execute(
@@ -176,6 +166,19 @@ impl PgIdentityClient {
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
         Ok(())
     }
+}
+
+/// Whether `user_id` holds an unrevoked admin role and is not deactivated.
+fn is_active_admin(tx: &mut Transaction<'_>, user_id: i64) -> Result<bool, IdentityStoreError> {
+    tx.query_one(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM role_assignments r JOIN users u ON u.id = r.user_id \
+              WHERE r.user_id = $1 AND r.role = 'admin' AND r.revoked_at IS NULL \
+                AND u.deactivated_at IS NULL)",
+        &[&user_id],
+    )
+    .map(|row| row.get(0))
+    .map_err(|err| IdentityStoreError::Database(err.to_string()))
 }
 
 /// Fails with [`IdentityStoreError::LastAdmin`] when at most one active
@@ -292,7 +295,9 @@ impl IdentityClient for PgIdentityClient {
         let user_id: i64 = row.get(0);
 
         let action = if grant { "role.grant" } else { "role.revoke" };
-        if !grant && role == Role::Admin {
+        // Revoking a deactivated user's dormant admin role cannot reduce the
+        // active-admin count, so only an active admin target is guarded.
+        if !grant && role == Role::Admin && is_active_admin(&mut tx, user_id)? {
             ensure_not_last_admin(&mut tx)?;
         }
         if grant {
