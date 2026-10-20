@@ -29,7 +29,8 @@ use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::genealogy::{
-    appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
+    appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree,
+    GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -1149,34 +1150,53 @@ async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Re
 
     match result {
         Ok(Ok(graph)) => {
-            let people: Vec<_> = graph.people.iter().map(|person| serde_json::json!({
-                "record_id": person.person_key,
-                "person_label": person.display_name,
-                "evidence_status": person.evidence_status,
-                "aliases": person.aliases,
-            })).collect();
-            let links: Vec<_> = graph.links.iter().map(|link| serde_json::json!({
-                "from_id": link.from_key,
-                "to_id": link.to_key,
-                "kind": link.kind,
-                "evidence_status": link.evidence_status,
-                "evidence": evidence_json(&link.citations),
-            })).collect();
+            let people: Vec<_> = graph
+                .people
+                .iter()
+                .map(|person| {
+                    serde_json::json!({
+                        "record_id": person.person_key,
+                        "person_label": person.display_name,
+                        "evidence_status": person.evidence_status,
+                        "aliases": person.aliases,
+                    })
+                })
+                .collect();
+            let links: Vec<_> = graph
+                .links
+                .iter()
+                .map(|link| {
+                    serde_json::json!({
+                        "from_id": link.from_key,
+                        "to_id": link.to_key,
+                        "kind": link.kind,
+                        "evidence_status": link.evidence_status,
+                        "evidence": evidence_json(&link.citations),
+                    })
+                })
+                .collect();
             Json(serde_json::json!({
                 "people": people,
                 "links": links,
                 "truncated": graph.truncated,
-            })).into_response()
+            }))
+            .into_response()
         }
         Ok(Err(message)) => {
             eprintln!("api: genealogy tree failed: {message}");
-            error(StatusCode::SERVICE_UNAVAILABLE, "genealogy_unavailable",
-                "the genealogy store is unavailable")
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
         }
         Err(err) => {
             eprintln!("api: genealogy tree task failed: {err}");
-            error(StatusCode::INTERNAL_SERVER_ERROR, "genealogy_unavailable",
-                "the genealogy task failed")
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
         }
     }
 }
