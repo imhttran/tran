@@ -135,7 +135,7 @@ function FamilyTree() {
   function selectPerson(id: string) {
     if (!graph) return;
     // Expand only the hidden ancestor path; unrelated collapsed branches stay.
-    const nextCollapsed = revealPerson(graph, collapsed, id, byId);
+    const nextCollapsed = revealPerson(graph, collapsed, id);
     setCollapsed(nextCollapsed);
     setSelected(id);
     setSearch("");
