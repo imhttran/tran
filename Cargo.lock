@@ -1380,6 +1380,7 @@ dependencies = [
  "r2d2",
  "r2d2_postgres",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",
