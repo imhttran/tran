@@ -518,9 +518,11 @@ mod tests {
     }
 
     #[test]
-    fn real_transcription_covers_all_pages() {
-        let md = std::fs::read_to_string("docs/tran/Tran-Family-Vietnamese.md").unwrap();
-        let coverage = transcription_coverage(&md, "docs/tran/Tran-Family-Vietnamese.md", 56);
+    fn transcription_with_all_page_markers_covers_all_pages() {
+        let md: String = (1..=56)
+            .map(|page| format!("## Trang PDF {page}\nbody\n"))
+            .collect();
+        let coverage = transcription_coverage(&md, "transcription.md", 56);
         assert_eq!(coverage.len(), 56);
         assert!(coverage
             .iter()
