@@ -20,7 +20,7 @@
 //!   `undetermined` plus an explicit succession-policy request. No successor is
 //!   chosen automatically.
 
-use postgres::Client;
+use postgres::GenericClient;
 use serde::Serialize;
 
 use super::GenealogyError;
@@ -257,8 +257,8 @@ pub fn decide(input: &EligibilityInput) -> EligibilityDecision {
     }
 }
 
-fn verified_evidence(
-    client: &mut Client,
+fn verified_evidence<C: GenericClient>(
+    client: &mut C,
     person_id: i64,
     kind: &str,
     key: Option<&str>,
@@ -295,8 +295,8 @@ fn verified_evidence(
 /// A person key with no matching person returns an empty input that
 /// [`decide`] maps to `undetermined`, not an error. Assertions whose
 /// `review_status` is not `verified` are dropped and cannot support eligibility.
-pub fn load_input(
-    client: &mut Client,
+pub fn load_input<C: GenericClient>(
+    client: &mut C,
     person_key: &str,
     branch_key: &str,
 ) -> Result<EligibilityInput, GenealogyError> {

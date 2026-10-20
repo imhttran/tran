@@ -198,6 +198,73 @@ pub fn lookup_relationship(
     }
 }
 
+/// One person row for the authorized read API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordRow {
+    /// Stable person key.
+    pub person_key: String,
+    /// Display label from the catalog.
+    pub display_name: String,
+    /// Coarse relationship label. The detailed links stay in their own reads.
+    pub relationship: String,
+    /// `verified`, `needs_review`, or `unverified`.
+    pub evidence_status: String,
+    /// Evidence citations supporting verified assertions.
+    pub citations: Vec<Citation>,
+}
+
+/// Lists cataloged people with their evidence status and verified citations.
+///
+/// This is a read-only query. It never promotes a candidate assertion and never
+/// derives a relationship from a name.
+pub fn list_records(
+    client: &mut Client,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<RecordRow>, GenealogyError> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+    let rows = client
+        .query(
+            "SELECT person_id, person_key, display_name FROM person
+              ORDER BY person_key LIMIT $1 OFFSET $2",
+            &[&limit, &offset],
+        )
+        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let person_id: i64 = row.get(0);
+        let assertions = assertion_rows(client, person_id)?;
+        let verified = assertions
+            .iter()
+            .any(|assertion| assertion.review_status == "verified");
+        let needs_review = assertions.iter().any(|assertion| {
+            assertion.review_status == "needs_review" || assertion.review_status == "disputed"
+        });
+        let evidence_status = if verified {
+            "verified"
+        } else if needs_review {
+            "needs_review"
+        } else {
+            "unverified"
+        };
+        let citations = assertions
+            .iter()
+            .filter(|assertion| assertion.review_status == "verified")
+            .flat_map(|assertion| assertion.citations.iter().cloned())
+            .collect();
+        records.push(RecordRow {
+            person_key: row.get(1),
+            display_name: row.get(2),
+            relationship: "cataloged".to_string(),
+            evidence_status: evidence_status.to_string(),
+            citations,
+        });
+    }
+    Ok(records)
+}
+
 /// Returns every assertion that is not yet resolved.
 ///
 /// A resolved assertion is `verified` or `rejected`. Candidates in

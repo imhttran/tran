@@ -55,6 +55,9 @@ export type GenealogyRecord = {
 // when Rust recorded an appointment backed by verified evidence.
 export type HeadOfFamilyConclusion = {
   conclusion: string;
+  record_id?: string;
+  appointment_id?: string;
+  nomination_id?: string;
   head_label: string | null;
   evidence: EvidenceRef[];
   evidence_status: EvidenceStatus;
@@ -84,6 +87,9 @@ const ALLOWED_FIELDS = new Set<string>([
   "person_label",
   "relationship",
   "conclusion",
+  "record_id",
+  "appointment_id",
+  "nomination_id",
   "head_label",
   "evidence",
   "evidence_id",

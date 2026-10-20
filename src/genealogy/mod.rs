@@ -4,6 +4,7 @@
 //! `GENEALOGY_DATABASE_URL`. This module owns the explicit destination guard and
 //! the migration runner. It never falls back to the RAG `DATABASE_URL`.
 
+pub mod appointments;
 pub mod eligibility;
 pub mod label;
 pub mod migrate;
@@ -37,6 +38,9 @@ pub enum GenealogyError {
     /// A genealogy query failed.
     #[error("genealogy query failed: {0}")]
     Query(String),
+    /// A domain rule rejected the requested operation.
+    #[error("genealogy domain error: {0}")]
+    Domain(String),
     /// A migration file could not be applied.
     #[error("genealogy migration failed: {0}")]
     Migration(String),

@@ -29,6 +29,22 @@ Required API environment:
 | `JWKS_CACHE_TTL_SECS` | Optional JWKS cache lifetime. |
 | `AUTH_RATE_LIMIT` | Sensitive-operation rate limit. |
 | `DATABASE_URL` | PostgreSQL/pgvector connection string. |
+| `GENEALOGY_DATABASE_URL` | Separate genealogy database; no fallback to `DATABASE_URL`. |
+| `HOF_THIRD_BRANCH_KEY` | Verified third-branch identifier used by Head of Family writes. |
+
+Browser sign-in environment:
+
+| Variable | Purpose |
+| --- | --- |
+| `OIDC_ISSUER` | Provider issuer used by the login/callback routes. |
+| `OIDC_CLIENT_ID` | Registered OIDC client id. |
+| `OIDC_CLIENT_SECRET` | Optional confidential-client secret; server-side only. |
+| `OIDC_REDIRECT_URI` | Registered callback URL, for example `https://host/api/auth/callback`. |
+| `OIDC_AUTHORIZATION_ENDPOINT` | Optional explicit authorization endpoint. |
+| `OIDC_TOKEN_ENDPOINT` | Optional explicit token endpoint. |
+| `OIDC_END_SESSION_ENDPOINT` | Optional provider logout endpoint. |
+| `OIDC_SCOPES` | Optional scope list; default `openid profile email`. |
+| `OIDC_COOKIE_SECURE` | Set `false` only for local HTTP E2E; production remains Secure. |
 
 The browser never receives a token, subject, email, issuer, JWKS value, corpus
 grant list, or database URL. The HttpOnly `rag_session` cookie carries the
@@ -84,9 +100,17 @@ cargo run --locked --bin admin -- revoke-corpus --subject <sub> --corpus <corpus
 ```
 
 Admin HTTP operations are available for role and Head of Family workflows and
-are protected by the same policy. A role change is rejected if it would leave
-no active admin or if the target account does not exist; nothing is written on
-failure.
+are protected by the same policy. Account provisioning and deactivation are
+available through the admin API and the CLI. A role change is rejected if it
+would leave no active admin or if the target account does not exist; nothing is
+written on failure. Concurrent admin revocations are serialized so one active
+administrator remains.
+
+```bash
+# Provision/reactivate or deactivate an account
+cargo run --locked --bin admin -- provision --subject <sub> --issuer <issuer>
+cargo run --locked --bin admin -- deactivate --subject <sub>
+```
 
 Audit rules:
 
@@ -107,8 +131,24 @@ Audit rules:
   before reaching the API.
 - State-changing requests with a session require a CSRF header that matches the
   `rag_csrf` cookie.
-- Session and CSRF cookies are `Secure`, `HttpOnly` where applicable, and
-  `SameSite=Strict`.
+- Session and CSRF cookies use `SameSite=Lax` (needed for the authorization-code
+  redirect), `HttpOnly` for the session, and `Secure` outside the explicit local
+  HTTP E2E setting.
+
+### OIDC browser flow
+
+1. `/signin` links to `/api/auth/login` only when `OIDC_ISSUER` and
+   `OIDC_CLIENT_ID` are configured.
+2. `/api/auth/login` creates state, nonce, and a PKCE verifier in short-lived
+   HttpOnly cookies and redirects to the provider authorization endpoint.
+3. `/api/auth/callback` verifies state and nonce, exchanges the code with the
+   PKCE verifier, checks issuer/audience/expiry, and asks Rust `/api/account` to
+   verify the credential and load database roles/grants.
+4. Only a successful Rust verification sets the `rag_session` cookie and a CSRF
+   cookie. Tokens, client secrets, and provider configuration never reach the
+   browser.
+5. A failed exchange, mismatched state/nonce, expired token, provider outage, or
+   unprovisioned account redirects to `/signin` with an error and no session.
 
 ## Backup, migrations, and rollback
 

@@ -124,7 +124,7 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
                   event.preventDefault();
                   if (candidateLabel.trim() === "") return;
                   setPendingNomination({
-                    recordId: conclusion.conclusion,
+                    recordId: conclusion.record_id ?? conclusion.conclusion,
                     candidateLabel: candidateLabel.trim(),
                   });
                 }}
@@ -146,7 +146,11 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
               <div className="admin-controls">
                 <button
                   type="button"
-                  onClick={() => setPendingApprove(conclusion.conclusion)}
+                  onClick={() =>
+                    setPendingApprove(
+                      conclusion.nomination_id ?? conclusion.conclusion,
+                    )
+                  }
                   data-testid="approve-button"
                 >
                   Approve nomination
@@ -156,7 +160,8 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
                     event.preventDefault();
                     if (revokeReason.trim() === "") return;
                     setPendingRevoke({
-                      appointmentId: conclusion.conclusion,
+                      appointmentId:
+                        conclusion.appointment_id ?? conclusion.conclusion,
                       reason: revokeReason.trim(),
                     });
                   }}
