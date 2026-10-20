@@ -23,6 +23,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::ingest::IngestRejection;
@@ -66,6 +67,8 @@ impl AppState {
     /// request inside a blocking task: `reqwest::blocking` must not be
     /// constructed on a Tokio runtime thread.
     pub fn new(config: Config, corpus: impl Into<String>) -> Result<Self, String> {
+        let corpus: String = corpus.into();
+        let corpus = Corpus::new(&corpus).map_err(|err| err.to_string())?;
         let store = Arc::new(
             PgStore::connect(&config.database_url)
                 .map_err(|err| format!("connect to the document store: {err}"))?,
@@ -73,7 +76,7 @@ impl AppState {
         Ok(Self {
             config: Arc::new(config),
             store,
-            corpus: corpus.into(),
+            corpus: corpus.as_str().to_string(),
         })
     }
 

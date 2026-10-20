@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use rag_foundation::corpus::Corpus;
 use rag_foundation::fingerprint::{fingerprint, ChunkerConfig, FingerprintReader};
 use rag_foundation::ingest::IngestRejection;
 use rag_foundation::pipeline::{IngestOutcome, IngestPipeline, PipelineConfig, RecordingEmbedder};
@@ -57,6 +58,7 @@ impl FingerprintReader for FakeReader {
 
     fn rows_for_hash(
         &self,
+        corpus: &Corpus,
         content_hash: &str,
         source: &str,
     ) -> Result<Vec<StoredChunkRow>, String> {
@@ -66,12 +68,17 @@ impl FingerprintReader for FakeReader {
             .borrow()
             .iter()
             .filter(|row| {
-                row.chunk.content_hash == content_hash
+                row.chunk.corpus.as_deref() == Some(corpus.as_str())
+                    && row.chunk.content_hash == content_hash
                     && row.chunk.source.as_deref() == Some(source)
             })
             .cloned()
             .collect())
     }
+}
+
+fn corpus() -> Corpus {
+    Corpus::new("trusted").unwrap()
 }
 
 fn stored_row(hash: &str, source: &str) -> StoredChunkRow {
@@ -175,7 +182,7 @@ fn repeated_ingestion_of_an_unchanged_source_preserves_stored_data() {
     assert!(chunks > 0);
     assert_eq!(embedder.calls(), chunks);
     assert_eq!(replacer.counts().replacements, 1);
-    let stored_before = replacer.rows_for("text-layer.pdf");
+    let stored_before = replacer.rows_for(&corpus(), "text-layer.pdf");
     assert_eq!(stored_before.len(), chunks);
 
     // Second run: the stored fingerprint matches, so the pipeline skips
@@ -201,7 +208,7 @@ fn repeated_ingestion_of_an_unchanged_source_preserves_stored_data() {
     assert_eq!(embedder.calls(), 0, "unchanged source is not re-embedded");
     assert_eq!(replacer.counts().replacements, 1, "no second replacement");
     assert_eq!(
-        replacer.rows_for("text-layer.pdf"),
+        replacer.rows_for(&corpus(), "text-layer.pdf"),
         stored_before,
         "stored data is preserved by a repeated ingestion"
     );
@@ -222,7 +229,7 @@ fn forced_replacement_failure_rolls_back_and_preserves_stored_data() {
             "old-hash",
         )
         .unwrap();
-    let before = replacer.rows_for("text-layer.pdf");
+    let before = replacer.rows_for(&corpus(), "text-layer.pdf");
     assert!(!before.is_empty());
 
     // Force a failure after the first insert of the next replacement.
@@ -235,7 +242,7 @@ fn forced_replacement_failure_rolls_back_and_preserves_stored_data() {
 
     assert!(result.is_err(), "the injected failure surfaces as an error");
     assert_eq!(
-        replacer.rows_for("text-layer.pdf"),
+        replacer.rows_for(&corpus(), "text-layer.pdf"),
         before,
         "rollback leaves the prior rows unchanged"
     );

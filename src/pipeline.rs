@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use thiserror::Error;
 
+use crate::corpus::{Corpus, CorpusError};
 use crate::document::Chunk;
 use crate::embedding::{Embedder, EmbeddingError};
 use crate::fingerprint::{
@@ -38,6 +39,9 @@ pub enum PipelineError {
     /// The source was rejected by the pre-effect guard: no effect occurred.
     #[error(transparent)]
     Rejected(#[from] IngestRejection),
+    /// The configured corpus identity was invalid. No effect occurred.
+    #[error(transparent)]
+    Corpus(#[from] CorpusError),
     /// The unchanged-source read failed. No effect occurred.
     #[error("unchanged-source read failed: {0}")]
     Fingerprint(String),
@@ -224,9 +228,11 @@ where
         content_hash: &str,
         chunks: Vec<Chunk>,
     ) -> Result<IngestOutcome, PipelineError> {
-        let decision = unchanged_source(self.reader, source, content_hash).map_err(|_| {
-            PipelineError::Fingerprint(format!("unchanged-source read failed for {source}"))
-        })?;
+        let corpus = Corpus::new(&self.config.corpus)?;
+        let decision =
+            unchanged_source(self.reader, &corpus, source, content_hash).map_err(|_| {
+                PipelineError::Fingerprint(format!("unchanged-source read failed for {source}"))
+            })?;
         if let UnchangedSource::Unchanged { rows } = decision {
             return Ok(IngestOutcome::Unchanged {
                 fingerprint: content_hash.to_string(),
@@ -245,7 +251,7 @@ where
                 chunk_index: chunk.chunk_index as i32,
                 language: Some(chunk.language.clone()),
                 page: chunk.page.map(|page| page as i32),
-                corpus: Some(self.config.corpus.clone()),
+                corpus: Some(corpus.as_str().to_string()),
                 content_hash: content_hash.to_string(),
                 embed_model: self.config.embed_model.clone(),
                 embedding_dim: embedding.len() as i32,
@@ -257,7 +263,7 @@ where
 
         // Fail before the transaction starts when an embedding width is wrong.
         validate_all_dims(&stored).map_err(PipelineError::Replace)?;
-        self.replacer.replace_source(source, &stored)?;
+        self.replacer.replace_source(&corpus, source, &stored)?;
         Ok(IngestOutcome::Replaced {
             fingerprint: content_hash.to_string(),
             chunks: stored.len(),
@@ -356,6 +362,7 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            _corpus: &Corpus,
             _content_hash: &str,
             _source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {
@@ -375,6 +382,7 @@ mod tests {
 
         fn rows_for_hash(
             &self,
+            _corpus: &Corpus,
             content_hash: &str,
             source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {
@@ -385,6 +393,10 @@ mod tests {
                 Ok(Vec::new())
             }
         }
+    }
+
+    fn corpus(name: &str) -> Corpus {
+        Corpus::new(name).unwrap()
     }
 
     fn stored_row(hash: &str, source: &str) -> StoredChunkRow {
@@ -524,7 +536,12 @@ mod tests {
         assert_eq!(embedder.calls(), chunks);
         assert_eq!(replacer.counts().replacements, 1);
         assert_eq!(replacer.counts().rows_written, chunks);
-        assert_eq!(replacer.rows_for("text-layer.pdf").len(), chunks);
+        assert_eq!(
+            replacer
+                .rows_for(&corpus("trusted"), "text-layer.pdf")
+                .len(),
+            chunks
+        );
     }
 
     #[test]
@@ -545,7 +562,7 @@ mod tests {
         assert_eq!(chunks, 2);
         assert_eq!(embedder.calls(), 2);
         assert_eq!(replacer.counts().replacements, 1);
-        let rows = replacer.rows_for("policy.md");
+        let rows = replacer.rows_for(&corpus("trusted"), "policy.md");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].section.as_deref(), Some("Intro"));
         assert_eq!(rows[1].section.as_deref(), Some("Fees"));
@@ -574,7 +591,7 @@ mod tests {
             panic!("expected a replacement, got {outcome:?}");
         };
         assert_eq!(chunks, 1);
-        let rows = replacer.rows_for("note.txt");
+        let rows = replacer.rows_for(&corpus("trusted"), "note.txt");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].section.as_deref(), Some("note.txt"));
         assert_eq!(rows[0].content, "## not a heading plain body");

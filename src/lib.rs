@@ -16,6 +16,7 @@ pub mod api;
 pub mod bilingual;
 pub mod chunker;
 pub mod config;
+pub mod corpus;
 pub mod document;
 pub mod embedding;
 pub mod evaluation;
