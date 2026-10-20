@@ -16,6 +16,7 @@ pub mod account_map;
 pub mod candidate;
 pub mod invitation;
 pub mod link;
+pub mod profile;
 pub mod reservation;
 pub mod username;
 
@@ -25,6 +26,10 @@ pub use candidate::{
     PreviewSummary, Reason,
 };
 pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
-pub use link::{link_for_person, link_reviewed, revoke_link, LinkDecision, LinkError, LinkRecord};
+pub use link::{
+    link_for_account, link_for_person, link_reviewed, revoke_link, LinkDecision, LinkError,
+    LinkRecord,
+};
+pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
 pub use username::NameParts;

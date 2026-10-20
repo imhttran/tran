@@ -120,6 +120,8 @@ pub enum Operation {
     DocumentStatus,
     /// Reading the caller's account.
     Account,
+    /// Reading the caller's own private member profile.
+    ProfileRead,
     /// Changing a role assignment (transactional and audited).
     RoleChange,
     /// Reading authorized genealogy records and evidence.
@@ -138,7 +140,9 @@ pub enum Operation {
 
 impl Operation {
     /// The minimum role required for the operation, from the MVP permission
-    /// table. `None` means public and non-sensitive (only `/api/health`).
+    /// table. `None` means the operation has no role gate: only the
+    /// authenticated self-service operations (account and profile reads) use
+    /// it, and [`decide`] still requires a verified identity for those.
     pub fn required_role(&self) -> Option<Role> {
         match self {
             Operation::Query | Operation::DocumentStatus | Operation::GenealogyRead => {
@@ -151,6 +155,7 @@ impl Operation {
             | Operation::OnboardingPreview
             | Operation::OnboardingInvite
             | Operation::OnboardingLink => Some(Role::Admin),
+            Operation::ProfileRead => None,
         }
     }
 
@@ -159,7 +164,10 @@ impl Operation {
     pub fn is_read(&self) -> bool {
         matches!(
             self,
-            Operation::DocumentStatus | Operation::GenealogyRead | Operation::Account
+            Operation::DocumentStatus
+                | Operation::GenealogyRead
+                | Operation::Account
+                | Operation::ProfileRead
         )
     }
 
@@ -173,6 +181,7 @@ impl Operation {
             Operation::GenealogyNominate => "genealogy_nominate",
             Operation::DocumentStatus => "document_status",
             Operation::Account => "account",
+            Operation::ProfileRead => "profile_read",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
             Operation::OnboardingPreview => "onboarding_preview",
             Operation::OnboardingInvite => "onboarding_invite",
@@ -193,25 +202,19 @@ pub enum Decision {
 
 /// The single place that turns a verified identity into an allow/deny decision.
 pub fn decide(identity: Option<&VerifiedIdentity>, operation: Operation) -> Decision {
-    // Every authenticated account may read its own account information. This is
-    // deliberately not a role check: a newly provisioned user has no role yet.
-    if operation == Operation::Account {
-        return match identity {
-            Some(_) => Decision::Allow,
-            None => Decision::Unauthenticated,
-        };
-    }
-    let required = match operation.required_role() {
-        Some(role) => role,
-        None => return Decision::Allow,
-    };
     let Some(identity) = identity else {
         return Decision::Unauthenticated;
     };
-    if identity.has_role(required) {
-        Decision::Allow
-    } else {
-        Decision::Forbidden
+    // Every authenticated account may read its own account and its own private
+    // profile. This is deliberately not a role check: a newly provisioned or
+    // linked member may not hold a role yet.
+    if matches!(operation, Operation::Account | Operation::ProfileRead) {
+        return Decision::Allow;
+    }
+    match operation.required_role() {
+        Some(required) if identity.has_role(required) => Decision::Allow,
+        Some(_) => Decision::Forbidden,
+        None => Decision::Allow,
     }
 }
 
@@ -230,6 +233,7 @@ mod tests {
             Operation::Query,
             Operation::DocumentStatus,
             Operation::Account,
+            Operation::ProfileRead,
             Operation::RoleChange,
             Operation::HeadOfFamilyApproval,
             Operation::OnboardingPreview,
@@ -254,6 +258,10 @@ mod tests {
         );
         assert_eq!(decide(Some(&viewer), Operation::Account), Decision::Allow);
         assert_eq!(
+            decide(Some(&viewer), Operation::ProfileRead),
+            Decision::Allow
+        );
+        assert_eq!(
             decide(Some(&viewer), Operation::GenealogyRead),
             Decision::Allow
         );
@@ -277,6 +285,10 @@ mod tests {
         assert_eq!(decide(Some(&editor), Operation::Ingest), Decision::Allow);
         assert_eq!(decide(Some(&editor), Operation::Account), Decision::Allow);
         assert_eq!(
+            decide(Some(&editor), Operation::ProfileRead),
+            Decision::Allow
+        );
+        assert_eq!(
             decide(Some(&editor), Operation::GenealogyNominate),
             Decision::Allow
         );
@@ -291,6 +303,10 @@ mod tests {
         let admin = identity(&[Role::Admin]);
         assert_eq!(decide(Some(&admin), Operation::RoleChange), Decision::Allow);
         assert_eq!(decide(Some(&admin), Operation::Account), Decision::Allow);
+        assert_eq!(
+            decide(Some(&admin), Operation::ProfileRead),
+            Decision::Allow
+        );
         assert_eq!(
             decide(Some(&admin), Operation::HeadOfFamilyApproval),
             Decision::Allow
@@ -315,6 +331,10 @@ mod tests {
     fn authenticated_account_without_a_role_can_read_own_account() {
         let account = VerifiedIdentity::new("sub-1", "https://issuer", vec![], vec![]);
         assert_eq!(decide(Some(&account), Operation::Account), Decision::Allow);
+        assert_eq!(
+            decide(Some(&account), Operation::ProfileRead),
+            Decision::Allow
+        );
         assert_eq!(
             decide(Some(&account), Operation::GenealogyRead),
             Decision::Forbidden
