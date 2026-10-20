@@ -24,7 +24,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 9] = [
+const GENEALOGY_MIGRATIONS: [&str; 10] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -34,6 +34,7 @@ const GENEALOGY_MIGRATIONS: [&str; 9] = [
     "genealogy/migrations/0007_onboarding.sql",
     "genealogy/migrations/0008_onboarding_identity.sql",
     "genealogy/migrations/0009_onboarding_link_audit.sql",
+    "genealogy/migrations/0010_onboarding_foreign_keys.sql",
 ];
 
 fn identity_dsn() -> Option<String> {
@@ -129,6 +130,7 @@ fn links_are_reviewed_scoped_and_reject_cross_issuer_ambiguity() {
         Client::connect(&genealogy_dsn, NoTls).expect("connect to the disposable genealogy DB");
     apply_migrations(&mut identity, &IDENTITY_MIGRATIONS);
     apply_migrations(&mut genealogy, &GENEALOGY_MIGRATIONS);
+    clear_orphans(&mut genealogy);
 
     let prefix = unique_prefix();
     let result = run_scenario(&mut identity, &mut genealogy, &prefix);
@@ -287,11 +289,37 @@ fn run_scenario(identity: &mut Client, genealogy: &mut Client, prefix: &str) -> 
 
 fn cleanup(genealogy: &mut Client, prefix: &str) {
     let pattern = format!("{prefix}%");
-    // Audit and link rows cascade from person.
+    // Delete child rows explicitly so cleanup is correct even on a database
+    // upgraded from a schema version whose foreign keys were missing.
+    let _ = genealogy.execute(
+        "DELETE FROM onboarding_link_audit WHERE person_id IN \
+         (SELECT person_id FROM person WHERE person_key LIKE $1)",
+        &[&pattern],
+    );
+    let _ = genealogy.execute(
+        "DELETE FROM onboarding_person_account_link WHERE person_id IN \
+         (SELECT person_id FROM person WHERE person_key LIKE $1)",
+        &[&pattern],
+    );
     let _ = genealogy.execute("DELETE FROM person WHERE person_key LIKE $1", &[&pattern]);
 }
 
 fn cleanup_identity(identity: &mut Client, prefix: &str) {
     let pattern = format!("{prefix}%");
     let _ = identity.execute("DELETE FROM users WHERE subject LIKE $1", &[&pattern]);
+}
+
+/// Removes orphaned link rows left by an earlier schema version without foreign
+/// keys. Safe on the disposable test database only.
+fn clear_orphans(genealogy: &mut Client) {
+    let _ = genealogy.execute(
+        "DELETE FROM onboarding_link_audit a \
+          WHERE NOT EXISTS (SELECT 1 FROM person p WHERE p.person_id = a.person_id)",
+        &[],
+    );
+    let _ = genealogy.execute(
+        "DELETE FROM onboarding_person_account_link l \
+          WHERE NOT EXISTS (SELECT 1 FROM person p WHERE p.person_id = l.person_id)",
+        &[],
+    );
 }
