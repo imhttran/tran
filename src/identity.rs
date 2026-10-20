@@ -130,6 +130,10 @@ pub enum Operation {
     HeadOfFamilyApproval,
     /// Reading the living-person onboarding candidate preview.
     OnboardingPreview,
+    /// Creating, resending, or revoking family-member invitations.
+    OnboardingInvite,
+    /// Reviewing or revoking an account-to-person link.
+    OnboardingLink,
 }
 
 impl Operation {
@@ -144,7 +148,9 @@ impl Operation {
             Operation::Account
             | Operation::RoleChange
             | Operation::HeadOfFamilyApproval
-            | Operation::OnboardingPreview => Some(Role::Admin),
+            | Operation::OnboardingPreview
+            | Operation::OnboardingInvite
+            | Operation::OnboardingLink => Some(Role::Admin),
         }
     }
 
@@ -169,6 +175,8 @@ impl Operation {
             Operation::Account => "account",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
             Operation::OnboardingPreview => "onboarding_preview",
+            Operation::OnboardingInvite => "onboarding_invite",
+            Operation::OnboardingLink => "onboarding_link",
         }
     }
 }
@@ -224,6 +232,9 @@ mod tests {
             Operation::Account,
             Operation::RoleChange,
             Operation::HeadOfFamilyApproval,
+            Operation::OnboardingPreview,
+            Operation::OnboardingInvite,
+            Operation::OnboardingLink,
         ] {
             assert_eq!(decide(None, operation), Decision::Unauthenticated);
         }
@@ -248,6 +259,14 @@ mod tests {
         );
         assert_eq!(
             decide(Some(&viewer), Operation::GenealogyNominate),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::OnboardingInvite),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::OnboardingLink),
             Decision::Forbidden
         );
     }
@@ -282,6 +301,14 @@ mod tests {
             Decision::Allow
         );
         assert_eq!(decide(Some(&admin), Operation::Ingest), Decision::Allow);
+        assert_eq!(
+            decide(Some(&admin), Operation::OnboardingInvite),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&admin), Operation::OnboardingLink),
+            Decision::Allow
+        );
     }
 
     #[test]

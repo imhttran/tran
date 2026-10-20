@@ -37,7 +37,9 @@ use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
-use crate::onboarding::{self, CandidatePreview, PreviewSummary};
+use crate::onboarding::{
+    self, link, AccountMapError, CandidatePreview, LinkDecision, LinkError, PreviewSummary,
+};
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
@@ -193,6 +195,23 @@ impl AppState {
             .route(
                 "/api/admin/family-members/candidates",
                 get(family_member_candidates),
+            )
+            .route(
+                "/api/admin/family-members/invitations",
+                post(create_invitation),
+            )
+            .route(
+                "/api/admin/family-members/invitations/{id}/resend",
+                post(resend_invitation),
+            )
+            .route(
+                "/api/admin/family-members/invitations/{id}/revoke",
+                post(revoke_invitation),
+            )
+            .route("/api/admin/family-members/links", post(create_link))
+            .route(
+                "/api/admin/family-members/links/{id}/revoke",
+                post(revoke_link),
             )
             .route("/api/admin/users", post(provision_user))
             .route(
@@ -1807,6 +1826,448 @@ fn preview_response(preview: &CandidatePreview) -> Response {
         },
     };
     Json(body).into_response()
+}
+
+// --- onboarding administration ---------------------------------------------
+
+/// Default invitation lifetime: seven days.
+const DEFAULT_INVITATION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// Longest accepted invitation lifetime: thirty days.
+const MAX_INVITATION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+#[derive(Deserialize)]
+struct CreateInvitationRequest {
+    person_key: String,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CreateLinkRequest {
+    person_key: String,
+    issuer: String,
+    subject: String,
+    decision: String,
+}
+
+/// Resolves an opaque person key to its genealogy id.
+fn person_id_for_key(
+    client: &mut postgres::Client,
+    person_key: &str,
+) -> Result<Option<i64>, String> {
+    client
+        .query_opt(
+            "SELECT person_id FROM person WHERE person_key = $1",
+            &[&person_key],
+        )
+        .map_err(|err| err.to_string())
+        .map(|row| row.map(|row| row.get(0)))
+}
+
+fn invitation_error(err: onboarding::InvitationError) -> Response {
+    match err {
+        onboarding::InvitationError::UnknownPerson => {
+            error(StatusCode::NOT_FOUND, "unknown_person", "no such person")
+        }
+        onboarding::InvitationError::InvalidToken => error(
+            StatusCode::NOT_FOUND,
+            "unknown_invitation",
+            "no such invitation",
+        ),
+        onboarding::InvitationError::Expired => error(
+            StatusCode::CONFLICT,
+            "invitation_expired",
+            "the invitation has expired",
+        ),
+        onboarding::InvitationError::AlreadyAccepted => error(
+            StatusCode::CONFLICT,
+            "invitation_accepted",
+            "the invitation was already accepted",
+        ),
+        onboarding::InvitationError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invitation_unavailable",
+            "the invitation store is unavailable",
+        ),
+    }
+}
+
+fn account_map_error(err: AccountMapError) -> Response {
+    match err {
+        AccountMapError::InvalidIdentity => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_identity",
+            "issuer and subject are required",
+        ),
+        AccountMapError::UnknownIdentity => error(
+            StatusCode::NOT_FOUND,
+            "identity_not_registered",
+            "the identity is not registered",
+        ),
+        AccountMapError::DeactivatedIdentity => error(
+            StatusCode::CONFLICT,
+            "identity_deactivated",
+            "the identity is deactivated",
+        ),
+        AccountMapError::AmbiguousIdentity => error(
+            StatusCode::CONFLICT,
+            "identity_ambiguous",
+            "the identity is ambiguous across issuers",
+        ),
+        AccountMapError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "identity_unavailable",
+            "the identity store is unavailable",
+        ),
+    }
+}
+
+fn link_error(err: LinkError) -> Response {
+    match err {
+        LinkError::UnknownPerson | LinkError::UnknownLink => error(
+            StatusCode::NOT_FOUND,
+            "unknown_link",
+            "no such person or link",
+        ),
+        LinkError::AlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "already_linked",
+            "the person or account is already linked",
+        ),
+        LinkError::InvalidReviewer => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_reviewer",
+            "a reviewer is required",
+        ),
+        LinkError::Rejected => error(
+            StatusCode::CONFLICT,
+            "link_rejected",
+            "the review rejected the link",
+        ),
+        LinkError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "link_unavailable",
+            "the link store is unavailable",
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn create_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateInvitationRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let person_key = request.person_key.trim().to_string();
+    if person_key.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_person",
+            "person_key must not be empty",
+        );
+    }
+    let ttl = request
+        .ttl_secs
+        .unwrap_or(DEFAULT_INVITATION_TTL_SECS)
+        .clamp(1, MAX_INVITATION_TTL_SECS);
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let task_person_key = person_key.clone();
+
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<onboarding::IssuedInvitation, Response> {
+            let mut client = open_genealogy(&config).map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "genealogy_unavailable",
+                    "the genealogy store is unavailable",
+                )
+            })?;
+            let person_id = person_id_for_key(&mut client, &task_person_key)
+                .map_err(|_| {
+                    error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "invitation_failed",
+                        "the invitation failed",
+                    )
+                })?
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_person", "no such person"))?;
+            onboarding::create(&mut client, person_id, Duration::from_secs(ttl), &actor)
+                .map_err(invitation_error)
+        })
+        .await;
+
+    match result {
+        Ok(Ok(invitation)) => Json(serde_json::json!({
+            "ok": true,
+            "invitation_id": invitation.invitation_id,
+            "person_key": person_key,
+            "token": invitation.token,
+            "expires_at": invitation.expires_at,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn resend_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(invitation_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<onboarding::IssuedInvitation, Response> {
+            let mut client = open_genealogy(&config).map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "genealogy_unavailable",
+                    "the genealogy store is unavailable",
+                )
+            })?;
+            let row = client
+                .query_opt(
+                    "SELECT person_id, status FROM onboarding_invitation WHERE invitation_id = $1",
+                    &[&invitation_id],
+                )
+                .map_err(|_| {
+                    error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "invitation_failed",
+                        "the invitation failed",
+                    )
+                })?
+                .ok_or_else(|| {
+                    error(
+                        StatusCode::NOT_FOUND,
+                        "unknown_invitation",
+                        "no such invitation",
+                    )
+                })?;
+            let person_id: i64 = row.get(0);
+            let status: String = row.get(1);
+            if status == "accepted" {
+                return Err(error(
+                    StatusCode::CONFLICT,
+                    "invitation_accepted",
+                    "the invitation was already accepted",
+                ));
+            }
+            // A pending invitation is revoked before a replacement is issued. An
+            // already revoked or expired row is left as history.
+            let _ = onboarding::revoke(&mut client, invitation_id);
+            onboarding::create(
+                &mut client,
+                person_id,
+                Duration::from_secs(DEFAULT_INVITATION_TTL_SECS),
+                &actor,
+            )
+            .map_err(invitation_error)
+        })
+        .await;
+
+    match result {
+        Ok(Ok(invitation)) => Json(serde_json::json!({
+            "ok": true,
+            "invitation_id": invitation.invitation_id,
+            "token": invitation.token,
+            "expires_at": invitation.expires_at,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation resend task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn revoke_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(invitation_id): Path<i64>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingInvite) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        onboarding::revoke(&mut client, invitation_id).map_err(invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true, "revoked": true })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation revoke task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn create_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateLinkRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingLink) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let person_key = request.person_key.trim().to_string();
+    let issuer = request.issuer.trim().to_string();
+    let subject = request.subject.trim().to_string();
+    if person_key.is_empty() || issuer.is_empty() || subject.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_link_request",
+            "person_key, issuer, and subject are required",
+        );
+    }
+    let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
+        "approve" | "approved" => LinkDecision::Approve,
+        "reject" | "rejected" => LinkDecision::Reject,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_decision",
+                "decision must be approve or reject",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let task_person_key = person_key.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut identity_client = postgres::Client::connect(&config.database_url, postgres::NoTls)
+            .map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "identity_unavailable",
+                    "the identity store is unavailable",
+                )
+            })?;
+        let account = onboarding::resolve_account(&mut identity_client, &issuer, &subject)
+            .map_err(account_map_error)?;
+        let mut genealogy = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let person_id = person_id_for_key(&mut genealogy, &task_person_key)
+            .map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "link_failed",
+                    "the link failed",
+                )
+            })?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_person", "no such person"))?;
+        link::link_reviewed(&mut genealogy, person_id, &account, decision, &actor)
+            .map_err(link_error)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(Some(record))) => Json(serde_json::json!({
+            "ok": true,
+            "linked": true,
+            "link_id": record.link_id,
+            "person_key": person_key,
+        }))
+        .into_response(),
+        Ok(Ok(None)) => Json(serde_json::json!({
+            "ok": true,
+            "linked": false,
+            "person_key": person_key,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: link task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "link_failed",
+                "the link failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn revoke_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(link_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingLink) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        link::revoke_link(&mut client, link_id, &actor).map_err(link_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true, "revoked": true })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: link revoke task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "link_failed",
+                "the link failed",
+            )
+        }
+    }
 }
 
 #[cfg(test)]
