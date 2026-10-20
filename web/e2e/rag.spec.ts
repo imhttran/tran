@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -40,10 +41,40 @@ test.beforeEach(async ({ context }) => {
   ]);
 });
 
+// A local model can take minutes per answer. Wait for the real /api/query
+// response itself instead of a fixed UI timeout, so a slow answer is never
+// mistaken for a wrong one and a retry never clicks a still-disabled button.
+const ANSWER_TIMEOUT = 5 * 60_000;
+
+async function ask(page: Page) {
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith("/api/query"), { timeout: ANSWER_TIMEOUT }),
+    page.getByTestId("ask-button").click(),
+  ]);
+  expect(response.status()).toBe(200);
+}
+
+// Live generation is stochastic; allow a bounded retry for a grounded, cited
+// answer before failing the browser check.
+async function askUntilCited(page: Page, answer: RegExp, source: RegExp) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ask(page);
+    try {
+      await expect(page.getByTestId("answer")).toContainText(answer, { timeout: 5_000 });
+      await expect(page.getByTestId("sources")).toContainText(source, { timeout: 5_000 });
+      return;
+    } catch {
+      // Retry the question; the next generation may cite the expected source.
+    }
+  }
+  throw new Error(`no answer matching ${answer} cited ${source} after 3 attempts`);
+}
+
 test.describe.serial("RUST-008A browser integration", () => {
   test("upload PDF, verify page; upload Markdown, verify cited answer", async ({
     page,
   }) => {
+    test.setTimeout(6 * ANSWER_TIMEOUT); // Up to three attempts for each of two questions.
     const requests: string[] = [];
     page.on("request", (request) => requests.push(request.url()));
 
@@ -68,24 +99,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     await page
       .getByTestId("question-input")
       .fill("What text appears on page two of the PDF document?");
-    // Live generation is stochastic; allow a bounded retry for a grounded
-    // page citation before failing the browser check.
-    let pdfAnswered = false;
-    for (let attempt = 0; attempt < 3 && !pdfAnswered; attempt++) {
-      await page.getByTestId("ask-button").click();
-      try {
-        await expect(page.getByTestId("answer")).toContainText(/page two|page 2/i, {
-          timeout: 30_000,
-        });
-        await expect(page.getByTestId("sources")).toContainText(/page 2/i, {
-          timeout: 30_000,
-        });
-        pdfAnswered = true;
-      } catch {
-        // Retry the question; the next generation may ground on page 2.
-      }
-    }
-    expect(pdfAnswered).toBeTruthy();
+    await askUntilCited(page, /page two|page 2/i, /page 2/i);
     await page.screenshot({
       path: path.join(screenshots, "pdf-page-answer.png"),
       fullPage: true,
@@ -106,9 +120,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     await page
       .getByTestId("question-input")
       .fill("What happens if someone misses a payment?");
-    await page.getByTestId("ask-button").click();
-    await expect(page.getByTestId("answer")).toContainText("grace period");
-    await expect(page.getByTestId("sources")).toContainText("loan-policy.md");
+    await askUntilCited(page, /grace period/, /loan-policy\.md/);
     await page.screenshot({
       path: path.join(screenshots, "markdown-answer.png"),
       fullPage: true,

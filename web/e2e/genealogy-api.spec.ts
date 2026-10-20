@@ -5,14 +5,16 @@ import { test, expect } from "@playwright/test";
 const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN;
 const VIEWER_TOKEN = process.env.E2E_VIEWER_TOKEN;
+// A different admin approves: a nominator cannot approve their own nomination.
+const APPROVER_TOKEN = process.env.E2E_APPROVER_TOKEN;
 
 const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
 test.describe.serial("genealogy API integration", () => {
-  test("admin reads synthetic records, nominates, approves, and revokes", async ({
+  test("admin reads synthetic records, nominates, a second admin approves, and revokes", async ({
     request,
   }) => {
-    test.skip(!ADMIN_TOKEN, "E2E_ADMIN_TOKEN not provided by the harness");
+    test.skip(!ADMIN_TOKEN || !APPROVER_TOKEN, "admin tokens not provided by the harness");
 
     const records = await request.get(`${API_URL}/api/genealogy/records`, {
       headers: auth(ADMIN_TOKEN!),
@@ -71,9 +73,15 @@ test.describe.serial("genealogy API integration", () => {
     expect(nomination.status()).toBe(200);
     const nominationBody = (await nomination.json()) as { nomination_id: number };
 
-    const approval = await request.post(
+    const selfApproval = await request.post(
       `${API_URL}/api/genealogy/nominations/${nominationBody.nomination_id}`,
       { headers: auth(ADMIN_TOKEN!), data: { approve: true } },
+    );
+    expect(selfApproval.status()).toBe(409);
+
+    const approval = await request.post(
+      `${API_URL}/api/genealogy/nominations/${nominationBody.nomination_id}`,
+      { headers: auth(APPROVER_TOKEN!), data: { approve: true } },
     );
     expect(approval.status()).toBe(200);
     const approvalBody = (await approval.json()) as { appointment_id: number };

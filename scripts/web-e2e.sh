@@ -76,20 +76,23 @@ export E2E_ADMIN_TOKEN
 export E2E_SESSION_TOKEN="$E2E_ADMIN_TOKEN"
 E2E_VIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-viewer --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_VIEWER_TOKEN
+# A second admin: a nomination cannot be approved by its own nominator.
+E2E_APPROVER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-approver --role admin --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_APPROVER_TOKEN
 
 echo "web-e2e: seeding test identities"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/007_user_lifecycle.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER')" >/dev/null
+	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject = 'e2e-admin'" >/dev/null
+	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject = 'e2e-viewer'" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
+	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null
 
 if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
 	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
@@ -129,9 +132,9 @@ cleanup() {
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM
