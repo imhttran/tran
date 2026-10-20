@@ -307,7 +307,7 @@ function FamilyTree({ role }: { role: Role | null }) {
                           return (
                             <li key={i}>
                               <button type="button" className="family-text-button"
-                                onClick={() => selectPerson(other?.record_id ?? selected)}>
+                                onClick={() => { if (other) selectPerson(other.record_id); }}>
                                 {other?.person_label ?? "Unknown"}
                               </button>
                               <span className="meta"> {link.kind.replace("_", " ")} · </span>
