@@ -16,7 +16,6 @@
 use thiserror::Error;
 
 use crate::onboarding::account_map::IdentityAccount;
-use crate::onboarding::link::{link_for_account, LinkError};
 
 /// One current private profile field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +48,8 @@ pub enum ProfileError {
     Database(String),
 }
 
-impl From<LinkError> for ProfileError {
-    fn from(err: LinkError) -> Self {
+impl From<postgres::Error> for ProfileError {
+    fn from(err: postgres::Error) -> Self {
         ProfileError::Database(err.to_string())
     }
 }
@@ -58,31 +57,28 @@ impl From<LinkError> for ProfileError {
 /// Reads the profile owned by `account`.
 ///
 /// `account` must come from [`crate::onboarding::resolve_account`], which rejects
-/// a deactivated identity before this function is reached. The lookup is
-/// anchored on both the opaque account id and the one-way identity fingerprint.
-/// A missing link returns `Ok(None)` so the API can say "unlinked" without
-/// returning any private field. A revoked link is deleted by
-/// [`crate::onboarding::revoke_link`], so it also returns `Ok(None)`.
+/// a deactivated identity before this function is reached.
+///
+/// Ownership and data access are one statement. The `onboarding_person_account_link`
+/// row, the linked person, and the current private values are read in the same
+/// PostgreSQL statement, so a concurrent revocation or replacement cannot slip
+/// between an authorization lookup and the profile read. A missing link returns
+/// `Ok(None)` without returning any private field, and a revoked link is deleted
+/// by [`crate::onboarding::revoke_link`], so it also returns `Ok(None)`.
 pub fn read_own_profile(
     client: &mut postgres::Client,
     account: &IdentityAccount,
 ) -> Result<Option<ProfileView>, ProfileError> {
-    let Some(link) = link_for_account(client, account.account_id, &account.identity_fingerprint)?
-    else {
-        return Ok(None);
-    };
-
-    let rows = client
-        .query(
-            "SELECT p.person_key, p.display_name, v.field_key, v.value_text, \
-                    v.updated_at::text \
-               FROM person p \
-               LEFT JOIN onboarding_profile_value v ON v.person_id = p.person_id \
-              WHERE p.person_id = $1 \
-              ORDER BY v.field_key",
-            &[&link.person_id],
-        )
-        .map_err(|err| ProfileError::Database(err.to_string()))?;
+    let rows = client.query(
+        "SELECT p.person_key, p.display_name, v.field_key, v.value_text, \
+                v.updated_at::text \
+           FROM onboarding_person_account_link l \
+           JOIN person p ON p.person_id = l.person_id \
+           LEFT JOIN onboarding_profile_value v ON v.person_id = l.person_id \
+          WHERE l.account_id = $1 AND l.identity_fingerprint = $2 \
+          ORDER BY v.field_key",
+        &[&account.account_id, &account.identity_fingerprint],
+    )?;
 
     let mut profile: Option<ProfileView> = None;
     for row in rows {

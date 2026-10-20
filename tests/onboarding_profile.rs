@@ -9,8 +9,10 @@
 
 use std::fs;
 use std::str::FromStr;
+use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
@@ -98,6 +100,7 @@ fn dsns() -> Option<(String, String)> {
 struct TestDb {
     identity: Client,
     genealogy: Client,
+    genealogy_dsn: String,
     prefix: String,
     _guard: MutexGuard<'static, ()>,
 }
@@ -118,6 +121,7 @@ impl TestDb {
         Some(Self {
             identity,
             genealogy,
+            genealogy_dsn,
             prefix: format!("synthetic-profile-{}-{nanos}", std::process::id()),
             _guard: guard,
         })
@@ -181,6 +185,10 @@ impl TestDb {
 
     fn read(&mut self, account: &IdentityAccount) -> Option<ProfileView> {
         read_own_profile(&mut self.genealogy, account).expect("read synthetic profile")
+    }
+
+    fn extra_genealogy(&self) -> Client {
+        Client::connect(&self.genealogy_dsn, NoTls).expect("second genealogy connection")
     }
 }
 
@@ -278,6 +286,22 @@ fn linked_account_reads_only_its_own_private_profile() {
             .all(|field| field.value != "A private biography"),
         "account B must never receive account A's private field"
     );
+}
+
+#[test]
+fn fingerprint_mismatch_returns_no_profile() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account_a = db.account("fingerprint-a");
+    let person_a = db.person("fingerprint-a");
+    db.link(&account_a, person_a);
+    db.field(person_a, "biography", "A fingerprint private biography");
+
+    let account_b = db.account("fingerprint-b");
+    let person_b = db.person("fingerprint-b");
+    db.link(&account_b, person_b);
+    db.field(person_b, "biography", "B fingerprint private biography");
 
     // The account id alone is not ownership: a row paired with another
     // identity's fingerprint must not be readable.
@@ -296,6 +320,215 @@ fn linked_account_reads_only_its_own_private_profile() {
         )
         .expect("lookup mismatch"),
         None
+    );
+}
+
+#[test]
+fn unlinked_reader_cannot_see_a_populated_person() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let private_person = db.person("populated-private");
+    db.field(private_person, "biography", "populated private biography");
+
+    let stranger = db.account("unlinked-stranger");
+    assert_eq!(
+        db.read(&stranger),
+        None,
+        "an unlinked account must not receive another person's private values"
+    );
+}
+
+#[test]
+fn concurrent_revocation_is_atomic_with_the_profile_read() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("atomic-revoke");
+    let person = db.person("atomic-revoke");
+    db.link(&account, person);
+    db.field(person, "biography", "before concurrent revoke");
+
+    let link = link_for_account(
+        &mut db.genealogy,
+        account.account_id,
+        &account.identity_fingerprint,
+    )
+    .expect("find active link")
+    .expect("active link exists");
+
+    let mut revoker = db.extra_genealogy();
+    let mut revoke_tx = revoker.transaction().expect("begin revoke transaction");
+    revoke_tx
+        .execute(
+            "DELETE FROM onboarding_person_account_link WHERE link_id = $1",
+            &[&link.link_id],
+        )
+        .expect("delete link in uncommitted transaction");
+
+    // The revoke is not committed yet, so a concurrent read still sees the
+    // last committed link and its owner's values.
+    let before = db.read(&account).expect("committed link remains visible");
+    assert_eq!(
+        field_value(&before, "biography"),
+        Some("before concurrent revoke")
+    );
+
+    revoke_tx.commit().expect("commit revoke");
+    assert_eq!(
+        db.read(&account),
+        None,
+        "after the revoke commits, the same read must return no private values"
+    );
+}
+
+#[test]
+fn contended_revocation_cannot_interleave_with_the_profile_read() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("contended-revoke");
+    let person = db.person("contended-revoke");
+    db.link(&account, person);
+    db.field(person, "biography", "contended private biography");
+
+    let link = link_for_account(
+        &mut db.genealogy,
+        account.account_id,
+        &account.identity_fingerprint,
+    )
+    .expect("find active link")
+    .expect("active link exists");
+
+    // Hold a row lock so the revoke cannot complete while the read runs. The
+    // profile read must still see the last committed link, and it must not
+    // return any value after the revoke finally commits.
+    let mut reader = db.extra_genealogy();
+    let mut blocker = db.genealogy.transaction().expect("begin link-lock holder");
+    blocker
+        .query_one(
+            "SELECT link_id FROM onboarding_person_account_link \
+              WHERE link_id = $1 FOR UPDATE",
+            &[&link.link_id],
+        )
+        .expect("lock active link row");
+
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let dsn = db.genealogy_dsn.clone();
+    let link_id = link.link_id;
+    let deleter = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("revoker connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("read revoker backend pid")
+            .get(0);
+        ready_tx.send(pid).expect("signal revoker");
+        client
+            .execute(
+                "DELETE FROM onboarding_person_account_link WHERE link_id = $1",
+                &[&link_id],
+            )
+            .expect("delete after the row lock is released")
+    });
+    let revoker_pid: i32 = ready_rx.recv().expect("revoker started");
+
+    // Wait until PostgreSQL reports the revoke is actually blocked on the row
+    // lock instead of relying on a timing sleep.
+    let mut blocked = false;
+    for _ in 0..200 {
+        let waiting: bool = reader
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                  WHERE pid = $1 AND wait_event_type = 'Lock')",
+                &[&revoker_pid],
+            )
+            .expect("inspect revoker wait state")
+            .get(0);
+        if waiting {
+            blocked = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(blocked, "revoker did not block on the link row lock");
+
+    let during = read_own_profile(&mut reader, &account)
+        .expect("read while the revoke waits")
+        .expect("the committed link is still visible");
+    assert_eq!(
+        field_value(&during, "biography"),
+        Some("contended private biography")
+    );
+
+    blocker.commit().expect("release the link row lock");
+    let deleted = deleter.join().expect("join revoker thread");
+    assert_eq!(deleted, 1);
+    assert_eq!(
+        read_own_profile(&mut reader, &account).expect("read after the revoke commits"),
+        None
+    );
+}
+
+#[test]
+fn concurrent_replacement_never_returns_the_previous_owner() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("atomic-replace");
+    let person_a = db.person("atomic-replace-a");
+    let person_b = db.person("atomic-replace-b");
+    db.link(&account, person_a);
+    db.field(person_a, "biography", "owner A biography");
+    db.field(person_b, "biography", "owner B biography");
+
+    let link = link_for_account(
+        &mut db.genealogy,
+        account.account_id,
+        &account.identity_fingerprint,
+    )
+    .expect("find active link")
+    .expect("active link exists");
+
+    let mut replacer = db.extra_genealogy();
+    let mut replace_tx = replacer
+        .transaction()
+        .expect("begin replacement transaction");
+    replace_tx
+        .execute(
+            "DELETE FROM onboarding_person_account_link WHERE link_id = $1",
+            &[&link.link_id],
+        )
+        .expect("remove old link");
+    replace_tx
+        .execute(
+            "INSERT INTO onboarding_person_account_link \
+                 (person_id, account_id, identity_fingerprint, linked_by) \
+             VALUES ($1, $2, $3, 'synthetic-reviewer')",
+            &[
+                &person_b,
+                &account.account_id,
+                &account.identity_fingerprint,
+            ],
+        )
+        .expect("insert replacement link");
+
+    // The replacement is not committed yet, so the read still sees owner A.
+    let during = db
+        .read(&account)
+        .expect("old committed link remains visible");
+    assert_eq!(during.display_name, "Synthetic Person atomic-replace-a");
+    assert_eq!(field_value(&during, "biography"), Some("owner A biography"));
+
+    replace_tx.commit().expect("commit replacement");
+    let after = db.read(&account).expect("replacement link is readable");
+    assert_eq!(after.display_name, "Synthetic Person atomic-replace-b");
+    assert_eq!(field_value(&after, "biography"), Some("owner B biography"));
+    assert!(
+        after
+            .fields
+            .iter()
+            .all(|field| field.value != "owner A biography"),
+        "the previous owner's private value must not survive replacement"
     );
 }
 
@@ -340,6 +573,28 @@ fn inactive_identity_is_rejected_before_the_profile_is_read() {
     db.link(&account, person);
     db.field(person, "biography", "inactive private biography");
     db.deactivate("inactive");
+
+    // The link and private value still exist, but no account can be minted for
+    // the deactivated identity, so the profile path is unreachable.
+    assert!(
+        link_for_account(
+            &mut db.genealogy,
+            account.account_id,
+            &account.identity_fingerprint
+        )
+        .expect("find link")
+        .is_some(),
+        "the inactive link remains until an admin revokes it"
+    );
+    let private_values: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT count(*) FROM onboarding_profile_value WHERE person_id = $1",
+            &[&person],
+        )
+        .expect("count private values")
+        .get(0);
+    assert_eq!(private_values, 1);
 
     let subject = format!("{}-user-inactive", db.prefix);
     assert_eq!(
