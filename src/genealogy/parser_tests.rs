@@ -20,6 +20,25 @@ const SYNTHETIC_NO_PAGE: &str = "\
 const SYNTHETIC_UNSOURCED_REL: &str = "\
 1. Đỗ Văn Giang\nVợ: cùng tên với chị gái\nTrang: 5\n";
 
+const SYNTHETIC_TABLE: &str = "\
+| ID | Name | Description | Page |\n| --- | --- | --- | --- |\n| P001 | Nguyễn Văn An | Spouse: Lê Thị Bình [p. 3] | 3 |\n| P002 | Lê Thị Bình | Child of Nguyễn Văn An [p. 4] | 4 |\n";
+
+#[test]
+fn table_rows_are_entries_with_names_and_pages() {
+    let parse = parse_catalog(SYNTHETIC_TABLE);
+    assert_eq!(parse.entries.len(), 2, "one entry per catalog table row");
+    assert_eq!(parse.parsed_count(), 2);
+    assert_eq!(
+        parse.entries[0].display_name.as_deref(),
+        Some("Nguyễn Văn An")
+    );
+    assert_eq!(
+        parse.entries[1].display_name.as_deref(),
+        Some("Lê Thị Bình")
+    );
+    assert_ne!(parse.entries[0].key, parse.entries[1].key);
+}
+
 #[test]
 fn every_entry_maps_to_exactly_one_outcome() {
     for text in [

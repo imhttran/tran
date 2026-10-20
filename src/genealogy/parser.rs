@@ -208,6 +208,18 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// heading (`#`, `##`). Blank lines do not split entries; non-heading lines
 /// are appended to the current entry.
 pub fn segment_entries(text: &str) -> Vec<String> {
+    // The real catalog is a Markdown table under "Entity index". When table
+    // rows are present, each row is one catalog entry; section headings and
+    // prose are not entries.
+    if text.lines().any(is_catalog_table_row) {
+        return text
+            .lines()
+            .filter(|line| is_catalog_table_row(line))
+            .map(|line| line.trim_end().to_string())
+            .filter(|entry| !entry.trim().is_empty())
+            .collect();
+    }
+
     let mut entries: Vec<String> = Vec::new();
     let mut current: Vec<&str> = Vec::new();
 
@@ -427,8 +439,33 @@ fn page_evidence(pages: &[u32]) -> Vec<Evidence> {
     }
 }
 
+fn is_catalog_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') {
+        return false;
+    }
+    let mut cells = trimmed.split('|');
+    cells.next();
+    let first = cells.next().unwrap_or("").trim();
+    first
+        .strip_prefix('P')
+        .is_some_and(|rest| rest.len() == 3 && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
 fn extract_display_name(raw: &str) -> Option<String> {
     for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('|') {
+            let mut cells = trimmed.split('|');
+            cells.next();
+            cells.next();
+            if let Some(name) = cells.next() {
+                let name = name.trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
         let without_heading = strip_heading(line);
         let candidate = without_heading
             .split([':', '|', '\u{2013}', '\u{2014}'])
