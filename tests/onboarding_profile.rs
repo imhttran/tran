@@ -628,5 +628,5 @@ fn profile_route_and_operation_are_registered() {
     let source = include_str!("../src/api.rs");
     assert!(source.contains("/api/profile"));
     assert!(source.contains("Operation::ProfileRead"));
-    assert!(source.contains("read_own_profile"));
+    assert!(source.contains("read_owner_profile"));
 }
