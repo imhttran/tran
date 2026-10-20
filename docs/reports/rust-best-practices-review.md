@@ -40,17 +40,19 @@ targeted changes at well-defined boundaries.
 
 ### High — correctness and data isolation
 
-> **Resolution (this branch):** H1–H3 are fixed. Corpus is now part of the
-> replacement and unchanged-source identities, evidence is reconciled on
-> re-import, and the reopen decision captures the baseline before the database
-> trigger can remove it. Regression tests are in `tests/corpus_isolation.rs`,
-> `tests/genealogy_repairs.rs`, `src/transaction.rs`, and `src/fingerprint.rs`.
+> **Resolution:** H1 and H2 were fixed on `main` by `17c93ab` (`Corpus`
+> newtype, corpus-scoped replacement, and corpus-scoped fingerprint reads).
+> H3 is fixed on this branch: re-import captures the baseline before the
+> database trigger can remove it, reconciles removed evidence, and reports
+> trigger-driven reopens with one audit event. The regression test is in
+> `tests/genealogy_repairs.rs`; the pure decision is unit-tested in
+> `src/genealogy/reimport.rs`.
 
 #### H1. `replace_source` deletes a source across every corpus
 
-**Status:** fixed — the port now takes `corpus`, the delete is
-`WHERE corpus = $1 AND source = $2`, and both implementations reject a chunk
-whose corpus differs from the replacement scope.
+**Status:** fixed on `main` (`17c93ab`) — `SourceReplacer::replace_source`
+takes a `Corpus`, the delete is `WHERE corpus = $1 AND source = $2`, and
+`validate_chunk_corpora` rejects a chunk from another corpus before any effect.
 
 `src/storage_pg.rs:554`
 
@@ -82,9 +84,9 @@ varies only `source`, so it cannot catch this.
 
 #### H2. The unchanged-source decision is corpus-blind
 
-**Status:** fixed — `FingerprintReader::rows_for_hash` and `unchanged_source`
-take `corpus`, and the read uses `WHERE corpus = $1 AND content_hash = $2 AND
-source = $3`.
+**Status:** fixed on `main` (`17c93ab`) —
+`FingerprintReader::rows_for_hash` and `unchanged_source` take a `Corpus`, and
+the read uses `WHERE corpus = $1 AND content_hash = $2 AND source = $3`.
 
 `src/storage_pg.rs:257` (`find_by_content_hash`), reached from
 `src/fingerprint.rs:143` and `src/pipeline.rs:227`
@@ -492,9 +494,8 @@ and group by `(source, section)`.
 
 ## Suggested order of work
 
-1. **H1–H3 first.** ✅ Done in this branch: `(corpus, source)` is carried through
-   the replacement and unchanged-source ports, evidence rows are reconciled, and
-   the cross-corpus and reopen tests are in place.
+1. **H1–H3 first.** ✅ H1/H2 were fixed on `main` (`17c93ab`); H3 is fixed on
+   this branch with the reimport regression test.
 2. **One typed-error pass (M1, M11, M17).** Introduce `#[from]`/`#[source]` errors at the
    storage, pipeline, genealogy, PDF, and evaluation boundaries, then classify HTTP
    status from types. This removes a whole class of string parsing.
@@ -517,11 +518,9 @@ cargo test --locked
 - `cargo fmt --check`: clean.
 - `cargo clippy ... -D warnings`: clean (`rag-foundation` and all targets).
 - `cargo test --locked` with the local PostgreSQL container: **all targets pass**,
-  including the new `tests/corpus_isolation.rs` and the extended
-  `tests/genealogy_repairs.rs` (the pre-existing hash-change reopen test still
-  passes). Library tests: **286 passed, 0 failed**.
-- Acceptance crate compilation: `acceptance/ingest_cli` builds against the new
-  port signatures.
+  including the extended `tests/genealogy_repairs.rs` (the pre-existing
+  hash-change reopen test still passes). Library tests: **311 passed, 0 failed**.
+- Acceptance crate compilation: `acceptance/ingest_cli` builds.
 - Additional targeted lints (`redundant_clone`, `needless_collect`, `map_unwrap_or`,
   `large_enum_variant`, `missing_errors_doc`) surfaced only eight library warnings, one
   redundant clone in a test helper, and two in binaries/tests — all listed above or
