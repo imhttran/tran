@@ -29,22 +29,30 @@ export OLLAMA_CHAT_MODEL="${OLLAMA_CHAT_MODEL:-llama3.2:3b}"
 export MIN_SIMILARITY="${MIN_SIMILARITY:-0.3}"
 export REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-180s}"
 
-# Test-only OIDC issuer. The API verifies real HS256 tokens against this local
-# JWKS; the browser tests use the same cryptographically valid tokens. This is
-# not a production identity provider and the secret is test-only.
+# Test-only OIDC provider. The API verifies RS256 tokens against this local
+# JWKS; the browser tests use the same cryptographically valid tokens and the
+# Next.js login flow. Keys and accounts are synthetic and disposable.
 AUTH_PORT="${E2E_AUTH_PORT:-9099}"
-E2E_AUTH_SECRET="${E2E_AUTH_SECRET:-e2e-test-secret-not-for-production}"
+E2E_KEY_FILE="/tmp/tran-e2e-oidc-key-$$.pem"
 E2E_ISSUER="http://127.0.0.1:${AUTH_PORT}"
-E2E_AUDIENCE="rag-e2e"
+E2E_AUDIENCE="tran-e2e"
 export AUTH_ISSUER="$E2E_ISSUER"
 export AUTH_AUDIENCE="$E2E_AUDIENCE"
 export JWKS_URL="${E2E_ISSUER}/jwks"
 export AUTH_RATE_LIMIT="${AUTH_RATE_LIMIT:-1000}"
 export AUTH_CLOCK_SKEW_SECS="${AUTH_CLOCK_SKEW_SECS:-60}"
 export JWKS_CACHE_TTL_SECS="${JWKS_CACHE_TTL_SECS:-60}"
+export OIDC_ISSUER="$E2E_ISSUER"
+export OIDC_CLIENT_ID="$E2E_AUDIENCE"
+export OIDC_REDIRECT_URI="http://127.0.0.1:3000/api/auth/callback"
+export OIDC_AUTHORIZATION_ENDPOINT="${E2E_ISSUER}/authorize"
+export OIDC_TOKEN_ENDPOINT="${E2E_ISSUER}/token"
+export OIDC_END_SESSION_ENDPOINT="${E2E_ISSUER}/logout"
+export OIDC_COOKIE_SECURE="false"
+export HOF_THIRD_BRANCH_KEY="branch-3"
 
 echo "web-e2e: starting the test OIDC issuer"
-python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --secret "$E2E_AUTH_SECRET" >/tmp/tran-e2e-auth.log 2>&1 &
+python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --key-file "$E2E_KEY_FILE" >/tmp/tran-e2e-auth.log 2>&1 &
 AUTH_PID=$!
 i=0
 while [ "$i" -lt 50 ]; do
@@ -63,14 +71,15 @@ fi
 echo "web-e2e: corpus $CORPUS"
 E2E_CSRF_TOKEN="e2e-csrf-token"
 export E2E_CSRF_TOKEN
-E2E_ADMIN_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-admin --role admin --corpus "$CORPUS" --secret "$E2E_AUTH_SECRET")
+E2E_ADMIN_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-admin --role admin --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_ADMIN_TOKEN
 export E2E_SESSION_TOKEN="$E2E_ADMIN_TOKEN"
-E2E_VIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-viewer --role viewer --corpus "$CORPUS" --secret "$E2E_AUTH_SECRET")
+E2E_VIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-viewer --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_VIEWER_TOKEN
 
 echo "web-e2e: seeding test identities"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/007_user_lifecycle.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -81,6 +90,27 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject = 'e2e-viewer'" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
+
+if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
+	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
+	exit 1
+fi
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0001_genealogy_schema_version.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0002_catalog_keys.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0003_assertions_evidence_and_links.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0004_review_workflow.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0005_source_kind.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DROP TABLE IF EXISTS head_of_family_audit_event, head_of_family_appointment, head_of_family_nomination CASCADE" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f genealogy/migrations/0006_head_of_family.sql >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f scripts/seed-genealogy-e2e.sql >/dev/null
 
 echo "web-e2e: building the API"
 cargo build --locked --bin api
@@ -94,6 +124,7 @@ cleanup() {
 	wait "$API_PID" 2>/dev/null || true
 	kill "$AUTH_PID" 2>/dev/null || true
 	wait "$AUTH_PID" 2>/dev/null || true
+	rm -f "$E2E_KEY_FILE"
 	./scripts/web-control.sh stop >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true

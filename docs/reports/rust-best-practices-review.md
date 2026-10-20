@@ -532,7 +532,7 @@ cargo test --locked
 - `cargo clippy ... -D warnings`: clean (`rag-foundation` and all targets).
 - `cargo test --locked` with the local PostgreSQL container: **all targets pass**,
   including the extended `tests/genealogy_repairs.rs` (the pre-existing
-  hash-change reopen test still passes). Library tests: **307 passed, 0 failed**.
+  hash-change reopen test still passes). Library tests: **305 passed, 0 failed**.
 - Acceptance crate compilation: `acceptance/ingest_cli` builds.
 - Additional targeted lints (`redundant_clone`, `needless_collect`, `map_unwrap_or`,
   `large_enum_variant`, `missing_errors_doc`) surfaced only eight library warnings, one

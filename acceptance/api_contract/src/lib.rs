@@ -14,10 +14,10 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use ring::rand::SystemRandom;
+use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
 
 use rag_foundation::storage::EMBEDDING_DIM;
 
@@ -117,7 +117,13 @@ pub fn free_port() -> u16 {
     listener.local_addr().expect("read the port").port()
 }
 
-/// A local HS256 OIDC issuer for the acceptance test. The API verifies the
+/// Test-only RS256 private key (PKCS#8 DER, base64). This is a synthetic key
+/// generated for the acceptance suite; it is never used outside tests.
+const TEST_KEY_DER_B64: &str = "MIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQC+V5EZ9MtnqFbydmFC46NtOIuNaQcyBxm2Vupukx+Wm6w8aZ2mLWJ0GodTU00VyuLfnh2901eNqGaG62f2m4DXCi7AziILWGXBgxnKbqSYK2P+0hG++JJMaqjX5qN5VN0f5UmmSlAKoKkInkePpe/GDsVnox6lsEFMQKtU8bkkqHcOhaOu4QbWKzgStIoey5qkVIulu6pbVbLnbO5xpubJneQiP1PkpG1Um/A20ppQaBNyr6a+Eu7riZv9TsGeGqwQx9ic5JAEar9ZR+yoUHFY19X9Vbj54SLo3wPhvdZaHKwVQviX5dqpFwWGUYUrEVESaB7zpvraH35q0vTS8fPZAgMBAAECgf91TSx82xLDtViKrYvcpH4sYk6veUYxqB19ORMvZyZuTKPP7JwQgF8jx74Vk1op2Dy0krRbHR9X4LzoNbOPcYoOt8jUCWgTyQiGQcUSFZUmuqft0TLJMUT3wfbDW3lSMyUkAu412adHB4ibz5oXKIn5nocrgf16uD4OHe6rt39ZY82Ae5F1AvQVWlPk1IvqUQn9fGFnHCDuqykl4h3QlPVP0bUrldaQcr8kRfM8J/LPKyICxxrfl3kE/G9hsKaPy2zaF43gDMJF8J2HrH7POMLPLmO/bEO+3kZqomBMVopWBjOCqW3NSor+zwVcbITwsM7rx2nlbpa3nwBPyTYqkO8CgYEA9gmQGvPWJ6BEr1FOvyQb5qEZ0U9qxSvGYSL+LUKDXHMyJDKHRUWOlNho1un6RXAsjVyDGo55COpmLT6JYQwKqs0K3RwfClo7gATlxTXmQs1sbo7ZLGLwHE65Xnj/uBe5YLWxulzuU1XSBsFh8T8UXhPeAggSNnX9XZd5pnV2GMcCgYEAxgypzg+5PE4Dgesq/MZVqolGIlA4O+3Y1jPkLxhDHh39RRCds9W8lQ2qNu1ef1ZjUYvaXJ0G+Uu9K9YYrM4iofCFv5KBiCtnTSvH2mXyXr21EvPm67pevMvWzBVsb7RNHKOP722rTKlLWec1i8I3O1h0ebjTiLS1fSe/VUH9Ll8CgYBbMkg79U3X+kv7QAQUTWoaHnTXZLyKwSMTNklItXLDfd+EE0aYoqOrAFw77RZbTqz06Omfmle6ukeNVbTOSAxcKwxv0NCgobmURjx00Pm8oTAj+sb88N9XXsbPAcKnlgOcmTx7e57LPPBQmLWZGmyOQobz8dHuZeW4H0F0Ne3EWQKBgDUvsWplTpmjWc3KGgFIQjlKJEuSv4dYmKLtzJnZKi0sYJfrnm5tN/fPc6bMmFQaHxIHPN0iTn0kmejr1jSSJzrWHRUVgzPOdC+FUmaUekJ3L+mnFpy3sDmDhGvKVRSqlwrZ4g2qphYwYMwEC508yxhk6OLHgAd2gEbcJcX/sr6BAoGAWoRdff3xMmzozsEdHnTOKYzf8OxDDYgJ0a+voWJtHUWdHV8qtND8IDCZe5vwnjy8h0MllavKj+14v64vFpdNnI/gQD9GkoAoJ03SoSGHOoloZo87am1EMJyv6ifsWRNOs2Hg9mEl9VLfyeZ4H06s5NEfhIu/Awpp3Z3fiXW3pTM=";
+const TEST_KEY_N: &str = "vleRGfTLZ6hW8nZhQuOjbTiLjWkHMgcZtlbqbpMflpusPGmdpi1idBqHU1NNFcri354dvdNXjahmhutn9puA1wouwM4iC1hlwYMZym6kmCtj_tIRvviSTGqo1-ajeVTdH-VJpkpQCqCpCJ5Hj6Xvxg7FZ6MepbBBTECrVPG5JKh3DoWjruEG1is4ErSKHsuapFSLpbuqW1Wy52zucabmyZ3kIj9T5KRtVJvwNtKaUGgTcq-mvhLu64mb_U7BnhqsEMfYnOSQBGq_WUfsqFBxWNfV_VW4-eEi6N8D4b3WWhysFUL4l-XaqRcFhlGFKxFREmge86b62h9-atL00vHz2Q";
+const TEST_KEY_E: &str = "AQAB";
+
+/// A local RS256 OIDC issuer for the acceptance test. The API verifies the
 /// signed token against this JWKS, so the test exercises the real auth path
 /// without an external identity provider and without an auth-bypass switch.
 pub struct TestAuth {
@@ -136,10 +142,9 @@ impl TestAuth {
             .expect("nonblocking JWKS listener");
         let addr = listener.local_addr().expect("test JWKS address");
         let issuer = format!("http://{addr}");
-        let secret = b"api-contract-test-secret";
         let jwks = format!(
-            r#"{{"keys":[{{"kid":"test","alg":"HS256","k":"{}"}}]}}"#,
-            String::from_utf8_lossy(secret)
+            r#"{{"keys":[{{"kty":"RSA","kid":"test","alg":"RS256","n":"{}","e":"{}"}}]}}"#,
+            TEST_KEY_N, TEST_KEY_E
         );
         let shutdown = Arc::new(AtomicBool::new(false));
         let stop = shutdown.clone();
@@ -165,7 +170,11 @@ impl TestAuth {
             }
         });
         let audience = "api-contract".to_string();
-        let token = mint_hs256(&issuer, &audience, "api-contract-admin", secret);
+        let der = STANDARD
+            .decode(TEST_KEY_DER_B64)
+            .expect("decode the test RSA key");
+        let key_pair = RsaKeyPair::from_pkcs8(&der).expect("parse the test RSA key");
+        let token = mint_rs256(&issuer, &audience, "api-contract-admin", &key_pair);
         Self {
             issuer,
             audience,
@@ -201,12 +210,17 @@ impl Drop for TestAuth {
     }
 }
 
-fn mint_hs256(issuer: &str, audience: &str, subject: &str, secret: &[u8]) -> String {
+fn mint_rs256(
+    issuer: &str,
+    audience: &str,
+    subject: &str,
+    key_pair: &RsaKeyPair,
+) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_secs();
-    let header = serde_json::json!({"alg": "HS256", "kid": "test", "typ": "JWT"});
+    let header = serde_json::json!({"alg": "RS256", "kid": "test", "typ": "JWT"});
     let payload = serde_json::json!({
         "iss": issuer,
         "aud": audience,
@@ -219,9 +233,16 @@ fn mint_hs256(issuer: &str, audience: &str, subject: &str, secret: &[u8]) -> Str
         URL_SAFE_NO_PAD.encode(header.to_string().as_bytes()),
         URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes())
     );
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key");
-    mac.update(signing.as_bytes());
-    let signature = mac.finalize().into_bytes();
+    let rng = SystemRandom::new();
+    let mut signature = vec![0u8; key_pair.public().modulus_len()];
+    key_pair
+        .sign(
+            &RSA_PKCS1_SHA256,
+            &rng,
+            signing.as_bytes(),
+            &mut signature,
+        )
+        .expect("sign the test RS256 token");
     format!("{}.{}", signing, URL_SAFE_NO_PAD.encode(signature))
 }
 

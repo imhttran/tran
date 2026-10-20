@@ -122,6 +122,10 @@ pub enum Operation {
     Account,
     /// Changing a role assignment (transactional and audited).
     RoleChange,
+    /// Reading authorized genealogy records and evidence.
+    GenealogyRead,
+    /// Drafting a Head of Family nomination with citations.
+    GenealogyNominate,
     /// Head of Family approval APIs.
     HeadOfFamilyApproval,
 }
@@ -131,8 +135,10 @@ impl Operation {
     /// table. `None` means public and non-sensitive (only `/api/health`).
     pub fn required_role(&self) -> Option<Role> {
         match self {
-            Operation::Query | Operation::DocumentStatus => Some(Role::Viewer),
-            Operation::Ingest => Some(Role::Editor),
+            Operation::Query | Operation::DocumentStatus | Operation::GenealogyRead => {
+                Some(Role::Viewer)
+            }
+            Operation::Ingest | Operation::GenealogyNominate => Some(Role::Editor),
             Operation::Account | Operation::RoleChange | Operation::HeadOfFamilyApproval => {
                 Some(Role::Admin)
             }
@@ -143,7 +149,11 @@ impl Operation {
     pub fn is_rate_limited(&self) -> bool {
         matches!(
             self,
-            Operation::Ingest | Operation::Query | Operation::RoleChange
+            Operation::Ingest
+                | Operation::Query
+                | Operation::RoleChange
+                | Operation::GenealogyNominate
+                | Operation::HeadOfFamilyApproval
         )
     }
 
@@ -153,6 +163,8 @@ impl Operation {
             Operation::Ingest => "ingest",
             Operation::Query => "query",
             Operation::RoleChange => "role_change",
+            Operation::GenealogyRead => "genealogy_read",
+            Operation::GenealogyNominate => "genealogy_nominate",
             Operation::DocumentStatus => "document_status",
             Operation::Account => "account",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
@@ -172,6 +184,14 @@ pub enum Decision {
 
 /// The single place that turns a verified identity into an allow/deny decision.
 pub fn decide(identity: Option<&VerifiedIdentity>, operation: Operation) -> Decision {
+    // Every authenticated account may read its own account information. This is
+    // deliberately not a role check: a newly provisioned user has no role yet.
+    if operation == Operation::Account {
+        return match identity {
+            Some(_) => Decision::Allow,
+            None => Decision::Unauthenticated,
+        };
+    }
     let required = match operation.required_role() {
         Some(role) => role,
         None => return Decision::Allow,
@@ -220,8 +240,13 @@ mod tests {
             decide(Some(&viewer), Operation::Ingest),
             Decision::Forbidden
         );
+        assert_eq!(decide(Some(&viewer), Operation::Account), Decision::Allow);
         assert_eq!(
-            decide(Some(&viewer), Operation::Account),
+            decide(Some(&viewer), Operation::GenealogyRead),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::GenealogyNominate),
             Decision::Forbidden
         );
     }
@@ -230,9 +255,10 @@ mod tests {
     fn editor_permission_table() {
         let editor = identity(&[Role::Editor]);
         assert_eq!(decide(Some(&editor), Operation::Ingest), Decision::Allow);
+        assert_eq!(decide(Some(&editor), Operation::Account), Decision::Allow);
         assert_eq!(
-            decide(Some(&editor), Operation::Account),
-            Decision::Forbidden
+            decide(Some(&editor), Operation::GenealogyNominate),
+            Decision::Allow
         );
         assert_eq!(
             decide(Some(&editor), Operation::RoleChange),
@@ -255,6 +281,16 @@ mod tests {
             Decision::Allow
         );
         assert_eq!(decide(Some(&admin), Operation::Ingest), Decision::Allow);
+    }
+
+    #[test]
+    fn authenticated_account_without_a_role_can_read_own_account() {
+        let account = VerifiedIdentity::new("sub-1", "https://issuer", vec![], vec![]);
+        assert_eq!(decide(Some(&account), Operation::Account), Decision::Allow);
+        assert_eq!(
+            decide(Some(&account), Operation::GenealogyRead),
+            Decision::Forbidden
+        );
     }
 
     #[test]

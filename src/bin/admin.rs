@@ -17,6 +17,8 @@ fn usage() -> String {
         "  admin revoke    --subject <sub> --role viewer|editor|admin [--actor <actor>]",
         "  admin grant-corpus  --subject <sub> --corpus <corpus> [--actor <actor>]",
         "  admin revoke-corpus --subject <sub> --corpus <corpus> [--actor <actor>]",
+        "  admin provision      --subject <sub> --issuer <issuer> [--actor <actor>]",
+        "  admin deactivate     --subject <sub> [--actor <actor>]",
     ]
     .join("\n")
 }
@@ -92,6 +94,22 @@ fn main() -> Result<(), String> {
                     .map_err(|err| err.to_string())?;
             }
             println!("{command} {corpus} for {subject}");
+        }
+        "provision" => {
+            let issuer =
+                flag(&args, "--issuer").ok_or_else(|| "--issuer is required".to_string())?;
+            let user_id = store
+                .client()
+                .provision_user(&subject, &issuer, &actor)
+                .map_err(|err| err.to_string())?;
+            println!("provisioned {subject} as user {user_id}");
+        }
+        "deactivate" => {
+            store
+                .client()
+                .deactivate_user(&subject, &actor)
+                .map_err(|err| err.to_string())?;
+            println!("deactivated {subject}");
         }
         other => return Err(format!("unknown command {other}\n{}", usage())),
     }

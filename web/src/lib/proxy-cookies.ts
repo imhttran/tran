@@ -13,22 +13,69 @@ export const CSRF_COOKIE = "rag_csrf";
 // The header the browser sends with the CSRF token on state-changing requests.
 export const CSRF_HEADER = "x-csrf-token";
 
-// Builds the Secure, HttpOnly, SameSite session cookie attributes. Session
-// establishment happens out of band; the cookie attributes live in one place.
+// OIDC transient cookies: short-lived, HttpOnly, and scoped to the auth routes.
+export const OIDC_STATE_COOKIE = "rag_oidc_state";
+export const OIDC_NONCE_COOKIE = "rag_oidc_nonce";
+export const OIDC_VERIFIER_COOKIE = "rag_oidc_verifier";
+
+// Secure cookies require HTTPS. Production must be secure; local HTTP E2E can
+// opt out explicitly without weakening a deployed environment.
+export function cookieSecure(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.OIDC_COOKIE_SECURE === "true"
+  );
+}
+
+// Builds the Secure, HttpOnly, SameSite session cookie attributes.
 export function sessionCookie(value: string): {
   name: string;
   value: string;
   httpOnly: boolean;
   secure: boolean;
-  sameSite: "strict";
+  sameSite: "lax";
   path: string;
+  maxAge: number;
 } {
   return {
     name: SESSION_COOKIE,
     value,
     httpOnly: true,
-    secure: true,
-    sameSite: "strict",
+    secure: cookieSecure(),
+    sameSite: "lax",
     path: "/",
+    maxAge: 60 * 60,
+  };
+}
+
+export function csrfCookie(value: string): {
+  name: string;
+  value: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "lax";
+  path: string;
+  maxAge: number;
+} {
+  return {
+    name: CSRF_COOKIE,
+    value,
+    httpOnly: false,
+    secure: cookieSecure(),
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60,
+  };
+}
+
+export function transientCookie(name: string, value: string) {
+  return {
+    name,
+    value,
+    httpOnly: true,
+    secure: cookieSecure(),
+    sameSite: "lax" as const,
+    path: "/api/auth",
+    maxAge: 10 * 60,
   };
 }

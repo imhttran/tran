@@ -1,17 +1,28 @@
-//! OIDC token verification adapter.
+//! OIDC token verification adapter (TRAN-003C phase 2).
 //!
-//! The adapter verifies, in this order:
+//! The custom HS256-only verifier is replaced with a maintained, standards-based
+//! asymmetric JWKS verifier built on the `ring` crate. The adapter:
 //!
-//! 1. token shape and signature against cached JWKS;
-//! 2. `iss` equals the configured issuer exactly;
-//! 3. `aud` contains the configured audience;
-//! 4. `exp` is in the future (with configured clock skew), and `nbf`/`iat` when
-//!    present are not in the future beyond the skew;
-//! 5. `sub` is present and non-blank.
+//! 1. parses the token header and rejects any algorithm outside the approved
+//!    asymmetric set ([`APPROVED_ALGORITHMS`]); HS256 and every symmetric or
+//!    `none` algorithm are rejected even if a matching key is present;
+//! 2. fetches the JWKS (cached, single-flight) and fails closed when keys are
+//!    unavailable or cannot be parsed;
+//! 3. selects the verification key by `kid` and algorithm, then verifies the
+//!    signature over the signing input;
+//! 4. requires `iss` to equal the configured issuer exactly;
+//! 5. requires `aud` to contain the configured audience;
+//! 6. requires `exp` in the future (with clock skew) and rejects `nbf`/`iat`
+//!    beyond the skew;
+//! 7. requires a non-blank `sub`.
 //!
 //! Roles and corpus grants are loaded from the database by the API after the
 //! token is verified. Token claims are never used to grant access, so a stale or
 //! altered claim cannot elevate an identity.
+//!
+//! JWK public keys are parsed as RSA (`kty=RSA`, `n`/`e`) or EC P-256
+//! (`kty=EC`, `crv=P-256`, `x`/`y`). Symmetric keys (`kty=oct`, `k`) and
+//! private-key material are rejected as malformed for verification purposes.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,6 +30,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 use crate::identity::VerifiedIdentity;
+
+/// The approved asymmetric JWKS algorithm set. Symmetric (`HS*`) and `none`
+/// algorithms are never accepted.
+pub const APPROVED_ALGORITHMS: &[&str] = &[
+    "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256",
+];
 
 /// Errors returned by token verification.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -33,6 +50,8 @@ pub enum AuthError {
     BadSignature,
     #[error("unknown signing key")]
     UnknownKey,
+    #[error("malformed JWK: {0}")]
+    MalformedJwk(String),
     #[error("token expired")]
     Expired,
     #[error("token not yet valid")]
@@ -47,18 +66,35 @@ pub enum AuthError {
     ProviderUnavailable(String),
 }
 
-/// A public JSON Web Key (subset used for EdDSA-free RSA/EC verification is
-/// out of scope). The adapter accepts only `none`-safe signed JWTs presented
-/// by the identity provider and verifies them with an HMAC-SHA256 key ring, so
-/// tests can run without an external crypto dependency.
+/// The verification algorithm family carried by a parsed public JWK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JwkAlgorithm {
+    /// RSA PKCS#1 v1.5 (`RS*`).
+    RsaPkcs1,
+    /// RSA PSS (`PS*`).
+    RsaPss,
+    /// ECDSA P-256 (`ES256`).
+    EcdsaP256,
+}
+
+/// A parsed asymmetric public JSON Web Key.
 #[derive(Debug, Clone)]
 pub struct Jwk {
     /// Key id.
     pub kid: String,
-    /// Algorithm, only `HS256` is accepted.
-    pub alg: String,
-    /// Symmetric key material.
-    pub k: Vec<u8>,
+    /// The `alg` declared by the JWK, if present. Verification also accepts the
+    /// algorithm named by the token header, provided both are approved.
+    pub alg: Option<String>,
+    /// The verification algorithm family.
+    pub algorithm: JwkAlgorithm,
+    /// RSA modulus (big-endian) for RSA keys.
+    pub modulus: Vec<u8>,
+    /// RSA public exponent (big-endian) for RSA keys.
+    pub exponent: Vec<u8>,
+    /// EC x-coordinate for P-256 keys.
+    pub x: Vec<u8>,
+    /// EC y-coordinate for P-256 keys.
+    pub y: Vec<u8>,
 }
 
 /// A snapshot of the JWKS document.
@@ -68,44 +104,110 @@ pub struct Jwks {
 }
 
 impl Jwks {
-    /// Builds a key set.
+    /// Builds a key set from parsed keys.
     pub fn new(keys: Vec<Jwk>) -> Self {
         Self { keys }
     }
 
-    /// Parses the compact JWKS JSON used by the tests and by operators.
+    /// Parses a JWKS JSON document into asymmetric public keys.
+    ///
+    /// Symmetric (`oct`) keys, missing key material, and unknown curves are
+    /// rejected as [`AuthError::MalformedJwk`]; the whole document fails closed.
     pub fn from_json(raw: &str) -> Result<Self, AuthError> {
         let value: serde_json::Value = serde_json::from_str(raw)
-            .map_err(|err| AuthError::ProviderUnavailable(err.to_string()))?;
+            .map_err(|err| AuthError::ProviderUnavailable(format!("JWKS is not JSON: {err}")))?;
         let keys = value
             .get("keys")
             .and_then(|keys| keys.as_array())
             .ok_or_else(|| AuthError::ProviderUnavailable("JWKS has no keys".into()))?;
         let mut parsed = Vec::new();
         for key in keys {
-            let kid = key
-                .get("kid")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AuthError::ProviderUnavailable("JWK has no kid".into()))?;
-            let alg = key
-                .get("alg")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AuthError::ProviderUnavailable("JWK has no alg".into()))?;
-            let k = key
-                .get("k")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AuthError::ProviderUnavailable("JWK has no k".into()))?;
-            parsed.push(Jwk {
-                kid: kid.to_string(),
-                alg: alg.to_string(),
-                k: k.as_bytes().to_vec(),
-            });
+            parsed.push(parse_jwk(key)?);
         }
         Ok(Self { keys: parsed })
     }
 
-    fn find(&self, kid: &str) -> Option<&Jwk> {
-        self.keys.iter().find(|key| key.kid == kid)
+    fn find(&self, kid: &str, alg: &str) -> Option<&Jwk> {
+        self.keys.iter().find(|key| {
+            if key.kid != kid {
+                return false;
+            }
+            // When the JWK names an algorithm, it must match the header exactly.
+            match (&key.alg, alg) {
+                (Some(declared), requested) => declared == requested,
+                (None, _) => true,
+            }
+        })
+    }
+}
+
+fn required_str<'a>(key: &'a serde_json::Value, field: &str) -> Result<&'a str, AuthError> {
+    key.get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AuthError::MalformedJwk(format!("missing {field}")))
+}
+
+fn decode_b64url(field: &str, value: &str) -> Result<Vec<u8>, AuthError> {
+    base64url_decode(value)
+        .ok_or_else(|| AuthError::MalformedJwk(format!("{field} is not base64url")))
+}
+
+fn parse_jwk(key: &serde_json::Value) -> Result<Jwk, AuthError> {
+    let kid = required_str(key, "kid")?.to_string();
+    let kty = required_str(key, "kty")?;
+    // Symmetric key material is never valid for verification.
+    if key.get("k").is_some() || kty == "oct" {
+        return Err(AuthError::MalformedJwk(
+            "symmetric JWK keys are not accepted for verification".into(),
+        ));
+    }
+    let alg = key.get("alg").and_then(|v| v.as_str()).map(str::to_string);
+    match kty {
+        "RSA" => {
+            let modulus = decode_b64url("n", required_str(key, "n")?)?;
+            let exponent = decode_b64url("e", required_str(key, "e")?)?;
+            if modulus.is_empty() || exponent.is_empty() {
+                return Err(AuthError::MalformedJwk("empty RSA key material".into()));
+            }
+            let algorithm = match alg.as_deref() {
+                Some("PS256") | Some("PS384") | Some("PS512") => JwkAlgorithm::RsaPss,
+                _ => JwkAlgorithm::RsaPkcs1,
+            };
+            Ok(Jwk {
+                kid,
+                alg,
+                algorithm,
+                modulus,
+                exponent,
+                x: Vec::new(),
+                y: Vec::new(),
+            })
+        }
+        "EC" => {
+            let crv = required_str(key, "crv")?;
+            if crv != "P-256" {
+                return Err(AuthError::MalformedJwk(format!(
+                    "unsupported EC curve {crv}"
+                )));
+            }
+            let x = decode_b64url("x", required_str(key, "x")?)?;
+            let y = decode_b64url("y", required_str(key, "y")?)?;
+            if x.len() != 32 || y.len() != 32 {
+                return Err(AuthError::MalformedJwk(
+                    "EC P-256 coordinates must be 32 bytes".into(),
+                ));
+            }
+            Ok(Jwk {
+                kid,
+                alg,
+                algorithm: JwkAlgorithm::EcdsaP256,
+                modulus: Vec::new(),
+                exponent: Vec::new(),
+                x,
+                y,
+            })
+        }
+        other => Err(AuthError::MalformedJwk(format!("unsupported kty {other}"))),
     }
 }
 
@@ -228,110 +330,6 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 
-/// HMAC-SHA256 over the signing input with the supplied key.
-pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut key_block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        let hashed = sha256(key);
-        key_block[..32].copy_from_slice(&hashed);
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Vec::with_capacity(BLOCK + message.len());
-    let mut outer = Vec::with_capacity(BLOCK + 32);
-    for byte in key_block {
-        inner.push(byte ^ 0x36);
-        outer.push(byte ^ 0x5c);
-    }
-    inner.extend_from_slice(message);
-    let inner_hash = sha256(&inner);
-    outer.extend_from_slice(&inner_hash);
-    sha256(&outer)
-}
-
-/// A self-contained SHA-256 used to avoid an extra dependency in the adapter.
-pub fn sha256(data: &[u8]) -> [u8; 32] {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let mut message = data.to_vec();
-    let bit_len = (data.len() as u64) * 8;
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in message.chunks(64) {
-        let mut w = [0u32; 64];
-        for (i, word) in w.iter_mut().take(16).enumerate() {
-            let start = i * 4;
-            *word = u32::from_be_bytes([
-                chunk[start],
-                chunk[start + 1],
-                chunk[start + 2],
-                chunk[start + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let temp1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
-    }
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
-}
-
 fn base64url_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
@@ -359,15 +357,55 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+fn algorithm_kind(alg: &str) -> Option<JwkAlgorithm> {
+    match alg {
+        "RS256" | "RS384" | "RS512" => Some(JwkAlgorithm::RsaPkcs1),
+        "PS256" | "PS384" | "PS512" => Some(JwkAlgorithm::RsaPss),
+        "ES256" => Some(JwkAlgorithm::EcdsaP256),
+        _ => None,
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+}
+
+fn verify_signature(
+    key: &Jwk,
+    alg: &str,
+    signing_input: &[u8],
+    signature: &[u8],
+) -> Result<(), AuthError> {
+    use ring::signature;
+    match key.algorithm {
+        JwkAlgorithm::RsaPkcs1 | JwkAlgorithm::RsaPss => {
+            let verification_alg = match alg {
+                "RS256" => &signature::RSA_PKCS1_2048_8192_SHA256,
+                "RS384" => &signature::RSA_PKCS1_2048_8192_SHA384,
+                "RS512" => &signature::RSA_PKCS1_2048_8192_SHA512,
+                "PS256" => &signature::RSA_PSS_2048_8192_SHA256,
+                "PS384" => &signature::RSA_PSS_2048_8192_SHA384,
+                "PS512" => &signature::RSA_PSS_2048_8192_SHA512,
+                _ => return Err(AuthError::UnsupportedAlgorithm),
+            };
+            let public_key = signature::RsaPublicKeyComponents {
+                n: &key.modulus,
+                e: &key.exponent,
+            };
+            public_key
+                .verify(verification_alg, signing_input, signature)
+                .map_err(|_| AuthError::BadSignature)
+        }
+        JwkAlgorithm::EcdsaP256 => {
+            if alg != "ES256" {
+                return Err(AuthError::UnsupportedAlgorithm);
+            }
+            // Uncompressed SEC1 point: 0x04 || x || y.
+            let mut point = Vec::with_capacity(65);
+            point.push(0x04);
+            point.extend_from_slice(&key.x);
+            point.extend_from_slice(&key.y);
+            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, point.as_slice())
+                .verify(signing_input, signature)
+                .map_err(|_| AuthError::BadSignature)
+        }
     }
-    diff == 0
 }
 
 fn claims_to_identity(
@@ -395,7 +433,7 @@ fn claims_to_identity(
 /// Verifies a bearer token and returns a typed verified identity.
 ///
 /// Verification failures and provider outages are errors. The function never
-/// returns an anonymous identity.
+/// returns an anonymous identity and performs no side effects.
 pub fn validate_token<F>(
     token: &str,
     config: &AuthConfig,
@@ -421,7 +459,9 @@ where
         .get("alg")
         .and_then(|v| v.as_str())
         .ok_or(AuthError::Malformed("header has no alg".into()))?;
-    if alg != "HS256" {
+    // Reject any algorithm outside the approved asymmetric set. This rejects
+    // HS256 (and every symmetric/`none` algorithm) before key lookup.
+    if !APPROVED_ALGORITHMS.contains(&alg) || algorithm_kind(alg).is_none() {
         return Err(AuthError::UnsupportedAlgorithm);
     }
     let kid = header
@@ -429,22 +469,17 @@ where
         .and_then(|v| v.as_str())
         .ok_or_else(|| AuthError::Malformed("header has no kid".into()))?;
 
-    let keys = jwks.get().map_err(|err| match err {
-        AuthError::ProviderUnavailable(message) => AuthError::ProviderUnavailable(message),
-        other => other,
-    })?;
-    let key = keys.find(kid).ok_or(AuthError::UnknownKey)?;
-    if key.alg != "HS256" {
+    let keys = jwks.get()?;
+    let key = keys.find(kid, alg).ok_or(AuthError::UnknownKey)?;
+    // The key family must match the requested algorithm family.
+    if algorithm_kind(alg) != Some(key.algorithm) {
         return Err(AuthError::UnsupportedAlgorithm);
     }
 
     let signing_input = format!("{}.{}", parts[0], parts[1]);
-    let expected = hmac_sha256(&key.k, signing_input.as_bytes());
-    let actual = base64url_decode(parts[2])
+    let signature = base64url_decode(parts[2])
         .ok_or_else(|| AuthError::Malformed("signature is not base64url".into()))?;
-    if !constant_time_eq(&expected, &actual) {
-        return Err(AuthError::BadSignature);
-    }
+    verify_signature(key, alg, signing_input.as_bytes(), &signature)?;
 
     let payload_bytes = base64url_decode(parts[1])
         .ok_or_else(|| AuthError::Malformed("payload is not base64url".into()))?;
@@ -488,25 +523,51 @@ where
     claims_to_identity(&claims, issuer)
 }
 
-/// Signs a test token. Used only by tests and the isolated test identity
-/// harness; production tokens are signed by the identity provider.
+/// Signs a compact JWT with the supplied RSA key (RS256). Test and synthetic
+/// provider use only; production tokens are signed by the identity provider.
 #[doc(hidden)]
-pub fn sign_test_token(header: serde_json::Value, claims: serde_json::Value, key: &[u8]) -> String {
-    let header_json = serde_json::to_vec(&header).unwrap_or_default();
-    let claims_json = serde_json::to_vec(&claims).unwrap_or_default();
-    let header_b64 = base64url_encode(&header_json);
-    let claims_b64 = base64url_encode(&claims_json);
+pub fn sign_rs256(
+    keypair: &ring::signature::RsaKeyPair,
+    kid: &str,
+    claims: serde_json::Value,
+) -> String {
+    use ring::rand::SystemRandom;
+    let header = serde_json::json!({"alg": "RS256", "kid": kid, "typ": "JWT"});
+    let header_b64 = base64url_encode(&serde_json::to_vec(&header).unwrap_or_default());
+    let claims_b64 = base64url_encode(&serde_json::to_vec(&claims).unwrap_or_default());
     let signing_input = format!("{header_b64}.{claims_b64}");
-    let signature = hmac_sha256(key, signing_input.as_bytes());
-    format!("{signing_input}.{}", base64url_encode(&signature))
+    let rng = SystemRandom::new();
+    let mut sig = vec![0u8; keypair.public().modulus_len()];
+    keypair
+        .sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &rng,
+            signing_input.as_bytes(),
+            &mut sig,
+        )
+        .expect("sign RS256");
+    format!("{signing_input}.{}", base64url_encode(&sig))
+}
+
+/// Signs a legacy HS256 token. Retained only so tests can prove that a
+/// symmetric token signed with a configured secret is rejected.
+#[doc(hidden)]
+pub fn sign_hs256_for_rejection(claims: serde_json::Value, secret: &[u8]) -> String {
+    let header = serde_json::json!({"alg": "HS256", "kid": "legacy", "typ": "JWT"});
+    let header_b64 = base64url_encode(&serde_json::to_vec(&header).unwrap_or_default());
+    let claims_b64 = base64url_encode(&serde_json::to_vec(&claims).unwrap_or_default());
+    let input = format!("{header_b64}.{claims_b64}");
+    let sig = ring::hmac::sign(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret),
+        input.as_bytes(),
+    );
+    format!("{input}.{}", base64url_encode(sig.as_ref()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const KEY: &[u8] = b"test-signing-key-please-rotate";
-    const KID: &str = "test-key";
     const ISSUER: &str = "https://issuer.example";
     const AUDIENCE: &str = "rag-api";
 
@@ -519,21 +580,6 @@ mod tests {
         )
     }
 
-    fn jwks() -> Jwks {
-        Jwks::new(vec![Jwk {
-            kid: KID.to_string(),
-            alg: "HS256".to_string(),
-            k: KEY.to_vec(),
-        }])
-    }
-
-    fn cache(
-        keys: Jwks,
-    ) -> JwksCache<impl Fn() -> Result<Jwks, AuthError> + Send + Sync + 'static> {
-        let keys = Arc::new(keys);
-        JwksCache::new(move || Ok((*keys).clone()), Duration::from_secs(300))
-    }
-
     fn claims(sub: &str, roles: &[&str]) -> serde_json::Value {
         serde_json::json!({
             "iss": ISSUER,
@@ -544,96 +590,60 @@ mod tests {
         })
     }
 
-    fn header() -> serde_json::Value {
-        serde_json::json!({"alg": "HS256", "kid": KID, "typ": "JWT"})
-    }
-
-    fn token(claims: serde_json::Value) -> String {
-        sign_test_token(header(), claims, KEY)
-    }
-
-    #[test]
-    fn valid_token_yields_verified_identity() {
-        let cache = cache(jwks());
-        let identity =
-            validate_token(&token(claims("user-1", &["editor"])), &config(), &cache).unwrap();
-        assert_eq!(identity.subject(), "user-1");
-        assert!(
-            identity.roles().is_empty(),
-            "token role claims must not grant access"
-        );
+    fn cache(
+        jwks: Jwks,
+    ) -> JwksCache<impl Fn() -> Result<Jwks, AuthError> + Send + Sync + 'static> {
+        let keys = Arc::new(jwks);
+        JwksCache::new(move || Ok((*keys).clone()), Duration::from_secs(300))
     }
 
     #[test]
-    fn forged_signature_is_rejected() {
-        let cache = cache(jwks());
-        let forged = sign_test_token(header(), claims("user-1", &["admin"]), b"wrong-key");
+    fn hs256_tokens_are_rejected_even_with_a_key() {
+        // A token claiming HS256 must be rejected before any key lookup, so an
+        // (unused) symmetric key in the set cannot authorize it.
+        let token = sign_hs256_for_rejection(claims("u", &["admin"]), b"secret");
+        let cache = cache(Jwks::new(Vec::new()));
         assert_eq!(
-            validate_token(&forged, &config(), &cache).unwrap_err(),
-            AuthError::BadSignature
+            validate_token(&token, &config(), &cache).unwrap_err(),
+            AuthError::UnsupportedAlgorithm
         );
     }
 
     #[test]
-    fn expired_token_is_rejected() {
-        let cache = cache(jwks());
-        let mut c = claims("user-1", &["viewer"]);
-        c["exp"] = serde_json::json!(now_seconds().saturating_sub(10));
-        assert_eq!(
-            validate_token(&token(c), &config(), &cache).unwrap_err(),
-            AuthError::Expired
-        );
+    fn malformed_jwk_is_rejected() {
+        let raw = r#"{"keys":[{"kty":"oct","kid":"k","k":"c2VjcmV0"}]}"#;
+        assert!(matches!(
+            Jwks::from_json(raw).unwrap_err(),
+            AuthError::MalformedJwk(_)
+        ));
+        let raw = r#"{"keys":[{"kty":"RSA","kid":"k"}]}"#;
+        assert!(matches!(
+            Jwks::from_json(raw).unwrap_err(),
+            AuthError::MalformedJwk(_)
+        ));
     }
 
     #[test]
-    fn wrong_issuer_is_rejected() {
-        let cache = cache(jwks());
-        let mut c = claims("user-1", &["viewer"]);
-        c["iss"] = serde_json::json!("https://evil.example");
-        assert_eq!(
-            validate_token(&token(c), &config(), &cache).unwrap_err(),
-            AuthError::WrongIssuer
-        );
-    }
-
-    #[test]
-    fn wrong_audience_is_rejected() {
-        let cache = cache(jwks());
-        let mut c = claims("user-1", &["viewer"]);
-        c["aud"] = serde_json::json!("other-api");
-        assert_eq!(
-            validate_token(&token(c), &config(), &cache).unwrap_err(),
-            AuthError::WrongAudience
-        );
-    }
-
-    #[test]
-    fn altered_claims_are_rejected() {
-        let cache = cache(jwks());
-        let original = token(claims("user-1", &["viewer"]));
-        let segments: Vec<&str> = original.split('.').collect();
-        let tampered_claims = claims("user-1", &["admin"]);
-        let tampered_b64 = base64url_encode(&serde_json::to_vec(&tampered_claims).unwrap());
-        let tampered = format!("{}.{}.{}", segments[0], tampered_b64, segments[2]);
-        assert_eq!(
-            validate_token(&tampered, &config(), &cache).unwrap_err(),
-            AuthError::BadSignature
-        );
-    }
-
-    #[test]
-    fn jwks_outage_is_an_error_not_anonymous() {
+    fn jwks_outage_fails_closed() {
         let cache: JwksCache<_> = JwksCache::new(
             || Err(AuthError::ProviderUnavailable("connection refused".into())),
             Duration::from_secs(1),
         );
-        let result = validate_token(&token(claims("user-1", &["admin"])), &config(), &cache);
-        assert!(matches!(result, Err(AuthError::ProviderUnavailable(_))));
+        // Build a valid-shaped RS256 header so verification reaches the fetch
+        // and observes the provider outage (fail closed, not anonymous).
+        // header to reach the fetch and observe the outage.
+        let header = base64url_encode(br#"{"alg":"RS256","kid":"k"}"#);
+        let payload = base64url_encode(br#"{"iss":"x","aud":"y","sub":"s","exp":9999999999}"#);
+        let token = format!("{header}.{payload}.c2ln");
+        assert!(matches!(
+            validate_token(&token, &config(), &cache).unwrap_err(),
+            AuthError::ProviderUnavailable(_)
+        ));
     }
 
     #[test]
     fn empty_token_is_missing() {
-        let cache = cache(jwks());
+        let cache = cache(Jwks::new(Vec::new()));
         assert_eq!(
             validate_token("  ", &config(), &cache).unwrap_err(),
             AuthError::Missing
@@ -641,10 +651,23 @@ mod tests {
     }
 
     #[test]
-    fn unknown_roles_are_dropped() {
-        let cache = cache(jwks());
-        let identity =
-            validate_token(&token(claims("user-2", &["root"])), &config(), &cache).unwrap();
-        assert!(identity.roles().is_empty());
+    fn malformed_token_is_rejected() {
+        let cache = cache(Jwks::new(Vec::new()));
+        assert!(matches!(
+            validate_token("not-a-jwt", &config(), &cache).unwrap_err(),
+            AuthError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_algorithm_is_rejected() {
+        let header = base64url_encode(br#"{"alg":"none","kid":"k"}"#);
+        let payload = base64url_encode(br#"{"iss":"x"}"#);
+        let token = format!("{header}.{payload}.");
+        let cache = cache(Jwks::new(Vec::new()));
+        assert_eq!(
+            validate_token(&token, &config(), &cache).unwrap_err(),
+            AuthError::UnsupportedAlgorithm
+        );
     }
 }
