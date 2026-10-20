@@ -29,6 +29,9 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgres://rag:rag@127.0.0.1:5432/rag_test?sslmode=disable
+      # Without this the genealogy integration tests skip and report "ok".
+      # They create their own disposable *_test databases from this DSN.
+      GENEALOGY_DATABASE_URL: postgres://rag:rag@127.0.0.1:5432/genealogy_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       # rustup honors rust-toolchain.toml at the repository root.
@@ -38,6 +41,12 @@ jobs:
         run: |
           for f in migrations/*.sql; do
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Create genealogy database and apply its migrations
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE genealogy_test"
+          for f in genealogy/migrations/*.sql; do
+            psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
       - name: Format check
         run: cargo fmt --check
