@@ -25,6 +25,7 @@ pub mod ingest;
 pub mod inventory;
 pub mod loader;
 pub mod ollama;
+pub mod pdf_assessment;
 pub mod pipeline;
 pub mod provider;
 pub mod query_service;
