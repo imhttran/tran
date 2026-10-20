@@ -412,6 +412,8 @@ async fn health(State(state): State<AppState>) -> Response {
     let body = serde_json::json!({
         "status": if healthy { "ok" } else { "degraded" },
         "service": "rust-api",
+        "database": if database_ok { "ok" } else { "down" },
+        "model": if model_ok { "ok" } else { "down" },
     });
     let status = if healthy {
         StatusCode::OK
