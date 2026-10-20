@@ -8,6 +8,10 @@ use rag_foundation::identity_store::identity_client::Client as IdentityClient;
 use rag_foundation::identity_store::IdentityStoreError;
 use rag_foundation::identity_store_pg::PgIdentityClient;
 
+/// The issuer every seeded account belongs to. Identity is keyed on
+/// `(issuer, subject)`, so every state-changing call must pass it.
+const ISSUER: &str = "https://issuer.example";
+
 fn base_dsn() -> Option<String> {
     std::env::var("DATABASE_URL").ok()
 }
@@ -53,20 +57,25 @@ fn reset_and_migrate(client: &mut Client) {
     client
         .batch_execute(include_str!("../migrations/007_user_lifecycle.sql"))
         .expect("apply lifecycle migration");
+    client
+        .batch_execute(include_str!(
+            "../migrations/008_identity_issuer_subject.sql"
+        ))
+        .expect("apply issuer+subject migration");
 }
 
 fn seed_user(client: &mut Client, subject: &str, role: &str) {
     client
         .execute(
-            "INSERT INTO users (subject, issuer) VALUES ($1, 'https://issuer.example')",
-            &[&subject],
+            "INSERT INTO users (subject, issuer) VALUES ($1, $2)",
+            &[&subject, &ISSUER],
         )
         .expect("insert user");
     client
         .execute(
             "INSERT INTO role_assignments (user_id, role, granted_by) \
-             SELECT id, $2, 'test' FROM users WHERE subject = $1",
-            &[&subject, &role],
+             SELECT id, $3, 'test' FROM users WHERE subject = $1 AND issuer = $2",
+            &[&subject, &ISSUER, &role],
         )
         .expect("insert role");
 }
@@ -87,12 +96,24 @@ fn last_active_admin_cannot_be_revoked() {
 
     let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
     let err = identity
-        .change_role("synthetic-admin", Role::Admin, "synthetic-admin", false)
+        .change_role(
+            "synthetic-admin",
+            ISSUER,
+            Role::Admin,
+            "synthetic-admin",
+            false,
+        )
         .expect_err("last admin revocation must fail");
     assert!(matches!(err, IdentityStoreError::LastAdmin));
 
     identity
-        .change_role("synthetic-viewer", Role::Viewer, "synthetic-admin", false)
+        .change_role(
+            "synthetic-viewer",
+            ISSUER,
+            Role::Viewer,
+            "synthetic-admin",
+            false,
+        )
         .expect("viewer revocation is allowed");
 }
 
@@ -115,13 +136,25 @@ fn concurrent_admin_revocations_leave_one_active_admin() {
         let a = scope.spawn(move || {
             let mut identity = PgIdentityClient::connect(&first).expect("client a");
             identity
-                .change_role("synthetic-admin-b", Role::Admin, "synthetic-admin-a", false)
+                .change_role(
+                    "synthetic-admin-b",
+                    ISSUER,
+                    Role::Admin,
+                    "synthetic-admin-a",
+                    false,
+                )
                 .is_ok()
         });
         let b = scope.spawn(move || {
             let mut identity = PgIdentityClient::connect(&second).expect("client b");
             identity
-                .change_role("synthetic-admin-a", Role::Admin, "synthetic-admin-b", false)
+                .change_role(
+                    "synthetic-admin-a",
+                    ISSUER,
+                    Role::Admin,
+                    "synthetic-admin-b",
+                    false,
+                )
                 .is_ok()
         });
         (a.join().unwrap(), b.join().unwrap())
@@ -156,10 +189,10 @@ fn deactivated_user_is_not_resolved() {
 
     let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
     identity
-        .deactivate_user("synthetic-account", "synthetic-admin")
+        .deactivate_user("synthetic-account", ISSUER, "synthetic-admin")
         .expect("deactivate");
     assert!(identity
-        .user_by_subject("synthetic-account", "https://issuer.example")
+        .user_by_subject("synthetic-account", ISSUER)
         .expect("lookup")
         .is_none());
 }
@@ -179,19 +212,19 @@ fn last_active_admin_cannot_be_deactivated() {
 
     let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
     let err = identity
-        .deactivate_user("synthetic-admin", "synthetic-admin")
+        .deactivate_user("synthetic-admin", ISSUER, "synthetic-admin")
         .expect_err("deactivating the last admin must fail");
     assert!(matches!(err, IdentityStoreError::LastAdmin));
     assert!(
         identity
-            .user_by_subject("synthetic-admin", "https://issuer.example")
+            .user_by_subject("synthetic-admin", ISSUER)
             .expect("lookup")
             .is_some(),
         "the refused deactivation must leave the admin active"
     );
 
     identity
-        .deactivate_user("synthetic-viewer", "synthetic-admin")
+        .deactivate_user("synthetic-viewer", ISSUER, "synthetic-admin")
         .expect("a non-admin can still be deactivated");
 }
 
@@ -210,14 +243,20 @@ fn deactivated_admin_does_not_count_toward_the_last_admin() {
 
     let mut identity = PgIdentityClient::connect(&dsn).expect("identity client");
     identity
-        .deactivate_user("synthetic-admin-a", "synthetic-admin-b")
+        .deactivate_user("synthetic-admin-a", ISSUER, "synthetic-admin-b")
         .expect("one of two admins can be deactivated");
     let err = identity
-        .change_role("synthetic-admin-b", Role::Admin, "synthetic-admin-b", false)
+        .change_role(
+            "synthetic-admin-b",
+            ISSUER,
+            Role::Admin,
+            "synthetic-admin-b",
+            false,
+        )
         .expect_err("the remaining active admin must not be revocable");
     assert!(matches!(err, IdentityStoreError::LastAdmin));
     let err = identity
-        .deactivate_user("synthetic-admin-b", "synthetic-admin-b")
+        .deactivate_user("synthetic-admin-b", ISSUER, "synthetic-admin-b")
         .expect_err("the remaining active admin must not be deactivatable");
     assert!(matches!(err, IdentityStoreError::LastAdmin));
 }

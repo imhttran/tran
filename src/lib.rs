@@ -36,6 +36,7 @@ pub mod inventory;
 pub mod loader;
 pub mod oidc;
 pub mod ollama;
+pub mod onboarding;
 pub mod pdf_assessment;
 pub mod pipeline;
 pub mod provider;

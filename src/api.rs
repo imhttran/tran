@@ -16,7 +16,7 @@ use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -182,6 +182,10 @@ impl AppState {
             .route(
                 "/api/admin/users/{subject}/deactivate",
                 post(deactivate_user),
+            )
+            .route(
+                "/api/admin/users/{issuer}/{subject}/deactivate",
+                post(deactivate_user_scoped),
             )
             // Multipart framing adds a small overhead; the file payload itself
             // is checked against MAX_UPLOAD_BYTES in the handler.
@@ -512,6 +516,10 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response 
 struct RoleChangeRequest {
     subject: String,
     role: String,
+    /// The issuer that owns the target account. Identity is keyed on
+    /// `(issuer, subject)`, so a same-subject account under another issuer is
+    /// never touched.
+    issuer: String,
     #[serde(default)]
     revoke: bool,
 }
@@ -566,17 +574,26 @@ async fn change_role(
             "subject must not be empty",
         );
     }
+    let issuer = request.issuer.trim().to_string();
+    if issuer.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_issuer",
+            "issuer must not be empty",
+        );
+    }
     let config = state.config.clone();
     let actor = identity.subject().to_string();
     let revoke = request.revoke;
     let task_subject = subject.clone();
+    let task_issuer = issuer.clone();
     let result = tokio::task::spawn_blocking(move || {
         let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
         let mut store = IdentityStore::new(client);
         if revoke {
-            store.revoke_role(&task_subject, role, &actor)
+            store.revoke_role(&task_subject, &task_issuer, role, &actor)
         } else {
-            store.grant_role(&task_subject, role, &actor)
+            store.grant_role(&task_subject, &task_issuer, role, &actor)
         }
     })
     .await;
@@ -1537,21 +1554,55 @@ async fn provision_user(
     }
 }
 
+#[derive(Deserialize)]
+struct DeactivateQuery {
+    /// The issuer that owns the target account. Identity is keyed on
+    /// `(issuer, subject)`, so a same-subject account under another issuer is
+    /// never deactivated.
+    issuer: String,
+}
+
 async fn deactivate_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(subject): Path<String>,
+    Query(query): Query<DeactivateQuery>,
+) -> Response {
+    let issuer = query.issuer.trim().to_string();
+    deactivate_identity(state, headers, subject, issuer).await
+}
+
+async fn deactivate_user_scoped(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((issuer, subject)): Path<(String, String)>,
+) -> Response {
+    deactivate_identity(state, headers, subject, issuer).await
+}
+
+async fn deactivate_identity(
+    state: AppState,
+    headers: HeaderMap,
+    subject: String,
+    issuer: String,
 ) -> Response {
     let identity = match authorize(&state, &headers, Operation::RoleChange) {
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    if issuer.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_issuer",
+            "issuer must not be empty",
+        );
+    }
     let config = state.config.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
         let mut store = IdentityStore::new(client);
-        store.client().deactivate_user(&subject, &actor)
+        store.client().deactivate_user(&subject, &issuer, &actor)
     })
     .await;
     match result {
