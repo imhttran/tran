@@ -145,15 +145,12 @@ impl Operation {
         }
     }
 
-    /// Reports whether the operation is sensitive enough to be rate limited.
-    pub fn is_rate_limited(&self) -> bool {
+    /// Reports whether the operation only reads. Every operation is rate
+    /// limited; reads get a larger quota than writes and model calls.
+    pub fn is_read(&self) -> bool {
         matches!(
             self,
-            Operation::Ingest
-                | Operation::Query
-                | Operation::RoleChange
-                | Operation::GenealogyNominate
-                | Operation::HeadOfFamilyApproval
+            Operation::DocumentStatus | Operation::GenealogyRead | Operation::Account
         )
     }
 

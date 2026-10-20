@@ -24,7 +24,7 @@
 //! (`kty=EC`, `crv=P-256`, `x`/`y`). Symmetric keys (`kty=oct`, `k`) and
 //! private-key material are rejected as malformed for verification purposes.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
@@ -249,6 +249,8 @@ where
 {
     fetch: Arc<F>,
     state: Arc<Mutex<CacheState>>,
+    /// Held by the one caller fetching; `state` is never held across a fetch.
+    refresh: Arc<Mutex<()>>,
     ttl: Duration,
 }
 
@@ -269,29 +271,51 @@ where
                 jwks: None,
                 fetched_at: None,
             })),
+            refresh: Arc::new(Mutex::new(())),
             ttl,
         }
     }
 
-    /// Returns a key set, refreshing when the TTL elapsed. A refresh error is
-    /// returned, never replaced with a stale-only success.
+    /// Returns the cached key set, if any, and whether it is within the TTL.
+    fn cached(&self) -> Result<(Option<Jwks>, bool), AuthError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AuthError::ProviderUnavailable("JWKS cache poisoned".into()))?;
+        let fresh = state.fetched_at.is_some_and(|at| at.elapsed() < self.ttl);
+        Ok((state.jwks.clone(), fresh))
+    }
+
+    /// Returns a key set, refreshing when the TTL elapsed.
+    ///
+    /// Single-flight: one caller fetches while the others keep serving the
+    /// expired set, so a slow provider never stalls every request. Only a cold
+    /// cache waits for the fetch. The fetching caller gets the refresh error,
+    /// never a stale-only success.
     pub fn get(&self) -> Result<Jwks, AuthError> {
-        // Single-flight: hold the lock while refreshing so concurrent callers
-        // wait for the same fetch instead of stampeding the provider.
+        let (cached, fresh) = self.cached()?;
+        if let (Some(jwks), true) = (&cached, fresh) {
+            return Ok(jwks.clone());
+        }
+        // The refresh lock guards no data, so a panicked fetch cannot leave it
+        // inconsistent.
+        let _refresh = match self.refresh.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => match cached {
+                Some(stale) => return Ok(stale),
+                None => self.refresh.lock().unwrap_or_else(PoisonError::into_inner),
+            },
+        };
+        // Another caller may have refreshed while this one waited.
+        if let (Some(jwks), true) = self.cached()? {
+            return Ok(jwks);
+        }
+        let jwks = (self.fetch)()?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| AuthError::ProviderUnavailable("JWKS cache poisoned".into()))?;
-        let fresh = match state.fetched_at {
-            Some(at) => at.elapsed() < self.ttl,
-            None => false,
-        };
-        if fresh {
-            if let Some(jwks) = &state.jwks {
-                return Ok(jwks.clone());
-            }
-        }
-        let jwks = (self.fetch)()?;
         state.jwks = Some(jwks.clone());
         state.fetched_at = Some(Instant::now());
         Ok(jwks)
@@ -639,6 +663,42 @@ mod tests {
             validate_token(&token, &config(), &cache).unwrap_err(),
             AuthError::ProviderUnavailable(_)
         ));
+    }
+
+    #[test]
+    fn slow_refresh_serves_the_stale_set_to_other_callers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let calls = AtomicUsize::new(0);
+        let cache = JwksCache::new(
+            move || {
+                if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    started_tx.send(()).unwrap();
+                    // Bounded so a regression fails instead of hanging.
+                    let _ = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5));
+                }
+                Ok(Jwks::new(Vec::new()))
+            },
+            Duration::ZERO,
+        );
+        cache.get().expect("initial fetch");
+
+        std::thread::scope(|scope| {
+            let refresher = scope.spawn(|| cache.get());
+            started_rx.recv().unwrap();
+            let begin = Instant::now();
+            cache.get().expect("stale set");
+            assert!(begin.elapsed() < Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+            refresher.join().unwrap().expect("refresh");
+        });
     }
 
     #[test]
