@@ -79,6 +79,10 @@ pub enum ReviewError {
     /// A verified transition has no evidence rows.
     #[error("cannot verify assertion {0}: it has no supporting evidence")]
     NoEvidence(i64),
+    /// The evidence is not linked to an authoritative original source with a
+    /// valid locator.
+    #[error("cannot verify assertion {0}: {1}")]
+    Unprovenanced(i64, String),
     /// The assertion is blocked by a blocking validation violation.
     #[error("cannot verify assertion {0}: {1:?}")]
     Blocked(i64, Vec<Violation>),
@@ -230,6 +234,69 @@ fn format_blocked(violations: &[Violation]) -> String {
     format!("blocked: {}", parts.join("; "))
 }
 
+/// Returns why the assertion lacks authoritative, locator-backed evidence.
+///
+/// A verified claim needs at least one evidence row joined through
+/// `source_evidence` to an `original` source document whose derivation lineage
+/// is empty and whose page/locator is explicit. A null link, a derivative
+/// catalog/transcription, or a missing locator never satisfies the rule.
+fn provenance_gap(
+    tx: &mut Transaction<'_>,
+    assertion_id: i64,
+) -> Result<Option<String>, ReviewError> {
+    let rows = tx
+        .query(
+            "SELECT ae.source_evidence_id, se.page, se.locator,
+                    sd.source_kind, sd.derived_from_source_document_id
+               FROM assertion_evidence ae
+               LEFT JOIN source_evidence se ON se.source_evidence_id = ae.source_evidence_id
+               LEFT JOIN source_document sd ON sd.source_document_id = se.source_document_id
+              WHERE ae.assertion_id = $1",
+            &[&assertion_id],
+        )
+        .map_err(|err| ReviewError::Db(err.to_string()))?;
+
+    let mut null_link = false;
+    let mut derivative = false;
+    let mut bad_locator = false;
+    for row in rows {
+        let source_evidence_id: Option<i64> = row.get(0);
+        let page: Option<i32> = row.get(1);
+        let locator: Option<String> = row.get(2);
+        let source_kind: Option<String> = row.get(3);
+        let derived_from: Option<i64> = row.get(4);
+
+        if source_evidence_id.is_none() || source_kind.is_none() {
+            null_link = true;
+            continue;
+        }
+        if source_kind.as_deref() != Some("original") || derived_from.is_some() {
+            derivative = true;
+            continue;
+        }
+        let locator_ok = locator
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let page_ok = page.is_some_and(|value| value >= 1);
+        if !locator_ok || !page_ok {
+            bad_locator = true;
+            continue;
+        }
+        return Ok(None);
+    }
+
+    let reason = if null_link {
+        "evidence is not linked to source_evidence".to_string()
+    } else if derivative {
+        "evidence is linked only to a derivative source document".to_string()
+    } else if bad_locator {
+        "evidence lacks a valid page and locator".to_string()
+    } else {
+        "no authoritative evidence".to_string()
+    };
+    Ok(Some(reason))
+}
+
 fn current_status(tx: &mut Transaction<'_>, assertion_id: i64) -> Result<String, ReviewError> {
     let row = tx
         .query_opt(
@@ -264,6 +331,9 @@ fn review_in_transaction(
     if request.new_status == ReviewStatus::Verified {
         if evidence_count == 0 {
             return Err(ReviewError::NoEvidence(request.assertion_id));
+        }
+        if let Some(reason) = provenance_gap(tx, request.assertion_id)? {
+            return Err(ReviewError::Unprovenanced(request.assertion_id, reason));
         }
         let violations = validation::validate_candidate(tx, request.assertion_id)
             .map_err(|err| ReviewError::Db(err.to_string()))?;

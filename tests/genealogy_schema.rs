@@ -9,10 +9,12 @@ use std::str::FromStr;
 
 use postgres::{Client, NoTls};
 
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 5] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
+    "genealogy/migrations/0004_review_workflow.sql",
+    "genealogy/migrations/0005_source_kind.sql",
 ];
 
 fn genealogy_dsn() -> Option<String> {

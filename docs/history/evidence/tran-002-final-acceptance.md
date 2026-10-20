@@ -9,20 +9,21 @@ Technical acceptance summary for the TRAN-002 integration and closure task. This
 
 ## Deterministic checks
 
-| Check                         | Command (by name)                                                           | Result                                                      |
-| ----------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Rust format                   | `cargo fmt --check`                                                         | PASS                                                        |
-| Rust build                    | `cargo build --locked`                                                      | PASS                                                        |
-| Rust tests                    | `cargo test --locked`                                                       | PASS (disposable PostgreSQL available)                      |
-| Rust clippy                   | `cargo clippy --locked --all-targets -- -D warnings`                        | PASS                                                        |
-| DB schema apply + schema test | `psql … -f … && cargo test --locked --test genealogy_schema -- --nocapture` | PASS                                                        |
-| DB CLI integration            | `cargo test --locked --test genealogy_cli`                                  | PASS                                                        |
-| Rust acceptance suite         | `make rust-check`                                                           | PASS                                                        |
-| Source integrity (SHA-256)    | pre/post hash compare vs private manifest                                   | PASS (all four digests unchanged; values not reproduced)    |
-| Fresh source inventory        | inventory CLI, exactly four inputs                                          | PASS (four source records; generated audit output excluded) |
-| Diff hygiene                  | `git diff --check`                                                          | PASS                                                        |
-| Git privacy                   | `git ls-files docs/tran/` / `git check-ignore -v docs/tran/`                | PASS (no tracked source; ignore rule present)               |
-| Staged-content privacy scan   | `git diff --cached` scan for `docs/tran/` and private identifiers           | PASS                                                        |
+| Check                         | Command (by name)                                                           | Result                                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Rust format                   | `cargo fmt --check`                                                         | PASS                                                                                           |
+| Rust build                    | `cargo build --locked`                                                      | PASS                                                                                           |
+| Rust tests                    | `cargo test --locked`                                                       | PASS (disposable PostgreSQL available)                                                         |
+| Rust clippy                   | `cargo clippy --locked --all-targets -- -D warnings`                        | PASS                                                                                           |
+| DB schema apply + schema test | `psql … -f … && cargo test --locked --test genealogy_schema -- --nocapture` | PASS                                                                                           |
+| DB CLI integration            | `cargo test --locked --test genealogy_cli`                                  | PASS                                                                                           |
+| Evidence provenance           | `cargo test --locked --test genealogy_provenance`                           | PASS (null links and derivative catalogs cannot verify; original source with page/locator can) |
+| Rust acceptance suite         | `make rust-check`                                                           | PASS                                                                                           |
+| Source integrity (SHA-256)    | pre/post hash compare vs private manifest                                   | PASS (all four digests unchanged; values not reproduced)                                       |
+| Fresh source inventory        | inventory CLI, exactly four inputs                                          | PASS (four source records; generated audit output excluded)                                    |
+| Diff hygiene                  | `git diff --check`                                                          | PASS                                                                                           |
+| Git privacy                   | `git ls-files docs/tran/` / `git check-ignore -v docs/tran/`                | PASS (no tracked source; ignore rule present)                                                  |
+| Staged-content privacy scan   | `git diff --cached` scan for `docs/tran/` and private identifiers           | PASS                                                                                           |
 
 A required check that did not execute is recorded as NOT-RUN, never as PASS.
 

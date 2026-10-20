@@ -47,6 +47,9 @@ pub struct ImportDocument {
     pub relative_path: String,
     /// The document sha256.
     pub sha256: String,
+    /// The source-document kind, one of `original`, `transcription`,
+    /// `translation`, `catalog`, or `derivative`.
+    pub source_kind: String,
     /// The persons referenced by the assertions.
     pub persons: Vec<ImportPerson>,
     /// The assertions to import.
@@ -84,11 +87,16 @@ fn reimport_in_transaction(
 ) -> Result<ReimportReport, GenealogyError> {
     let document_id: i64 = tx
         .query_one(
-            "INSERT INTO source_document (relative_path, sha256)
-             VALUES ($1, $2)
-             ON CONFLICT (relative_path) DO UPDATE SET sha256 = EXCLUDED.sha256
+            "INSERT INTO source_document (relative_path, sha256, source_kind)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (relative_path) DO UPDATE
+                SET sha256 = EXCLUDED.sha256, source_kind = EXCLUDED.source_kind
              RETURNING source_document_id",
-            &[&document.relative_path, &document.sha256],
+            &[
+                &document.relative_path,
+                &document.sha256,
+                &document.source_kind,
+            ],
         )
         .map_err(|err| GenealogyError::Query(err.to_string()))?
         .get(0);

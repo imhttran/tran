@@ -155,6 +155,7 @@ fn import_apply(input: &Path) -> Result<(), String> {
     let document = ImportDocument {
         relative_path: document_ref,
         sha256,
+        source_kind: "catalog".to_string(),
         persons,
         assertions,
     };

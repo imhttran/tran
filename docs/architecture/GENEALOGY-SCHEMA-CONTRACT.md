@@ -10,7 +10,7 @@ original reference. The Vietnamese transcription is a derivative. The English
 translation and the people catalog are interpretation aids, not independent
 proof.
 
-The model separates a *person* from a *claim about a person*. A record that
+The model separates a _person_ from a _claim about a person_. A record that
 links to a person is not a verified fact by itself. Only an assertion with
 source evidence and a review decision can be `verified`.
 
@@ -19,25 +19,28 @@ source evidence and a review decision can be `verified`.
 Seven logical record categories make the model. Each category is one table in
 the persistence layer.
 
-| Category | Purpose | Key identifier | Evidence rule |
-| --- | --- | --- | --- |
-| `source_document` | A private local source file, its hash, language, and derivation lineage. | `source_document_id` | Holds the SHA-256 of the file bytes. Never committed. |
-| `source_evidence` | One citation anchor: source, page, locator, optional private excerpt. | `source_evidence_id` | The only object that can justify `verified`. |
-| `person` | A distinct person, separate from any source ordinal. | `person_id` | Carries identity and review state, not birth facts. |
-| `person_name` | One name form of a person: original, normalized, script, alias type. | `person_name_id` | Links to `person_id`; keeps literal Vietnamese spelling. |
-| `family_branch` | One family branch with an explicit number or label. | `family_branch_id` | Requires source evidence for the branch claim. |
-| `genealogy_assertion` | One claim: subject, predicate, optional object or literal, status, review metadata. | `genealogy_assertion_id` | Requires `source_evidence_id` before `verified`. |
-| `catalog_entry` | One stable key for one source catalog entry and its parse result. | `catalog_entry_key` | Links to candidate person and assertion IDs, never proves them. |
+| Category              | Purpose                                                                             | Key identifier           | Evidence rule                                                   |
+| --------------------- | ----------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------- |
+| `source_document`     | A private local source file, its hash, language, and derivation lineage.            | `source_document_id`     | Holds the SHA-256 of the file bytes. Never committed.           |
+| `source_evidence`     | One citation anchor: source, page, locator, optional private excerpt.               | `source_evidence_id`     | The only object that can justify `verified`.                    |
+| `person`              | A distinct person, separate from any source ordinal.                                | `person_id`              | Carries identity and review state, not birth facts.             |
+| `person_name`         | One name form of a person: original, normalized, script, alias type.                | `person_name_id`         | Links to `person_id`; keeps literal Vietnamese spelling.        |
+| `family_branch`       | One family branch with an explicit number or label.                                 | `family_branch_id`       | Requires source evidence for the branch claim.                  |
+| `genealogy_assertion` | One claim: subject, predicate, optional object or literal, status, review metadata. | `genealogy_assertion_id` | Requires `source_evidence_id` before `verified`.                |
+| `catalog_entry`       | One stable key for one source catalog entry and its parse result.                   | `catalog_entry_key`      | Links to candidate person and assertion IDs, never proves them. |
 
 ### 1.1 `source_document`
 
 Fields: `source_document_id`, `relative_path`, `sha256`, `language`,
-`derivation_of` (nullable reference to another `source_document_id`), `role`
-(`original` or `derivative`).
+`derived_from_source_document_id` (nullable reference to another
+`source_document_id`), `source_kind` (`original`, `transcription`,
+`translation`, `catalog`, or `derivative`).
 
 Rule: the SHA-256 must equal the value in the private TRAN-001 manifest. The
 four source files keep their hashes. A hash change reopens all assertions that
-cite the document.
+cite the document. Only a document with `source_kind = 'original'` and no
+derivation parent is authoritative; transcriptions, translations, catalogs, and
+other derivatives can be evidence but cannot independently justify `verified`.
 
 ### 1.2 `source_evidence`
 
@@ -47,6 +50,13 @@ nullable), `locator`, `excerpt` (nullable, private), `char_offset` (nullable).
 Rule: `page_number` must be in the valid page range of the source PDF. This
 range is 1 to 56 for the current input. An out-of-range page number is rejected
 at parse time and stays `unresolved`.
+
+Review rule: a `verified` assertion requires at least one
+`assertion_evidence` row linked through `source_evidence` to an `original`
+source document, with a 1-based `page` and a non-empty `locator`. A null
+`source_evidence_id`, evidence linked only to a derivative catalog or
+transcription, and evidence without a valid page/locator all refuse
+verification.
 
 ### 1.3 `person`
 
@@ -128,12 +138,12 @@ Rules:
 
 `assertion_status` has four explicit values.
 
-| State | Meaning | Can display as a relative? |
-| --- | --- | --- |
-| `candidate` | Extracted or proposed, not reviewed. | No. |
-| `verified` | Reviewed and backed by valid source evidence. | Yes, with citation. |
-| `disputed` | Reviewed and contradicted by other evidence or a reviewer. | No; show as disputed. |
-| `rejected` | Reviewed and found false or not in the source. | No. |
+| State       | Meaning                                                    | Can display as a relative? |
+| ----------- | ---------------------------------------------------------- | -------------------------- |
+| `candidate` | Extracted or proposed, not reviewed.                       | No.                        |
+| `verified`  | Reviewed and backed by valid source evidence.              | Yes, with citation.        |
+| `disputed`  | Reviewed and contradicted by other evidence or a reviewer. | No; show as disputed.      |
+| `rejected`  | Reviewed and found false or not in the source.             | No.                        |
 
 Allowed transitions:
 
@@ -159,11 +169,11 @@ Promotion rules:
 
 `identity_state` has three values:
 
-| State | Meaning |
-| --- | --- |
-| `resolved` | One person with reviewed, unique evidence. |
-| `provisional` | One person with candidate evidence only. |
-| `unresolved` | Two or more candidate people may be the same person. |
+| State         | Meaning                                              |
+| ------------- | ---------------------------------------------------- |
+| `resolved`    | One person with reviewed, unique evidence.           |
+| `provisional` | One person with candidate evidence only.             |
+| `unresolved`  | Two or more candidate people may be the same person. |
 
 Unknown facts stay unknown. A missing death date never implies `living`. A
 missing birth order never implies first-born. A shared surname never implies

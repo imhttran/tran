@@ -11,11 +11,12 @@ use rag_foundation::genealogy::eligibility::{self, ReasonCode};
 use rag_foundation::genealogy::reimport::{self, ImportAssertion, ImportDocument, ImportPerson};
 use rag_foundation::genealogy::review::{self, ReviewError, ReviewRequest, ReviewStatus};
 
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
     "genealogy/migrations/0004_review_workflow.sql",
+    "genealogy/migrations/0005_source_kind.sql",
 ];
 
 fn base_dsn() -> Option<String> {
@@ -95,6 +96,7 @@ fn import_document(sha: &str, evidence: bool) -> ImportDocument {
     ImportDocument {
         relative_path: "repair-catalog.md".to_string(),
         sha256: sha.to_string(),
+        source_kind: "original".to_string(),
         persons: vec![ImportPerson {
             person_key: "repair-person".to_string(),
             display_name: "Repair Person".to_string(),
