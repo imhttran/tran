@@ -235,3 +235,26 @@ pub fn link_for_person(
         .map_err(|err| LinkError::Database(err.to_string()))?;
     Ok(row.map(row_to_link))
 }
+
+/// Returns the active link owned by one verified identity, if any.
+///
+/// Ownership requires both the opaque account id and the fingerprint of the
+/// exact `(issuer, subject)` pair. The fingerprint binds the row to that pair as
+/// a defense-in-depth check; it does not replace database access control. The
+/// `account_id` predicate uses the existing unique
+/// `onboarding_person_account_link_account_key` index; the fingerprint predicate
+/// is a binding check, not a second lookup key.
+pub fn link_for_account(
+    client: &mut postgres::Client,
+    account_id: i64,
+    identity_fingerprint: &str,
+) -> Result<Option<LinkRecord>, LinkError> {
+    let sql = format!(
+        "SELECT {LINK_COLUMNS} FROM onboarding_person_account_link \
+          WHERE account_id = $1 AND identity_fingerprint = $2"
+    );
+    let row = client
+        .query_opt(&sql, &[&account_id, &identity_fingerprint])
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    Ok(row.map(row_to_link))
+}

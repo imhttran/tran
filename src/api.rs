@@ -39,6 +39,7 @@ use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
 use crate::onboarding::{
     self, link, AccountMapError, CandidatePreview, LinkDecision, LinkError, PreviewSummary,
+    ProfileError,
 };
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
@@ -174,6 +175,7 @@ impl AppState {
             .route("/api/documents/{source}/status", get(status))
             .route("/api/query", post(query))
             .route("/api/account", get(account))
+            .route("/api/profile", get(profile))
             .route("/api/admin/roles", post(change_role))
             .route("/api/genealogy/records", get(genealogy_records))
             .route("/api/genealogy/tree", get(genealogy_tree))
@@ -556,6 +558,95 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response 
         })
         .into_response(),
         Err(response) => response,
+    }
+}
+
+/// Reads the authenticated member's own private profile.
+///
+/// Ownership is derived only from the verified `(issuer, subject)` pair and the
+/// reviewed link it resolved elsewhere. The handler accepts no person key,
+/// account id, or reviewer from the client. An unlinked account receives
+/// `linked: false` and no private field.
+#[allow(clippy::result_large_err)]
+async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut identity_client = postgres::Client::connect(&config.database_url, postgres::NoTls)
+            .map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "identity_unavailable",
+                    "the identity store is unavailable",
+                )
+            })?;
+        let account = onboarding::resolve_account(&mut identity_client, &issuer, &subject)
+            .map_err(account_map_error)?;
+        let mut genealogy = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        onboarding::read_own_profile(&mut genealogy, &account).map_err(profile_error)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(Some(view))) => {
+            let fields: Vec<serde_json::Value> = view
+                .fields
+                .iter()
+                .map(|field| {
+                    serde_json::json!({
+                        "field_key": field.field_key,
+                        "value": field.value,
+                        "updated_at": field.updated_at,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "ok": true,
+                "linked": true,
+                "profile": {
+                    "person_key": view.person_key,
+                    "display_name": view.display_name,
+                    "fields": fields,
+                },
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => Json(serde_json::json!({
+            "ok": true,
+            "linked": false,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: profile task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "profile_failed",
+                "the profile read failed",
+            )
+        }
+    }
+}
+
+fn profile_error(err: ProfileError) -> Response {
+    eprintln!("api: profile read failed: {err}");
+    match err {
+        ProfileError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "profile_unavailable",
+            "the profile store is unavailable",
+        ),
     }
 }
 
