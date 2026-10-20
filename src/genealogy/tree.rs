@@ -4,8 +4,8 @@
 //! have a matching reviewed relationship assertion; conflicting assertions
 //! keep the edge in needs_review. All reads use the separate genealogy DB.
 
-use postgres::Client;
 use super::{query::Citation, GenealogyError};
+use postgres::Client;
 
 /// Bound the first tree response without silently pretending it is complete.
 pub const MAX_TREE_PEOPLE: i64 = 500;
@@ -77,7 +77,11 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
         .collect::<Result<Vec<_>, postgres::Error>>()?;
 
     if people.is_empty() {
-        return Ok(TreeGraph { people, links: Vec::new(), truncated });
+        return Ok(TreeGraph {
+            people,
+            links: Vec::new(),
+            truncated,
+        });
     }
 
     let keys: Vec<String> = people.iter().map(|p| p.person_key.clone()).collect();
@@ -142,8 +146,9 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
         let document_ref: Option<String> = row.try_get(4)?;
         let page: Option<i32> = row.try_get(5)?;
         let citation = match (document_ref, page) {
-            (Some(document_ref), Some(page)) if status == "verified" =>
-                Some(Citation { document_ref, page }),
+            (Some(document_ref), Some(page)) if status == "verified" => {
+                Some(Citation { document_ref, page })
+            }
             _ => None,
         };
         if let Some(last) = links.last_mut() {
@@ -162,5 +167,9 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
             citations: citation.into_iter().collect(),
         });
     }
-    Ok(TreeGraph { people, links, truncated })
+    Ok(TreeGraph {
+        people,
+        links,
+        truncated,
+    })
 }
