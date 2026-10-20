@@ -152,7 +152,6 @@ function FamilyTree({ role }: { role: Role | null }) {
     });
   }
   function onPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
-    if (event.target !== event.currentTarget) return;
     dragging.current = { x: event.clientX, y: event.clientY, view };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -253,6 +252,7 @@ function FamilyTree({ role }: { role: Role | null }) {
                       role="button" tabIndex={0}
                       aria-label={"Select " + person.person_label}
                       aria-pressed={selected === person.record_id}
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={() => setSelected(person.record_id)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
