@@ -47,7 +47,7 @@ no profile/asset engine has been merged, so this work must not duplicate them.
 
 ### Acceptance Checks
 
-- `cargo test --locked --test identity_last_admin`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-002 — Onboarding schema and verified living candidates
@@ -86,7 +86,7 @@ from a missing death year or a model answer.
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-003 — Usernames, invitations, and account linking
@@ -130,7 +130,7 @@ implemented.
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-004 — Self-service profile, photo, and personal document
@@ -167,7 +167,7 @@ the profile/revision/media tables and reuse the existing review and authorizatio
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-005 — Branch-scoped reviewer grants
@@ -199,7 +199,7 @@ claims require both applicable grants or an admin decision.
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-006 — Review decisions, publication, and audit
@@ -235,7 +235,7 @@ Family eligibility without appointing a successor.
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
+- `cargo test --locked`
 - `cargo fmt --check`
 
 ## USR-007 — Admin/member/branch UI and end-to-end acceptance
@@ -272,6 +272,5 @@ authority for every test.
 
 ### Acceptance Checks
 
-- `cargo test --locked onboarding`
-- `npm run typecheck --prefix web`
+- `cargo test --locked`
 - `git diff --check`
