@@ -162,6 +162,11 @@ it proves the slices fit together and that no slice weakened a privacy or author
 - USR-003C
 - USR-003D
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - `tests/onboarding_flow.rs` covering the full synthetic flow and a repeated run with no
