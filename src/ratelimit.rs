@@ -31,11 +31,6 @@ impl RateLimiter {
         }
     }
 
-    /// Builds a limiter that never rejects (used when a limit is zero).
-    pub fn disabled() -> Self {
-        Self::new(u32::MAX, Duration::from_secs(1))
-    }
-
     /// Records one request and reports whether it is allowed.
     pub fn check(&self, subject: &str, operation: &'static str) -> bool {
         let mut buckets = match self.buckets.lock() {

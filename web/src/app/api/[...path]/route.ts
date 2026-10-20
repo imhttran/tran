@@ -20,6 +20,7 @@
 // Next.js checks this file's exports strictly, so shared cookie definitions live
 // in src/lib/proxy-cookies.ts and this file exports only HTTP handlers.
 
+import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE } from "../../../lib/proxy-cookies";
@@ -59,15 +60,10 @@ function readCookie(request: NextRequest, name: string): string | null {
   return value && value.trim() !== "" ? value : null;
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
+function csrfTokensMatch(cookieToken: string, headerToken: string): boolean {
+  const a = Buffer.from(cookieToken);
+  const b = Buffer.from(headerToken);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 // Resolves the credential to forward. The HttpOnly session cookie is the source
@@ -150,7 +146,7 @@ async function proxy(
   if (isStateChanging(request.method) && bearer) {
     const cookieToken = readCookie(request, CSRF_COOKIE);
     const headerToken = request.headers.get(CSRF_HEADER);
-    if (!cookieToken || !headerToken || !timingSafeEqual(cookieToken, headerToken)) {
+    if (!cookieToken || !headerToken || !csrfTokensMatch(cookieToken, headerToken)) {
       return forbiddenCsrf();
     }
   }

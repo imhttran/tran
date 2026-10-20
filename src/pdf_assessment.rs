@@ -19,8 +19,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::inventory::{build_record, sha256_hex, SourceRecord};
-use crate::loader::pdf::{load_pdf, PdfError, PdfExtraction};
+use crate::inventory::{build_record, SourceRecord};
+use crate::loader::pdf::{PdfError, PdfExtraction};
 
 /// Errors returned by the read-only PDF assessment helpers.
 #[derive(Debug, Error)]
@@ -394,28 +394,6 @@ fn status_label(status: TextLayerStatus) -> &'static str {
 /// Thin wrapper over [`crate::inventory::reject_manifest_path`].
 pub fn reject_report_path(root: &Path, report: &Path) -> Result<(), PdfAssessmentError> {
     crate::inventory::reject_manifest_path(root, report).map_err(PdfAssessmentError::ReportPath)
-}
-
-/// Computes a SHA-256 of a file's bytes; helper for before/after checks.
-pub fn file_sha256(path: &Path) -> Result<String, PdfAssessmentError> {
-    let bytes = std::fs::read(path).map_err(|source| PdfAssessmentError::Read {
-        path: path.display().to_string(),
-        source,
-    })?;
-    Ok(sha256_hex(&bytes))
-}
-
-/// Loads a PDF from `path` and returns its page count from the manifest logic.
-/// Kept for parity with the loader so callers can cross-check page counts.
-pub fn loader_page_count(path: impl AsRef<Path>) -> Result<u32, PdfError> {
-    let extraction = load_pdf(path)?;
-    Ok(extraction
-        .sections
-        .iter()
-        .filter_map(|section| section.page)
-        .chain(extraction.incomplete_pages.iter().copied())
-        .max()
-        .unwrap_or(0))
 }
 
 #[cfg(test)]
