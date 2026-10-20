@@ -447,36 +447,41 @@ fn serve(stream: &mut TcpStream) {
 }
 
 /// Returns a citation to the first retrieved passage in the prompt.
+///
+/// Passages are separated by `---`; parse each block on its own so a `Page:`
+/// line from a later passage is never attached to an earlier unpaginated one.
 fn answer_for(prompt: &str) -> String {
-    let mut source: Option<String> = None;
-    let mut section: Option<String> = None;
-    let mut page: Option<u32> = None;
-    for line in prompt.lines() {
-        if let Some(value) = line.strip_prefix("Source: ") {
-            if source.is_none() {
-                source = Some(value.trim().to_string());
-            }
-        } else if let Some(value) = line.strip_prefix("Section: ") {
-            if section.is_none() {
-                section = Some(value.trim().to_string());
-            }
-        } else if let Some(value) = line.strip_prefix("Page: ") {
-            if page.is_none() {
-                page = value.trim().parse().ok();
+    for block in prompt.split("\n\n---\n\n") {
+        let mut source: Option<String> = None;
+        let mut section: Option<String> = None;
+        let mut page: Option<u32> = None;
+        for line in block.lines() {
+            if let Some(value) = line.strip_prefix("Source: ") {
+                if source.is_none() {
+                    source = Some(value.trim().to_string());
+                }
+            } else if let Some(value) = line.strip_prefix("Section: ") {
+                if section.is_none() {
+                    section = Some(value.trim().to_string());
+                }
+            } else if let Some(value) = line.strip_prefix("Page: ") {
+                if page.is_none() {
+                    page = value.trim().parse().ok();
+                }
             }
         }
+        if let (Some(source), Some(section)) = (source, section) {
+            return match page {
+                Some(page) => format!(
+                    "Deterministic answer from the retrieved context. [{source} - {section} - p.{page}]"
+                ),
+                None => {
+                    format!("Deterministic answer from the retrieved context. [{source} - {section}]")
+                }
+            };
+        }
     }
-    match (source, section) {
-        (Some(source), Some(section)) => match page {
-            Some(page) => format!(
-                "Deterministic answer from the retrieved context. [{source} - {section} - p.{page}]"
-            ),
-            None => {
-                format!("Deterministic answer from the retrieved context. [{source} - {section}]")
-            }
-        },
-        _ => "I do not have enough information.".to_string(),
-    }
+    "I do not have enough information.".to_string()
 }
 
 fn vector_for(input: &str) -> String {
