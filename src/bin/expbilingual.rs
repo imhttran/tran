@@ -24,6 +24,7 @@ use rag_foundation::bilingual::{
     self, BilingualError, CorpusSearcher, Harness, OllamaQueryGenerator, QueryCache, Settings,
 };
 use rag_foundation::config::Config;
+use rag_foundation::corpus::Corpus;
 use rag_foundation::embedding::OllamaEmbedder;
 use rag_foundation::ollama::{HttpTransport, OllamaClient};
 use rag_foundation::storage_pg::PgStore;
@@ -49,6 +50,7 @@ fn run() -> Result<(), String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_CORPUS.to_string());
+    let corpus = Corpus::new(corpus).map_err(|err| format!("invalid RAG_CORPUS: {err}"))?;
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -86,7 +88,7 @@ fn run() -> Result<(), String> {
         gen_timeout,
     );
     let generator = OllamaQueryGenerator::new(gen_client);
-    let searcher = CorpusSearcher::new(&store, corpus);
+    let searcher = CorpusSearcher::new(&store, corpus.as_str());
 
     let cache_path = Path::new(&settings.cache_path);
     let mut cache =

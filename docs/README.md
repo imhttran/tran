@@ -70,6 +70,9 @@ their content here.
 | [operations/prompt-injection.md](operations/prompt-injection.md) | You need the prompt-injection risk model and mitigations. |
 | [operations/defect-recovery.md](operations/defect-recovery.md) | You are recovering from a suspected `agentic-sop` defect during a RAG task. |
 | [operations/platform-support.md](operations/platform-support.md) | You need the supported platforms, prerequisites, and known gaps. |
+| [operations/RBAC-OPERATIONS.md](operations/RBAC-OPERATIONS.md) | You are setting up identity, roles, migrations, backup, or recovery. |
+| [operations/HEAD-OF-FAMILY.md](operations/HEAD-OF-FAMILY.md) | You need the Head of Family eligibility evidence and succession rule. |
+| [cli-trust-boundary.md](cli-trust-boundary.md) | You need the local CLI trust boundary. |
 | [plans/PLAN.md](plans/PLAN.md) | You want the engineering and learning plan. |
 | [plans/PLAN-RAG-Gap-Closure.md](plans/PLAN-RAG-Gap-Closure.md) | You want the gap-closure governance and audit record. |
 | [plans/PLAN-RAG-Phase-23b.md](plans/PLAN-RAG-Phase-23b.md) | You want the phase-23b execution plan. |

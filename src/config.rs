@@ -46,6 +46,9 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const OUTPUT_HUMAN: &str = "human";
 pub const OUTPUT_JSON: &str = "json";
 pub const DEFAULT_OBSERVABILITY_FORMAT: &str = OUTPUT_HUMAN;
+pub const DEFAULT_JWKS_CACHE_TTL_SECS: i64 = 300;
+pub const DEFAULT_AUTH_CLOCK_SKEW_SECS: i64 = 60;
+pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 
 /// Name of the explicitly configured genealogy database DSN variable. It has no
 /// default, so a genealogy command can never silently target the RAG database.
@@ -97,6 +100,12 @@ pub struct Config {
     pub request_timeout: Duration,
     pub query_rewrite: bool,
     pub observability_format: String,
+    pub auth_issuer: String,
+    pub auth_audience: String,
+    pub jwks_url: String,
+    pub jwks_cache_ttl_secs: i64,
+    pub auth_clock_skew_secs: i64,
+    pub auth_rate_limit: i64,
 }
 
 impl Config {
@@ -195,6 +204,20 @@ impl Config {
                 "OBSERVABILITY_FORMAT",
                 DEFAULT_OBSERVABILITY_FORMAT,
             )?,
+            auth_issuer: get("AUTH_ISSUER").unwrap_or_default(),
+            auth_audience: get("AUTH_AUDIENCE").unwrap_or_default(),
+            jwks_url: get("JWKS_URL").unwrap_or_default(),
+            jwks_cache_ttl_secs: non_negative_int(
+                &get,
+                "JWKS_CACHE_TTL_SECS",
+                DEFAULT_JWKS_CACHE_TTL_SECS,
+            )?,
+            auth_clock_skew_secs: non_negative_int(
+                &get,
+                "AUTH_CLOCK_SKEW_SECS",
+                DEFAULT_AUTH_CLOCK_SKEW_SECS,
+            )?,
+            auth_rate_limit: positive_int(&get, "AUTH_RATE_LIMIT", DEFAULT_AUTH_RATE_LIMIT)?,
         })
     }
 

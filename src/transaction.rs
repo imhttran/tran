@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::corpus::Corpus;
 use crate::storage::{validate_embedding_dim, DimensionMismatchError, StoredChunk, EMBEDDING_DIM};
 
 /// Errors raised by a source replacement.
@@ -28,14 +29,9 @@ pub enum ReplaceError {
     /// The store failed during the transaction; the transaction is rolled back.
     #[error("replace source failed: {0}")]
     Store(String),
-    /// A chunk's corpus does not match the replacement scope.
-    #[error("replace source corpus mismatch: expected {expected:?}, chunk has {actual:?}")]
-    CorpusMismatch {
-        /// The corpus the caller is replacing.
-        expected: String,
-        /// The corpus recorded on the offending chunk.
-        actual: Option<String>,
-    },
+    /// A chunk did not carry the corpus named by the replacement.
+    #[error("corpus mismatch: {0}")]
+    Corpus(String),
     /// A test-only injected failure, used to prove rollback.
     #[error("injected replacement failure: {0}")]
     Injected(String),
@@ -48,12 +44,9 @@ pub enum ReplaceError {
 /// starts.
 pub trait SourceReplacer {
     /// Replaces every stored row of `(corpus, source)` with `chunks` atomically.
-    ///
-    /// The corpus is part of the identity: replacing `README.md` in one corpus
-    /// must never delete the same filename in another corpus.
     fn replace_source(
         &self,
-        corpus: &str,
+        corpus: &Corpus,
         source: &str,
         chunks: &[StoredChunk],
     ) -> Result<(), ReplaceError>;
@@ -71,18 +64,21 @@ pub fn validate_all_dims(chunks: &[StoredChunk]) -> Result<(), ReplaceError> {
     Ok(())
 }
 
-/// Validates that every chunk belongs to the corpus being replaced.
-///
-/// Call this after [`validate_all_dims`] and before any effect. A mismatch is a
-/// caller bug: the delete predicate and the inserted rows would otherwise target
-/// different corpora, leaving the replacement half-applied.
-pub fn validate_corpus(corpus: &str, chunks: &[StoredChunk]) -> Result<(), ReplaceError> {
+/// Validates that every chunk belongs to `corpus` before any delete or insert.
+pub fn validate_chunk_corpora(corpus: &Corpus, chunks: &[StoredChunk]) -> Result<(), ReplaceError> {
     for chunk in chunks {
-        if chunk.corpus.as_deref() != Some(corpus) {
-            return Err(ReplaceError::CorpusMismatch {
-                expected: corpus.to_string(),
-                actual: chunk.corpus.clone(),
-            });
+        match chunk.corpus.as_deref() {
+            Some(value) if value == corpus.as_str() => {}
+            Some(other) => {
+                return Err(ReplaceError::Corpus(format!(
+                    "chunk corpus {other:?} does not match replacement corpus {corpus}"
+                )))
+            }
+            None => {
+                return Err(ReplaceError::Corpus(format!(
+                    "chunk has no corpus; expected {corpus}"
+                )))
+            }
         }
     }
     Ok(())
@@ -128,10 +124,10 @@ impl RecordingSourceReplacer {
     }
 
     /// Returns the committed rows for `(corpus, source)`.
-    pub fn rows_for(&self, corpus: &str, source: &str) -> Vec<StoredChunk> {
+    pub fn rows_for(&self, corpus: &Corpus, source: &str) -> Vec<StoredChunk> {
         self.table
             .borrow()
-            .get(&(corpus.to_string(), source.to_string()))
+            .get(&(corpus.as_str().to_string(), source.to_string()))
             .cloned()
             .unwrap_or_default()
     }
@@ -150,14 +146,14 @@ impl RecordingSourceReplacer {
 impl SourceReplacer for RecordingSourceReplacer {
     fn replace_source(
         &self,
-        corpus: &str,
+        corpus: &Corpus,
         source: &str,
         chunks: &[StoredChunk],
     ) -> Result<(), ReplaceError> {
         // Fail-fast, before any effect: the same ordering the Postgres
         // implementation enforces.
         validate_all_dims(chunks)?;
-        validate_corpus(corpus, chunks)?;
+        validate_chunk_corpora(corpus, chunks)?;
 
         let fail_after = *self.fail_after_rows.borrow();
         let mut staged = Vec::with_capacity(chunks.len());
@@ -174,10 +170,10 @@ impl SourceReplacer for RecordingSourceReplacer {
         }
 
         // Commit: the delete and every insert take effect together. The key is
-        // `(corpus, source)`, so another corpus keeps its rows.
+        // the pair, so the same source in another corpus is untouched.
         self.table
             .borrow_mut()
-            .insert((corpus.to_string(), source.to_string()), staged);
+            .insert((corpus.as_str().to_string(), source.to_string()), staged);
         {
             let mut counts = self.counts.borrow_mut();
             counts.replacements += 1;
@@ -191,7 +187,11 @@ impl SourceReplacer for RecordingSourceReplacer {
 mod tests {
     use super::*;
 
-    fn chunk(source: &str, index: i32, dim: usize) -> StoredChunk {
+    fn corpus(name: &str) -> Corpus {
+        Corpus::new(name).unwrap()
+    }
+
+    fn chunk_in(corpus: &Corpus, source: &str, index: i32, dim: usize) -> StoredChunk {
         StoredChunk {
             content: format!("body {index}"),
             source: Some(source.to_string()),
@@ -199,7 +199,7 @@ mod tests {
             chunk_index: index,
             language: Some("english".to_string()),
             page: None,
-            corpus: Some("trusted".to_string()),
+            corpus: Some(corpus.as_str().to_string()),
             content_hash: "hash".to_string(),
             embed_model: "nomic-embed-text".to_string(),
             embedding_dim: dim as i32,
@@ -209,17 +209,22 @@ mod tests {
         }
     }
 
+    fn chunk(source: &str, index: i32, dim: usize) -> StoredChunk {
+        chunk_in(&corpus("trusted"), source, index, dim)
+    }
+
     #[test]
     fn successful_replacement_replaces_the_old_rows() {
         let store = RecordingSourceReplacer::new();
+        let trusted = corpus("trusted");
         store
-            .replace_source("trusted", "doc.md", &[chunk("doc.md", 0, EMBEDDING_DIM)])
+            .replace_source(&trusted, "doc.md", &[chunk("doc.md", 0, EMBEDDING_DIM)])
             .unwrap();
-        assert_eq!(store.rows_for("trusted", "doc.md").len(), 1);
+        assert_eq!(store.rows_for(&trusted, "doc.md").len(), 1);
 
         store
             .replace_source(
-                "trusted",
+                &trusted,
                 "doc.md",
                 &[
                     chunk("doc.md", 0, EMBEDDING_DIM),
@@ -228,7 +233,7 @@ mod tests {
             )
             .unwrap();
 
-        let rows = store.rows_for("trusted", "doc.md");
+        let rows = store.rows_for(&trusted, "doc.md");
         assert_eq!(
             rows.len(),
             2,
@@ -241,54 +246,72 @@ mod tests {
     #[test]
     fn successful_replacement_leaves_other_sources_alone() {
         let store = RecordingSourceReplacer::new();
+        let trusted = corpus("trusted");
         store
-            .replace_source("trusted", "a.md", &[chunk("a.md", 0, EMBEDDING_DIM)])
+            .replace_source(&trusted, "a.md", &[chunk("a.md", 0, EMBEDDING_DIM)])
             .unwrap();
         store
-            .replace_source("trusted", "b.md", &[chunk("b.md", 0, EMBEDDING_DIM)])
+            .replace_source(&trusted, "b.md", &[chunk("b.md", 0, EMBEDDING_DIM)])
             .unwrap();
-        assert_eq!(store.rows_for("trusted", "a.md").len(), 1);
-        assert_eq!(store.rows_for("trusted", "b.md").len(), 1);
+        assert_eq!(store.rows_for(&trusted, "a.md").len(), 1);
+        assert_eq!(store.rows_for(&trusted, "b.md").len(), 1);
     }
 
     #[test]
-    fn replacement_does_not_delete_the_same_source_in_another_corpus() {
+    fn replacement_is_isolated_by_corpus() {
         let store = RecordingSourceReplacer::new();
-        let mut public = chunk("README.md", 0, EMBEDDING_DIM);
-        public.corpus = Some("public".to_string());
+        let first = corpus("corpus-a");
+        let second = corpus("corpus-b");
 
         store
             .replace_source(
-                "trusted",
-                "README.md",
-                &[chunk("README.md", 0, EMBEDDING_DIM)],
+                &first,
+                "same.md",
+                &[chunk_in(&first, "same.md", 0, EMBEDDING_DIM)],
             )
             .unwrap();
         store
-            .replace_source("public", "README.md", &[public])
+            .replace_source(
+                &second,
+                "same.md",
+                &[chunk_in(&second, "same.md", 0, EMBEDDING_DIM)],
+            )
             .unwrap();
 
-        assert_eq!(store.rows_for("trusted", "README.md").len(), 1);
-        assert_eq!(store.rows_for("public", "README.md").len(), 1);
+        store
+            .replace_source(
+                &first,
+                "same.md",
+                &[
+                    chunk_in(&first, "same.md", 0, EMBEDDING_DIM),
+                    chunk_in(&first, "same.md", 1, EMBEDDING_DIM),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(store.rows_for(&first, "same.md").len(), 2);
+        assert_eq!(store.rows_for(&second, "same.md").len(), 1);
+        assert_eq!(
+            store.rows_for(&second, "same.md")[0].corpus.as_deref(),
+            Some("corpus-b")
+        );
     }
 
     #[test]
-    fn a_chunk_from_another_corpus_is_rejected_before_any_effect() {
+    fn corpus_mismatch_is_rejected_before_any_effect() {
         let store = RecordingSourceReplacer::new();
-        let mut wrong = chunk("doc.md", 0, EMBEDDING_DIM);
-        wrong.corpus = Some("public".to_string());
+        let first = corpus("corpus-a");
+        let second = corpus("corpus-b");
 
         let err = store
-            .replace_source("trusted", "doc.md", &[wrong])
+            .replace_source(
+                &first,
+                "same.md",
+                &[chunk_in(&second, "same.md", 0, EMBEDDING_DIM)],
+            )
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ReplaceError::CorpusMismatch {
-                expected,
-                actual: Some(_)
-            } if expected == "trusted"
-        ));
+        assert!(matches!(err, ReplaceError::Corpus(_)));
         assert!(store.is_empty());
         assert_eq!(store.counts().replacements, 0);
     }
@@ -296,9 +319,10 @@ mod tests {
     #[test]
     fn forced_failure_rolls_back_the_complete_transaction() {
         let store = RecordingSourceReplacer::new();
+        let trusted = corpus("trusted");
         store
             .replace_source(
-                "trusted",
+                &trusted,
                 "doc.md",
                 &[
                     chunk("doc.md", 0, EMBEDDING_DIM),
@@ -306,13 +330,13 @@ mod tests {
                 ],
             )
             .unwrap();
-        let before = store.rows_for("trusted", "doc.md");
+        let before = store.rows_for(&trusted, "doc.md");
         assert_eq!(before.len(), 2);
 
         store.inject_failure_after(1);
         let err = store
             .replace_source(
-                "trusted",
+                &trusted,
                 "doc.md",
                 &[
                     chunk("doc.md", 0, EMBEDDING_DIM),
@@ -323,7 +347,7 @@ mod tests {
 
         assert!(matches!(err, ReplaceError::Injected(_)));
         assert_eq!(
-            store.rows_for("trusted", "doc.md"),
+            store.rows_for(&trusted, "doc.md"),
             before,
             "prior rows must survive rollback"
         );
@@ -335,23 +359,25 @@ mod tests {
     #[test]
     fn failure_before_any_insert_also_preserves_the_old_rows() {
         let store = RecordingSourceReplacer::new();
+        let trusted = corpus("trusted");
         store
-            .replace_source("trusted", "doc.md", &[chunk("doc.md", 0, EMBEDDING_DIM)])
+            .replace_source(&trusted, "doc.md", &[chunk("doc.md", 0, EMBEDDING_DIM)])
             .unwrap();
-        let before = store.rows_for("trusted", "doc.md");
+        let before = store.rows_for(&trusted, "doc.md");
 
         store.inject_failure_after(0);
         assert!(store
-            .replace_source("trusted", "doc.md", &[chunk("doc.md", 5, EMBEDDING_DIM)])
+            .replace_source(&trusted, "doc.md", &[chunk("doc.md", 5, EMBEDDING_DIM)])
             .is_err());
-        assert_eq!(store.rows_for("trusted", "doc.md"), before);
+        assert_eq!(store.rows_for(&trusted, "doc.md"), before);
     }
 
     #[test]
     fn dimension_mismatch_fails_before_any_statement() {
         let store = RecordingSourceReplacer::new();
+        let trusted = corpus("trusted");
         let err = store
-            .replace_source("trusted", "doc.md", &[chunk("doc.md", 0, 3)])
+            .replace_source(&trusted, "doc.md", &[chunk("doc.md", 0, 3)])
             .unwrap_err();
         assert!(matches!(err, ReplaceError::Dimension(_)));
         assert!(store.is_empty());

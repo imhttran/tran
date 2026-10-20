@@ -8,14 +8,24 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use api_contract_acceptance::{dsn, repo_root, unique_tag, ApiProcess, CorpusCleanup, FakeOllama};
+use api_contract_acceptance::{
+    dsn, repo_root, seed_api_contract_admin, unique_tag, ApiProcess, CorpusCleanup, FakeOllama,
+    TestAuth,
+};
 use rag_foundation::api::{default_host, default_port, MAX_UPLOAD_BYTES};
 use reqwest::blocking::{Client, Response};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
 use serde_json::Value;
 
-fn client() -> Client {
+fn client(token: &str) -> Client {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("bearer header"),
+    );
     Client::builder()
+        .default_headers(headers)
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .expect("build the HTTP client")
@@ -110,9 +120,11 @@ fn api_contract_upload_status_query_health_and_refusal() {
     let corpus = unique_tag("api-contract");
     let _cleanup = CorpusCleanup::new(dsn.clone(), corpus.clone());
     let ollama = FakeOllama::start();
-    let api = ApiProcess::start(&dsn, &corpus, ollama.url());
+    let auth = TestAuth::start();
+    seed_api_contract_admin(&dsn, auth.issuer(), "api-contract-admin", &corpus);
+    let api = ApiProcess::start(&dsn, &corpus, ollama.url(), &auth);
     let base = api.base_url().to_string();
-    let client = client();
+    let client = client(auth.token());
 
     // Loopback defaults are part of the contract.
     assert_eq!(default_host(), "127.0.0.1");

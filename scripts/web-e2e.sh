@@ -29,7 +29,59 @@ export OLLAMA_CHAT_MODEL="${OLLAMA_CHAT_MODEL:-llama3.2:3b}"
 export MIN_SIMILARITY="${MIN_SIMILARITY:-0.3}"
 export REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-180s}"
 
+# Test-only OIDC issuer. The API verifies real HS256 tokens against this local
+# JWKS; the browser tests use the same cryptographically valid tokens. This is
+# not a production identity provider and the secret is test-only.
+AUTH_PORT="${E2E_AUTH_PORT:-9099}"
+E2E_AUTH_SECRET="${E2E_AUTH_SECRET:-e2e-test-secret-not-for-production}"
+E2E_ISSUER="http://127.0.0.1:${AUTH_PORT}"
+E2E_AUDIENCE="rag-e2e"
+export AUTH_ISSUER="$E2E_ISSUER"
+export AUTH_AUDIENCE="$E2E_AUDIENCE"
+export JWKS_URL="${E2E_ISSUER}/jwks"
+export AUTH_RATE_LIMIT="${AUTH_RATE_LIMIT:-1000}"
+export AUTH_CLOCK_SKEW_SECS="${AUTH_CLOCK_SKEW_SECS:-60}"
+export JWKS_CACHE_TTL_SECS="${JWKS_CACHE_TTL_SECS:-60}"
+
+echo "web-e2e: starting the test OIDC issuer"
+python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --secret "$E2E_AUTH_SECRET" >/tmp/tran-e2e-auth.log 2>&1 &
+AUTH_PID=$!
+i=0
+while [ "$i" -lt 50 ]; do
+	if curl -fsS -m 1 -o /dev/null "$JWKS_URL"; then
+		break
+	fi
+	sleep 0.2
+	i=$((i+1))
+done
+if [ "$i" -ge 50 ]; then
+	echo "web-e2e: the test OIDC issuer did not become ready" >&2
+	cat /tmp/tran-e2e-auth.log >&2 || true
+	exit 1
+fi
+
 echo "web-e2e: corpus $CORPUS"
+E2E_CSRF_TOKEN="e2e-csrf-token"
+export E2E_CSRF_TOKEN
+E2E_ADMIN_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-admin --role admin --corpus "$CORPUS" --secret "$E2E_AUTH_SECRET")
+export E2E_ADMIN_TOKEN
+export E2E_SESSION_TOKEN="$E2E_ADMIN_TOKEN"
+E2E_VIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-viewer --role viewer --corpus "$CORPUS" --secret "$E2E_AUTH_SECRET")
+export E2E_VIEWER_TOKEN
+
+echo "web-e2e: seeding test identities"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER')" >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject = 'e2e-admin'" >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject = 'e2e-viewer'" >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null
+
 echo "web-e2e: building the API"
 cargo build --locked --bin api
 
@@ -40,9 +92,15 @@ API_PID=$!
 cleanup() {
 	kill "$API_PID" 2>/dev/null || true
 	wait "$API_PID" 2>/dev/null || true
+	kill "$AUTH_PID" 2>/dev/null || true
+	wait "$AUTH_PID" 2>/dev/null || true
 	./scripts/web-control.sh stop >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
+	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null 2>&1 || true
+	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer')" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM

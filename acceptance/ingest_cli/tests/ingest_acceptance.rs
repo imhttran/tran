@@ -9,6 +9,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ingest_cli_acceptance::fixture;
+use rag_foundation::corpus::Corpus;
 use rag_foundation::embedding::{Embedder, EmbeddingError};
 use rag_foundation::fingerprint::{ChunkerConfig, FingerprintReader};
 use rag_foundation::ingest::IngestRejection;
@@ -26,7 +27,7 @@ impl FingerprintReader for NoRows {
 
     fn rows_for_hash(
         &self,
-        _corpus: &str,
+        _corpus: &Corpus,
         _content_hash: &str,
         _source: &str,
     ) -> Result<Vec<StoredChunkRow>, String> {

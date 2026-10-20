@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
-import { AppShell } from "@/components/AppShell";
+import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageTitle } from "@/components/PageTitle";
 import { PageHeader } from "@/components/PageHeader";
 import { PageFooter } from "@/components/PageFooter";
@@ -16,6 +16,7 @@ import {
   getStatus,
   ingestDocument,
 } from "@/lib/api";
+import { canUpload } from "@/lib/experience-contract";
 import type {
   HealthResponse,
   IngestResponse,
@@ -131,7 +132,9 @@ export default function Page() {
   const connectionDown = healthError !== null;
 
   return (
-    <AppShell>
+    <ExperienceShell>
+      {(role) => (
+        <>
       <PageTitle title="RAG document Q&A" />
       <PageHeader
         title="RAG document Q&A"
@@ -158,7 +161,8 @@ export default function Page() {
         </p>
       ) : null}
 
-      <section className="card">
+      {canUpload(role) ? (
+      <section className="card" data-testid="upload-controls">
         <h2>Document upload</h2>
         <label htmlFor="doc">
           Choose one supported file (.md, .markdown, .txt, .pdf)
@@ -218,6 +222,8 @@ export default function Page() {
           </div>
         ) : null}
       </section>
+
+        ) : null}
 
       <section className="card">
         <h2>Ask a question</h2>
@@ -288,6 +294,8 @@ export default function Page() {
       </section>
 
       <PageFooter meta={<span>Rust Axum API • local PostgreSQL + Ollama</span>} />
-    </AppShell>
+        </>
+      )}
+    </ExperienceShell>
   );
 }

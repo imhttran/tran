@@ -80,10 +80,12 @@ impl Fnv1a {
     }
 }
 
+use crate::corpus::Corpus;
+
 /// The read port the unchanged-source decision depends on.
 ///
-/// Implemented for [`PgStore`] over its corpus-scoped `content_hash` read.
-/// Tests substitute a recording fake so the decision runs without a database.
+/// Implemented for [`PgStore`] over `find_by_content_hash`. Tests substitute a
+/// recording fake so the decision runs without a database.
 pub trait FingerprintReader {
     /// The error type returned when the read fails.
     type Error;
@@ -92,7 +94,7 @@ pub trait FingerprintReader {
     /// `content_hash`.
     fn rows_for_hash(
         &self,
-        corpus: &str,
+        corpus: &Corpus,
         content_hash: &str,
         source: &str,
     ) -> Result<Vec<StoredChunkRow>, Self::Error>;
@@ -103,11 +105,11 @@ impl FingerprintReader for PgStore {
 
     fn rows_for_hash(
         &self,
-        corpus: &str,
+        corpus: &Corpus,
         content_hash: &str,
         source: &str,
-    ) -> Result<Vec<StoredChunkRow>, Self::Error> {
-        self.rows_by_content_hash(Some(corpus), content_hash, Some(source))
+    ) -> Result<Vec<StoredChunkRow>, PgStoreError> {
+        self.find_by_content_hash(corpus, content_hash, Some(source))
     }
 }
 
@@ -128,15 +130,15 @@ impl UnchangedSource {
     }
 }
 
-/// Decides whether `(corpus, source)` must be re-embedded.
+/// Decides whether `source` is unchanged against `content_hash`.
 ///
 /// Returns [`UnchangedSource::Unchanged`] when at least one stored row for the
-/// same corpus and source carries the computed fingerprint, and
+/// same source carries the computed fingerprint, and
 /// [`UnchangedSource::Changed`] when no such row exists (including the first
 /// ingest, where the store is empty for the source).
 pub fn unchanged_source<R>(
     reader: &R,
-    corpus: &str,
+    corpus: &Corpus,
     source: &str,
     content_hash: &str,
 ) -> Result<UnchangedSource, R::Error>
@@ -194,6 +196,10 @@ mod tests {
     }
 
     fn row(hash: &str, source: &str) -> StoredChunkRow {
+        row_in("trusted", hash, source)
+    }
+
+    fn row_in(corpus: &str, hash: &str, source: &str) -> StoredChunkRow {
         StoredChunkRow {
             id: 1,
             chunk: StoredChunk {
@@ -203,7 +209,7 @@ mod tests {
                 chunk_index: 0,
                 language: Some("english".to_string()),
                 page: None,
-                corpus: Some("trusted".to_string()),
+                corpus: Some(corpus.to_string()),
                 content_hash: hash.to_string(),
                 embed_model: "nomic-embed-text".to_string(),
                 embedding_dim: 768,
@@ -212,6 +218,10 @@ mod tests {
                 embedding: vec![0.0; 768],
             },
         }
+    }
+
+    fn corpus(name: &str) -> Corpus {
+        Corpus::new(name).unwrap()
     }
 
     /// A read port backed by an in-memory row list that records its queries.
@@ -225,12 +235,12 @@ mod tests {
 
         fn rows_for_hash(
             &self,
-            corpus: &str,
+            corpus: &Corpus,
             content_hash: &str,
             source: &str,
         ) -> Result<Vec<StoredChunkRow>, String> {
             self.queries.borrow_mut().push((
-                corpus.to_string(),
+                corpus.as_str().to_string(),
                 content_hash.to_string(),
                 source.to_string(),
             ));
@@ -238,7 +248,7 @@ mod tests {
                 .rows
                 .iter()
                 .filter(|r| {
-                    r.chunk.corpus.as_deref() == Some(corpus)
+                    r.chunk.corpus.as_deref() == Some(corpus.as_str())
                         && r.chunk.content_hash == content_hash
                         && r.chunk.source.as_deref() == Some(source)
                 })
@@ -254,7 +264,7 @@ mod tests {
             queries: RefCell::new(Vec::new()),
         };
         assert_eq!(
-            unchanged_source(&reader, "trusted", "doc.md", "hash").unwrap(),
+            unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap(),
             UnchangedSource::Changed
         );
         assert_eq!(reader.queries.borrow().len(), 1);
@@ -267,7 +277,7 @@ mod tests {
             queries: RefCell::new(Vec::new()),
         };
         assert_eq!(
-            unchanged_source(&reader, "trusted", "doc.md", "hash").unwrap(),
+            unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap(),
             UnchangedSource::Unchanged { rows: 2 }
         );
     }
@@ -278,25 +288,18 @@ mod tests {
             rows: vec![row("hash", "other.md")],
             queries: RefCell::new(Vec::new()),
         };
-        let decision = unchanged_source(&reader, "trusted", "doc.md", "hash").unwrap();
+        let decision = unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap();
         assert!(!decision.is_unchanged());
     }
 
     #[test]
     fn matching_hash_in_another_corpus_reads_as_changed() {
-        let mut elsewhere = row("hash", "doc.md");
-        elsewhere.chunk.corpus = Some("public".to_string());
         let reader = FakeReader {
-            rows: vec![elsewhere],
+            rows: vec![row_in("other-corpus", "hash", "doc.md")],
             queries: RefCell::new(Vec::new()),
         };
-
-        let decision = unchanged_source(&reader, "trusted", "doc.md", "hash").unwrap();
-
-        assert!(
-            !decision.is_unchanged(),
-            "a row in another corpus must not make this corpus look unchanged"
-        );
+        let decision = unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap();
+        assert!(!decision.is_unchanged());
     }
 
     #[test]
@@ -307,7 +310,7 @@ mod tests {
             rows: Vec::new(),
             queries: RefCell::new(Vec::new()),
         };
-        assert!(!unchanged_source(&empty, "trusted", "doc.md", &fp)
+        assert!(!unchanged_source(&empty, &corpus("trusted"), "doc.md", &fp)
             .unwrap()
             .is_unchanged());
 
@@ -315,7 +318,7 @@ mod tests {
             rows: vec![row(&fp, "doc.md")],
             queries: RefCell::new(Vec::new()),
         };
-        assert!(unchanged_source(&stored, "trusted", "doc.md", &fp)
+        assert!(unchanged_source(&stored, &corpus("trusted"), "doc.md", &fp)
             .unwrap()
             .is_unchanged());
     }
