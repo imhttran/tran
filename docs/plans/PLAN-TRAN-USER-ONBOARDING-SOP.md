@@ -114,6 +114,11 @@ runs before any genealogy database read, and the endpoint performs no writes.
 
 - 6
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - `GET /api/admin/family-members/candidates` returning `{rows, summary}` with opaque
@@ -197,6 +202,11 @@ is idempotent for the same person, and never uses a date of birth.
 
 - 6
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - `src/onboarding/reservation.rs` with reserve, claim, and release operations in one
@@ -242,6 +252,11 @@ stored, logged, or placed in an audit row.
 ### Discovery Iterations
 
 - 6
+
+
+### Execution
+
+- done
 
 ### Deliverables
 
