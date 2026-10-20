@@ -86,7 +86,8 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
 
     let keys: Vec<String> = people.iter().map(|p| p.person_key.clone()).collect();
     // The link and assertion must match the same person pair and relationship
-    // kind. Source metadata is returned only for verified, non-conflicting edges.
+    // kind. Spouses are unordered: review claims in either orientation count. 
+    // Source metadata is returned only for verified, non-conflicting edges.
     let rows = client.query(
         "WITH links AS (
             SELECT 'parent_child'::text AS kind,
@@ -111,14 +112,26 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                CASE
                  WHEN EXISTS (
                    SELECT 1 FROM assertion a
-                    WHERE a.person_id = l.from_id AND a.assertion_kind = l.kind
-                      AND (a.object_person_id = l.to_id OR a.value_text = l.to_key)
+                    WHERE a.assertion_kind = l.kind
+                      AND (
+                        (a.person_id = l.from_id
+                         AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
+                        OR
+                        (l.kind = 'spouse' AND a.person_id = l.to_id
+                         AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
+                      )
                       AND a.review_status IN ('needs_review', 'disputed')
                  ) THEN 'needs_review'
                  WHEN EXISTS (
                    SELECT 1 FROM assertion a
-                    WHERE a.person_id = l.from_id AND a.assertion_kind = l.kind
-                      AND (a.object_person_id = l.to_id OR a.value_text = l.to_key)
+                    WHERE a.assertion_kind = l.kind
+                      AND (
+                        (a.person_id = l.from_id
+                         AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
+                        OR
+                        (l.kind = 'spouse' AND a.person_id = l.to_id
+                         AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
+                      )
                       AND a.review_status = 'verified'
                  ) THEN 'verified'
                  ELSE 'unverified'
@@ -129,8 +142,14 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
             SELECT DISTINCT ae.document_ref, ae.page
               FROM assertion a
               JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
-             WHERE a.person_id = l.from_id AND a.assertion_kind = l.kind
-               AND (a.object_person_id = l.to_id OR a.value_text = l.to_key)
+             WHERE a.assertion_kind = l.kind
+               AND (
+                 (a.person_id = l.from_id
+                  AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
+                 OR
+                 (l.kind = 'spouse' AND a.person_id = l.to_id
+                  AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
+               )
                AND a.review_status = 'verified'
           ) evidence ON true
          ORDER BY l.kind, l.from_key, l.to_key, evidence.document_ref, evidence.page",
