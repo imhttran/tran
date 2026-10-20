@@ -302,6 +302,11 @@ id can select the identity.
 
 - 6
 
+
+### Execution
+
+- done
+
 ### Deliverables
 
 - `src/onboarding/link.rs` implementing review, link, revoke, and replacement with audit rows.
@@ -348,6 +353,11 @@ CSRF trust boundary; the browser never supplies a role, account id, or approval 
 ### Discovery Iterations
 
 - 6
+
+
+### Execution
+
+- done
 
 ### Deliverables
 
