@@ -122,4 +122,4 @@ BEGIN
        SET review_status = 'verified',
            reviewed_by = 'synthetic-reviewer', reviewed_at = now()
      WHERE assertion_id = v_assertion_id;
-END $;
+END $$;
