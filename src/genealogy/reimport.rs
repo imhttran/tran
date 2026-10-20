@@ -30,6 +30,16 @@ pub struct ImportAssertion {
     pub evidence: Vec<(String, i32)>,
 }
 
+/// One imported person identity. Upserted in the same transaction as the
+/// assertions so a failed import leaves no partial graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportPerson {
+    /// The stable catalog person key.
+    pub person_key: String,
+    /// The display name to store.
+    pub display_name: String,
+}
+
 /// One imported document with its assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDocument {
@@ -37,6 +47,8 @@ pub struct ImportDocument {
     pub relative_path: String,
     /// The document sha256.
     pub sha256: String,
+    /// The persons referenced by the assertions.
+    pub persons: Vec<ImportPerson>,
     /// The assertions to import.
     pub assertions: Vec<ImportAssertion>,
 }
@@ -70,7 +82,7 @@ fn reimport_in_transaction(
     tx: &mut Transaction<'_>,
     document: &ImportDocument,
 ) -> Result<ReimportReport, GenealogyError> {
-    let _document_id: i64 = tx
+    let document_id: i64 = tx
         .query_one(
             "INSERT INTO source_document (relative_path, sha256)
              VALUES ($1, $2)
@@ -80,6 +92,17 @@ fn reimport_in_transaction(
         )
         .map_err(|err| GenealogyError::Query(err.to_string()))?
         .get(0);
+
+    // Persons are upserted inside this transaction. If any later assertion
+    // fails, the transaction rollback also removes these persons.
+    for person in &document.persons {
+        tx.execute(
+            "INSERT INTO person (person_key, display_name) VALUES ($1, $2)
+             ON CONFLICT (person_key) DO UPDATE SET display_name = EXCLUDED.display_name",
+            &[&person.person_key, &person.display_name],
+        )
+        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    }
 
     let mut report = ReimportReport::default();
     for assertion in &document.assertions {
@@ -103,7 +126,7 @@ fn reimport_in_transaction(
         let assertion_id = match existing {
             Some((id, status)) => {
                 // Re-import never rewrites reviewer history or status here.
-                sync_evidence(tx, id, document, assertion)?;
+                sync_evidence(tx, id, document_id, document, assertion)?;
                 if status == ReviewStatus::Verified.as_str() {
                     if reopened_by_evidence_change(tx, id)? {
                         report.reopened += 1;
@@ -132,7 +155,7 @@ fn reimport_in_transaction(
                     )
                     .map_err(|err| GenealogyError::Query(err.to_string()))?
                     .get(0);
-                sync_evidence(tx, id, document, assertion)?;
+                sync_evidence(tx, id, document_id, document, assertion)?;
                 report.inserted += 1;
                 id
             }
@@ -145,25 +168,62 @@ fn reimport_in_transaction(
 fn sync_evidence(
     tx: &mut Transaction<'_>,
     assertion_id: i64,
+    document_id: i64,
     document: &ImportDocument,
     assertion: &ImportAssertion,
 ) -> Result<(), GenealogyError> {
     if assertion.evidence.is_empty() {
         return Ok(());
     }
-    // Insert missing evidence rows. The change trigger reopens a verified
-    // assertion when new evidence arrives; that is the intended reopening.
     for (document_ref, page) in &assertion.evidence {
         let _ = document;
+        let source_evidence_id = source_evidence_id(tx, document_id, *page)?;
         tx.execute(
-            "INSERT INTO assertion_evidence (assertion_id, document_ref, page)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (assertion_id, document_ref, page) DO NOTHING",
-            &[&assertion_id, document_ref, page],
+            "INSERT INTO assertion_evidence
+                (assertion_id, source_evidence_id, document_ref, page)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (assertion_id, document_ref, page) DO UPDATE
+                SET source_evidence_id = EXCLUDED.source_evidence_id",
+            &[&assertion_id, &source_evidence_id, document_ref, page],
         )
         .map_err(|err| GenealogyError::Query(err.to_string()))?;
     }
     Ok(())
+}
+
+fn source_evidence_id(
+    tx: &mut Transaction<'_>,
+    document_id: i64,
+    page: i32,
+) -> Result<i64, GenealogyError> {
+    if let Some(row) = tx
+        .query_opt(
+            "SELECT source_evidence_id FROM source_evidence
+              WHERE source_document_id = $1 AND page = $2
+                AND (locator = 'page' OR locator IS NULL)
+              ORDER BY source_evidence_id LIMIT 1",
+            &[&document_id, &page],
+        )
+        .map_err(|err| GenealogyError::Query(err.to_string()))?
+    {
+        let id: i64 = row.get(0);
+        tx.execute(
+            "UPDATE source_evidence SET locator = 'page' WHERE source_evidence_id = $1",
+            &[&id],
+        )
+        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        return Ok(id);
+    }
+
+    Ok(tx
+        .query_one(
+            "INSERT INTO source_evidence (source_document_id, page, locator)
+             VALUES ($1, $2, 'page')
+             RETURNING source_evidence_id",
+            &[&document_id, &page],
+        )
+        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .get(0))
 }
 
 fn reopened_by_evidence_change(

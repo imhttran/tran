@@ -12,7 +12,7 @@ use rag_foundation::config::Config;
 use rag_foundation::genealogy::migrate::{self, MIGRATIONS_DIR};
 use rag_foundation::genealogy::parser::{self, AssertionKind, Evidence, ParseOutcome};
 use rag_foundation::genealogy::query;
-use rag_foundation::genealogy::reimport::{self, ImportAssertion, ImportDocument};
+use rag_foundation::genealogy::reimport::{self, ImportAssertion, ImportDocument, ImportPerson};
 use rag_foundation::genealogy::report;
 use rag_foundation::genealogy::resolve_genealogy_dsn;
 use rag_foundation::genealogy::review::{self, ReviewRequest, ReviewStatus};
@@ -118,6 +118,7 @@ fn import_apply(input: &Path) -> Result<(), String> {
     let document_ref = input.to_string_lossy().to_string();
     let sha256 = sha256_hex(&fs::read(input).map_err(|err| err.to_string())?);
 
+    let mut persons = Vec::new();
     let mut assertions = Vec::new();
     for entry in &parse.entries {
         if entry.outcome == ParseOutcome::Rejected {
@@ -127,12 +128,10 @@ fn import_apply(input: &Path) -> Result<(), String> {
             .display_name
             .clone()
             .unwrap_or_else(|| entry.key.clone());
-        conn.execute(
-            "INSERT INTO person (person_key, display_name) VALUES ($1, $2)
-             ON CONFLICT (person_key) DO UPDATE SET display_name = EXCLUDED.display_name",
-            &[&entry.key, &display_name],
-        )
-        .map_err(|err| err.to_string())?;
+        persons.push(ImportPerson {
+            person_key: entry.key.clone(),
+            display_name,
+        });
 
         for assertion in &entry.assertions {
             let evidence: Vec<(String, i32)> = assertion
@@ -156,6 +155,7 @@ fn import_apply(input: &Path) -> Result<(), String> {
     let document = ImportDocument {
         relative_path: document_ref,
         sha256,
+        persons,
         assertions,
     };
     let report =

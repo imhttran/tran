@@ -110,16 +110,26 @@ fn same_database(left: &PgConfig, right: &PgConfig) -> bool {
 fn normalized_hosts(config: &PgConfig) -> Vec<String> {
     let hosts = config.get_hosts();
     if hosts.is_empty() {
-        return vec!["localhost".to_string()];
+        return vec!["loopback".to_string()];
     }
     hosts
         .iter()
         .map(|host| match host {
-            Host::Tcp(name) => name.to_ascii_lowercase(),
+            Host::Tcp(name) => canonical_host(name),
             #[cfg(unix)]
-            Host::Unix(path) => path.display().to_string(),
+            Host::Unix(_) => "loopback".to_string(),
         })
         .collect()
+}
+
+/// Canonicalizes every loopback spelling to one value, so `localhost`,
+/// `127.0.0.1`, `::1`, a default host, and a local Unix socket cannot disguise
+/// the same database as a different destination.
+fn canonical_host(name: &str) -> String {
+    match name.to_ascii_lowercase().as_str() {
+        "localhost" | "127.0.0.1" | "::1" | "[::1]" => "loopback".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn normalized_ports(config: &PgConfig) -> Vec<u16> {
@@ -183,6 +193,30 @@ mod tests {
         assert!(matches!(
             resolve_genealogy_dsn(&cfg),
             Err(GenealogyError::Guard(message)) if message.contains("local")
+        ));
+    }
+
+    #[test]
+    fn loopback_alias_cannot_bypass_the_rag_database_guard() {
+        let cfg = config(
+            Some("postgres://rag:rag@127.0.0.1:5434/rag"),
+            Some("postgres://rag:rag@localhost:5434/rag"),
+        );
+        assert!(matches!(
+            resolve_genealogy_dsn(&cfg),
+            Err(GenealogyError::Guard(_))
+        ));
+    }
+
+    #[test]
+    fn default_host_cannot_bypass_the_rag_database_guard() {
+        let cfg = config(
+            Some("postgres://rag:rag@localhost:5434/rag"),
+            Some("postgres://rag:rag@127.0.0.1:5434/rag"),
+        );
+        assert!(matches!(
+            resolve_genealogy_dsn(&cfg),
+            Err(GenealogyError::Guard(_))
         ));
     }
 

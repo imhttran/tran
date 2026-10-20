@@ -73,6 +73,9 @@ pub enum ReviewError {
     /// The requested status is not a known status.
     #[error("unknown review status: {0}")]
     UnknownStatus(String),
+    /// The requested transition is not allowed from the current status.
+    #[error("invalid review transition: {0} -> {1}")]
+    InvalidTransition(String, String),
     /// A verified transition has no evidence rows.
     #[error("cannot verify assertion {0}: it has no supporting evidence")]
     NoEvidence(i64),
@@ -153,6 +156,23 @@ fn fnv1a64_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+/// Reports whether one review transition is allowed.
+///
+/// A candidate or reopened assertion may be verified, disputed, or rejected.
+/// A verified or disputed assertion may be reopened or rejected. A rejected
+/// assertion must be reopened before it can be reviewed again; it cannot jump
+/// directly back to verified or disputed.
+pub fn allowed_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("unverified", "verified" | "disputed" | "rejected")
+            | ("needs_review", "verified" | "disputed" | "rejected")
+            | ("verified", "needs_review" | "disputed" | "rejected")
+            | ("disputed", "needs_review" | "verified" | "rejected")
+            | ("rejected", "needs_review")
+    )
+}
+
 /// Performs one evidence-backed review transition on exactly one assertion.
 ///
 /// The assertion status row, the review event, and (on verify) the evidence
@@ -226,6 +246,12 @@ fn review_in_transaction(
     request: &ReviewRequest<'_>,
 ) -> Result<ReviewOutcome, ReviewError> {
     let from_status = current_status(tx, request.assertion_id)?;
+    if !allowed_transition(&from_status, request.new_status.as_str()) {
+        return Err(ReviewError::InvalidTransition(
+            from_status,
+            request.new_status.as_str().to_string(),
+        ));
+    }
 
     let evidence_count: i64 = tx
         .query_one(
@@ -319,4 +345,28 @@ fn insert_event(
     )
     .map_err(|err| ReviewError::Db(err.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_can_be_verified_disputed_or_rejected() {
+        for to in ["verified", "disputed", "rejected"] {
+            assert!(allowed_transition("unverified", to));
+            assert!(allowed_transition("needs_review", to));
+        }
+    }
+
+    #[test]
+    fn terminal_and_noop_transitions_are_rejected() {
+        assert!(!allowed_transition("verified", "verified"));
+        assert!(!allowed_transition("unverified", "unverified"));
+        assert!(!allowed_transition("rejected", "verified"));
+        assert!(!allowed_transition("rejected", "disputed"));
+        assert!(allowed_transition("rejected", "needs_review"));
+        assert!(allowed_transition("verified", "disputed"));
+        assert!(allowed_transition("disputed", "verified"));
+    }
 }

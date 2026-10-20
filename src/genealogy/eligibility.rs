@@ -33,6 +33,10 @@ pub const KIND_GENDER: &str = "gender";
 pub const KIND_BIRTH_ORDER: &str = "birth_order";
 /// The assertion kind that carries vital (living/deceased) status.
 pub const KIND_VITAL_STATUS: &str = "vital_status";
+/// The assertion kind that marks the first-born as deceased.
+pub const KIND_DECEASED_FIRST_BORN: &str = "deceased_first_born";
+/// The assertion kind that marks the first-born as contested.
+pub const KIND_CONTESTED_FIRST_BORN: &str = "contested_first_born";
 
 /// The `vital_status` assertion key that carries living status.
 pub const VITAL_LIVING: &str = "living";
@@ -315,6 +319,9 @@ pub fn load_input(
     let gender = verified_evidence(client, person_id, KIND_GENDER, None)?;
     let birth_order = verified_evidence(client, person_id, KIND_BIRTH_ORDER, None)?;
     let living = verified_evidence(client, person_id, KIND_VITAL_STATUS, Some(VITAL_LIVING))?;
+    let deceased_first_born = verified_evidence(client, person_id, KIND_DECEASED_FIRST_BORN, None)?;
+    let contested_first_born =
+        verified_evidence(client, person_id, KIND_CONTESTED_FIRST_BORN, None)?;
 
     Ok(EligibilityInput {
         person_key: person_key.to_string(),
@@ -323,8 +330,8 @@ pub fn load_input(
         gender,
         birth_order,
         living,
-        deceased_first_born: None,
-        contested_first_born: None,
+        deceased_first_born,
+        contested_first_born,
     })
 }
 
