@@ -6,6 +6,11 @@
 //! loader ([`crate::loader::pdf`]), and detects missing files and duplicate
 //! content. Nothing here writes to the database or modifies a source file.
 //!
+//! Generated audit output under `docs/tran/audit/` is excluded from the walk, so
+//! private reports and manifests never count as source input. The exclusion is a
+//! path prefix, not a directory name, so a sibling `audit/` folder elsewhere
+//! stays visible.
+//!
 //! Sources are only ever opened for reading; a manifest write happens in
 //! `src/bin/inventory.rs`, never in this module.
 
@@ -24,6 +29,22 @@ pub const FORMAT_OTHER: &str = "other";
 
 /// Source directories that hold frozen assets and must never be written.
 pub const FROZEN_DIRECTORIES: [&str; 4] = ["examples", "fixtures", "migrations", "evals"];
+
+/// Relative path prefixes that hold generated output and are never inventoried.
+///
+/// Entries are matched against the manifest form of a relative path (see
+/// [`relative_path_string`]) and must end with `/`. `audit/` covers the normal
+/// invocation whose root is `docs/tran`; `docs/tran/audit/` covers a walk whose
+/// root is the repository or another ancestor. Neither prefix hides an unrelated
+/// `audit/` directory nested elsewhere.
+pub const GENERATED_OUTPUT_PREFIXES: [&str; 2] = ["audit/", "docs/tran/audit/"];
+
+/// True when the manifest-form relative path lies under a generated prefix.
+pub fn is_generated_output(relative_path: &str) -> bool {
+    GENERATED_OUTPUT_PREFIXES
+        .iter()
+        .any(|prefix| relative_path.starts_with(prefix))
+}
 
 /// One inventory record; the manifest stores a list of these.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,16 +169,20 @@ pub fn discover(root: &Path) -> Result<Vec<PathBuf>, InventoryError> {
             if file_type.is_symlink() {
                 continue;
             }
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| InventoryError::Entry {
+                    path: path.clone(),
+                    source: std::io::Error::other("path outside source root"),
+                })?
+                .to_path_buf();
+            let rel_string = relative_path_string(&rel);
             if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file() {
-                let rel = path
-                    .strip_prefix(root)
-                    .map_err(|_| InventoryError::Entry {
-                        path: path.clone(),
-                        source: std::io::Error::other("path outside source root"),
-                    })?
-                    .to_path_buf();
+                // Do not enter a directory that is itself a generated prefix.
+                if !is_generated_output(&format!("{rel_string}/")) {
+                    stack.push(path);
+                }
+            } else if file_type.is_file() && !is_generated_output(&rel_string) {
                 found.push(rel);
             }
         }
@@ -480,6 +505,59 @@ mod tests {
         assert_eq!(
             rels,
             vec!["a/first.md", "b/second.txt", "empty.bin", "weird.xyz"]
+        );
+    }
+
+    #[test]
+    fn generated_audit_output_is_never_counted_and_stays_stable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The four source-like inputs at the root.
+        write(root, "Family Genealogy.pdf", b"%PDF-1.4 fake");
+        write(root, "Tran-Family-English.md", b"english");
+        write(root, "Tran-Family-People-Catalog.md", b"catalog");
+        write(root, "Tran-Family-Vietnamese.md", b"vietnamese");
+        // Generated audit output, including a nested file.
+        write(root, "docs/tran/audit/manifest.json", b"{}");
+        write(root, "docs/tran/audit/nested/report.md", b"# report");
+        write(root, "audit/root-generated.json", b"{}");
+        // A legitimate nested source file outside the audit folder.
+        write(root, "docs/tran/notes/synthetic.md", b"# synthetic");
+        // A sibling `audit` directory elsewhere must stay visible.
+        write(root, "docs/other/audit/keep.md", b"# keep");
+
+        let first = inventory(root).unwrap();
+        let second = inventory(root).unwrap();
+
+        let first_paths: Vec<String> = first
+            .records
+            .iter()
+            .map(|record| record.relative_path.clone())
+            .collect();
+        let second_paths: Vec<String> = second
+            .records
+            .iter()
+            .map(|record| record.relative_path.clone())
+            .collect();
+        assert_eq!(first_paths, second_paths, "repeat runs must be identical");
+        assert_eq!(to_json(&first), to_json(&second));
+
+        assert_eq!(
+            first_paths,
+            vec![
+                "Family Genealogy.pdf".to_string(),
+                "Tran-Family-English.md".to_string(),
+                "Tran-Family-People-Catalog.md".to_string(),
+                "Tran-Family-Vietnamese.md".to_string(),
+                "docs/other/audit/keep.md".to_string(),
+                "docs/tran/notes/synthetic.md".to_string(),
+            ]
+        );
+        assert!(
+            !first_paths
+                .iter()
+                .any(|path| path.starts_with("docs/tran/audit/")),
+            "audit output must never be counted"
         );
     }
 
