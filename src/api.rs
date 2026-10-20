@@ -1388,8 +1388,8 @@ async fn nominate_head_of_family(
 
 #[derive(Deserialize)]
 struct NominationDecision {
-    #[serde(default)]
-    approve: Option<bool>,
+    /// Required: a missing field is rejected rather than read as approval.
+    approve: bool,
     #[serde(default)]
     note: Option<String>,
 }
@@ -1416,7 +1416,7 @@ async fn decide_nomination(
     };
     let config = state.config.clone();
     let actor = identity.subject().to_string();
-    let approve = body.approve.unwrap_or(true);
+    let approve = body.approve;
     let note = body.note;
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_genealogy(&config).map_err(GenealogyError::Guard)?;
@@ -1594,6 +1594,15 @@ mod tests {
         );
         assert_eq!(sanitize_file_name("../"), None);
         assert_eq!(sanitize_file_name(""), None);
+    }
+
+    #[test]
+    fn nomination_decision_requires_an_explicit_approve() {
+        assert!(serde_json::from_str::<NominationDecision>("{}").is_err());
+        assert!(serde_json::from_str::<NominationDecision>(r#"{"note":"ok"}"#).is_err());
+        let rejected: NominationDecision =
+            serde_json::from_str(r#"{"approve":false,"note":"no"}"#).unwrap();
+        assert!(!rejected.approve);
     }
 
     #[test]
