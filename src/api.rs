@@ -6,17 +6,18 @@
 //! * query calls the same [`QueryService`] the CLI uses;
 //! * retrieval, generation, and citation validation stay in the library.
 //!
-//! Database and Ollama clients are synchronous, so every handler runs its work
-//! on [`tokio::task::spawn_blocking`] rather than occupying an async executor
-//! thread. The server binds loopback by default; database and model settings
-//! stay in the process environment and are never returned to the browser.
+//! Phase 2 makes security fail-closed. Every route except `/api/health` runs
+//! through [`crate::identity::decide`] against a [`VerifiedIdentity`] produced
+//! only by [`crate::oidc::validate_token`]. The authorization step runs before
+//! multipart staging, database access, embeddings, or model calls. There is no
+//! configuration flag that disables enforcement.
 
 use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -26,10 +27,14 @@ use crate::config::Config;
 use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
+use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
+use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
+use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient};
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
+use crate::ratelimit::RateLimiter;
 use crate::service::IngestService;
 use crate::storage_pg::PgStore;
 
@@ -41,6 +46,10 @@ pub const DEFAULT_PORT: u16 = 8080;
 pub const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// Accepted upload extensions, matching the implemented loaders.
 pub const ALLOWED_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "pdf"];
+/// The session cookie name set by the Next.js proxy.
+pub const SESSION_COOKIE: &str = "rag_session";
+/// The CSRF header name enforced by the Next.js proxy.
+pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// Returns the default bind host.
 pub fn default_host() -> &'static str {
@@ -58,7 +67,13 @@ pub struct AppState {
     config: Arc<Config>,
     store: Arc<PgStore>,
     corpus: String,
+    auth: Arc<AuthConfig>,
+    jwks: Arc<JwksCache<JwksFetcher>>,
+    limiter: Arc<RateLimiter>,
 }
+
+/// The JWKS fetcher type held by the cached verifier.
+type JwksFetcher = Box<dyn Fn() -> Result<Jwks, AuthError> + Send + Sync>;
 
 impl AppState {
     /// Builds the state from the loaded configuration.
@@ -73,11 +88,43 @@ impl AppState {
             PgStore::connect(&config.database_url)
                 .map_err(|err| format!("connect to the document store: {err}"))?,
         );
+        let auth = AuthConfig::new(
+            config.auth_issuer.clone(),
+            config.auth_audience.clone(),
+            Duration::from_secs(config.jwks_cache_ttl_secs as u64),
+            Duration::from_secs(config.auth_clock_skew_secs as u64),
+        );
+        let jwks_url = config.jwks_url.clone();
+        let fetcher: JwksFetcher = Box::new(move || fetch_jwks(&jwks_url));
+        let jwks = Arc::new(JwksCache::new(
+            fetcher,
+            Duration::from_secs(config.jwks_cache_ttl_secs as u64),
+        ));
+        let limiter = Arc::new(RateLimiter::new(
+            config.auth_rate_limit as u32,
+            Duration::from_secs(60),
+        ));
         Ok(Self {
             config: Arc::new(config),
             store,
             corpus: corpus.as_str().to_string(),
+            auth: Arc::new(auth),
+            jwks,
+            limiter,
         })
+    }
+
+    /// Replaces the JWKS fetcher (tests only).
+    #[doc(hidden)]
+    pub fn with_jwks(
+        mut self,
+        fetcher: impl Fn() -> Result<Jwks, AuthError> + Send + Sync + 'static,
+    ) -> Self {
+        self.jwks = Arc::new(JwksCache::new(
+            Box::new(fetcher) as JwksFetcher,
+            Duration::from_secs(self.config.jwks_cache_ttl_secs as u64),
+        ));
+        self
     }
 
     /// Builds the API router.
@@ -87,11 +134,36 @@ impl AppState {
             .route("/api/documents/ingest", post(ingest))
             .route("/api/documents/{source}/status", get(status))
             .route("/api/query", post(query))
+            .route("/api/account", get(account))
+            .route("/api/admin/roles", post(change_role))
+            .route(
+                "/api/admin/head-of-family/approvals",
+                post(approve_head_of_family),
+            )
             // Multipart framing adds a small overhead; the file payload itself
             // is checked against MAX_UPLOAD_BYTES in the handler.
             .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024))
             .with_state(self)
     }
+}
+
+/// Fetches JWKS over HTTP. Any failure (network, status, parse) is an error.
+fn fetch_jwks(url: &str) -> Result<Jwks, AuthError> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .and_then(|client| client.get(url).send())
+        .map_err(|err| AuthError::ProviderUnavailable(err.to_string()))?;
+    if !response.status().is_success() {
+        return Err(AuthError::ProviderUnavailable(format!(
+            "JWKS endpoint returned {}",
+            response.status()
+        )));
+    }
+    let body = response
+        .text()
+        .map_err(|err| AuthError::ProviderUnavailable(err.to_string()))?;
+    Jwks::from_json(&body)
 }
 
 /// Binds and serves the API until the process stops.
@@ -143,6 +215,89 @@ fn error(status: StatusCode, code: &str, message: impl Into<String>) -> Response
         .into_response()
 }
 
+// --- authentication and authorization --------------------------------------
+
+/// Reads the bearer credential from the request headers only.
+///
+/// Client-supplied identity headers (`X-User`, `X-Role`, ...) are ignored.
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?;
+    let text = value.to_str().ok()?.trim();
+    let token = text
+        .strip_prefix("Bearer ")
+        .or_else(|| text.strip_prefix("bearer "))?
+        .trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
+/// Verifies the credential. Any error maps to 401; an outage never becomes
+/// anonymous access.
+#[allow(clippy::result_large_err)]
+fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<VerifiedIdentity, Response> {
+    let Some(token) = bearer_token(headers) else {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "a verified identity is required",
+        ));
+    };
+    match validate_token(&token, &state.auth, &state.jwks) {
+        Ok(identity) => Ok(identity),
+        Err(err) => {
+            eprintln!("api: token rejected: {err}");
+            Err(error(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "the credential could not be verified",
+            ))
+        }
+    }
+}
+
+/// Runs authentication, the central policy decision, and rate limiting in the
+/// required order. Every protected handler calls this first.
+#[allow(clippy::result_large_err)]
+fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+    operation: Operation,
+) -> Result<VerifiedIdentity, Response> {
+    let identity = authenticate(state, headers)?;
+    match identity::decide(Some(&identity), operation) {
+        Decision::Allow => {}
+        Decision::Unauthenticated => {
+            return Err(error(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "a verified identity is required",
+            ))
+        }
+        Decision::Forbidden => {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "the verified identity lacks the required role",
+            ))
+        }
+    }
+    if operation.is_rate_limited()
+        && !state
+            .limiter
+            .check(identity.subject(), operation.rate_limit_key())
+    {
+        return Err(error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many requests for this operation",
+        ));
+    }
+    Ok(identity)
+}
+
 // --- health ----------------------------------------------------------------
 
 fn model_reachable(url: &str) -> bool {
@@ -155,6 +310,7 @@ fn model_reachable(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+// Public and non-sensitive: no identity, no database content, no model output.
 async fn health(State(state): State<AppState>) -> Response {
     let store = state.store.clone();
     let database_ok = tokio::task::spawn_blocking(move || store.ping().is_ok())
@@ -168,8 +324,6 @@ async fn health(State(state): State<AppState>) -> Response {
     let body = serde_json::json!({
         "status": if healthy { "ok" } else { "degraded" },
         "service": "rust-api",
-        "database": if database_ok { "ok" } else { "down" },
-        "model": if model_ok { "ok" } else { "down" },
     });
     let status = if healthy {
         StatusCode::OK
@@ -177,6 +331,139 @@ async fn health(State(state): State<AppState>) -> Response {
         StatusCode::SERVICE_UNAVAILABLE
     };
     (status, Json(body)).into_response()
+}
+
+// --- account and admin -----------------------------------------------------
+
+#[derive(Serialize)]
+struct AccountBody {
+    ok: bool,
+    subject: String,
+    roles: Vec<&'static str>,
+    corpus_grants: Vec<String>,
+}
+
+async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    match authorize(&state, &headers, Operation::Account) {
+        Ok(identity) => Json(AccountBody {
+            ok: true,
+            subject: identity.subject().to_string(),
+            roles: identity.roles().iter().map(Role::as_str).collect(),
+            corpus_grants: identity.corpus_grants().to_vec(),
+        })
+        .into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(Deserialize)]
+struct RoleChangeRequest {
+    subject: String,
+    role: String,
+    #[serde(default)]
+    revoke: bool,
+}
+
+fn identity_store_error(err: IdentityStoreError) -> Response {
+    eprintln!("api: role change failed: {err}");
+    match err {
+        IdentityStoreError::UnknownUser(_) => error(
+            StatusCode::NOT_FOUND,
+            "unknown_user",
+            "no such user; no role assignment was written",
+        ),
+        IdentityStoreError::InvalidRole(_) => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_role",
+            "role must be viewer, editor, or admin",
+        ),
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "role_change_failed",
+            "the role change failed; nothing was written",
+        ),
+    }
+}
+
+async fn change_role(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RoleChangeRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::RoleChange) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let Some(role) = Role::parse(&request.role) else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_role",
+            "role must be viewer, editor, or admin",
+        );
+    };
+    let subject = request.subject.trim().to_string();
+    if subject.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_subject",
+            "subject must not be empty",
+        );
+    }
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let revoke = request.revoke;
+    let task_subject = subject.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let mut store = IdentityStore::new(client);
+        if revoke {
+            store.revoke_role(&task_subject, role, &actor)
+        } else {
+            store.grant_role(&task_subject, role, &actor)
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({
+            "ok": true,
+            "subject": subject,
+            "role": role.as_str(),
+            "revoked": revoke,
+        }))
+        .into_response(),
+        Ok(Err(err)) => identity_store_error(err),
+        Err(err) => {
+            eprintln!("api: role change task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "role_change_failed",
+                "the role change task failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ApprovalRequest {
+    subject: String,
+}
+
+async fn approve_head_of_family(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ApprovalRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::HeadOfFamilyApproval) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    Json(serde_json::json!({
+        "ok": true,
+        "approved": request.subject.trim(),
+        "approved_by": identity.subject(),
+        "status": "pending_catalog",
+    }))
+    .into_response()
 }
 
 // --- ingestion -------------------------------------------------------------
@@ -209,7 +496,16 @@ fn is_dependency_error(error: &PipelineError) -> bool {
         || text.contains("connect")
 }
 
-async fn ingest(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+async fn ingest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    // Authorization runs before any field is read, staged, or embedded.
+    if let Err(response) = authorize(&state, &headers, Operation::Ingest) {
+        return response;
+    }
+
     let mut file: Option<(String, Vec<u8>)> = None;
     loop {
         let field = match multipart.next_field().await {
@@ -421,7 +717,14 @@ async fn ingest(State(state): State<AppState>, mut multipart: Multipart) -> Resp
 
 // --- ingestion status ------------------------------------------------------
 
-async fn status(State(state): State<AppState>, Path(source): Path<String>) -> Response {
+async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(source): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentStatus) {
+        return response;
+    }
     let store = state.store.clone();
     let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || store.source_status(&corpus, &source)).await;
@@ -476,7 +779,16 @@ struct QueryRequest {
     top_k: Option<usize>,
 }
 
-async fn query(State(state): State<AppState>, Json(request): Json<QueryRequest>) -> Response {
+async fn query(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<QueryRequest>,
+) -> Response {
+    // The body is parsed by Axum before this point, but no retrieval, embedding,
+    // or model call happens until authorization succeeds.
+    if let Err(response) = authorize(&state, &headers, Operation::Query) {
+        return response;
+    }
     let question = request.question.trim().to_string();
     if question.is_empty() {
         return error(
@@ -493,9 +805,6 @@ async fn query(State(state): State<AppState>, Json(request): Json<QueryRequest>)
                 "top_k must be between 1 and 50",
             );
         }
-        // The server's configured TOP_K/FINAL_K govern retrieval, matching the
-        // CLI. `top_k` is accepted for the established request contract and
-        // validated, but is not a per-request override.
     }
     let config = state.config.clone();
     let store = state.store.clone();
@@ -586,5 +895,23 @@ mod tests {
     fn extension_detection_is_case_insensitive() {
         assert_eq!(extension("Policy.MD"), Some("md".to_string()));
         assert_eq!(extension("no-extension"), None);
+    }
+
+    #[test]
+    fn client_identity_headers_are_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-user", "admin".parse().unwrap());
+        headers.insert("x-role", "admin".parse().unwrap());
+        assert!(bearer_token(&headers).is_none());
+    }
+
+    #[test]
+    fn bearer_token_is_read_from_authorization_only() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer token-value".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), Some("token-value".to_string()));
     }
 }

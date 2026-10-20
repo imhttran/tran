@@ -1,0 +1,73 @@
+//! Initial-admin bootstrap command.
+//!
+//! This is the only way to create the first admin. It is an explicit operator
+//! action, writes the user, the admin role assignment, and the audit event in one
+//! transaction, and refuses to run when an admin already exists. It is not
+//! reachable from any HTTP route and is not a configuration switch.
+
+use rag_foundation::identity::Role;
+use rag_foundation::identity_store::IdentityStore;
+use rag_foundation::identity_store_pg::PgIdentityClient;
+
+fn usage() -> String {
+    [
+        "usage:",
+        "  admin bootstrap --subject <sub> --issuer <issuer> [--actor <actor>]",
+        "  admin grant     --subject <sub> --role viewer|editor|admin [--actor <actor>]",
+        "  admin revoke    --subject <sub> --role viewer|editor|admin [--actor <actor>]",
+    ]
+    .join("\n")
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(value) = iter.next() {
+        if value == name {
+            return iter.next().cloned();
+        }
+    }
+    None
+}
+
+fn main() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(command) = args.first() else {
+        return Err(usage());
+    };
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
+    let subject = flag(&args, "--subject").ok_or_else(|| "--subject is required".to_string())?;
+    let actor = flag(&args, "--actor").unwrap_or_else(|| "cli-operator".to_string());
+
+    let client = PgIdentityClient::connect(&database_url).map_err(|err| err.to_string())?;
+    let mut store = IdentityStore::new(client);
+
+    match command.as_str() {
+        "bootstrap" => {
+            let issuer =
+                flag(&args, "--issuer").ok_or_else(|| "--issuer is required".to_string())?;
+            store
+                .bootstrap_initial_admin(&subject, &issuer, &actor)
+                .map_err(|err| err.to_string())?;
+            println!("initial admin created for {subject}");
+        }
+        "grant" | "revoke" => {
+            let role_name =
+                flag(&args, "--role").ok_or_else(|| "--role is required".to_string())?;
+            let role = Role::parse(&role_name)
+                .ok_or_else(|| "role must be viewer, editor, or admin".to_string())?;
+            if command == "grant" {
+                store
+                    .grant_role(&subject, role, &actor)
+                    .map_err(|err| err.to_string())?;
+            } else {
+                store
+                    .revoke_role(&subject, role, &actor)
+                    .map_err(|err| err.to_string())?;
+            }
+            println!("{command} {role_name} for {subject}");
+        }
+        other => return Err(format!("unknown command {other}\n{}", usage())),
+    }
+    Ok(())
+}
