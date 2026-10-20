@@ -37,6 +37,7 @@ use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
+use crate::onboarding::{self, CandidatePreview, PreviewSummary};
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
@@ -189,6 +190,10 @@ impl AppState {
             )
             .route("/api/genealogy/nominations/{id}", post(decide_nomination))
             .route("/api/genealogy/appointments/{id}", post(end_head_of_family))
+            .route(
+                "/api/admin/family-members/candidates",
+                get(family_member_candidates),
+            )
             .route("/api/admin/users", post(provision_user))
             .route(
                 "/api/admin/users/{subject}/deactivate",
@@ -1707,6 +1712,101 @@ async fn deactivate_identity(
     }
 }
 
+// --- onboarding preview ----------------------------------------------------
+
+/// The privacy-safe summary of one preview. Counts only; never a person.
+#[derive(Serialize)]
+struct PreviewSummaryBody {
+    eligible_for_invite: usize,
+    needs_review: usize,
+    already_linked: usize,
+    invited: usize,
+    not_eligible: usize,
+}
+
+/// One classified candidate for the wire. Carries the opaque key and reason
+/// codes only.
+#[derive(Serialize)]
+struct PreviewRowBody {
+    person_key: String,
+    classification: &'static str,
+    reasons: Vec<&'static str>,
+}
+
+/// The full response envelope.
+#[derive(Serialize)]
+struct PreviewBody {
+    ok: bool,
+    rows: Vec<PreviewRowBody>,
+    summary: PreviewSummaryBody,
+}
+
+/// An admin-only, strictly read-only preview of living-person candidates.
+///
+/// Authorization runs before any database connection. The genealogy read runs
+/// in a blocking task. Rows are never logged; the response carries opaque keys
+/// and reason codes only.
+async fn family_member_candidates(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingPreview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let dsn = resolve_genealogy_dsn(&config).map_err(|err| err.to_string())?;
+        let mut client =
+            postgres::Client::connect(&dsn, postgres::NoTls).map_err(|err| err.to_string())?;
+        onboarding::preview_candidates(&mut client).map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => preview_response(&preview),
+        Ok(Err(message)) => {
+            // No row detail is logged. The message names a rule or a
+            // destination, never a person.
+            eprintln!("api: onboarding preview unavailable: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: onboarding preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "preview_failed",
+                "the candidate preview failed",
+            )
+        }
+    }
+}
+
+/// Maps a preview to the wire body. The summary is derived from the preview.
+fn preview_response(preview: &CandidatePreview) -> Response {
+    let summary = PreviewSummary::from_preview(preview);
+    let rows = preview
+        .rows
+        .iter()
+        .map(|row| PreviewRowBody {
+            person_key: row.person_key.clone(),
+            classification: row.classification.as_str(),
+            reasons: row.reasons.iter().map(|reason| reason.as_str()).collect(),
+        })
+        .collect();
+    let body = PreviewBody {
+        ok: true,
+        rows,
+        summary: PreviewSummaryBody {
+            eligible_for_invite: summary.eligible_for_invite,
+            needs_review: summary.needs_review,
+            already_linked: summary.already_linked,
+            invited: summary.invited,
+            not_eligible: summary.not_eligible,
+        },
+    };
+    Json(body).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1748,6 +1848,25 @@ mod tests {
     fn extension_detection_is_case_insensitive() {
         assert_eq!(extension("Policy.MD"), Some("md".to_string()));
         assert_eq!(extension("no-extension"), None);
+    }
+
+    #[test]
+    fn onboarding_preview_is_admin_only() {
+        let viewer = VerifiedIdentity::new("sub-1", "https://issuer", vec![Role::Viewer], vec![]);
+        let editor = VerifiedIdentity::new("sub-2", "https://issuer", vec![Role::Editor], vec![]);
+        let admin = VerifiedIdentity::new("sub-3", "https://issuer", vec![Role::Admin], vec![]);
+        assert_eq!(
+            identity::decide(Some(&viewer), Operation::OnboardingPreview),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            identity::decide(Some(&editor), Operation::OnboardingPreview),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            identity::decide(Some(&admin), Operation::OnboardingPreview),
+            Decision::Allow
+        );
     }
 
     #[test]
