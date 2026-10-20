@@ -47,6 +47,10 @@ pub const OUTPUT_HUMAN: &str = "human";
 pub const OUTPUT_JSON: &str = "json";
 pub const DEFAULT_OBSERVABILITY_FORMAT: &str = OUTPUT_HUMAN;
 
+/// Name of the explicitly configured genealogy database DSN variable. It has no
+/// default, so a genealogy command can never silently target the RAG database.
+pub const GENEALOGY_DATABASE_URL_VAR: &str = "GENEALOGY_DATABASE_URL";
+
 /// Error returned by [`Config::load`]. The message names the offending variable
 /// so an invalid setting is never silently replaced with a default.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -63,6 +67,9 @@ pub struct Config {
     pub embed_dim: i64,
     pub chat_model: String,
     pub database_url: String,
+    /// Explicit genealogy database DSN. `None` when the variable is unset or
+    /// blank; there is deliberately no fallback to the RAG `database_url`.
+    pub genealogy_database_url: Option<String>,
     pub question: String,
     pub embed_provider: String,
     pub gen_provider: String,
@@ -128,6 +135,11 @@ impl Config {
             )));
         }
 
+        // An unset or blank variable stays `None`; it never falls back to the
+        // RAG default. A caller that needs the genealogy database must treat
+        // `None` as a configuration error naming the variable.
+        let genealogy_database_url = get(GENEALOGY_DATABASE_URL_VAR);
+
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
             embed_model: get("OLLAMA_EMBED_MODEL")
@@ -135,6 +147,7 @@ impl Config {
             embed_dim: positive_int(&get, "EMBED_DIM", DEFAULT_EMBED_DIM)?,
             chat_model: get("OLLAMA_CHAT_MODEL").unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string()),
             database_url: get("DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string()),
+            genealogy_database_url,
             question: get("QUESTION").unwrap_or_default(),
             embed_provider,
             gen_provider,
@@ -183,6 +196,20 @@ impl Config {
                 DEFAULT_OBSERVABILITY_FORMAT,
             )?,
         })
+    }
+
+    /// Returns the explicitly configured genealogy database DSN.
+    ///
+    /// There is no fallback: an absent or blank `GENEALOGY_DATABASE_URL` is a
+    /// [`ConfigError::Invalid`] that names the variable, so a genealogy command
+    /// can never silently target the RAG database.
+    pub fn genealogy_database_url(&self) -> Result<&str, ConfigError> {
+        match self.genealogy_database_url.as_deref() {
+            Some(dsn) => Ok(dsn),
+            None => Err(ConfigError::Invalid(format!(
+                "{GENEALOGY_DATABASE_URL_VAR} must be set to an explicit genealogy database DSN"
+            ))),
+        }
     }
 
     /// Reports whether the configured output format selects the opt-in JSON
@@ -486,6 +513,8 @@ mod tests {
         assert_eq!(cfg.observability_format, "human");
         assert_eq!(cfg.language, "");
         assert_eq!(cfg.question, "");
+        // No genealogy fallback: an absent key stays absent.
+        assert_eq!(cfg.genealogy_database_url, None);
     }
 
     #[test]
@@ -626,5 +655,45 @@ mod tests {
     fn duration_supports_compound_units() {
         let cfg = load(&[("REQUEST_TIMEOUT", "1h30m")]).unwrap();
         assert_eq!(cfg.request_timeout, Duration::from_secs(5400));
+    }
+
+    #[test]
+    fn genealogy_key_is_read_when_set() {
+        let cfg = load(&[(
+            "GENEALOGY_DATABASE_URL",
+            "postgres://u:p@127.0.0.1:5434/genealogy?sslmode=disable",
+        )])
+        .unwrap();
+        assert_eq!(
+            cfg.genealogy_database_url,
+            Some("postgres://u:p@127.0.0.1:5434/genealogy?sslmode=disable".to_string())
+        );
+        assert_eq!(
+            cfg.genealogy_database_url().unwrap(),
+            "postgres://u:p@127.0.0.1:5434/genealogy?sslmode=disable"
+        );
+    }
+
+    #[test]
+    fn absent_genealogy_key_is_an_error_naming_the_variable() {
+        let cfg = load(&[]).unwrap();
+        let err = cfg.genealogy_database_url().unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::Invalid(
+                "GENEALOGY_DATABASE_URL must be set to an explicit genealogy database DSN".into()
+            )
+        );
+    }
+
+    #[test]
+    fn blank_genealogy_key_is_treated_as_absent_with_no_rag_fallback() {
+        let cfg = load(&[("GENEALOGY_DATABASE_URL", "   ")]).unwrap();
+        assert_eq!(cfg.genealogy_database_url, None);
+        // The RAG default must never be used as the genealogy DSN.
+        let genealogy = cfg.genealogy_database_url.clone().unwrap_or_default();
+        assert_ne!(cfg.database_url, genealogy);
+        let err = cfg.genealogy_database_url().unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(ref m) if m.contains("GENEALOGY_DATABASE_URL")));
     }
 }
