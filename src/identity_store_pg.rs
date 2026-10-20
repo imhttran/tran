@@ -36,6 +36,70 @@ impl PgIdentityClient {
             client: RefCell::new(client),
         }
     }
+
+    /// Grants one corpus to an existing user and records the audit event.
+    pub fn grant_corpus(
+        &mut self,
+        subject: &str,
+        corpus: &str,
+        actor: &str,
+    ) -> Result<(), IdentityStoreError> {
+        let mut guard = self.client.borrow_mut();
+        let mut tx = guard
+            .transaction()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let row = tx
+            .query_opt("SELECT id FROM users WHERE subject = $1", &[&subject])
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let Some(row) = row else {
+            return Err(IdentityStoreError::UnknownUser(subject.to_string()));
+        };
+        let user_id: i64 = row.get(0);
+        tx.execute(
+            "INSERT INTO corpus_grants (user_id, corpus, granted_by) \
+             SELECT $1, $2, $3 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM corpus_grants \
+                 WHERE user_id = $1 AND corpus = $2 AND revoked_at IS NULL \
+             )",
+            &[&user_id, &corpus, &actor],
+        )
+        .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        audit(&mut tx, actor, "corpus.grant", subject)?;
+        tx.commit()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(())
+    }
+
+    /// Revokes one corpus grant and records the audit event.
+    pub fn revoke_corpus(
+        &mut self,
+        subject: &str,
+        corpus: &str,
+        actor: &str,
+    ) -> Result<(), IdentityStoreError> {
+        let mut guard = self.client.borrow_mut();
+        let mut tx = guard
+            .transaction()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let row = tx
+            .query_opt("SELECT id FROM users WHERE subject = $1", &[&subject])
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let Some(row) = row else {
+            return Err(IdentityStoreError::UnknownUser(subject.to_string()));
+        };
+        let user_id: i64 = row.get(0);
+        tx.execute(
+            "UPDATE corpus_grants SET revoked_at = now() \
+             WHERE user_id = $1 AND corpus = $2 AND revoked_at IS NULL",
+            &[&user_id, &corpus],
+        )
+        .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        audit(&mut tx, actor, "corpus.revoke", subject)?;
+        tx.commit()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(())
+    }
 }
 
 fn audit(

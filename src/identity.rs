@@ -95,9 +95,12 @@ impl VerifiedIdentity {
         &self.corpus_grants
     }
 
-    /// Reports whether the identity holds a role.
+    /// Reports whether the identity holds a role at or above `role`.
+    ///
+    /// Roles are hierarchical in the MVP table: an admin also has every editor
+    /// and viewer capability, and an editor also has every viewer capability.
     pub fn has_role(&self, role: Role) -> bool {
-        self.roles.contains(&role)
+        self.roles.iter().any(|held| *held >= role)
     }
 
     /// The highest role the identity holds, if any.
@@ -246,6 +249,12 @@ mod tests {
             decide(Some(&admin), Operation::HeadOfFamilyApproval),
             Decision::Allow
         );
+        assert_eq!(decide(Some(&admin), Operation::Query), Decision::Allow);
+        assert_eq!(
+            decide(Some(&admin), Operation::DocumentStatus),
+            Decision::Allow
+        );
+        assert_eq!(decide(Some(&admin), Operation::Ingest), Decision::Allow);
     }
 
     #[test]

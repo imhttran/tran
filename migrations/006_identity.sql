@@ -34,12 +34,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS role_assignments_active_role
 CREATE INDEX IF NOT EXISTS role_assignments_user_idx
     ON role_assignments (user_id);
 
--- At most one active admin exists, so the initial-admin bootstrap cannot be
--- replayed to mint a second one, and replay races are rejected by the database
--- as well as by the transaction's own check.
-CREATE UNIQUE INDEX IF NOT EXISTS role_assignments_single_active_admin
-    ON role_assignments (role)
-    WHERE role = 'admin' AND revoked_at IS NULL;
+-- The initial-admin bootstrap refuses to run after any admin exists, but the
+-- schema does not cap the number of admins: later explicit grants may add more.
+DROP INDEX IF EXISTS role_assignments_single_active_admin;
 
 CREATE TABLE IF NOT EXISTS corpus_grants (
     id          BIGSERIAL PRIMARY KEY,

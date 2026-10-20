@@ -245,7 +245,7 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<VerifiedIdentit
             "a verified identity is required",
         ));
     };
-    match validate_token(&token, &state.auth, &state.jwks) {
+    match validate_in_context(&token, &state.auth, &state.jwks) {
         Ok(identity) => Ok(identity),
         Err(err) => {
             eprintln!("api: token rejected: {err}");
@@ -258,6 +258,25 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<VerifiedIdentit
     }
 }
 
+/// Runs the synchronous JWKS/token verification without blocking the async
+/// executor. The JWKS fetch uses `reqwest::blocking`, so it must run on a
+/// blocking thread when a Tokio runtime is active; outside a runtime (unit
+/// tests), it runs directly.
+fn validate_in_context<F>(
+    token: &str,
+    config: &AuthConfig,
+    jwks: &JwksCache<F>,
+) -> Result<VerifiedIdentity, AuthError>
+where
+    F: Fn() -> Result<Jwks, AuthError> + Send + Sync + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| validate_token(token, config, jwks))
+    } else {
+        validate_token(token, config, jwks)
+    }
+}
+
 /// Runs authentication, the central policy decision, and rate limiting in the
 /// required order. Every protected handler calls this first.
 #[allow(clippy::result_large_err)]
@@ -266,7 +285,8 @@ fn authorize(
     headers: &HeaderMap,
     operation: Operation,
 ) -> Result<VerifiedIdentity, Response> {
-    let identity = authenticate(state, headers)?;
+    let token_identity = authenticate(state, headers)?;
+    let identity = load_identity(state, &token_identity)?;
     match identity::decide(Some(&identity), operation) {
         Decision::Allow => {}
         Decision::Unauthenticated => {
@@ -284,6 +304,18 @@ fn authorize(
             ))
         }
     }
+    if operation_requires_corpus(operation)
+        && !identity
+            .corpus_grants()
+            .iter()
+            .any(|grant| grant == &state.corpus)
+    {
+        return Err(error(
+            StatusCode::FORBIDDEN,
+            "corpus_forbidden",
+            "the verified identity has no grant for this corpus",
+        ));
+    }
     if operation.is_rate_limited()
         && !state
             .limiter
@@ -296,6 +328,62 @@ fn authorize(
         ));
     }
     Ok(identity)
+}
+
+/// Operations that read or write documents in the configured corpus.
+fn operation_requires_corpus(operation: Operation) -> bool {
+    matches!(
+        operation,
+        Operation::Ingest | Operation::Query | Operation::DocumentStatus
+    )
+}
+
+/// Loads the effective roles and corpus grants from the database. The verified
+/// token only identifies the subject; it never supplies authorization.
+#[allow(clippy::result_large_err)]
+fn load_identity(state: &AppState, token: &VerifiedIdentity) -> Result<VerifiedIdentity, Response> {
+    let subject = token.subject().to_string();
+    let issuer = token.issuer().to_string();
+    let dsn = state.config.database_url.clone();
+    let lookup = if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| load_identity_blocking(&dsn, &subject, &issuer))
+    } else {
+        load_identity_blocking(&dsn, &subject, &issuer)
+    };
+    match lookup {
+        Ok((roles, grants)) => Ok(VerifiedIdentity::new(subject, issuer, roles, grants)),
+        Err(IdentityStoreError::Database(message)) => {
+            eprintln!("api: identity store unavailable: {message}");
+            Err(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_store_unavailable",
+                "the identity store is unavailable",
+            ))
+        }
+        Err(err) => {
+            eprintln!("api: identity lookup failed for {subject}: {err}");
+            Err(error(
+                StatusCode::FORBIDDEN,
+                "account_not_provisioned",
+                "the verified identity has no active account",
+            ))
+        }
+    }
+}
+
+fn load_identity_blocking(
+    dsn: &str,
+    subject: &str,
+    issuer: &str,
+) -> Result<(Vec<Role>, Vec<String>), IdentityStoreError> {
+    let client = crate::identity_store_pg::PgIdentityClient::connect(dsn)?;
+    let store = IdentityStore::new(client);
+    let user = store
+        .user_by_subject(subject, issuer)?
+        .ok_or_else(|| IdentityStoreError::UnknownUser(subject.to_string()))?;
+    let roles = store.effective_roles(user.id)?;
+    let grants = store.effective_grants(user.id)?;
+    Ok((roles, grants))
 }
 
 // --- health ----------------------------------------------------------------

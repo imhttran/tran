@@ -12,9 +12,11 @@ use rag_foundation::identity_store_pg::PgIdentityClient;
 fn usage() -> String {
     [
         "usage:",
-        "  admin bootstrap --subject <sub> --issuer <issuer> [--actor <actor>]",
+        "  admin bootstrap --subject <sub> --issuer <issuer> [--corpus <corpus>] [--actor <actor>]",
         "  admin grant     --subject <sub> --role viewer|editor|admin [--actor <actor>]",
         "  admin revoke    --subject <sub> --role viewer|editor|admin [--actor <actor>]",
+        "  admin grant-corpus  --subject <sub> --corpus <corpus> [--actor <actor>]",
+        "  admin revoke-corpus --subject <sub> --corpus <corpus> [--actor <actor>]",
     ]
     .join("\n")
 }
@@ -49,7 +51,15 @@ fn main() -> Result<(), String> {
             store
                 .bootstrap_initial_admin(&subject, &issuer, &actor)
                 .map_err(|err| err.to_string())?;
-            println!("initial admin created for {subject}");
+            if let Some(corpus) = flag(&args, "--corpus") {
+                store
+                    .client()
+                    .grant_corpus(&subject, &corpus, &actor)
+                    .map_err(|err| err.to_string())?;
+                println!("initial admin created for {subject} with corpus {corpus}");
+            } else {
+                println!("initial admin created for {subject}");
+            }
         }
         "grant" | "revoke" => {
             let role_name =
@@ -66,6 +76,22 @@ fn main() -> Result<(), String> {
                     .map_err(|err| err.to_string())?;
             }
             println!("{command} {role_name} for {subject}");
+        }
+        "grant-corpus" | "revoke-corpus" => {
+            let corpus =
+                flag(&args, "--corpus").ok_or_else(|| "--corpus is required".to_string())?;
+            if command == "grant-corpus" {
+                store
+                    .client()
+                    .grant_corpus(&subject, &corpus, &actor)
+                    .map_err(|err| err.to_string())?;
+            } else {
+                store
+                    .client()
+                    .revoke_corpus(&subject, &corpus, &actor)
+                    .map_err(|err| err.to_string())?;
+            }
+            println!("{command} {corpus} for {subject}");
         }
         other => return Err(format!("unknown command {other}\n{}", usage())),
     }

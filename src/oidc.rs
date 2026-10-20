@@ -9,16 +9,16 @@
 //!    present are not in the future beyond the skew;
 //! 5. `sub` is present and non-blank.
 //!
-//! Roles and corpus grants are read only from the verified claim set. Any
-//! verification error, including a JWKS outage, is an error: the adapter never
-//! returns an anonymous identity.
+//! Roles and corpus grants are loaded from the database by the API after the
+//! token is verified. Token claims are never used to grant access, so a stale or
+//! altered claim cannot elevate an identity.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
-use crate::identity::{Role, VerifiedIdentity};
+use crate::identity::VerifiedIdentity;
 
 /// Errors returned by token verification.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -381,29 +381,15 @@ fn claims_to_identity(
         .filter(|v| !v.is_empty())
         .ok_or(AuthError::MissingSubject)?;
 
-    let mut roles = Vec::new();
-    if let Some(list) = claims.get("roles").and_then(|v| v.as_array()) {
-        for entry in list {
-            if let Some(name) = entry.as_str() {
-                // Unknown role names are dropped, never mapped to a default.
-                if let Some(role) = Role::parse(name) {
-                    roles.push(role);
-                }
-            }
-        }
-    }
-
-    let corpus_grants = claims
-        .get("corpus_grants")
-        .and_then(|v| v.as_array())
-        .map(|list| {
-            list.iter()
-                .filter_map(|entry| entry.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Ok(VerifiedIdentity::new(subject, issuer, roles, corpus_grants))
+    // Authorization is database-backed. Claims named `roles` or
+    // `corpus_grants` are deliberately ignored here; the API loads the
+    // effective values for this subject after verification.
+    Ok(VerifiedIdentity::new(
+        subject,
+        issuer,
+        Vec::new(),
+        Vec::new(),
+    ))
 }
 
 /// Verifies a bearer token and returns a typed verified identity.
@@ -572,7 +558,10 @@ mod tests {
         let identity =
             validate_token(&token(claims("user-1", &["editor"])), &config(), &cache).unwrap();
         assert_eq!(identity.subject(), "user-1");
-        assert_eq!(identity.roles(), &[Role::Editor]);
+        assert!(
+            identity.roles().is_empty(),
+            "token role claims must not grant access"
+        );
     }
 
     #[test]

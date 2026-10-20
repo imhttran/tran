@@ -17,6 +17,29 @@ test.beforeAll(() => {
   fs.mkdirSync(screenshots, { recursive: true });
 });
 
+test.beforeEach(async ({ context }) => {
+  const token = process.env.E2E_SESSION_TOKEN;
+  if (!token) {
+    return;
+  }
+  const base = process.env.E2E_BASE_URL || "http://127.0.0.1:3000";
+  await context.addCookies([
+    {
+      name: "rag_session",
+      value: token,
+      url: base,
+      httpOnly: true,
+      sameSite: "Strict",
+    },
+    {
+      name: "rag_csrf",
+      value: process.env.E2E_CSRF_TOKEN || "e2e-csrf-token",
+      url: base,
+      sameSite: "Strict",
+    },
+  ]);
+});
+
 test.describe.serial("RUST-008A browser integration", () => {
   test("upload PDF, verify page; upload Markdown, verify cited answer", async ({
     page,
