@@ -97,21 +97,58 @@ export function layoutTree(graph: TreeGraph, collapsed: ReadonlySet<string>): Tr
         }
       }
     }
-    let roots = members.filter((id) => !incoming.has(id));
-    if (roots.length === 0) roots = [members[0]]; // Cycle; choose deterministic root.
-    const queue = roots.map((id) => ({ id, depth: 0 }));
-    for (let i = 0; i < queue.length; i++) {
-      const { id, depth } = queue[i];
-      if (depths.has(id)) continue;
-      depths.set(id, { component, depth });
-      // Spouses stay at the current generation; they are never inferred parents.
-      for (const edge of graph.links) {
-        if (edge.kind !== "spouse") continue;
-        if (edge.from_id === id && !depths.has(edge.to_id)) queue.push({ id: edge.to_id, depth });
-        if (edge.to_id === id && !depths.has(edge.from_id)) queue.push({ id: edge.from_id, depth });
+    // A collapse hides reachable descendants, but not the collapsed node
+    // itself. Compute that separately from cycle recovery so we never
+    // resurrect deliberately hidden branches.
+    const hidden = new Set<string>();
+    for (const source of members) {
+      if (!collapsed.has(source)) continue;
+      const seen = new Set([source]);
+      const stack = [source];
+      while (stack.length) {
+        const id = stack.pop()!;
+        for (const child of children.get(id) ?? []) {
+          if (seen.has(child)) continue;
+          seen.add(child);
+          hidden.add(child);
+          stack.push(child);
+        }
       }
-      if (!collapsed.has(id)) {
-        for (const child of children.get(id) ?? []) queue.push({ id: child, depth: depth + 1 });
+    }
+
+    let roots = members.filter((id) => !incoming.has(id) && !hidden.has(id));
+    if (roots.length === 0 && members.some((id) => !hidden.has(id))) {
+      roots = [members.find((id) => !hidden.has(id))!];
+    }
+    const queue = roots.map((id) => ({ id, depth: 0 }));
+    let processed = 0;
+    const visit = () => {
+      for (let i = processed; i < queue.length; i++) {
+        const { id, depth } = queue[i];
+        if (depths.has(id) || hidden.has(id)) continue;
+        depths.set(id, { component, depth });
+        // Spouses stay at the current generation; they are never inferred parents.
+        for (const edge of graph.links) {
+          if (edge.kind !== "spouse") continue;
+          if (edge.from_id === id && !depths.has(edge.to_id))
+            queue.push({ id: edge.to_id, depth });
+          if (edge.to_id === id && !depths.has(edge.from_id))
+            queue.push({ id: edge.from_id, depth });
+        }
+        if (!collapsed.has(id)) {
+          for (const child of children.get(id) ?? [])
+            queue.push({ id: child, depth: depth + 1 });
+        }
+      }
+      processed = queue.length;
+    };
+    visit();
+    // A root elsewhere in a weak component can mask a separate ancestor
+    // cycle (A→B→A, B→C, D→C). Seed every unreached, non-hidden node.
+    for (const id of members) {
+      if (!depths.has(id) && !hidden.has(id)) {
+        queue.push({ id, depth: 0 });
+        visit();
       }
     }
     component++;
