@@ -1190,6 +1190,7 @@ async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Re
                 "record_id": person.person_key,
                 "person_label": person.display_name,
                 "evidence_status": person.evidence_status,
+                "aliases": person.aliases,
             })).collect();
             let links: Vec<_> = graph.links.iter().map(|link| serde_json::json!({
                 "from_id": link.from_key,
