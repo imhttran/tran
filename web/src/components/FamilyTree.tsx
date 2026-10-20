@@ -4,13 +4,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
 
 import { DenialView } from "@/components/DenialView";
-import { EvidenceBadge } from "@/components/EvidenceBadge";
+import { EvidenceBadge, EvidenceList } from "@/components/EvidenceBadge";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
-import type { EvidenceRef, Role } from "@/lib/experience-contract";
+import { SourceDialog } from "@/components/SourceDetails";
+import type { CitedFact, OpenSource } from "@/components/SourceDetails";
+import type { EvidenceRef } from "@/lib/experience-contract";
 import {
-  CARD_HEIGHT, CARD_WIDTH, layoutTree, normalizedName, parseTreeGraph,
+  CARD_HEIGHT, CARD_WIDTH, layoutTree, normalizedName, parseTreeGraph, relationLabel, revealPerson,
 } from "@/lib/family-tree";
 import type { TreeGraph, TreeLink } from "@/lib/family-tree";
 
@@ -41,20 +43,21 @@ function edgeClass(link: TreeLink) {
 export default function GenealogyPage() {
   return (
     <ExperienceShell>
-      {(role) => <FamilyTree role={role} />}
+      {() => <FamilyTree />}
     </ExperienceShell>
   );
 }
 
-function FamilyTree({ role }: { role: Role | null }) {
+function FamilyTree() {
   const [graph, setGraph] = useState<TreeGraph | null>(null);
   const [denial, setDenial] = useState<Denial | null>(null);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [view, setView] = useState<View>({ x: 0, y: 0, width: 850, height: 530 });
   const [detail, setDetail] = useState<PersonDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [openSource, setOpenSource] = useState<OpenSource | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
 
@@ -130,18 +133,40 @@ function FamilyTree({ role }: { role: Role | null }) {
   }, [selected]);
 
   function selectPerson(id: string) {
-    // Open all branches on selection so search results are never hidden.
-    setCollapsed(new Set());
+    if (!graph) return;
+    // Expand only the hidden ancestor path; unrelated collapsed branches stay.
+    const nextCollapsed = revealPerson(graph, collapsed, id, byId);
+    setCollapsed(nextCollapsed);
     setSelected(id);
     setSearch("");
-    const positioned = layoutTree(graph ?? { people: [], links: [], truncated: false }, new Set())
-      .people.find((p) => p.record_id === id);
+    const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
     if (positioned) {
-      setView({
-        x: Math.max(0, positioned.x - 260), y: Math.max(0, positioned.y - 180),
-        width: 800, height: 490,
-      });
+      setView((old) => ({ ...old,
+        x: positioned.x + CARD_WIDTH / 2 - old.width / 2,
+        y: positioned.y + CARD_HEIGHT / 2 - old.height / 2 }));
     }
+    svgRef.current?.scrollIntoView?.({ block: "nearest" });
+  }
+
+  // Facts in this authorized view that cite exactly this evidence.
+  function openCitation(evidence: EvidenceRef) {
+    if (!graph) return;
+    const name = (id: string) => graph.people.find((p) => p.record_id === id)?.person_label ?? "Unknown";
+    const cites = (refs: EvidenceRef[]) => refs.some((ref) => ref.evidence_id === evidence.evidence_id);
+    const citedFor: CitedFact[] = [
+      ...graph.links.filter((link) => cites(link.evidence)).map((link) => ({
+        label: link.kind === "spouse"
+          ? name(link.from_id) + " and " + name(link.to_id) + " — spouses"
+          : name(link.from_id) + " — parent of " + name(link.to_id),
+        status: link.evidence_status,
+      })),
+      ...(detail?.assertions ?? []).filter((a) => cites(a.evidence)).map((a) => ({
+        label: (detail?.person_label ?? "Person") + " — " + a.kind.replace("_", " ") +
+          (a.value_text ? ": " + a.value_text : ""),
+        status: a.review_status,
+      })),
+    ];
+    setOpenSource({ evidence, citedFor });
   }
 
   function scaleView(factor: number) {
@@ -174,8 +199,7 @@ function FamilyTree({ role }: { role: Role | null }) {
     <>
       <PageTitle title="Family tree" />
       <PageHeader title="Family tree"
-        subtitle={"Read-only family relationships for " +
-          (role ?? "an unauthenticated visitor") + ". Evidence status is not inferred."} />
+        subtitle="Explore people, relationships, and their sources. Evidence status is never inferred." />
       {denial ? <DenialView kind={denial.kind} reason={denial.reason} /> : !graph || !layout ? (
         <p className="hint" data-testid="genealogy-loading">Loading family tree…</p>
       ) : (
@@ -294,7 +318,7 @@ function FamilyTree({ role }: { role: Role | null }) {
                     <h2>{selectedPerson.person_label}</h2>
                     <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
                     <EvidenceBadge status={selectedPerson.evidence_status} />
-                    <h3>Relationships</h3>
+                    <h3>Relatives</h3>
                     {graph.links.filter((link) =>
                       link.from_id === selected || link.to_id === selected).length === 0 ? (
                       <p className="hint">No stored relationships are available.</p>
@@ -305,16 +329,16 @@ function FamilyTree({ role }: { role: Role | null }) {
                           const other = graph.people.find((p) => p.record_id ===
                             (link.from_id === selected ? link.to_id : link.from_id));
                           return (
-                            <li key={i}>
+                            <li key={i} data-testid="family-relative">
+                              <strong className="family-relation" data-testid="family-relation">
+                                {selected ? relationLabel(link, selected) : ""}
+                              </strong>{" "}
                               <button type="button" className="family-text-button"
                                 onClick={() => { if (other) selectPerson(other.record_id); }}>
                                 {other?.person_label ?? "Unknown"}
                               </button>
-                              <span className="meta"> {link.kind.replace("_", " ")} · </span>
-                              <span className="meta">{link.evidence_status.replace("_", " ")}</span>
-                              {link.evidence.map((ev) => (
-                                <p className="meta" key={ev.evidence_id}>{ev.citation}</p>
-                              ))}
+                              <p className="meta">{link.evidence_status.replace("_", " ")}</p>
+                              <EvidenceList evidence={link.evidence} onOpen={openCitation} />
                             </li>
                           );
                         })}
@@ -333,9 +357,7 @@ function FamilyTree({ role }: { role: Role | null }) {
                             <strong>{assertion.kind.replace("_", " ")}</strong>
                             {assertion.value_text && <p>{assertion.value_text}</p>}
                             <span className="meta">{assertion.review_status.replace("_", " ")}</span>
-                            {assertion.evidence.map((ev) => (
-                              <p className="meta" key={ev.evidence_id}>{ev.citation}</p>
-                            ))}
+                            <EvidenceList evidence={assertion.evidence} onOpen={openCitation} />
                           </li>
                         ))}
                       </ul>
@@ -350,6 +372,7 @@ function FamilyTree({ role }: { role: Role | null }) {
             <span className="family-key family-key-review" /> Needs review
             <span className="family-key family-key-unverified" /> Unverified
           </p>
+          <SourceDialog source={openSource} onClose={() => setOpenSource(null)} />
           <section className="card">
             <h2>Catalog view</h2>
             <ul className="family-catalog" data-testid="genealogy-records">

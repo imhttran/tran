@@ -58,27 +58,71 @@ export function parseTreeGraph(body: unknown): TreeGraph {
   return { people, links, truncated: data.truncated };
 }
 
+function indexLinks(graph: TreeGraph) {
+  const empty = () => new Map<string, string[]>(graph.people.map((p) => [p.record_id, []]));
+  const children = empty();
+  const parents = empty();
+  const spouses = empty();
+  for (const edge of graph.links) {
+    if (edge.kind === "parent_child") {
+      children.get(edge.from_id)?.push(edge.to_id);
+      parents.get(edge.to_id)?.push(edge.from_id);
+    } else {
+      spouses.get(edge.from_id)?.push(edge.to_id);
+      spouses.get(edge.to_id)?.push(edge.from_id);
+    }
+  }
+  return { children, parents, spouses };
+}
+
+/**
+ * The other person's role relative to `selectedId`. A parent_child link is
+ * stored parent (from_id) → child (to_id).
+ */
+export function relationLabel(link: TreeLink, selectedId: string): "Parent" | "Child" | "Spouse" {
+  if (link.kind === "spouse") return "Spouse";
+  return link.from_id === selectedId ? "Child" : "Parent";
+}
+
+/**
+ * Collapse set that makes `targetId` visible while keeping every unrelated
+ * collapsed branch. Walks up stored parents (breadth-first, visited set, so
+ * cycles and shared ancestors terminate) to the nearest visible ancestor and
+ * expands only that ancestor and the hidden path below it.
+ */
+export function revealPerson(
+  graph: TreeGraph, collapsed: ReadonlySet<string>, targetId: string,
+  visible: { has(id: string): boolean } =
+    new Set(layoutTree(graph, collapsed).people.map((p) => p.record_id)),
+): ReadonlySet<string> {
+  if (visible.has(targetId)) return collapsed;
+  const next = new Set(collapsed);
+  const { parents } = indexLinks(graph);
+  const via = new Map<string, string>([[targetId, targetId]]);
+  const queue = [targetId];
+  for (let i = 0; i < queue.length; i++) {
+    for (const parent of parents.get(queue[i]) ?? []) {
+      if (via.has(parent)) continue;
+      via.set(parent, queue[i]);
+      if (visible.has(parent)) {
+        for (let id = parent; id !== targetId; id = via.get(id) as string) next.delete(id);
+        return next;
+      }
+      queue.push(parent);
+    }
+  }
+  return next; // Unreachable: layoutTree places every component root.
+}
+
 /**
  * Place every node once, even with cycles, multiple parents, or disconnected
  * components. Collapse controls the traversal, never the authoritative data.
  */
 export function layoutTree(graph: TreeGraph, collapsed: ReadonlySet<string>): TreeLayout {
   const byId = new Map(graph.people.map((p) => [p.record_id, p]));
-  const children = new Map<string, string[]>();
-  const adjacent = new Map<string, string[]>();
-  const incoming = new Set<string>();
-  for (const p of graph.people) {
-    children.set(p.record_id, []);
-    adjacent.set(p.record_id, []);
-  }
-  for (const edge of graph.links) {
-    adjacent.get(edge.from_id)?.push(edge.to_id);
-    adjacent.get(edge.to_id)?.push(edge.from_id);
-    if (edge.kind === "parent_child") {
-      children.get(edge.from_id)?.push(edge.to_id);
-      incoming.add(edge.to_id);
-    }
-  }
+  const { children, parents, spouses } = indexLinks(graph);
+  const neighbours = (id: string) =>
+    [...(children.get(id) ?? []), ...(parents.get(id) ?? []), ...(spouses.get(id) ?? [])];
   const componentSeen = new Set<string>();
   const depths = new Map<string, { component: number; depth: number }>();
   let component = 0;
@@ -90,25 +134,41 @@ export function layoutTree(graph: TreeGraph, collapsed: ReadonlySet<string>): Tr
     for (let i = 0; i < componentQueue.length; i++) {
       const id = componentQueue[i];
       members.push(id);
-      for (const n of adjacent.get(id) ?? []) {
+      for (const n of neighbours(id)) {
         if (!componentSeen.has(n)) {
           componentSeen.add(n);
           componentQueue.push(n);
         }
       }
     }
-    let roots = members.filter((id) => !incoming.has(id));
-    if (roots.length === 0) roots = [members[0]]; // Cycle; choose deterministic root.
+    // Roots have no stored parent. A cycle with no parent-free entry gets its
+    // first unreached member as a deterministic root so it is never dropped.
+    const roots = members.filter((id) => !parents.get(id)?.length);
+    const reached = new Set<string>();
+    const reach = (start: string) => {
+      const stack = [start];
+      while (stack.length) {
+        const id = stack.pop() as string;
+        if (reached.has(id)) continue;
+        reached.add(id);
+        stack.push(...(children.get(id) ?? []), ...(spouses.get(id) ?? []));
+      }
+    };
+    roots.forEach(reach);
+    for (const id of members) {
+      if (!reached.has(id)) {
+        roots.push(id);
+        reach(id);
+      }
+    }
     const queue = roots.map((id) => ({ id, depth: 0 }));
     for (let i = 0; i < queue.length; i++) {
       const { id, depth } = queue[i];
       if (depths.has(id)) continue;
       depths.set(id, { component, depth });
       // Spouses stay at the current generation; they are never inferred parents.
-      for (const edge of graph.links) {
-        if (edge.kind !== "spouse") continue;
-        if (edge.from_id === id && !depths.has(edge.to_id)) queue.push({ id: edge.to_id, depth });
-        if (edge.to_id === id && !depths.has(edge.from_id)) queue.push({ id: edge.from_id, depth });
+      for (const spouse of spouses.get(id) ?? []) {
+        if (!depths.has(spouse)) queue.push({ id: spouse, depth });
       }
       if (!collapsed.has(id)) {
         for (const child of children.get(id) ?? []) queue.push({ id: child, depth: depth + 1 });

@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
 
+import { layoutTree, relationLabel, revealPerson } from "../src/lib/family-tree";
+import type { TreeGraph } from "../src/lib/family-tree";
+
 const session = { state: "signed_in", role: "viewer", display_name: "Synthetic viewer" };
 const graph = {
   people: [
@@ -96,4 +99,126 @@ test("unreferenced graph edges are rejected rather than fabricated", async ({ pa
 test("anonymous graph request is denied by Rust API", async ({ request }) => {
   const response = await request.get("/api/genealogy/tree");
   expect([401, 403]).toContain(response.status());
+});
+
+// --- Relationship direction, path reveal, and source drill-down -------------
+
+const p = (record_id: string, aliases: string[] = []) => ({
+  record_id, person_label: record_id, evidence_status: "unverified" as const, aliases });
+const pc = (from_id: string, to_id: string) => ({
+  from_id, to_id, kind: "parent_child" as const, evidence_status: "unverified" as const, evidence: [] });
+const shown = (g: TreeGraph, collapsed: ReadonlySet<string>) =>
+  layoutTree(g, collapsed).people.map((x) => x.record_id).sort();
+
+// R → A → A1, R → B → B1
+const branches: TreeGraph = {
+  people: [p("R"), p("A"), p("A1", ["Ánh Một"]), p("B"), p("B1")],
+  links: [pc("R", "A"), pc("A", "A1"), pc("R", "B"), pc("B", "B1")],
+  truncated: false,
+};
+
+test("relationship labels follow the selected person's perspective", () => {
+  const link = pc("parent", "child");
+  expect(relationLabel(link, "parent")).toBe("Child");
+  expect(relationLabel(link, "child")).toBe("Parent");
+  expect(relationLabel({ ...link, kind: "spouse" }, "child")).toBe("Spouse");
+});
+
+test("reveal expands only the hidden ancestor path", () => {
+  const next = revealPerson(branches, new Set(["R", "B"]), "A1");
+  expect([...next]).toEqual(["B"]);
+  expect(shown(branches, next)).toEqual(["A", "A1", "B", "R"]);
+  // Already visible: nothing changes.
+  expect([...revealPerson(branches, new Set(["B"]), "A")]).toEqual(["B"]);
+});
+
+test("reveal and layout terminate on cycles, shared ancestors, and multiple parents", () => {
+  // X ⇄ Y is a parent cycle with no parent-free entry; Y and Z share child C;
+  // M and F are both parents of C.
+  const g: TreeGraph = {
+    people: [p("M"), p("F"), p("X"), p("Y"), p("C")],
+    links: [pc("X", "Y"), pc("Y", "X"), pc("Y", "C"), pc("M", "C"), pc("F", "C")],
+    truncated: false,
+  };
+  expect(shown(g, new Set())).toEqual(["C", "F", "M", "X", "Y"]);
+  const collapsed = new Set(["M", "F", "X", "Y"]);
+  expect(shown(g, collapsed)).not.toContain("C");
+  const next = revealPerson(g, collapsed, "C");
+  expect(shown(g, next)).toContain("C");
+  expect(next.size).toBe(3); // Exactly one parent path was expanded.
+});
+
+const branchGraph = {
+  people: branches.people.map((x) => ({ ...x, person_label: "Person " + x.record_id })),
+  links: [
+    { ...pc("R", "A"), evidence_status: "verified",
+      evidence: [{ evidence_id: "synthetic-register#4", citation: "synthetic-register p.4",
+        document_ref: "synthetic-register", page: 4 }] },
+    pc("A", "A1"), pc("R", "B"), pc("B", "B1"),
+  ],
+  truncated: false,
+};
+
+async function stubBranches(page: import("@playwright/test").Page) {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(branchGraph) }));
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+  });
+}
+
+async function collapse(page: import("@playwright/test").Page, id: string) {
+  await page.getByRole("button", { name: "Select Person " + id, exact: true }).click();
+  await page.getByTestId("family-collapse").click();
+}
+
+test("the details panel labels parents and children from the selection", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  const relatives = page.getByTestId("family-relative");
+  await expect(relatives.filter({ hasText: "Person R" }).getByTestId("family-relation")).toHaveText("Parent");
+  await expect(relatives.filter({ hasText: "Person A1" }).getByTestId("family-relation")).toHaveText("Child");
+});
+
+test("search reveals a person without expanding unrelated branches", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await collapse(page, "B");
+  await collapse(page, "R");
+  await expect(page.getByTestId("family-person")).toHaveCount(1);
+  await page.getByTestId("family-search").fill("anh mot"); // Alias, without diacritics.
+  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await expect(page.getByTestId("family-person-details")).toContainText("Person A1");
+  await expect(page.getByTestId("family-person")).toHaveCount(4); // R, A, A1, B — B1 stays collapsed.
+  await expect(page.getByRole("button", { name: "Select Person B1" })).toHaveCount(0);
+});
+
+test("catalog selection reveals the selected person", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await collapse(page, "B");
+  await page.getByTestId("genealogy-records").getByRole("button", { name: "Person B1" }).click();
+  await expect(page.getByRole("button", { name: "Select Person B1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Select Person B1" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a tree citation opens metadata-only source details", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page.getByTestId("citation-button").filter({ hasText: "synthetic-register p.4" }).click();
+  const dialog = page.getByTestId("source-details");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("synthetic-register");
+  await expect(dialog).toContainText("Page");
+  await expect(dialog).toContainText("Person R — parent of Person A");
+  await expect(dialog.getByTestId("source-metadata-only")).toBeVisible();
+  await expect(dialog.locator("a")).toHaveCount(0); // No link to a nonexistent viewer.
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
 });

@@ -84,6 +84,29 @@ test.describe.serial("genealogy API integration", () => {
     expect(afterBody.conclusions.length).toBe(0);
   });
 
+  test("person citations carry document and page, directly and through the proxy", async ({
+    request,
+  }) => {
+    test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
+    const base = process.env.E2E_BASE_URL || "http://127.0.0.1:3000";
+    type Person = { assertions: Array<{ evidence: Array<{ document_ref?: string; page?: number }> }> };
+    const reads = [
+      request.get(`${API_URL}/api/genealogy/person/synthetic-e2e-person`, { headers: auth(VIEWER_TOKEN!) }),
+      request.get(`${base}/api/genealogy/person/synthetic-e2e-person`,
+        { headers: { cookie: `rag_session=${VIEWER_TOKEN}` } }),
+    ];
+    for (const response of await Promise.all(reads)) {
+      expect(response.status()).toBe(200);
+      const evidence = ((await response.json()) as Person).assertions.flatMap((a) => a.evidence);
+      expect(evidence).toContainEqual(expect.objectContaining({ document_ref: "synthetic/e2e.pdf", page: 1 }));
+    }
+    // The same source metadata stays denied without a session on either path.
+    for (const url of [API_URL, base]) {
+      const anonymous = await request.get(`${url}/api/genealogy/person/synthetic-e2e-person`);
+      expect(anonymous.status()).toBe(401);
+    }
+  });
+
   test("viewer cannot nominate and anonymous reads are denied", async ({ request }) => {
     test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
     const nomination = await request.post(`${API_URL}/api/genealogy/nominations`, {

@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 
 import { EvidenceBadge, EvidenceList } from "@/components/EvidenceBadge";
+import { SourceDialog } from "@/components/SourceDetails";
+import type { OpenSource } from "@/components/SourceDetails";
 import { canApproveOrRevoke, canNominate } from "@/lib/experience-contract";
 import type { HeadOfFamilyResult, Role } from "@/lib/experience-contract";
 
-// The Head of Family view renders only what Rust returned. Each conclusion links
-// to its cited evidence by identifier. There is no code path that sets a head
+// The Head of Family view renders only what Rust returned. Each conclusion opens
+// its cited evidence in a metadata-only source dialog. There is no code path that sets a head
 // from a model answer: a head label appears only when Rust recorded an
 // appointment backed by evidence.
 
@@ -58,6 +60,7 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
   } | null>(null);
   const [candidateLabel, setCandidateLabel] = useState("");
   const [revokeReason, setRevokeReason] = useState("");
+  const [openSource, setOpenSource] = useState<OpenSource | null>(null);
 
   useEffect(() => {
     setPendingNomination(null);
@@ -116,7 +119,12 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
               <p className="meta">Cited head: {conclusion.head_label}</p>
             ) : null}
             <EvidenceBadge status={conclusion.evidence_status} />
-            <EvidenceList evidence={conclusion.evidence} />
+            <EvidenceList evidence={conclusion.evidence} onOpen={(evidence) =>
+              setOpenSource({ evidence, citedFor: [{
+                label: conclusion.head_label
+                  ? `${conclusion.conclusion}: ${conclusion.head_label}` : conclusion.conclusion,
+                status: conclusion.evidence_status,
+              }] })} />
 
             {canNominate(role) ? (
               <form
@@ -182,6 +190,8 @@ export function HeadOfFamilyView({ role, result, onNominate, onApprove, onRevoke
           </li>
         ))}
       </ul>
+
+      <SourceDialog source={openSource} onClose={() => setOpenSource(null)} />
 
       {pendingNomination ? (
         <ConfirmDialog
