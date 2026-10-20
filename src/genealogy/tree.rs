@@ -16,6 +16,7 @@ pub struct TreePerson {
     pub person_key: String,
     pub display_name: String,
     pub evidence_status: String,
+    pub aliases: Vec<String>,
 }
 
 /// One stored link, classified using a matching review assertion.
@@ -51,7 +52,9 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                   WHEN COALESCE(BOOL_OR(a.review_status = 'verified'), false)
                     THEN 'verified'
                   ELSE 'unverified'
-                END AS evidence_status
+                END AS evidence_status,
+                (SELECT COALESCE(ARRAY_AGG(v.name_variant ORDER BY v.name_variant), ARRAY[]::text[])
+                   FROM person_name_variant v WHERE v.person_id = p.person_id) AS aliases
            FROM person p
            LEFT JOIN assertion a ON a.person_id = p.person_id
           GROUP BY p.person_id
@@ -68,6 +71,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                 person_key: row.try_get(0)?,
                 display_name: row.try_get(1)?,
                 evidence_status: row.try_get(2)?,
+                aliases: row.try_get(3)?,
             })
         })
         .collect::<Result<Vec<_>, postgres::Error>>()?;
