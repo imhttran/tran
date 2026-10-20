@@ -190,8 +190,11 @@ test.describe("head of family", () => {
     await page.goto("/head-of-family");
     const conclusions = page.getByTestId("hof-conclusion");
     await expect(conclusions).toHaveCount(3);
-    const links = page.getByTestId("evidence-links").getByRole("link");
-    await expect(links.first()).toHaveAttribute("href", /\/evidence\/ev-1/);
+    // Evidence opens metadata-only source details; there is no dead /evidence link.
+    await expect(page.getByTestId("evidence-links").getByRole("link")).toHaveCount(0);
+    await page.getByTestId("citation-button").filter({ hasText: "Family Genealogy p.12" }).click();
+    await expect(page.getByTestId("source-details")).toContainText("Third Branch head after 1800");
+    await expect(page.getByTestId("source-metadata-only")).toBeVisible();
     await expect(page.getByTestId("evidence-verified").first()).toBeVisible();
     await assertNoSensitive(page);
   });
@@ -304,4 +307,92 @@ test.describe("enforcement", () => {
     });
     expect([401, 403]).toContain(response.status());
   });
+});
+
+test.describe("navigation", () => {
+  test("desktop navigation shows implemented routes and the active page", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.goto("/head-of-family");
+    const nav = page.getByRole("navigation", { name: "Main navigation" });
+    await expect(nav.getByRole("link")).toHaveText([
+      /Family tree/, /Ask the archive/, /Head of Family/,
+    ]);
+    await expect(nav.getByRole("link", { name: /Head of Family/ })).toHaveAttribute("aria-current", "page");
+    await nav.getByRole("link", { name: /Ask the archive/ }).click();
+    await expect(page).toHaveURL(/\/ask$/);
+    await expect(nav.getByRole("link", { name: /Ask the archive/ })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("account-role")).toHaveText("viewer");
+    await assertNoSensitive(page);
+  });
+
+  test("editors also see the existing upload page", async ({ page }) => {
+    await signIn(page, "editor");
+    await page.goto("/ask");
+    await expect(page.getByRole("navigation", { name: "Main navigation" })
+      .getByRole("link", { name: /Add documents/ })).toHaveAttribute("href", "/");
+  });
+
+  test("mobile menu opens, navigates, and closes", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+    const nav = page.getByRole("navigation", { name: "Main navigation" });
+    await expect(nav).toBeHidden();
+    await page.getByTestId("nav-toggle").click();
+    await expect(page.getByTestId("nav-toggle")).toHaveAttribute("aria-expanded", "true");
+    await nav.getByRole("link", { name: /Head of Family/ }).click();
+    await expect(page).toHaveURL(/\/head-of-family$/);
+    await expect(nav).toBeHidden();
+    await expect(page.getByTestId("sign-out-button")).toBeVisible();
+  });
+});
+
+test.describe("ask the archive", () => {
+  async function ask(page: Page, reply: { status: number; body: unknown }, delay = 0) {
+    await signIn(page, "viewer");
+    await page.route("**/api/query", async (route) => {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      await route.fulfill({ status: reply.status, contentType: "application/json",
+        body: JSON.stringify(reply.body) });
+    });
+    await page.goto("/ask");
+    await page.getByTestId("ask-example").first().click();
+    await page.getByTestId("ask-button").click();
+  }
+
+  test("shows family examples and makes no empty-archive or payment claims", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+    await expect(page.getByPlaceholder("Ask about your family…")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeVisible();
+    await expect(page.getByTestId("ask-example")).not.toHaveCount(0);
+    const text = await page.locator("body").innerText();
+    expect(text).not.toMatch(/payment|No documents ingested|Ollama|PostgreSQL|Axum/i);
+  });
+
+  test("renders an answer with numbered citations", async ({ page }) => {
+    await ask(page, { status: 200, body: { answer: "The register lists two founders.",
+      insufficient: false, sources: [{ source: "synthetic-register.md", section: "Founders",
+        page: 3, text: "Two founders are recorded." }] } });
+    await expect(page.getByTestId("answer")).toHaveText("The register lists two founders.");
+    await expect(page.getByTestId("sources")).toContainText("[1] synthetic-register.md — Founders");
+    await expect(page.getByTestId("sources")).toContainText("page 3");
+    await assertNoSensitive(page);
+  });
+
+  test("shows loading, then insufficient evidence", async ({ page }) => {
+    await ask(page, { status: 200, body: { answer: "", insufficient: true, sources: [] } }, 800);
+    await expect(page.getByTestId("ask-loading")).toBeVisible();
+    await expect(page.getByTestId("insufficient")).toBeVisible();
+    await expect(page.getByTestId("answer")).toHaveCount(0);
+  });
+
+  for (const [status, testId] of [[401, "ask-expired"], [403, "ask-denied"], [503, "ask-error"]] as const) {
+    test(`HTTP ${status} renders ${testId}`, async ({ page }) => {
+      await ask(page, { status, body: { ok: false, error: "x", message: "retrieval or generation is unavailable" } });
+      await expect(page.getByTestId(testId)).toBeVisible();
+      await expect(page.getByTestId("answer")).toHaveCount(0);
+      await expect(page.locator("body")).not.toContainText("retrieval or generation");
+    });
+  }
 });

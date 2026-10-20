@@ -1,5 +1,6 @@
 "use client";
 
+import { CitationButton } from "@/components/SourceDetails";
 import { evidenceStatusLabel } from "@/lib/experience-contract";
 import type { EvidenceRef, EvidenceStatus } from "@/lib/experience-contract";
 
@@ -14,7 +15,10 @@ export function EvidenceBadge({ status }: { status: EvidenceStatus }) {
   );
 }
 
-export function EvidenceList({ evidence }: { evidence: EvidenceRef[] }) {
+export function EvidenceList({ evidence, onOpen }: {
+  evidence: EvidenceRef[];
+  onOpen: (evidence: EvidenceRef) => void;
+}) {
   if (evidence.length === 0) {
     return null;
   }
@@ -22,9 +26,7 @@ export function EvidenceList({ evidence }: { evidence: EvidenceRef[] }) {
     <ul className="evidence-links" data-testid="evidence-links">
       {evidence.map((ref) => (
         <li key={ref.evidence_id}>
-          <a href={`/evidence/${encodeURIComponent(ref.evidence_id)}`}>
-            {ref.citation} ({ref.evidence_id})
-          </a>
+          <CitationButton evidence={ref} onOpen={onOpen} />
         </li>
       ))}
     </ul>

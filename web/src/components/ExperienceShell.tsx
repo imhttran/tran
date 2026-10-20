@@ -1,19 +1,30 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import { AccountMenu } from "@/components/AccountMenu";
+import { canUpload } from "@/lib/experience-contract";
 import type { Role, SessionResult } from "@/lib/experience-contract";
 
 // Client shell for authenticated pages. It resolves the session from the
 // same-origin session endpoint (the server never sends a token, subject, email,
-// or credential to the browser) and renders the account menu above the page.
-// The role is passed to the page so it can hide controls, but it is never an
-// authorization decision: Rust enforces every request.
+// or credential to the browser) and renders the shared navigation and account
+// menu around the page. The role is passed to the page so it can hide controls,
+// but it is never an authorization decision: Rust enforces every request.
 type Props = {
   children: (role: Role | null) => ReactNode;
 };
+
+// Only implemented routes. "Add documents" is the existing direct-upload page.
+const NAV_ITEMS = [
+  { href: "/genealogy", label: "Family tree", icon: "♧" },
+  { href: "/ask", label: "Ask the archive", icon: "?" },
+  { href: "/head-of-family", label: "Head of Family", icon: "◈" },
+];
+const UPLOAD_ITEM = { href: "/", label: "Add documents", icon: "＋" };
 
 async function readSession(): Promise<SessionResult> {
   try {
@@ -56,8 +67,10 @@ function roleOf(session: SessionResult | null): Role | null {
 }
 
 export function ExperienceShell({ children }: Props) {
+  const pathname = usePathname();
   const [session, setSession] = useState<SessionResult | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,17 +100,42 @@ export function ExperienceShell({ children }: Props) {
   }
 
   const role = roleOf(session);
+  const items = canUpload(role) ? [...NAV_ITEMS, UPLOAD_ITEM] : NAV_ITEMS;
   return (
-    <main className="app-shell">
-      {session ? (
-        <AccountMenu
-          session={session}
-          signingOut={signingOut}
-          onSignIn={signIn}
-          onSignOut={signOut}
-        />
-      ) : null}
-      {children(role)}
-    </main>
+    <div className="experience">
+      <aside className="site-nav" data-testid="site-nav">
+        <div className="site-nav-bar">
+          <Link href="/genealogy" className="brand">
+            TRẦN FAMILY<small>Family archive</small>
+          </Link>
+          <button type="button" className="site-nav-toggle"
+            aria-expanded={menuOpen} aria-controls="site-nav-links"
+            onClick={() => setMenuOpen((open) => !open)} data-testid="nav-toggle">
+            {menuOpen ? "Close" : "Menu"}
+          </button>
+        </div>
+        <nav id="site-nav-links" aria-label="Main navigation"
+          className={menuOpen ? "open" : undefined}>
+          {items.map((item) => (
+            <Link key={item.href} href={item.href}
+              aria-current={pathname === item.href ? "page" : undefined}
+              onClick={() => setMenuOpen(false)}>
+              <span aria-hidden="true">{item.icon}</span> {item.label}
+            </Link>
+          ))}
+        </nav>
+      </aside>
+      <main className="app-shell">
+        {session ? (
+          <AccountMenu
+            session={session}
+            signingOut={signingOut}
+            onSignIn={signIn}
+            onSignOut={signOut}
+          />
+        ) : null}
+        {children(role)}
+      </main>
+    </div>
   );
 }

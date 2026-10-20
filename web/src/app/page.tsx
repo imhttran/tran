@@ -1,7 +1,7 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
 
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageTitle } from "@/components/PageTitle";
@@ -11,7 +11,6 @@ import { FormStatus, type FormStatusState } from "@/components/FormStatus";
 import { SystemStatus, type Availability } from "@/components/SystemStatus";
 import {
   ApiRequestError,
-  askQuestion,
   getHealth,
   getStatus,
   ingestDocument,
@@ -20,7 +19,6 @@ import { canUpload } from "@/lib/experience-contract";
 import type {
   HealthResponse,
   IngestResponse,
-  QueryResponse,
   StatusResponse,
 } from "@/lib/api";
 
@@ -40,11 +38,6 @@ export default function Page() {
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [incompletePages, setIncompletePages] = useState<number[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
-
-  const [question, setQuestion] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<QueryResponse | null>(null);
-  const [queryError, setQueryError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,12 +72,6 @@ export default function Page() {
           }
         : null;
 
-  const askStatus: FormStatusState = asking
-    ? { kind: "info", text: "Retrieving and answering…" }
-    : queryError
-      ? { kind: "error", text: queryError }
-      : null;
-
   async function onIngest() {
     if (!file || ingesting) return;
     setIngesting(true);
@@ -92,8 +79,6 @@ export default function Page() {
     setIngestError(null);
     setIncompletePages([]);
     setStatus(null);
-    setAnswer(null);
-    setQueryError(null);
     try {
       const result = await ingestDocument(file);
       setIngest(result);
@@ -110,35 +95,16 @@ export default function Page() {
     }
   }
 
-  async function onAsk(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = question.trim();
-    if (asking || trimmed === "") return;
-    setAsking(true);
-    setAnswer(null);
-    setQueryError(null);
-    try {
-      setAnswer(await askQuestion(trimmed));
-    } catch (error) {
-      setQueryError(
-        error instanceof Error ? error.message : "The question failed.",
-      );
-    } finally {
-      setAsking(false);
-    }
-  }
-
-  const hasDocument = status !== null && status.chunks > 0;
   const connectionDown = healthError !== null;
 
   return (
     <ExperienceShell>
       {(role) => (
         <>
-      <PageTitle title="RAG document Q&A" />
+      <PageTitle title="Add documents" />
       <PageHeader
-        title="RAG document Q&A"
-        subtitle="Local Next.js UI over the Rust Axum API. Ingestion, retrieval, and generation run in the Rust services against PostgreSQL and Ollama."
+        title="Add documents"
+        subtitle={<>Add a document to the archive, then <Link href="/ask">ask the archive</Link> about it.</>}
       />
 
       <SystemStatus
@@ -164,6 +130,10 @@ export default function Page() {
       {canUpload(role) ? (
       <section className="card" data-testid="upload-controls">
         <h2>Document upload</h2>
+        <p className="hint" data-testid="upload-direct-note">
+          Uploading ingests the file immediately; there is no review step. It
+          becomes searchable as soon as ingestion finishes.
+        </p>
         <label htmlFor="doc">
           Choose one supported file (.md, .markdown, .txt, .pdf)
         </label>
@@ -223,75 +193,13 @@ export default function Page() {
         ) : null}
       </section>
 
-        ) : null}
-
-      <section className="card">
-        <h2>Ask a question</h2>
-        {!hasDocument ? (
-          <p className="hint" data-testid="empty-state">
-            No documents ingested yet. Upload a document to answer questions.
-          </p>
-        ) : null}
-        <form onSubmit={onAsk}>
-          <label htmlFor="q">Question</label>
-          <input
-            id="q"
-            type="text"
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder="What happens if someone misses a payment?"
-            aria-describedby="q-hint"
-            data-testid="question-input"
-          />
-          <p id="q-hint" className="hint">
-            Answers come only from retrieved context; the Rust answer service
-            refuses when the evidence cannot answer.
-          </p>
-          <button
-            type="submit"
-            disabled={asking || question.trim() === ""}
-            data-testid="ask-button"
-          >
-            {asking ? "Asking…" : "Ask"}
-          </button>
-        </form>
-        <FormStatus status={askStatus} />
-
-        <div aria-live="polite">
-          {answer && answer.insufficient ? (
-            <p className="insufficient" data-testid="insufficient">
-              The retrieved evidence does not answer the question.
-            </p>
-          ) : null}
-
-          {answer && !answer.insufficient ? (
-            <>
-              <h3>Answer</h3>
-              <p data-testid="answer">{answer.answer}</p>
-              {answer.sources.length > 0 ? (
-                <>
-                  <h3>Sources</h3>
-                  <ul className="sources" data-testid="sources">
-                    {answer.sources.map((source, index) => (
-                      <li key={`${source.source}-${source.section}-${index}`}>
-                        <span className="cite">
-                          {source.source} — {source.section}
-                        </span>
-                        <span className="page">
-                          {source.page === null
-                            ? " (no page metadata)"
-                            : ` (page ${source.page})`}
-                        </span>
-                        <p>{source.text}</p>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      </section>
+        ) : (
+      <p className="hint" data-testid="upload-unavailable">
+        Adding documents requires an editor or administrator account. You can
+        still <Link href="/ask">ask the archive</Link> or browse the{" "}
+        <Link href="/genealogy">family tree</Link>.
+      </p>
+        )}
 
       <PageFooter meta={<span>Rust Axum API • local PostgreSQL + Ollama</span>} />
         </>

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RAG document Q&A",
-  description: "Local RAG web application backed by the Rust Axum API.",
+  title: "Trần family archive",
+  description: "Family tree, cited archive answers, and Head of Family records.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

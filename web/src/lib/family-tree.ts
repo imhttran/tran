@@ -59,6 +59,42 @@ export function parseTreeGraph(body: unknown): TreeGraph {
 }
 
 /**
+ * The other person's role relative to `selectedId`. A parent_child link is
+ * stored parent (from_id) → child (to_id).
+ */
+export function relationLabel(link: TreeLink, selectedId: string): "Parent" | "Child" | "Spouse" {
+  if (link.kind === "spouse") return "Spouse";
+  return link.from_id === selectedId ? "Child" : "Parent";
+}
+
+/**
+ * Collapse set that makes `targetId` visible while keeping every unrelated
+ * collapsed branch. layoutTree hides anything below a collapsed node, so every
+ * collapsed ancestor is expanded. The upward walk keeps a visited set, so
+ * cycles, shared ancestors, and multiple parents terminate.
+ */
+export function revealPerson(
+  graph: TreeGraph, collapsed: ReadonlySet<string>, targetId: string,
+): ReadonlySet<string> {
+  const parents = new Map<string, string[]>();
+  for (const edge of graph.links) {
+    if (edge.kind === "parent_child") parents.set(edge.to_id, [...(parents.get(edge.to_id) ?? []), edge.from_id]);
+  }
+  const ancestors = new Set<string>();
+  const queue = [targetId];
+  for (let i = 0; i < queue.length; i++) {
+    for (const parent of parents.get(queue[i]) ?? []) {
+      if (!ancestors.has(parent) && parent !== targetId) {
+        ancestors.add(parent);
+        queue.push(parent);
+      }
+    }
+  }
+  if (![...ancestors].some((id) => collapsed.has(id))) return collapsed;
+  return new Set([...collapsed].filter((id) => !ancestors.has(id)));
+}
+
+/**
  * Place every node once, even with cycles, multiple parents, or disconnected
  * components. Collapse controls the traversal, never the authoritative data.
  */

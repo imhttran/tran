@@ -48,7 +48,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     page.on("request", (request) => requests.push(request.url()));
 
     await page.goto("/");
-    await expect(page.getByTestId("empty-state")).toBeVisible();
+    await expect(page.getByTestId("empty-state")).toHaveCount(0);
     await expect(page.getByLabel("System status")).toContainText("up");
 
     // PDF upload -> page provenance. Ingest the PDF first so the page question
@@ -63,6 +63,8 @@ test.describe.serial("RUST-008A browser integration", () => {
       "text-layer.pdf",
     );
 
+    // Questions are asked on the family-facing /ask page.
+    await page.goto("/ask");
     await page
       .getByTestId("question-input")
       .fill("What text appears on page two of the PDF document?");
@@ -90,6 +92,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     });
 
     // Markdown upload -> ingestion status and a cited answer.
+    await page.goto("/");
     await page
       .getByTestId("file-input")
       .setInputFiles(path.join(repo, "examples/loan-policy.md"));
@@ -99,6 +102,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     );
     await expect(page.getByTestId("ingest-status")).toContainText("chunk");
 
+    await page.goto("/ask");
     await page
       .getByTestId("question-input")
       .fill("What happens if someone misses a payment?");
@@ -121,7 +125,7 @@ test.describe.serial("RUST-008A browser integration", () => {
   });
 
   test("loading indicator while a question is pending", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/ask");
     await page.route("**/api/query", async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       await route.continue();
@@ -130,7 +134,7 @@ test.describe.serial("RUST-008A browser integration", () => {
       .getByTestId("question-input")
       .fill("What happens if someone misses a payment?");
     await page.getByTestId("ask-button").click();
-    await expect(page.getByText("Retrieving and answering…")).toBeVisible();
+    await expect(page.getByTestId("ask-loading")).toBeVisible();
     await page.screenshot({
       path: path.join(screenshots, "loading-state.png"),
       fullPage: true,
@@ -166,7 +170,7 @@ test.describe.serial("RUST-008A browser integration", () => {
   test("no-context / insufficient-evidence UI state", async ({ page }) => {
     // The real backend refusal is covered by the API contract crate. Here the
     // UI state itself is verified by fulfilling the same contract shape.
-    await page.goto("/");
+    await page.goto("/ask");
     await page.route("**/api/query", (route) =>
       route.fulfill({
         status: 200,

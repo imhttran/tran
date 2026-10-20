@@ -1107,6 +1107,8 @@ fn evidence_json(citations: &[genealogy_query::Citation]) -> Vec<serde_json::Val
             serde_json::json!({
                 "evidence_id": format!("{}#{}", citation.document_ref, citation.page),
                 "citation": format!("{} p.{}", citation.document_ref, citation.page),
+                "document_ref": citation.document_ref,
+                "page": citation.page,
             })
         })
         .collect()

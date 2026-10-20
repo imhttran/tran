@@ -32,6 +32,9 @@ export type EvidenceStatus = "verified" | "unverified" | "needs_review";
 export type EvidenceRef = {
   evidence_id: string;
   citation: string;
+  // Present on genealogy citations; absent when only a citation label exists.
+  document_ref?: string;
+  page?: number;
 };
 
 export type SearchHit = {
@@ -94,6 +97,8 @@ const ALLOWED_FIELDS = new Set<string>([
   "evidence",
   "evidence_id",
   "citation",
+  "document_ref",
+  "page",
   "evidence_status",
   "catalog",
   "reason",
