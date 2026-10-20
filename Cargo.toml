@@ -32,6 +32,10 @@ name = "api"
 path = "src/bin/api.rs"
 
 [[bin]]
+name = "genealogy"
+path = "src/bin/genealogy.rs"
+
+[[bin]]
 name = "inventory"
 path = "src/bin/inventory.rs"
 
