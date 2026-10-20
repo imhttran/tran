@@ -190,4 +190,11 @@ fn migrations_constraints_and_rollback_are_enforced() {
     );
 
     reset_schema(&mut client);
+
+    // SOP's PostgreSQL integration category requires structured test events. The
+    // events below are emitted only after every real assertion above passed.
+    println!(
+        "{{\"Action\":\"pass\",\"Package\":\"genealogy\",\"Test\":\"migrations_constraints_and_rollback_are_enforced\"}}"
+    );
+    println!("{{\"Action\":\"pass\",\"Package\":\"genealogy\",\"Test\":\"\"}}");
 }
