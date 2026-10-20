@@ -2,7 +2,7 @@
 
 **Status:** PROPOSED — documentation and design only; no implementation has started.
 **Repository:** https://github.com/imhttran/tran
-**Inspected baseline:** `6680ea48d4c0d9c252763e0ec560dcb10ce5dc8e` (2026-10-20).
+**Inspected baseline:** `c8ad555ebb196e19c2c8f6c9ab1fa8359bcf0f25` (2026-10-20; PR #10 and PR #11 merged).
 **Suggested SOP identity:** `plan-tran-family-experience`.
 **Design reference:** [Mockup and review guide](../mockups/family-experience/README.md).
 **Precedence:** Existing [RBAC requirements](PLAN-TRAN-RBAC.md), [integration follow-up](PLAN-TRAN-RBAC-INTEGRATION-FOLLOWUP.md), and TRAN-002 provenance rules remain authoritative.
@@ -21,13 +21,41 @@ The mockup defines visual direction and user flow. It does not prove that a back
 
 ## Current baseline and dependencies
 
-- Next.js already has genealogy, Head of Family, session, and query surfaces.
-- Axum now registers genealogy record, person, relationship, nomination, and appointment routes. Inspect and reuse these; do not recreate the earlier missing-route assumption.
+- Next.js already has genealogy, Head of Family, session, sign-in, and query
+  surfaces; reuse them rather than adding a second shell.
+- Merged PR #10 registers the genealogy record, person, relationship, nomination,
+  appointment, account, and administrative routes. Reuse those routes and their
+  Rust services; do not recreate an earlier missing-route assumption.
 - Existing uploads ingest directly. The new review workflow must prevent browser or direct-API calls from bypassing admin approval.
-- The RBAC follow-up records unresolved acceptance requirements. Reconcile its current code and evidence before implementation. A registered route or merged PR alone does not prove acceptance.
+- The RBAC/OIDC/genealogy/Head of Family work and the Rust best-practices pass are
+  merged (PR #10 and PR #11). Treat `origin/main` at the inspected baseline as the
+  current implementation; any later post-merge remediation is tracked separately
+  and does not reopen the historical SOP runs.
 - Keep `DATABASE_URL` and guarded `GENEALOGY_DATABASE_URL` separate. Do not create duplicate genealogy person, relationship, assertion, or appointment tables.
-- Coordinate overlapping files with active work. The inspected baseline had PR #11 for Rust medium findings; recheck its state at implementation time.
+- PR #11 is merged; recheck the exact baseline only when implementation begins, not
+  whether the earlier PR is still open.
 - New access scopes below are proposed product policy. Record their mapping to existing grants before implementing storage and retrieval. Do not silently expand access.
+
+### FAM-001 preflight baseline (2026-10-20)
+
+- **Baseline:** `origin/main` = `c8ad555`; PR #10 (RBAC/OIDC/genealogy/Head of
+  Family), PR #11 (Rust best-practices), and PR #9 (genealogy reimport/CI) are
+  merged.
+- **Routes available for reuse:** `GET /api/genealogy/records`,
+  `GET /api/genealogy/head-of-family`, person/relationship detail reads,
+  nomination/appointment reads and writes, `GET /api/account`, and the admin
+  role/user/corpus operations. The Next.js authenticated proxy and sign-in flow
+  are present.
+- **Identity/RBAC:** database roles and corpus grants by immutable issuer +
+  subject; OIDC login/session/CSRF. Reuse these contracts; do not introduce a
+  second identity source.
+- **Genealogy:** the TRAN-002 database, provenance/review workflow, pure
+  eligibility function, and additive appointment tables remain authoritative.
+- **RAG storage:** existing `documents` rows came from direct ingest and have no
+  document version, review decision, or processing-job record. The legacy policy
+  below defines their preserved, quarantined upgrade path.
+- **Not started:** this PR is design/mockup only. No FAM implementation, schema,
+  record deletion, or real-family appointment is part of this change.
 
 ## Product behavior and permissions
 
@@ -113,17 +141,73 @@ Admin retry: **Failed → Queued**.
 - Audit uploads, version changes, visibility, review, processing, retries, removal, and account/person linking.
 - Direct legacy ingest routes must not bypass review. Preserve the documented trusted local CLI boundary separately.
 
+## Legacy indexed documents — migration and backfill policy
+
+The current `documents` rows predate document versions, review decisions, and
+processing jobs. Presence in `documents` is **not** evidence of approval, scope,
+or provenance for the new workflow. The policy is:
+
+1. **Preserve every existing row.** The migration is additive and never deletes,
+   rewrites, re-embeds, or re-labels an existing chunk/source. Take a database
+   backup before applying it.
+2. **Quarantine by default.** Create one `legacy_import` version per existing
+   `(corpus, source)` group with `review_status = pending_review`,
+   `processing_status = legacy_indexed`, `origin = legacy_import`, and no
+   invented owner or access scope. The new approved retrieval path
+   (`/api/query`, `/api/ask`, citations) only reads versions that are approved,
+   ready, scope-authorized, and not removed. Legacy rows are therefore not
+   returned by the new path until explicitly reviewed and promoted.
+3. **Inventory, do not guess.** Produce a dry-run report grouped by corpus/source
+   with counts and content fingerprints (no private names or excerpts). Resolve
+   ambiguous ownership or scope through operator review, never by filename, name
+   similarity, or model output.
+4. **Promote only by explicit review.** An admin reviews the legacy version,
+   assigns a named scope and owner where required, records an approval decision,
+   and queues processing. Processing uses the existing ingestion/embedding
+   services and must commit a ready version before it enters retrieval. No
+   implicit approval, bulk approval, or automatic backfill promotion.
+5. **Direct ingest cannot bypass review.** Legacy CLI/direct-ingest paths may
+   remain for local operators, but their output is recorded as pending review and
+   excluded from the new approved path. A new browser or direct-API upload
+   follows the same pending-review contract.
+6. **Rollback is data-preserving.** The new metadata is additive; rolling back
+   the application leaves the original `documents` rows and citations intact.
+   Keep the backup and either leave additive tables inert or drop only the new
+   metadata tables after verification. Never roll back by deleting documents.
+7. **Admin/audit access is separate.** Access to quarantined legacy rows for
+   inventory or review is permission-checked and audited; it is not family
+   retrieval and must not leak private names, excerpts, or source details.
+
+### Required migration acceptance cases
+
+- **Clean install:** all migrations apply to an empty database; no legacy rows;
+  approved/ready retrieval works.
+- **Upgrade:** a synthetic database with existing `documents` rows upgrades
+  without changing row counts, content hashes, corpus/source identities, or
+  citations; the backfill creates the expected pending versions and inventory.
+- **Quarantine regression:** pre-upgrade corpus content is not returned by the
+  new approved retrieval path, search, ask, or citations while pending.
+- **Promotion regression:** after admin review, scope assignment, and successful
+  processing, the version is returned and citations resolve to its original
+  source/page; rejection keeps it outside retrieval.
+- **Rollback:** after backup and backfill, reverting the application leaves the
+  original `documents` rows and citations readable by the prior path; no records
+  are deleted.
+- **No implicit approval:** an upgrade or backfill alone never marks a legacy
+  version `approved` or `ready`, and direct ingest never writes an approved or
+  ready version.
+
 ## Implementation phases
 
 | Task | Deliverable | Acceptance |
 | --- | --- | --- |
-| FAM-001: Reconcile | Current-main review, SOP preflight, route/permission/data-owner matrix, RBAC dependency mapping | Identify implemented behavior and required changes; preserve existing SOP history |
-| FAM-002: Contracts and persistence | Typed APIs, additive metadata/version/review/job migrations, asset ownership and visibility | Stable IDs; both database boundaries remain intact; approved version/scope is explicit |
-| FAM-003: Upload and review | Profile assets, general submissions, admin review, confirmed account/person link | Roles enforced by Rust; pending/rejected content cannot enter RAG |
-| FAM-004: Processing | Durable queue or database job runner using existing ingestion services | Idempotent processing; stale jobs cannot publish; failures/retries are visible |
+| FAM-001: Reconcile | Current-main review at `c8ad555`, SOP preflight, legacy-row inventory, route/permission/data-owner matrix, RBAC dependency mapping | Identify merged behavior, legacy inventory, and required changes; preserve historical SOP evidence |
+| FAM-002: Contracts and persistence | Typed APIs, additive metadata/version/review/job migrations, explicit legacy backfill/quarantine policy, asset ownership and visibility | Stable IDs; both database boundaries remain intact; legacy rows preserved and quarantined; clean-install and upgrade cases pass; approved version/scope is explicit |
+| FAM-003: Upload and review | Profile assets, general submissions, admin review, confirmed account/person link | Roles enforced by Rust; pending, rejected, and legacy content cannot enter the approved RAG path; promotion requires review and successful processing |
+| FAM-004: Processing | Durable queue or database job runner using existing ingestion services; audited legacy backfill dry-run/apply | Idempotent processing and backfill; stale jobs cannot publish; failures/retries are visible |
 | FAM-005: Tree | Stored graph, catalog, person panel, search, viewport controls | All authorized components remain reachable; uncertain links stay uncertain |
 | FAM-006: Ask | Question UI, person suggestions, cited answers, navigation | Only ready/permitted versions contribute; no fabricated source/person links |
-| FAM-007: Integrate and hand off | Shared navigation, responsive layouts, affected checks, public-safe screenshots, implementation PR | Core flows work across roles; required checks pass or an exact blocker is reported |
+| FAM-007: Integrate and hand off | Shared navigation, responsive layouts, affected checks, public-safe screenshots, implementation PR | Core flows work across roles; clean-install, upgrade, rollback, and retrieval-regression evidence is recorded; required checks pass or an exact blocker is reported |
 
 Run FAM-001 before selecting implementation details. Complete backend authorization contracts before wiring mutations. Use a distinct SOP run and preserve the RBAC follow-up history. This planning PR does not start or close an implementation run.
 
@@ -134,6 +218,9 @@ Use synthetic data in all committed fixtures, examples, screenshots, and CI.
 - Tree: test collapse/search reveal, Vietnamese lookup, cycles, shared ancestors, and disconnected components.
 - Profile: test own/other access, private defaults, confirmed linking, replacement/removal, photo handling, and personal-submission review access.
 - Documents: exercise editor upload → admin review → process → ready → cited answer against real APIs and disposable databases.
+- Migration: clean install creates the new metadata with no legacy rows; upgrade of a synthetic database with existing `documents` rows preserves row counts, content hashes, corpus/source identities, and citations; the legacy inventory/backfill creates pending versions without deleting or rewriting documents.
+- Promotion/retrieval regression: pending, rejected, and `legacy_import` versions never appear in approved retrieval, search, ask, or citations; after explicit admin review, scope assignment, and successful processing they appear with resolvable source/page citations. Rejection keeps them outside retrieval.
+- Rollback: after backup and backfill, reverting the application leaves the original `documents` rows/citations readable by the prior path; no records are deleted.
 - Negative cases: viewer general upload, editor approval, direct-ingest bypass, private preview/citation leaks, pending/rejected retrieval, stale approval, concurrent/retried jobs, and processing failure.
 - Verify permission changes/removal prevent access to stale indexes and cited content.
 - Use focused Rust and browser checks during implementation. Reuse passing checks when inputs are unchanged.
