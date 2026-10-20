@@ -86,7 +86,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
 
     let keys: Vec<String> = people.iter().map(|p| p.person_key.clone()).collect();
     // The link and assertion must match the same person pair and relationship
-    // kind. Spouses are unordered: review claims in either orientation count. 
+    // kind. Spouses are unordered: review claims in either orientation count.
     // Source metadata is returned only for verified, non-conflicting edges.
     let rows = client.query(
         "WITH links AS (
