@@ -1,9 +1,9 @@
 # PLAN-TRAN-RBAC — Private Genealogy Access and Head of Family
 
 **Repository:** `https://github.com/imhttran/tran`  
-**Status:** TRAN-003 RECONCILIATION — existing PR #7 is open; implementation NOT YET ACCEPTED against merged TRAN-002  
+**Status:** TRAN-003 POST-MERGE FOLLOW-UP REQUIRED — PR #7 merged on 2026-10-20; functional acceptance incomplete  
 **Scope:** Rust Axum API, PostgreSQL/pgvector, Next.js UI, genealogy catalog integration  
-**Execution:** SOP-managed reconciliation of existing PR #7; preserve verified work, use focused verification, and require approval at genuine security, data, and merge gates
+**Execution:** This file records the merged publication and outstanding acceptance. The original `plan-tran-rbac` SOP run is historical; implement remaining work on a new isolated follow-up branch, with a distinct SOP run identity and new PR.
 
 ## Goal
 
@@ -47,17 +47,35 @@ TRAN-002 (PR #6) is merged into main. The merged TRAN-002 plan, genealogy schema
 
 The source inventory consists of four private originals/derivatives under docs/tran/. The catalog dry run reported 263 entries (259 parsed, 4 ambiguous), not 263 verified distinct relatives. The recorded disposable import produced 356 unverified assertions and **zero verified** assertions. Do not automatically convert candidate records into an approved family tree or Head of Family.
 
-The earlier RBAC implementation branch is **sop/plan-tran-rbac**, PR #7, and already contains useful work: corpus-scoped document operations, Rust identity roles and grants, a migration for identity tables, API authorization, a Next.js server-side proxy, UI components, and synthetic browser tests. Its pre-TRAN-002 green checks **do not establish post-merge readiness**. Reconcile it with current origin/main and prove each acceptance criterion below; do not restart or create a duplicate implementation PR.
+**PR #7 is merged** (merge commit `c5cfd96`, feature head `ae0fcdd`, contained in `origin/main`). It delivered corpus-scoped documents, roles and grants, an identity migration, API authorization, a Next.js server-side proxy, UI components, and synthetic browser tests. Six CI checks passed and SOP publication evidence was preserved. **Publication is not complete functional acceptance**: the gaps recorded below still require a focused follow-up PR. Do not reopen the historical `plan-tran-rbac` run.
 
 | Existing surface | Disposition for TRAN-003 |
 | --- | --- |
 | TRAN-002 genealogy database, source evidence, review, eligibility | Reuse unchanged; extend additively only if a required API or appointment capability is absent |
 | RAG database and documents table | Preserve contents, indexes, and existing migration history |
-| PR #7 corpus-scoped reads and writes | Retain after regression verification; repair only verified gaps |
-| PR #7 identity migration, role policy, and proxy | Retain after integration; harden token verification, login, session, and negative tests |
-| PR #7 genealogy pages | Wire to real authorized Rust endpoints, not placeholder responses |
-| PR #7 Head of Family approval handler | Replace pending_catalog placeholder with an evidence-backed, transactional workflow |
+| Merged PR #7 corpus-scoped reads and writes | Retain and regression-test in follow-up |
+| Merged PR #7 identity migration, role policy, and proxy | Retain; complete token verification, login, session, and negative tests |
+| Merged PR #7 genealogy pages | Wire to authorized Rust endpoints; existing UI tests mock API responses |
+| Merged PR #7 Head of Family approval handler | Replace `pending_catalog` placeholder with an evidence-backed transactional workflow |
 | PR #4 merged planning baseline | This file remains the canonical plan; no competing plan or schema |
+
+## Post-merge disposition and outstanding acceptance (2026-10-20)
+
+**Published and historical:** PR #4 (planning) merged at `2b61f47`; PR #7 (RBAC foundation) merged at `c5cfd96`, feature head `ae0fcdd`. The reported SOP validation and six PR CI checks passed. The `plan-tran-rbac` SOP lifecycle was historicalized and the evidence archived locally under ignored `.sop-evidence/plan-tran-rbac/`. The PR #7 execution worktree and local branch were cleaned; remote branches remain. These are publication facts, **not** proof of end-to-end functionality.
+
+| Area | Merged `main` observed state | Required follow-up acceptance |
+| --- | --- | --- |
+| Genealogy read API | No registered `GET /api/genealogy/records` or `GET /api/genealogy/head-of-family` in `src/api.rs` | Implement authorized reads using the separate TRAN-002 genealogy database; verify denials and record privacy |
+| Head of Family writes | Admin approval handler returns `status: "pending_catalog"` without a persistent appointment | Reuse TRAN-002 pure eligibility, cited evidence, atomic appointment/audit writes, uniqueness and concurrency protection |
+| Account and role access | `Operation::Account` requires `admin` | Permit viewer/editor/admin to access *their own* account; keep role management admin-only |
+| Sign-in | `web/src/app/signin/page.tsx` is an unconfigured placeholder | Implement and test provider-backed OIDC authorization-code + PKCE and secure session lifecycle |
+| Token verification | `src/oidc.rs` is custom and HS256-only | Use a maintained verifier for chosen provider's approved asymmetric algorithms and public JWKS |
+| Admin recovery / enrollment | No final-admin revocation guard in `change_role`; bootstrap exists but normal account provisioning is absent | Add last-active-admin safeguards and auditable issuer+subject-based account provisioning |
+| Browser mutations | Head of Family UI posts to unregistered endpoints, omits CSRF headers, and does not check response success; UI tests mock these routes | Wire real endpoints with stable IDs, CSRF, response/error handling, and persisted-state integration tests |
+
+**Acceptance ledger:** The published PR #7 foundation (including corpus-scoped writes) is retained. TRAN-003A's original publication/reconciliation history is complete, subject to new-branch preflight. TRAN-003B needs follow-up regression evidence. TRAN-003C, D, E, F and G remain **not accepted** until their specific criteria below pass with real API, database, and browser integration. Preserve TRAN-002's genealogy schema and pure eligibility engine; do not create duplicate family tables. No real Head of Family has been designated.
+
+**Follow-up execution:** Keep this file as the canonical requirement baseline. Use a new isolated worktree, a new PR, and a distinct SOP identity (suggested `plan-tran-rbac-integration-followup`), without rewriting `plan-tran-rbac` history. Use synthetic data only, respect the two-database trust boundary, and keep public deployment blocked pending full authentication, authorization, and explicit approval.
 
 ### Persistence and trust boundaries
 
@@ -69,28 +87,28 @@ The earlier RBAC implementation branch is **sop/plan-tran-rbac**, PR #7, and alr
 
 ## Common SOP delivery contract
 
-- Execute the stages below as deterministic **TRAN-003A–TRAN-003G** tasks, with dependencies, acceptance checks, and preserved test evidence. The task list is a work plan, not a claim that anything has already passed.
-- First inspect the existing PR #7 and latest main, including changed files, SOP state, private/untracked artifacts, migration histories, and passing tests. Preserve unrelated work and never blindly reset, discard, force-push, or rebase a dirty tree.
-- Use verify-first for work genuinely implemented in PR #7. Re-run affected checks when the code, migrations, or prerequisites changed; do not treat prior reports as current acceptance evidence.
+- Treat stages **TRAN-003A–TRAN-003G** as the *follow-up acceptance contract*, not instructions to reopen the historical SOP lifecycle. Reconcile prior evidence first; execute and verify only outstanding implementation under a distinct plan/run ID.
+- First inspect merged PR #7 and latest main, including changed files, historical SOP evidence, private/untracked artifacts, migration histories, and passing tests. Preserve unrelated work and never blindly reset, discard, force-push, or rebase a dirty tree.
+- Use verify-first for work genuinely implemented in merged PR #7. Re-run affected checks when code, migrations, or prerequisites changed; do not treat historical green checks as acceptance of missing functionality.
 - Tests and tracked documentation use **synthetic genealogy data only**. Never commit docs/tran/, its audit subdirectory, private source excerpts or hashes, local database exports, real family names, or living-person details. Check both staged and committed diffs.
 - Real family records remain candidate, unverified, needs_review, or disputed until the required source evidence and authorized review are complete. No model-generated answer grants permissions or approves a family designation.
 - Use disposable local PostgreSQL databases for migration and DB integration testing. Do not reset the RAG database or local private genealogy database as a test convenience.
 
 ## TRAN-003A — Preflight, branch reconciliation, and contract mapping
 
-**Dependencies:** TRAN-002 merged; PR #4 planning baseline merged; PR #7 exists.
+**Dependencies:** TRAN-002 merged; PR #4 planning baseline merged; PR #7 merged and historicalized.
 
 ### Deliverables
 
-- Confirm origin/main contains TRAN-002 migrations 0001–0005, evidence review/provenance, and eligibility code. Fetch PR #7 and compare its Rust, SQL, Next.js, and test surfaces against current main.
-- Continue on **sop/plan-tran-rbac** / PR #7, not a new implementation branch. Resolve conflicts conservatively, preserving original RAG and genealogy migrations. Do not overwrite TRAN-002 files from the older RBAC branch.
+- Confirm `origin/main` contains TRAN-002 migrations 0001–0005, provenance/review/eligibility code, and the merged PR #7. Compare implementation against the functional acceptance criteria instead of treating publication as completion.
+- Continue remaining implementation on a **new isolated follow-up branch and PR**, not on the published `sop/plan-tran-rbac` run. Preserve original RAG and TRAN-002 genealogy migrations.
 - Inventory current Axum route registrations, UI-requested endpoints, OIDC support, Next.js session/login handlers, identity grants, genealogy DB access, and appointment persistence. Record a grounded route/permission/data-owner matrix.
 - Record baseline checks and identify previously verified code that needs no changes, confirmed defects that need repair, and environment-only deployment prerequisites.
-- Reconcile any existing SOP task state without falsifying past completions, bypassing approvals, or restarting satisfied tasks.
+- Preserve the original SOP archive and evidence as history. Use a distinct follow-up SOP identity; do not restart completed tasks or bypass approvals.
 
 ### Acceptance criteria
 
-- The candidate PR #7 branch includes the full merged TRAN-002 model and no duplicate/conflicting genealogy schema, with an attributable diff and safe worktree state.
+- The follow-up branch starts from merged `origin/main` containing TRAN-002 and PR #7, with no duplicate/conflicting genealogy schema, an attributable diff, and a safe worktree state.
 - Every browser genealogy operation maps to an existing or explicitly planned server route with a named permission, data source, and expected denial behavior.
 - A public-safe preflight document records exact SHA, changed baseline, outstanding tasks, and verification limitations.
 
@@ -219,14 +237,14 @@ The earlier RBAC implementation branch is **sop/plan-tran-rbac**, PR #7, and alr
 - Record post-TRAN-002 integration evidence, all authorization/cryptography negatives, corpus-leakage and appointment-race results, browser outcomes, deployment prerequisites, and known limitations.
 - Update docs for OIDC provider setup, admin bootstrap, family-user invite/revocation, corpus grants, privacy, backup/restore, appointment evidence, and succession-policy ambiguity.
 - Record only public-safe synthetic validation and nonidentifying metrics in tracked evidence docs. Keep private real-data audit outputs under ignored docs/tran/audit/ and preserve the four original source file hashes.
-- Update existing PR #7 description and publish a focused verification report. Do not automatically merge, deploy, historicalize an unfinished plan, or delete worktrees/evidence.
+- Open a **new follow-up PR** with focused post-merge verification evidence. Do not rewrite published PR #7, automatically merge, deploy, historicalize an unfinished follow-up run, or delete historical evidence.
 
 ### Acceptance criteria
 
 - Deterministic required gates pass on the reconciled feature branch and GitHub Actions CI passes on that same commit.
 - Rust enforces all permissions, the separate genealogy-DB guard works, and all six stages have verifiable acceptance evidence.
 - No real genealogy record is promoted or appointed by a synthetic test; all source privacy checks pass; no real-person data appears in tracked diffs or CI.
-- SOP final result is PASS with no unresolved required approval and PR #7 is merge-ready on latest main, subject to explicit operator merge authorization.
+- The new follow-up SOP run reaches PASS with no unresolved required approval and its new PR is merge-ready against latest main, subject to explicit operator merge authorization.
 
 ### Verification
 
@@ -267,6 +285,6 @@ Stages B and C may be developed independently after the preflight contracts are 
 
 ## Completion and PR policy
 
-The completion path is the **existing PR #7** against current origin/main. Use SOP read-only review and focused implementation/repair as appropriate; keep task-by-task verification and evidence. After gates pass, update that PR and request operator merge approval. After a confirmed merge, use /sop-publish to historicalize the eligible plan and safely preserve evidence; do not historicalize from CI success alone.
+**PR #7 has already merged and been published.** Complete the remaining TRAN-003 acceptance work in a new isolated follow-up branch and separate SOP run/PR. Preserve evidence, require explicit merge approval, and only after the follow-up PR merges use `/sop-publish` to archive that new run. Green CI from PR #7 alone is not closure of missing capabilities.
 
 The application remains private. A live family-tree experience and a real Head of Family appointment are distinct operational decisions, not side effects of merging code.
