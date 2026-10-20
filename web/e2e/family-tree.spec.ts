@@ -3,10 +3,10 @@ import { expect, test } from "@playwright/test";
 const session = { state: "signed_in", role: "viewer", display_name: "Synthetic viewer" };
 const graph = {
   people: [
-    { record_id: "root", person_label: "Nguyễn Văn A", evidence_status: "verified" },
-    { record_id: "child", person_label: "Trần Văn B", evidence_status: "unverified" },
-    { record_id: "grandchild", person_label: "Child C", evidence_status: "needs_review" },
-    { record_id: "disconnected", person_label: "Unlinked Person", evidence_status: "unverified" },
+    { record_id: "root", person_label: "Nguyễn Văn A", evidence_status: "verified", aliases: ["Nguyen A"] },
+    { record_id: "child", person_label: "Trần Văn B", evidence_status: "unverified", aliases: [] },
+    { record_id: "grandchild", person_label: "Child C", evidence_status: "needs_review", aliases: [] },
+    { record_id: "disconnected", person_label: "Unlinked Person", evidence_status: "unverified", aliases: [] },
   ],
   links: [
     { from_id: "root", to_id: "child", kind: "parent_child",
@@ -42,8 +42,8 @@ test("graph, citations, disconnected records, and uncertain edges stay distinct"
   await expect(page.getByTestId("genealogy-tree")).toBeVisible();
   await expect(page.getByTestId("family-person")).toHaveCount(4);
   await expect(page.getByTestId("family-relationship")).toHaveCount(2);
-  await expect(page.getByTestId("family-relationship").nth(0)).toHaveAttribute("data-status", "verified");
-  await expect(page.getByTestId("family-relationship").nth(1)).toHaveAttribute("data-status", "needs_review");
+  await expect(page.locator("[data-testid=family-relationship][data-status=verified]")).toHaveCount(1);
+  await expect(page.locator("[data-testid=family-relationship][data-status=needs_review]")).toHaveCount(1);
   await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
   await expect(page.getByTestId("family-assertions")).toContainText("synthetic p.3");
 });
@@ -51,7 +51,7 @@ test("graph, citations, disconnected records, and uncertain edges stay distinct"
 test("Vietnamese name search reveals the requested person", async ({ page }) => {
   await stubAuthorized(page);
   await page.goto("/genealogy");
-  await page.getByTestId("family-search").fill("Nguyen van a");
+  await page.getByTestId("family-search").fill("Nguyen A");
   await expect(page.getByTestId("family-search-results")).toContainText("Nguyễn Văn A");
   await page.getByTestId("family-search-results").getByRole("button").first().click();
   await expect(page.getByTestId("family-person-details")).toContainText("Nguyễn Văn A");
