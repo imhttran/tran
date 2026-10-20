@@ -24,7 +24,7 @@
 //! (`kty=EC`, `crv=P-256`, `x`/`y`). Symmetric keys (`kty=oct`, `k`) and
 //! private-key material are rejected as malformed for verification purposes.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
@@ -241,6 +241,15 @@ impl AuthConfig {
     }
 }
 
+/// How long past its TTL an expired key set may still be served while one
+/// refresh runs. Longer than the 10-second fetch timeout, so one slow fetch
+/// does not stall requests, but short enough that a provider outage fails
+/// closed instead of serving rotated-out keys indefinitely.
+#[cfg(not(test))]
+const JWKS_MAX_STALE: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const JWKS_MAX_STALE: Duration = Duration::from_secs(1);
+
 /// The JWKS cache with TTL and single-flight refresh.
 #[derive(Clone)]
 pub struct JwksCache<F>
@@ -249,6 +258,8 @@ where
 {
     fetch: Arc<F>,
     state: Arc<Mutex<CacheState>>,
+    /// Held by the one caller fetching; `state` is never held across a fetch.
+    refresh: Arc<Mutex<()>>,
     ttl: Duration,
 }
 
@@ -269,29 +280,61 @@ where
                 jwks: None,
                 fetched_at: None,
             })),
+            refresh: Arc::new(Mutex::new(())),
             ttl,
         }
     }
 
-    /// Returns a key set, refreshing when the TTL elapsed. A refresh error is
-    /// returned, never replaced with a stale-only success.
+    /// Returns the cached key set and its age, if any.
+    fn cached(&self) -> Result<Option<(Jwks, Duration)>, AuthError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AuthError::ProviderUnavailable("JWKS cache poisoned".into()))?;
+        Ok(state
+            .jwks
+            .clone()
+            .zip(state.fetched_at.map(|at| at.elapsed())))
+    }
+
+    /// Returns a key set, refreshing when the TTL elapsed.
+    ///
+    /// Single-flight: one caller fetches while the others keep serving the
+    /// expired set, so a slow provider never stalls every request. The expired
+    /// set is served for at most [`JWKS_MAX_STALE`] past the TTL; after that,
+    /// and on a cold cache, callers wait for the fetch and see its error. The
+    /// fetching caller gets the refresh error, never a stale-only success.
     pub fn get(&self) -> Result<Jwks, AuthError> {
-        // Single-flight: hold the lock while refreshing so concurrent callers
-        // wait for the same fetch instead of stampeding the provider.
+        let cached = self.cached()?;
+        if let Some((jwks, age)) = &cached {
+            if *age < self.ttl {
+                return Ok(jwks.clone());
+            }
+        }
+        let stale = cached
+            .filter(|(_, age)| *age < self.ttl + JWKS_MAX_STALE)
+            .map(|(jwks, _)| jwks);
+        // The refresh lock guards no data, so a panicked fetch cannot leave it
+        // inconsistent.
+        let _refresh = match self.refresh.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => match stale {
+                Some(stale) => return Ok(stale),
+                None => self.refresh.lock().unwrap_or_else(PoisonError::into_inner),
+            },
+        };
+        // Another caller may have refreshed while this one waited.
+        if let Some((jwks, age)) = self.cached()? {
+            if age < self.ttl {
+                return Ok(jwks);
+            }
+        }
+        let jwks = (self.fetch)()?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| AuthError::ProviderUnavailable("JWKS cache poisoned".into()))?;
-        let fresh = match state.fetched_at {
-            Some(at) => at.elapsed() < self.ttl,
-            None => false,
-        };
-        if fresh {
-            if let Some(jwks) = &state.jwks {
-                return Ok(jwks.clone());
-            }
-        }
-        let jwks = (self.fetch)()?;
         state.jwks = Some(jwks.clone());
         state.fetched_at = Some(Instant::now());
         Ok(jwks)
@@ -639,6 +682,72 @@ mod tests {
             validate_token(&token, &config(), &cache).unwrap_err(),
             AuthError::ProviderUnavailable(_)
         ));
+    }
+
+    #[test]
+    fn slow_refresh_serves_the_stale_set_to_other_callers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let calls = AtomicUsize::new(0);
+        let cache = JwksCache::new(
+            move || {
+                if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    started_tx.send(()).unwrap();
+                    // Bounded so a regression fails instead of hanging.
+                    let _ = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5));
+                }
+                Ok(Jwks::new(Vec::new()))
+            },
+            Duration::ZERO,
+        );
+        cache.get().expect("initial fetch");
+
+        std::thread::scope(|scope| {
+            let refresher = scope.spawn(|| cache.get());
+            started_rx.recv().unwrap();
+            let begin = Instant::now();
+            cache.get().expect("stale set");
+            assert!(begin.elapsed() < Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+            refresher.join().unwrap().expect("refresh");
+        });
+    }
+
+    #[test]
+    fn stale_set_past_the_cap_is_not_served_during_a_refresh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let cache = JwksCache::new(
+            move || {
+                if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    std::thread::sleep(Duration::from_millis(300));
+                    return Err(AuthError::ProviderUnavailable("down".into()));
+                }
+                Ok(Jwks::new(Vec::new()))
+            },
+            Duration::ZERO,
+        );
+        cache.get().expect("initial fetch");
+        std::thread::sleep(JWKS_MAX_STALE + Duration::from_millis(100));
+
+        std::thread::scope(|scope| {
+            let refresher = scope.spawn(|| cache.get());
+            std::thread::sleep(Duration::from_millis(50));
+            // Past the cap the caller waits for the refresh and fails closed.
+            assert!(matches!(
+                cache.get(),
+                Err(AuthError::ProviderUnavailable(_))
+            ));
+            assert!(refresher.join().unwrap().is_err());
+        });
     }
 
     #[test]

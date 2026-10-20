@@ -225,7 +225,7 @@ pub fn approve(
 
     let row = tx
         .query_opt(
-            "SELECT person_key, branch_key, status FROM head_of_family_nomination \
+            "SELECT person_key, branch_key, status, nominated_by FROM head_of_family_nomination \
               WHERE nomination_id = $1 FOR UPDATE",
             &[&nomination_id],
         )
@@ -238,6 +238,11 @@ pub fn approve(
     let status: String = row.get(2);
     if status != "pending" {
         return Err(GenealogyError::Domain("nomination is not pending".into()));
+    }
+    if row.get::<_, String>(3) == admin {
+        return Err(GenealogyError::Domain(
+            "a nomination cannot be approved by its nominator".into(),
+        ));
     }
     if nomination_branch != branch_key {
         return Err(GenealogyError::Domain(

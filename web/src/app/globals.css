@@ -30,3 +30,55 @@ button:disabled { background:#a9bce8; cursor:not-allowed; }
 .insufficient { background:#fffde7; border:1px solid #f0e6a8; border-radius:8px; padding:10px 12px; }
 footer.page-footer { display:flex; justify-content:space-between; color:var(--muted); font-size:.85rem; margin-top:24px; }
 :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+
+/* FAM-005 — read-only family tree, no client-side authorization decisions. */
+.app-shell:has(.family-workspace) { max-width: 1320px; }
+.family-workspace { margin: 18px 0; }
+.family-toolbar { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; padding:16px; background:#f3efe4; border:1px solid #ddd4bf; border-radius:14px 14px 0 0; }
+.family-search { position:relative; width:min(100%, 390px); }
+.family-search input { background:white; border:1px solid #b8b29f; padding:10px 12px; width:100%; border-radius:9px; }
+.family-controls { display:flex; flex-wrap:wrap; gap:8px; }
+.family-controls button, .family-canvas>button { background:#294c43; margin:2px; border-radius:8px; }
+.family-suggestions { position:absolute; z-index:3; background:white; margin:4px 0; padding:5px; list-style:none; border:1px solid #cbc2aa; box-shadow:0 6px 20px #0002; border-radius:10px; width:100%; max-height:300px; overflow:auto; }
+.family-suggestions button { width:100%; text-align:left; margin:0; color:#203e35; background:white; font-weight:500; }
+.family-suggestions button:hover { background:#e8eee8; }
+.family-main { display:grid; grid-template-columns:minmax(0, 1fr) 310px; min-height:540px; background:#f9f7f0; border:1px solid #ddd4bf; border-top:0; }
+.family-canvas { min-width:0; padding:12px; overflow:hidden; }
+.family-canvas svg { width:100%; height:490px; display:block; border-radius:12px; background:#f4f3eb; touch-action:none; }
+.family-canvas-help { font-size:13px; color:#5d625e; margin:10px 0; }
+.family-node { cursor:pointer; outline:none; }
+.family-node rect { fill:#fff; stroke:#a8b4aa; stroke-width:1.5; filter:drop-shadow(0 3px 3px #0001); }
+.family-node:hover rect, .family-node:focus rect { stroke:#356954; stroke-width:3; }
+.family-node .family-node-selected { stroke:#1d6f56; stroke-width:3.5; fill:#ebf5ed; }
+.family-node-name { fill:#1d352c; font:600 15px system-ui, sans-serif; }
+.family-node-status { font:12px system-ui, sans-serif; text-transform:capitalize; }
+.family-node-status-verified { fill:#1a7446; }
+.family-node-status-review { fill:#92670a; }
+.family-node-status-unverified { fill:#68716a; }
+.family-edge { fill:none; stroke-width:2.5; stroke:#89958a; }
+.family-edge-verified { stroke:#348761; }
+.family-edge-review { stroke:#b78b2b; stroke-dasharray:7 4; }
+.family-edge-unverified { stroke:#8b9691; stroke-dasharray:2 6; }
+.family-edge-spouse { stroke-width:2; }
+.family-detail { border-left:1px solid #d8d8ce; background:white; padding:18px; min-width:0; max-height:600px; overflow-y:auto; overflow-wrap:anywhere; }
+.family-detail h2 { font:600 24px Georgia, serif; margin:0 0 6px; }
+.family-detail h3 { font-size:14px; border-top:1px solid #e5e5df; padding-top:16px; margin-top:18px; }
+.family-detail-list { list-style:none; margin:0; padding:0; }
+.family-detail-list li { border-bottom:1px solid #eee; padding:10px 0; }
+.family-detail-list p { margin:4px 0; }
+.family-text-button { border:0; background:transparent; padding:0; color:#255648; text-align:left; text-decoration:underline; font:inherit; font-weight:600; margin:0; }
+.family-text-button:hover { color:#113a2d; }
+.family-legend { display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:13px; padding:11px 16px; background:#f5f7f5; border:1px solid #dedede; margin:0; }
+.family-key { width:16px; height:4px; display:inline-block; }
+.family-key-verified { background:#348761; }
+.family-key-review { background:#b78b2b; }
+.family-key-unverified { background:#8b9691; }
+.family-catalog { columns:2; list-style:none; padding:0; }
+.family-catalog li { padding:7px; display:flex; align-items:center; flex-wrap:wrap; gap:10px; break-inside:avoid; }
+.family-limit { background:#fff3d8; color:#624900; padding:10px 14px; margin:0; border:1px solid #d6bd7c; }
+@media(max-width:820px) {
+  .family-main { grid-template-columns:minmax(0, 1fr); }
+  .family-detail { border-left:0; border-top:1px solid #d8d8ce; max-height:none; }
+  .family-canvas svg { height:370px; }
+  .family-catalog { columns:1; }
+}

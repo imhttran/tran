@@ -71,7 +71,7 @@ row in one transaction.
 | `JWKS_URL` | API only | JWKS document endpoint |
 | `JWKS_CACHE_TTL_SECS` | API only | JWKS cache lifetime |
 | `AUTH_CLOCK_SKEW_SECS` | API only | Allowed clock skew |
-| `AUTH_RATE_LIMIT` | API only | Requests per subject per 60 seconds |
+| `AUTH_RATE_LIMIT` | API only | Requests per subject per operation per 60 seconds; reads (account, document status, genealogy) get 5x |
 
 ## File paths
 

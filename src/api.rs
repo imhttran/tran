@@ -29,7 +29,8 @@ use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::genealogy::{
-    appointments, query as genealogy_query, resolve_genealogy_dsn, GenealogyError,
+    appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree,
+    GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -54,6 +55,9 @@ pub const ALLOWED_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "pdf"];
 pub const SESSION_COOKIE: &str = "rag_session";
 /// The CSRF header name enforced by the Next.js proxy.
 pub const CSRF_HEADER: &str = "x-csrf-token";
+/// Reads (account, document status, genealogy) get this multiple of
+/// `AUTH_RATE_LIMIT` per subject, since one page view issues several.
+const READ_RATE_LIMIT_FACTOR: u32 = 5;
 
 /// Errors raised while constructing or running the API server.
 #[derive(Debug, Error)]
@@ -90,6 +94,7 @@ pub struct AppState {
     auth: Arc<AuthConfig>,
     jwks: Arc<JwksCache<JwksFetcher>>,
     limiter: Arc<RateLimiter>,
+    read_limiter: Arc<RateLimiter>,
     /// The query service is built once, on the first query, inside a blocking
     /// task. Rebuilding it per request would create two HTTP clients and two
     /// connection pools each time.
@@ -128,6 +133,10 @@ impl AppState {
             config.auth_rate_limit as u32,
             Duration::from_secs(60),
         ));
+        let read_limiter = Arc::new(RateLimiter::new(
+            (config.auth_rate_limit as u32).saturating_mul(READ_RATE_LIMIT_FACTOR),
+            Duration::from_secs(60),
+        ));
         Ok(Self {
             config: Arc::new(config),
             store,
@@ -135,6 +144,7 @@ impl AppState {
             auth: Arc::new(auth),
             jwks,
             limiter,
+            read_limiter,
             query_service: Arc::new(Mutex::new(None)),
             health_client: Arc::new(Mutex::new(None)),
         })
@@ -163,6 +173,7 @@ impl AppState {
             .route("/api/account", get(account))
             .route("/api/admin/roles", post(change_role))
             .route("/api/genealogy/records", get(genealogy_records))
+            .route("/api/genealogy/tree", get(genealogy_tree))
             .route(
                 "/api/genealogy/head-of-family",
                 get(genealogy_head_of_family),
@@ -364,11 +375,12 @@ fn authorize(
             "the verified identity has no grant for this corpus",
         ));
     }
-    if operation.is_rate_limited()
-        && !state
-            .limiter
-            .check(identity.subject(), operation.rate_limit_key())
-    {
+    let limiter = if operation.is_read() {
+        &state.read_limiter
+    } else {
+        &state.limiter
+    };
+    if !limiter.check(identity.subject(), operation.rate_limit_key()) {
         return Err(error(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -396,11 +408,11 @@ fn operation_requires_corpus(operation: Operation) -> bool {
 fn load_identity(state: &AppState, token: &VerifiedIdentity) -> Result<VerifiedIdentity, Response> {
     let subject = token.subject().to_string();
     let issuer = token.issuer().to_string();
-    let dsn = state.config.database_url.clone();
+    let store = &state.store;
     let lookup = if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::block_in_place(|| load_identity_blocking(&dsn, &subject, &issuer))
+        tokio::task::block_in_place(|| load_identity_blocking(store, &subject, &issuer))
     } else {
-        load_identity_blocking(&dsn, &subject, &issuer)
+        load_identity_blocking(store, &subject, &issuer)
     };
     match lookup {
         Ok((roles, grants)) => Ok(VerifiedIdentity::new(subject, issuer, roles, grants)),
@@ -424,11 +436,11 @@ fn load_identity(state: &AppState, token: &VerifiedIdentity) -> Result<VerifiedI
 }
 
 fn load_identity_blocking(
-    dsn: &str,
+    store: &PgStore,
     subject: &str,
     issuer: &str,
 ) -> Result<(Vec<Role>, Vec<String>), IdentityStoreError> {
-    let client = crate::identity_store_pg::PgIdentityClient::connect(dsn)?;
+    let client = identity_client(store)?;
     let store = IdentityStore::new(client);
     let user = store
         .user_by_subject(subject, issuer)?
@@ -436,6 +448,17 @@ fn load_identity_blocking(
     let roles = store.effective_roles(user.id)?;
     let grants = store.effective_grants(user.id)?;
     Ok((roles, grants))
+}
+
+/// Borrows an identity-store client from the shared pool. The identity tables
+/// live in the same database as the document store.
+fn identity_client(
+    store: &PgStore,
+) -> Result<crate::identity_store_pg::PgIdentityClient, IdentityStoreError> {
+    store
+        .pooled_connection()
+        .map(crate::identity_store_pg::PgIdentityClient::from_pooled)
+        .map_err(|err| IdentityStoreError::Database(err.to_string()))
 }
 
 // --- health ----------------------------------------------------------------
@@ -582,13 +605,13 @@ async fn change_role(
             "issuer must not be empty",
         );
     }
-    let config = state.config.clone();
+    let store = state.store.clone();
     let actor = identity.subject().to_string();
     let revoke = request.revoke;
     let task_subject = subject.clone();
     let task_issuer = issuer.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let client = identity_client(&store)?;
         let mut store = IdentityStore::new(client);
         if revoke {
             store.revoke_role(&task_subject, &task_issuer, role, &actor)
@@ -1151,6 +1174,71 @@ async fn genealogy_records(State(state): State<AppState>, headers: HeaderMap) ->
     }
 }
 
+/// Authorized, bounded, read-only genealogy graph.
+async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        genealogy_tree::load_tree(&mut client).map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(graph)) => {
+            let people: Vec<_> = graph
+                .people
+                .iter()
+                .map(|person| {
+                    serde_json::json!({
+                        "record_id": person.person_key,
+                        "person_label": person.display_name,
+                        "evidence_status": person.evidence_status,
+                        "aliases": person.aliases,
+                    })
+                })
+                .collect();
+            let links: Vec<_> = graph
+                .links
+                .iter()
+                .map(|link| {
+                    serde_json::json!({
+                        "from_id": link.from_key,
+                        "to_id": link.to_key,
+                        "kind": link.kind,
+                        "evidence_status": link.evidence_status,
+                        "evidence": evidence_json(&link.citations),
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "people": people,
+                "links": links,
+                "truncated": graph.truncated,
+            }))
+            .into_response()
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: genealogy tree failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: genealogy tree task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the genealogy task failed",
+            )
+        }
+    }
+}
+
 async fn genealogy_head_of_family(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
         return response;
@@ -1528,12 +1616,12 @@ async fn provision_user(
         Ok(identity) => identity,
         Err(response) => return response,
     };
-    let config = state.config.clone();
+    let store = state.store.clone();
     let actor = identity.subject().to_string();
     let subject = body.subject.trim().to_string();
     let issuer = body.issuer.trim().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let client = identity_client(&store)?;
         let mut store = IdentityStore::new(client);
         store.client().provision_user(&subject, &issuer, &actor)
     })
@@ -1597,10 +1685,10 @@ async fn deactivate_identity(
             "issuer must not be empty",
         );
     }
-    let config = state.config.clone();
+    let store = state.store.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let client = crate::identity_store_pg::PgIdentityClient::connect(&config.database_url)?;
+        let client = identity_client(&store)?;
         let mut store = IdentityStore::new(client);
         store.client().deactivate_user(&subject, &issuer, &actor)
     })
