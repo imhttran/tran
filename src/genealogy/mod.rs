@@ -12,6 +12,7 @@ pub mod parser;
 pub mod query;
 pub mod reimport;
 pub mod report;
+pub mod tree;
 pub mod review;
 pub mod validation;
 

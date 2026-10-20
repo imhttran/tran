@@ -148,7 +148,7 @@ test.describe("roles", () => {
 test.describe("denial states", () => {
   test("permission denial renders a denied view without record detail", async ({ page }) => {
     await signIn(page, "viewer");
-    await page.route("**/api/genealogy/records**", (route) =>
+    await page.route("**/api/genealogy/tree**", (route) =>
       route.fulfill({
         status: 403,
         contentType: "application/json",
@@ -169,7 +169,7 @@ test.describe("denial states", () => {
         body: JSON.stringify({ state: "signed_in", role: "viewer", display_name: "No access user" }),
       }),
     );
-    await page.route("**/api/genealogy/records**", (route) =>
+    await page.route("**/api/genealogy/tree**", (route) =>
       route.fulfill({
         status: 404,
         contentType: "application/json",
