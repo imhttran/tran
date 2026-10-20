@@ -124,7 +124,7 @@ Decompose these tasks according to SOP's supported plan format; this document is
 
 ## Mandatory acceptance
 
-- Living inventory correctly excludes no-evidence, deceased, disputed, conflicting, missing-DOB, minor-without-guardian-consent, already-linked, or ambiguous people from automatic activation; uncertain age/DOB should block only when actually needed for consent, not falsely classify adults as deceased.
+- Living inventory distinguishes verified living, deceased, disputed, conflicting, already-linked, ambiguous, and not-yet-verified people. A missing exact birth date must **not** itself disqualify a verified living adult from an invitation; age or guardian-consent uncertainty blocks activation only when it is necessary to establish eligibility. No real person is automatically activated without identity verification and explicit invitation approval.
 - Dry-run makes zero account changes. Admin-approved invitation is repeatable without duplication. No invitations or real account activations run until the operator approves both identity provider and recipient list.
 - Username alias algorithm passes Vietnamese/ASCII normalization, missing/compound name, collision and idempotent retry tests. No password is generated from birthday or surname; authentication is provider-managed.
 - Identity linking prevents cross-issuer privilege transfer and person-link hijacking. Non-members and impersonators cannot edit another person's profile.
