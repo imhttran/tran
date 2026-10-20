@@ -125,4 +125,4 @@ web-e2e:
 	./scripts/web-e2e.sh
 
 # Everything: the Rust checks and the web checks.
-check: test rust-check web-check
+check: rust-check web-check

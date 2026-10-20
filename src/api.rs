@@ -55,16 +55,6 @@ pub const SESSION_COOKIE: &str = "rag_session";
 /// The CSRF header name enforced by the Next.js proxy.
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
-/// Returns the default bind host.
-pub fn default_host() -> &'static str {
-    DEFAULT_HOST
-}
-
-/// Returns the default bind port.
-pub fn default_port() -> u16 {
-    DEFAULT_PORT
-}
-
 /// Errors raised while constructing or running the API server.
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -172,10 +162,6 @@ impl AppState {
             .route("/api/query", post(query))
             .route("/api/account", get(account))
             .route("/api/admin/roles", post(change_role))
-            .route(
-                "/api/admin/head-of-family/approvals",
-                post(approve_head_of_family),
-            )
             .route("/api/genealogy/records", get(genealogy_records))
             .route(
                 "/api/genealogy/head-of-family",
@@ -612,29 +598,6 @@ async fn change_role(
             )
         }
     }
-}
-
-#[derive(Deserialize)]
-struct ApprovalRequest {
-    subject: String,
-}
-
-async fn approve_head_of_family(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<ApprovalRequest>,
-) -> Response {
-    let identity = match authorize(&state, &headers, Operation::HeadOfFamilyApproval) {
-        Ok(identity) => identity,
-        Err(response) => return response,
-    };
-    Json(serde_json::json!({
-        "ok": true,
-        "approved": request.subject.trim(),
-        "approved_by": identity.subject(),
-        "status": "pending_catalog",
-    }))
-    .into_response()
 }
 
 // --- ingestion -------------------------------------------------------------
@@ -1608,12 +1571,6 @@ async fn deactivate_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_binding_is_loopback() {
-        assert_eq!(default_host(), "127.0.0.1");
-        assert_eq!(default_port(), 8080);
-    }
 
     #[test]
     fn only_expected_extensions_are_allowed() {

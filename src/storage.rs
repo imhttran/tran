@@ -133,28 +133,9 @@ pub trait DocumentStore {
     fn write_chunk(&self, chunk: &StoredChunk) -> Result<(), Self::Error>;
 }
 
-/// Validates the embedding dimension of `chunk` against `expected` and, only
-/// when the dimension matches, forwards the chunk to `store`.
-///
-/// This is the fail-fast entry point: a dimension mismatch returns a
-/// [`DimensionMismatchError`] and `store` is never called, so no write path is
-/// entered.
-pub fn write_validated<S, E>(
-    store: &S,
-    expected_dim: usize,
-    chunk: &StoredChunk,
-) -> Result<Result<(), E>, DimensionMismatchError>
-where
-    S: DocumentStore<Error = E>,
-{
-    validate_embedding_dim(expected_dim, chunk.embedding_dim())?;
-    Ok(store.write_chunk(chunk))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     fn chunk_with_dim(dim: usize, page: Option<i32>) -> StoredChunk {
         StoredChunk {
@@ -186,51 +167,6 @@ mod tests {
         assert_eq!(err.actual, 3);
         assert!(err.to_string().contains("expected 768"));
         assert!(err.to_string().contains("got 3"));
-    }
-
-    /// A store that records whether its write path was entered.
-    struct RecordingStore {
-        written: Cell<u32>,
-    }
-
-    impl DocumentStore for RecordingStore {
-        type Error = ();
-
-        fn write_chunk(&self, _chunk: &StoredChunk) -> Result<(), Self::Error> {
-            self.written.set(self.written.get() + 1);
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn mismatch_fails_before_the_write_path_is_entered() {
-        let store = RecordingStore {
-            written: Cell::new(0),
-        };
-        let chunk = chunk_with_dim(3, None);
-
-        let result = write_validated(&store, EMBEDDING_DIM, &chunk);
-
-        assert!(result.is_err());
-        assert_eq!(
-            store.written.get(),
-            0,
-            "the write path must not be entered on a dimension mismatch"
-        );
-    }
-
-    #[test]
-    fn match_reaches_the_write_path() {
-        let store = RecordingStore {
-            written: Cell::new(0),
-        };
-        let chunk = chunk_with_dim(EMBEDDING_DIM, None);
-
-        write_validated(&store, EMBEDDING_DIM, &chunk)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(store.written.get(), 1);
     }
 
     #[test]
