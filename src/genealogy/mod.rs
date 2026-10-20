@@ -4,6 +4,7 @@
 //! `GENEALOGY_DATABASE_URL`. This module owns the explicit destination guard and
 //! the migration runner. It never falls back to the RAG `DATABASE_URL`.
 
+pub mod eligibility;
 pub mod label;
 pub mod migrate;
 pub mod parser;

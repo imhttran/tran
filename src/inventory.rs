@@ -32,10 +32,12 @@ pub const FROZEN_DIRECTORIES: [&str; 4] = ["examples", "fixtures", "migrations",
 
 /// Relative path prefixes that hold generated output and are never inventoried.
 ///
-/// An entry is matched against the manifest form of a relative path (see
-/// [`relative_path_string`]) and must end with `/`, so only paths under that
-/// exact prefix are dropped.
-pub const GENERATED_OUTPUT_PREFIXES: [&str; 1] = ["docs/tran/audit/"];
+/// Entries are matched against the manifest form of a relative path (see
+/// [`relative_path_string`]) and must end with `/`. `audit/` covers the normal
+/// invocation whose root is `docs/tran`; `docs/tran/audit/` covers a walk whose
+/// root is the repository or another ancestor. Neither prefix hides an unrelated
+/// `audit/` directory nested elsewhere.
+pub const GENERATED_OUTPUT_PREFIXES: [&str; 2] = ["audit/", "docs/tran/audit/"];
 
 /// True when the manifest-form relative path lies under a generated prefix.
 pub fn is_generated_output(relative_path: &str) -> bool {
@@ -518,6 +520,7 @@ mod tests {
         // Generated audit output, including a nested file.
         write(root, "docs/tran/audit/manifest.json", b"{}");
         write(root, "docs/tran/audit/nested/report.md", b"# report");
+        write(root, "audit/root-generated.json", b"{}");
         // A legitimate nested source file outside the audit folder.
         write(root, "docs/tran/notes/synthetic.md", b"# synthetic");
         // A sibling `audit` directory elsewhere must stay visible.
