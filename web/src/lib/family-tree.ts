@@ -4,6 +4,7 @@ export type TreePerson = {
   record_id: string;
   person_label: string;
   evidence_status: EvidenceStatus;
+  aliases: string[];
 };
 export type TreeLink = {
   from_id: string;
@@ -41,7 +42,8 @@ export function parseTreeGraph(body: unknown): TreeGraph {
     s === "verified" || s === "unverified" || s === "needs_review";
   const people = data.people.filter((p): p is TreePerson =>
     !!p && typeof p.record_id === "string" && p.record_id.length > 0 &&
-    typeof p.person_label === "string" && validStatus(p.evidence_status));
+    typeof p.person_label === "string" && validStatus(p.evidence_status) &&
+    Array.isArray(p.aliases) && p.aliases.every((a) => typeof a === "string"));
   const ids = new Set(people.map((p) => p.record_id));
   const links = data.links.filter((l): l is TreeLink =>
     !!l && typeof l.from_id === "string" && typeof l.to_id === "string" &&
