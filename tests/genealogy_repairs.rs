@@ -330,3 +330,122 @@ fn import_atomicity_provenance_hash_reopen_transitions_and_eligibility_inputs() 
 
     reset_schema(&mut client);
 }
+
+/// Regression for the re-import evidence path: the database trigger that
+/// reopens a verified assertion removes its baseline, so the application must
+/// capture the baseline before syncing and must reconcile removed evidence.
+#[test]
+fn evidence_changes_are_reconciled_and_reported_as_reopened() {
+    let Some(base) = base_dsn() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping evidence reconciliation test");
+        return;
+    };
+    let dsn = with_database(&base, "genealogy_reimport_test");
+    let admin_dsn = with_database(&base, "postgres");
+    ensure_database(&admin_dsn, "genealogy_reimport_test");
+
+    let mut client = Client::connect(&dsn, NoTls).expect("connect to reimport test database");
+    reset_schema(&mut client);
+    apply_migrations(&mut client);
+
+    let mut document = import_document(&"c".repeat(64), true);
+    let report = reimport::reimport_document(&mut client, &document).expect("initial import");
+    assert_eq!(report.inserted, 1);
+
+    let assertion_id: i64 = client
+        .query_one("SELECT assertion_id FROM assertion", &[])
+        .expect("read assertion")
+        .get(0);
+
+    let verify = || ReviewRequest {
+        assertion_id,
+        new_status: ReviewStatus::Verified,
+        reviewer: "synthetic-reviewer",
+        evidence_ref: "repair-catalog.md p.3",
+        note: None,
+    };
+    review::review_assertion(&mut client, &verify()).expect("verify the assertion");
+    let baseline: i64 = client
+        .query_one(
+            "SELECT count(*) FROM assertion_review_baseline WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .expect("read baseline")
+        .get(0);
+    assert_eq!(baseline, 1, "verification records a baseline");
+
+    // Change the evidence page. This INSERT fires the reopen trigger, which
+    // used to delete the baseline before the decision was made.
+    document.assertions[0].evidence = vec![("repair-catalog.md".to_string(), 4)];
+    let report =
+        reimport::reimport_document(&mut client, &document).expect("re-import changed evidence");
+    assert_eq!(
+        report.reopened, 1,
+        "changed evidence must be reported as reopened"
+    );
+    assert_eq!(report.unchanged, 0);
+
+    let status: String = client
+        .query_one(
+            "SELECT review_status FROM assertion WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .expect("read status")
+        .get(0);
+    assert_eq!(status, "needs_review");
+
+    let pages: Vec<i32> = client
+        .query(
+            "SELECT page FROM assertion_evidence WHERE assertion_id = $1 ORDER BY page",
+            &[&assertion_id],
+        )
+        .expect("read evidence")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(pages, vec![4], "the removed page-3 row is reconciled away");
+
+    let events = |client: &mut Client| -> i64 {
+        client
+            .query_one(
+                "SELECT count(*) FROM assertion_review_event
+                  WHERE assertion_id = $1 AND note = 'evidence_changed'",
+                &[&assertion_id],
+            )
+            .expect("count reopen events")
+            .get(0)
+    };
+    assert_eq!(events(&mut client), 1, "exactly one reopen event");
+
+    // Idempotent: the same input again must not reopen or duplicate the event.
+    let report = reimport::reimport_document(&mut client, &document).expect("repeat re-import");
+    assert_eq!(report.reopened, 0);
+    assert_eq!(report.unchanged, 1);
+    assert_eq!(events(&mut client), 1, "no duplicate audit event");
+
+    // Removing all evidence must also reopen and leave no stale provenance.
+    review::review_assertion(&mut client, &verify()).expect("re-verify the assertion");
+    document.assertions[0].evidence = Vec::new();
+    let report =
+        reimport::reimport_document(&mut client, &document).expect("re-import without evidence");
+    assert_eq!(report.reopened, 1, "removed evidence reopens the assertion");
+
+    let status: String = client
+        .query_one(
+            "SELECT review_status FROM assertion WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .expect("read status after removal")
+        .get(0);
+    assert_eq!(status, "needs_review");
+    let remaining: i64 = client
+        .query_one(
+            "SELECT count(*) FROM assertion_evidence WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .expect("count remaining evidence")
+        .get(0);
+    assert_eq!(remaining, 0, "no stale evidence survives the re-import");
+
+    reset_schema(&mut client);
+}

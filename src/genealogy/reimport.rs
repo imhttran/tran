@@ -8,7 +8,9 @@
 //! When the recomputed evidence fingerprint differs from
 //! `assertion_review_baseline`, a verified assertion is reopened: its status
 //! moves to `needs_review`, its baseline is removed, and one `reopened` event is
-//! appended. A second run with identical input makes no status or event change.
+//! appended. Evidence rows that disappeared from the source are deleted, so a
+//! removed citation reopens the assertion instead of leaving stale provenance
+//! behind. A second run with identical input makes no status or event change.
 
 use postgres::Transaction;
 
@@ -133,14 +135,20 @@ fn reimport_in_transaction(
 
         let assertion_id = match existing {
             Some((id, status)) => {
-                // Re-import never rewrites reviewer history or status here.
-                sync_evidence(tx, id, document_id, document, assertion)?;
-                if status == ReviewStatus::Verified.as_str() {
-                    if reopened_by_evidence_change(tx, id)? {
-                        report.reopened += 1;
-                    } else {
-                        report.unchanged += 1;
-                    }
+                // Capture the baseline before syncing: an evidence INSERT or
+                // DELETE fires the reopen trigger, which removes the baseline.
+                let was_verified = status == ReviewStatus::Verified.as_str();
+                let baseline = if was_verified {
+                    review_baseline(tx, id)?
+                } else {
+                    None
+                };
+
+                // Re-import never rewrites reviewer history here; it only
+                // reconciles evidence and lets a change reopen the assertion.
+                sync_evidence(tx, id, document_id, assertion)?;
+                if reopen_if_evidence_changed(tx, id, was_verified, baseline.as_deref())? {
+                    report.reopened += 1;
                 } else {
                     report.unchanged += 1;
                 }
@@ -163,7 +171,7 @@ fn reimport_in_transaction(
                     )
                     .map_err(|err| GenealogyError::Query(err.to_string()))?
                     .get(0);
-                sync_evidence(tx, id, document_id, document, assertion)?;
+                sync_evidence(tx, id, document_id, assertion)?;
                 report.inserted += 1;
                 id
             }
@@ -177,14 +185,37 @@ fn sync_evidence(
     tx: &mut Transaction<'_>,
     assertion_id: i64,
     document_id: i64,
-    document: &ImportDocument,
     assertion: &ImportAssertion,
 ) -> Result<(), GenealogyError> {
-    if assertion.evidence.is_empty() {
-        return Ok(());
-    }
+    let document_refs: Vec<String> = assertion
+        .evidence
+        .iter()
+        .map(|(document_ref, _)| document_ref.clone())
+        .collect();
+    let pages: Vec<i32> = assertion.evidence.iter().map(|(_, page)| *page).collect();
+
+    // Reconcile only the rows that point at this source document, so evidence
+    // supplied by another document is preserved. A removed citation must not
+    // leave the assertion permanently verified against stale provenance.
+    tx.execute(
+        "DELETE FROM assertion_evidence ae
+          WHERE ae.assertion_id = $1
+            AND ae.source_evidence_id IN (
+                SELECT source_evidence_id
+                  FROM source_evidence
+                 WHERE source_document_id = $2
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM unnest($3::text[], $4::int[]) AS keep(document_ref, page)
+                 WHERE keep.document_ref = ae.document_ref
+                   AND keep.page = ae.page
+            )",
+        &[&assertion_id, &document_id, &document_refs, &pages],
+    )
+    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+
     for (document_ref, page) in &assertion.evidence {
-        let _ = document;
         let source_evidence_id = source_evidence_id(tx, document_id, *page)?;
         tx.execute(
             "INSERT INTO assertion_evidence
@@ -234,28 +265,67 @@ fn source_evidence_id(
         .get(0))
 }
 
-fn reopened_by_evidence_change(
+fn review_baseline(
     tx: &mut Transaction<'_>,
     assertion_id: i64,
+) -> Result<Option<String>, GenealogyError> {
+    tx.query_opt(
+        "SELECT evidence_fingerprint FROM assertion_review_baseline WHERE assertion_id = $1",
+        &[&assertion_id],
+    )
+    .map_err(|err| GenealogyError::Query(err.to_string()))
+    .map(|row| row.map(|r| r.get(0)))
+}
+
+fn current_status(tx: &mut Transaction<'_>, assertion_id: i64) -> Result<String, GenealogyError> {
+    tx.query_one(
+        "SELECT review_status FROM assertion WHERE assertion_id = $1",
+        &[&assertion_id],
+    )
+    .map_err(|err| GenealogyError::Query(err.to_string()))
+    .map(|row| row.get(0))
+}
+
+/// Reports whether a verified assertion must reopen after an evidence sync.
+///
+/// The evidence trigger is the authority: it flips the status and drops the
+/// baseline on every INSERT or DELETE. A changed source hash, however, changes
+/// the fingerprint without touching an evidence row, so the baseline comparison
+/// covers that path as well.
+fn should_reopen(
+    was_verified: bool,
+    baseline: Option<&str>,
+    current_fingerprint: &str,
+    current_status: &str,
+) -> bool {
+    was_verified
+        && (current_status != ReviewStatus::Verified.as_str()
+            || baseline.is_some_and(|expected| expected != current_fingerprint))
+}
+
+fn reopen_if_evidence_changed(
+    tx: &mut Transaction<'_>,
+    assertion_id: i64,
+    was_verified: bool,
+    baseline: Option<&str>,
 ) -> Result<bool, GenealogyError> {
-    let baseline: Option<String> = tx
-        .query_opt(
-            "SELECT evidence_fingerprint FROM assertion_review_baseline WHERE assertion_id = $1",
-            &[&assertion_id],
-        )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
-        .map(|r| r.get(0));
-    let Some(expected) = baseline else {
-        return Ok(false);
-    };
-    let current = evidence_fingerprint(tx, assertion_id)
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    if current == expected {
+    if !was_verified {
         return Ok(false);
     }
-    // Reopen: move to needs_review, drop the stale baseline, append one event.
+    let current = evidence_fingerprint(tx, assertion_id)
+        .map_err(|err| GenealogyError::Query(format!("evidence fingerprint: {err}")))?;
+    let status_after = current_status(tx, assertion_id)?;
+    if !should_reopen(was_verified, baseline, &current, &status_after) {
+        return Ok(false);
+    }
+
+    // The trigger already moved the status and removed the baseline when an
+    // evidence row changed. Re-asserting the post-state is idempotent and also
+    // covers the fingerprint-only path (a changed source hash with identical
+    // evidence), where the trigger never fired.
     tx.execute(
-        "UPDATE assertion SET review_status = 'needs_review' WHERE assertion_id = $1",
+        "UPDATE assertion SET review_status = 'needs_review'
+          WHERE assertion_id = $1 AND review_status = 'verified'",
         &[&assertion_id],
     )
     .map_err(|err| GenealogyError::Query(err.to_string()))?;
@@ -264,12 +334,47 @@ fn reopened_by_evidence_change(
         &[&assertion_id],
     )
     .map_err(|err| GenealogyError::Query(err.to_string()))?;
+
+    let evidence_ref = baseline.unwrap_or(&current);
     tx.execute(
         "INSERT INTO assertion_review_event
             (assertion_id, reviewer, from_status, to_status, evidence_ref, note)
          VALUES ($1, 'reimport', 'verified', 'needs_review', $2, 'evidence_changed')",
-        &[&assertion_id, &expected],
+        &[&assertion_id, &evidence_ref],
     )
     .map_err(|err| GenealogyError::Query(err.to_string()))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_reopen;
+
+    const VERIFIED: &str = "verified";
+    const NEEDS_REVIEW: &str = "needs_review";
+
+    #[test]
+    fn unchanged_evidence_and_a_stable_hash_do_not_reopen() {
+        assert!(!should_reopen(true, Some("fp"), "fp", VERIFIED));
+    }
+
+    #[test]
+    fn a_changed_fingerprint_reopens_a_still_verified_assertion() {
+        assert!(should_reopen(true, Some("old"), "new", VERIFIED));
+    }
+
+    #[test]
+    fn a_trigger_reopen_counts_even_when_the_fingerprint_is_stable() {
+        assert!(should_reopen(true, Some("fp"), "fp", NEEDS_REVIEW));
+    }
+
+    #[test]
+    fn an_assertion_that_was_not_verified_is_never_counted_as_reopened() {
+        assert!(!should_reopen(false, Some("old"), "new", NEEDS_REVIEW));
+    }
+
+    #[test]
+    fn a_verified_assertion_without_a_baseline_does_not_reopen_on_its_own() {
+        assert!(!should_reopen(true, None, "fp", VERIFIED));
+    }
 }
