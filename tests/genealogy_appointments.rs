@@ -203,6 +203,32 @@ fn eligible_candidate_can_be_nominated_approved_and_revoked() {
 }
 
 #[test]
+fn nominator_cannot_approve_their_own_nomination() {
+    let Some(base) = base_dsn() else {
+        return;
+    };
+    let database = "genealogy_appointments_self_approval_test";
+    ensure_database(&with_database(&base, "postgres"), database);
+    let dsn = with_database(&base, database);
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    reset_schema(&mut client);
+    migrate(&mut client);
+    seed_person(&mut client, "synthetic-self", BRANCH, true);
+
+    let nomination =
+        appointments::nominate(&mut client, "synthetic-self", BRANCH, "admin").unwrap();
+    let err = appointments::approve(&mut client, nomination, BRANCH, "admin").unwrap_err();
+    match err {
+        GenealogyError::Domain(message) => assert!(message.contains("nominator"), "{message}"),
+        other => panic!("unexpected error: {other}"),
+    }
+    assert!(appointments::list_active_appointments(&mut client)
+        .unwrap()
+        .is_empty());
+    appointments::approve(&mut client, nomination, BRANCH, "other-admin").expect("approve");
+}
+
+#[test]
 fn ineligible_candidate_is_rejected_without_an_appointment() {
     let Some(base) = base_dsn() else {
         return;

@@ -27,7 +27,7 @@ Required API environment:
 | `JWKS_URL` | JWKS endpoint used for signature verification. |
 | `AUTH_CLOCK_SKEW_SECS` | Optional clock-skew allowance. |
 | `JWKS_CACHE_TTL_SECS` | Optional JWKS cache lifetime. |
-| `AUTH_RATE_LIMIT` | Sensitive-operation rate limit. |
+| `AUTH_RATE_LIMIT` | Per-subject, per-operation limit per 60 seconds; reads (account, document status, genealogy) get 5x. |
 | `DATABASE_URL` | PostgreSQL/pgvector connection string. |
 | `GENEALOGY_DATABASE_URL` | Separate genealogy database; no fallback to `DATABASE_URL`. |
 | `HOF_THIRD_BRANCH_KEY` | Verified third-branch identifier used by Head of Family writes. |

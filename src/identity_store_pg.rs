@@ -8,6 +8,7 @@
 //! There is no other code path that creates a role assignment.
 
 use std::cell::RefCell;
+use std::ops::DerefMut;
 
 use postgres::{Client, NoTls, Transaction};
 
@@ -15,9 +16,12 @@ use crate::identity::Role;
 use crate::identity_store::identity_client::Client as IdentityClient;
 use crate::identity_store::{IdentityStore, IdentityStoreError, UserRecord};
 
+/// A direct connection or one borrowed from a pool; both deref to `Client`.
+type Connection = Box<dyn DerefMut<Target = Client> + Send>;
+
 /// A transaction-capable identity client backed by PostgreSQL.
 pub struct PgIdentityClient {
-    client: RefCell<Client>,
+    client: RefCell<Connection>,
 }
 
 impl PgIdentityClient {
@@ -25,15 +29,18 @@ impl PgIdentityClient {
     pub fn connect(dsn: &str) -> Result<Self, IdentityStoreError> {
         let client = Client::connect(dsn, NoTls)
             .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
-        Ok(Self {
-            client: RefCell::new(client),
-        })
+        Ok(Self::from_client(client))
     }
 
     /// Wraps an existing `postgres::Client`.
     pub fn from_client(client: Client) -> Self {
+        Self::from_pooled(Box::new(client))
+    }
+
+    /// Wraps a pooled connection, which returns to its pool when dropped.
+    pub fn from_pooled(connection: impl DerefMut<Target = Client> + Send + 'static) -> Self {
         Self {
-            client: RefCell::new(client),
+            client: RefCell::new(Box::new(connection)),
         }
     }
 
