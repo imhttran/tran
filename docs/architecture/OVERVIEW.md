@@ -13,6 +13,7 @@ Next.js UI talks only to the Axum API through same-origin `/api/*` requests.
 | `src/bin/eval.rs` | Score retrieval against `evals/retrieval.json` |
 | `src/bin/expbilingual.rs` | RAG-024 bilingual experiment harness |
 | `src/bin/api.rs` | Axum API: health, upload/ingest, status, query |
+| `src/bin/genealogy.rs` | Genealogy ingest and eligibility adapters |
 | `web/` | Next.js UI; the browser calls only same-origin Next.js `/api/*` |
 
 ## Ingest path
@@ -71,8 +72,26 @@ The API additionally returns the cited passages as structured `sources`
 | `query_service` | Shared CLI/API question path |
 | `evaluation` | Recall/precision evaluation harness |
 | `bilingual` | RAG-024 experiment arms, cache, and pinned generation |
+| `genealogy` | Genealogy schema contract, ingest, and eligibility model |
 | `api` | Axum router, validation, structured errors, loopback binding |
 | `web/` | Next.js upload/status/question/cited-answer UI and Playwright tests |
+
+## Verification commands
+
+The closure and integration gates use these commands. Each name matches a
+`Makefile` target or a direct `cargo` invocation:
+
+| Gate | Command |
+| --- | --- |
+| Format | `cargo fmt --check` (target: `make rust-fmt`) |
+| Build | `cargo build --locked` (target: `make rust-build`) |
+| Tests | `cargo test --locked` (target: `make rust-test`) |
+| Lints | `cargo clippy --locked --all-targets -- -D warnings` (target: `make rust-clippy`) |
+| DB schema | `make db-up` / `make db-schema` then `cargo test --locked --test genealogy_schema` |
+| RAG regression | `make rust-acceptance-k3` and `make rust-acceptance-functional` |
+
+`make rust-check` runs format, build, tests, lints, and the transition-evidence
+crates. `make check` adds the web checks.
 
 ## Boundaries
 

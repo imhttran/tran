@@ -26,6 +26,7 @@ pub mod document;
 pub mod embedding;
 pub mod evaluation;
 pub mod fingerprint;
+pub mod genealogy;
 pub mod generation;
 pub mod identity;
 pub mod identity_store;

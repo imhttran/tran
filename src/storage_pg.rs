@@ -223,6 +223,14 @@ impl PgStore {
         PgStore { pool }
     }
 
+    /// Returns a pooled connection so a caller module (for example the
+    /// genealogy layer) can run its own statements on the shared pool.
+    ///
+    /// The connection returns to the pool when it is dropped.
+    pub fn pooled_connection(&self) -> Result<PooledConnection<PgPoolManager>, PgStoreError> {
+        self.connection()
+    }
+
     /// Returns a pooled connection. The connection returns to the pool when it
     /// is dropped, so the pool is reused rather than reopened per operation.
     fn connection(&self) -> Result<PooledConnection<PgPoolManager>, PgStoreError> {

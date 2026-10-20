@@ -1,9 +1,9 @@
 # PLAN-TRAN-RBAC — Private Genealogy Access and Head of Family
 
 **Repository:** `https://github.com/imhttran/tran`  
-**Status:** PROPOSED — not implemented  
+**Status:** TRAN-003 RECONCILIATION — existing PR #7 is open; implementation NOT YET ACCEPTED against merged TRAN-002  
 **Scope:** Rust Axum API, PostgreSQL/pgvector, Next.js UI, genealogy catalog integration  
-**Execution:** SOP-managed, one end-to-end run, approval only at real security or publication gates
+**Execution:** SOP-managed reconciliation of existing PR #7; preserve verified work, use focused verification, and require approval at genuine security, data, and merge gates
 
 ## Goal
 
@@ -40,105 +40,233 @@ Secure the Tran family genealogy project with user identities, role-based author
 
 All permissions require authentication. No role is assigned from client-provided headers or request-body fields. Absence of identity or permission denies access.
 
-## Phase 0 — Preflight and baseline
 
-1. Work from current `origin/main` in a new `feat/tran-rbac` branch or isolated worktree. Preserve existing changes. Inspect prior passing check evidence and reuse it where inputs are unchanged.
-2. Map real Rust API endpoints (`/api/health`, `/api/query`, `/api/documents/ingest`, `/api/documents/{source}/status`), CLI entry points, Next.js rewrite, and database reads/writes.
-3. Verify whether the people/branch genealogy catalog is present. If absent, add only the minimum stable `branches`, `people`, `relationships`, and cited evidence schema needed for the designation; do not invent or bulk-assign people.
-4. Document the application identity approach. Use standards-based OIDC sign-in for multi-user browser access, verified on the Rust side; bind accounts by immutable provider subject, never email alone. Do not expose app endpoints publicly until real identity-provider settings and TLS are configured. For automated tests use isolated cryptographically valid test identities; no production auth-bypass switch.
-5. Record baseline test results and any environment limitations.
+## Current baseline and source of truth (2026-10-20)
 
-**Gate:** No production secrets in repo or logs. No internet-facing deploy without functioning authentication and authorization.
+TRAN-002 (PR #6) is merged into main. The merged TRAN-002 plan, genealogy schema contract, migrations 0001–0005, source-provenance checks, catalog parser, local CLI, review workflow, and pure Head of Family eligibility function are the **canonical genealogy implementation**. TRAN-003 must consume these interfaces rather than recreate a second people/relationships/assertions model.
 
-## Phase 1 — Fix corpus isolation before RBAC
+The source inventory consists of four private originals/derivatives under docs/tran/. The catalog dry run reported 263 entries (259 parsed, 4 ambiguous), not 263 verified distinct relatives. The recorded disposable import produced 356 unverified assertions and **zero verified** assertions. Do not automatically convert candidate records into an approved family tree or Head of Family.
 
-1. Fix PostgreSQL `replace_source` to replace rows by `(corpus, source)`, not filename alone. `src/storage_pg.rs` currently deletes using `DELETE FROM documents WHERE source = $1`.
-2. Review `unchanged_source`, content-hash lookup, `source_status`, vector search, keyword search, expansion, direct row reads, and CLI reads for accidental cross-corpus access. Pass an explicit, validated corpus identity through every operation.
-3. Deny requests for a corpus not in the authenticated user's grants. Treat the existing `trusted` corpus as private; do not expose legacy `NULL`-corpus rows automatically.
-4. Cover two corpora with the same filename and different content. Reingestion, status, and Q&A must not change or disclose the other corpus.
+The earlier RBAC implementation branch is **sop/plan-tran-rbac**, PR #7, and already contains useful work: corpus-scoped document operations, Rust identity roles and grants, a migration for identity tables, API authorization, a Next.js server-side proxy, UI components, and synthetic browser tests. Its pre-TRAN-002 green checks **do not establish post-merge readiness**. Reconcile it with current origin/main and prove each acceptance criterion below; do not restart or create a duplicate implementation PR.
 
-**Gate:** Cross-corpus overwrite, search-result leakage, and citation leakage tests all pass.
+| Existing surface | Disposition for TRAN-003 |
+| --- | --- |
+| TRAN-002 genealogy database, source evidence, review, eligibility | Reuse unchanged; extend additively only if a required API or appointment capability is absent |
+| RAG database and documents table | Preserve contents, indexes, and existing migration history |
+| PR #7 corpus-scoped reads and writes | Retain after regression verification; repair only verified gaps |
+| PR #7 identity migration, role policy, and proxy | Retain after integration; harden token verification, login, session, and negative tests |
+| PR #7 genealogy pages | Wire to real authorized Rust endpoints, not placeholder responses |
+| PR #7 Head of Family approval handler | Replace pending_catalog placeholder with an evidence-backed, transactional workflow |
+| PR #4 merged planning baseline | This file remains the canonical plan; no competing plan or schema |
 
-## Phase 2 — Authentication and authorization
+### Persistence and trust boundaries
 
-1. Add an identity adapter and a central permission policy in Rust. Validate OIDC token issuer, audience, signature (using cached JWKS), expiration, and subject. Reject tokens on verification errors; do not use unverified claims to grant roles.
-2. Add database-backed `users`, `role_assignments`, `corpus_grants`, and `audit_events` with migrations. Keep role changes transactional and audited; use an explicit, secure initial-admin bootstrap.
-3. Require `viewer` for `/api/query` and document status; `editor` for ingestion; `admin` for account, role, and Head of Family approval APIs. Keep `/api/health` public and limited to non-sensitive availability only.
-4. Replace the unrestricted Next.js `/api/*` rewrite with a server-side authenticated API route/proxy that forwards only the verified identity credential to Axum. Prevent direct client-injected identity headers from elevating permissions. Apply CSRF protection for cookie-authenticated mutations, and secure/HttpOnly/SameSite session cookies.
-5. Ensure unauthorized requests fail **before** document staging, database reads/writes, embeddings, or model generation. Return `401` for missing/invalid login and `403` for authenticated insufficient permission. Rate-limit sensitive operations.
-6. Explicitly document the CLI trust boundary: CLI is a local operator interface, not a remote family-user API. Do not suggest browser RBAC protects unrestricted shell/database access.
+- **DATABASE_URL:** existing RAG PostgreSQL database; RAG document/corpus operations and application identity tables may be hosted here. Authorization must never depend on request-supplied roles or corpus names.
+- **GENEALOGY_DATABASE_URL:** independent, explicitly configured local genealogy database, protected by the TRAN-002 guard. Only its existing tables/migrations own persons, branches, evidence, assertions, review history, and Head of Family appointments. Never silently fall back to DATABASE_URL.
+- Application account (immutable issuer + subject) is not automatically a genealogy person. Keep actor identifiers auditable without cross-database foreign keys. Appointment eligibility and its authoritative appointment audit must commit atomically in the genealogy database. Identity/role changes remain independently transactional and audited.
+- Rust Axum enforces identity, permission, record/corpus grants, and privacy before any document fetch, DB write, embedding, or model call. Next.js only presents allowed results and securely mediates the browser session.
+- Original genealogy evidence must be a valid original source and locator as governed by TRAN-002. Catalogs, translations, transcriptions, RAG answers, and name similarity do not independently prove any relationship.
 
-**Gate:** All endpoints deny by default. Neither direct Axum calls nor Next.js proxy requests bypass RBAC. Identity-provider outages do not become anonymous access.
+## Common SOP delivery contract
 
-## Phase 3 — Genealogy Head of Family
+- Execute the stages below as deterministic **TRAN-003A–TRAN-003G** tasks, with dependencies, acceptance checks, and preserved test evidence. The task list is a work plan, not a claim that anything has already passed.
+- First inspect the existing PR #7 and latest main, including changed files, SOP state, private/untracked artifacts, migration histories, and passing tests. Preserve unrelated work and never blindly reset, discard, force-push, or rebase a dirty tree.
+- Use verify-first for work genuinely implemented in PR #7. Re-run affected checks when the code, migrations, or prerequisites changed; do not treat prior reports as current acceptance evidence.
+- Tests and tracked documentation use **synthetic genealogy data only**. Never commit docs/tran/, its audit subdirectory, private source excerpts or hashes, local database exports, real family names, or living-person details. Check both staged and committed diffs.
+- Real family records remain candidate, unverified, needs_review, or disputed until the required source evidence and authorized review are complete. No model-generated answer grants permissions or approves a family designation.
+- Use disposable local PostgreSQL databases for migration and DB integration testing. Do not reset the RAG database or local private genealogy database as a test convenience.
 
-1. Establish the canonical identifier for the **third branch** from reviewed genealogy catalog evidence. Do not conflate branch 3 with generation 3.
-2. Add cited relationship, birth-order, branch membership, and living-status assertions. Each assertion can be `verified`, `unverified`, or `disputed`; living status also records a reviewer, evidence, and confirmation date.
-3. Add `head_of_family_appointments`: candidate person ID, branch ID, approved-by user ID, evidence references, effective timestamp, revoked/suspended timestamp, and reason. Enforce one current approved appointment per branch in the database.
-4. Centralize a server-side eligibility function. Check every domain rule within the same transaction that assigns the designation; lock relevant person/appointment rows or use equivalent serializable protection to prevent concurrent appointments and stale validation.
-5. On death, dispute, or revocation of verified living status, prevent new approvals; suspend or revoke an active appointment by a documented policy. Never silently transfer the title.
-6. Add an admin approval workflow. Editors can submit evidence-backed proposals. The approval API re-evaluates eligibility; no role or form field can override failed checks.
-7. Keep the Head of Family title separate from user `admin` privileges. Any extra authority for this family title requires a later explicit permission policy.
+## TRAN-003A — Preflight, branch reconciliation, and contract mapping
 
-**Gate:** Only a verified living first-born male of the documented third branch can hold an active designation. Every rejection explains which *validation category* failed, without leaking protected records.
+**Dependencies:** TRAN-002 merged; PR #4 planning baseline merged; PR #7 exists.
 
-## Phase 4 — Browser experience
+### Deliverables
 
-1. Add sign-in/sign-out and a session-aware account menu.
-2. Hide upload controls for viewers. Display read-only search and genealogy records only when authorized; retain Rust API enforcement regardless of UI state.
-3. Add an evidence-linked Head of Family view. Add editor nomination and admin approval/revocation controls with explicit confirmation.
-4. Show missing or conflicting evidence as `Unverified` or `Needs review`; never generate a family head from an LLM answer.
-5. Keep sensitive account/identity fields, OIDC credentials, and database URLs off the browser and out of responses.
+- Confirm origin/main contains TRAN-002 migrations 0001–0005, evidence review/provenance, and eligibility code. Fetch PR #7 and compare its Rust, SQL, Next.js, and test surfaces against current main.
+- Continue on **sop/plan-tran-rbac** / PR #7, not a new implementation branch. Resolve conflicts conservatively, preserving original RAG and genealogy migrations. Do not overwrite TRAN-002 files from the older RBAC branch.
+- Inventory current Axum route registrations, UI-requested endpoints, OIDC support, Next.js session/login handlers, identity grants, genealogy DB access, and appointment persistence. Record a grounded route/permission/data-owner matrix.
+- Record baseline checks and identify previously verified code that needs no changes, confirmed defects that need repair, and environment-only deployment prerequisites.
+- Reconcile any existing SOP task state without falsifying past completions, bypassing approvals, or restarting satisfied tasks.
 
-**Gate:** Playwright covers all three roles, sign-in expiry, permission denial, proposal, approval, and no-access states.
+### Acceptance criteria
 
-## Phase 5 — Verification, security review, and delivery
+- The candidate PR #7 branch includes the full merged TRAN-002 model and no duplicate/conflicting genealogy schema, with an attributable diff and safe worktree state.
+- Every browser genealogy operation maps to an existing or explicitly planned server route with a named permission, data source, and expected denial behavior.
+- A public-safe preflight document records exact SHA, changed baseline, outstanding tasks, and verification limitations.
 
-### Mandatory negative and concurrency cases
+### Verification
 
-- Anonymous `POST /api/query`, upload, and source-status requests: `401`, no side effects.
-- Viewer upload or family-head assignment: `403`, no side effects.
-- Editor role assignment, account invite, or family-head approval: `403`.
-- Admin actions: success with valid input, audit entry created.
-- Forged or expired token, wrong issuer/audience, altered role claim: denied.
-- Cross-corpus source collision, embedding retrieval, keyword retrieval, citation, status, and ingestion: no leak or overwrite.
-- Third branch only; first-born male only; verified living only. Female, younger male, different branch, deceased, unknown or disputed living status, and incomplete parent/birth-order evidence: rejected.
-- Two concurrent approvals for branch 3: at most one commits.
-- Status changes after an approved designation: title does not continue as an unreviewed active designation.
-- Permission changes take effect without trusting stale client role claims.
-- Admin actions emit actor, action, target, timestamp, and outcome, but never secrets or unnecessary living-person details.
-- Genealogy imports, embeddings, and RAG citations cannot bypass source-provenance checks.
+- Git ancestry/diff and migration inventory checks; existing Rust/build/CI smoke checks when reconciliation changes code.
+- Confirm git ls-files docs/tran/ is empty and the source inventory still contains only the four original files.
 
-### Commands and milestones
+## TRAN-003B — Corpus isolation and default-deny review
 
-```bash
+**Dependencies:** TRAN-003A.
+
+### Deliverables
+
+- Reuse PR #7's scoped (corpus, source) replacement and review unchanged-source checks, status, keyword/vector retrieval, expansion, citation resolution, ingestion, and local CLI boundaries for isolation.
+- Validate the trusted corpus is private; legacy NULL-corpus rows and ungranted corpora are not exposed by default. Never infer corpus access from a filename or request header.
+- Require authenticated grants on Rust handlers; deny before DB mutation, staging, embeddings, or model generation. Limit public health to nonsensitive status.
+
+### Acceptance criteria
+
+- Two authorized corpora with the same document filename retain independent data on replacement and reimport.
+- An ungranted user cannot read, replace, search, expand, or retrieve citations or source-status details from another corpus.
+- Anonymous/expired/forged credentials fail closed with no side effects; viewers cannot upload and client-provided role/corpus headers cannot elevate permissions.
+
+### Verification
+
+- Synthetic PostgreSQL same-filename/cross-corpus tests; Rust API direct-call 401/403 tests; no-leak retrieval and citation cases. Reuse existing PR #7 tests only after confirming the merged baseline.
+
+## TRAN-003C — OIDC authentication, sessions, and roles
+
+**Dependencies:** TRAN-003A; TRAN-003B's trust-boundary contract.
+
+### Deliverables
+
+- Retain database-backed users, role assignments, corpus grants, audit events, and secure bootstrap when reconciled, but verify all required migrations and effective-permission behavior.
+- Replace PR #7's custom HS256-only JWT/JWKS path with a maintained standards-compliant token verifier supporting only the chosen provider's securely approved algorithms. Correctly parse JWK public keys, require verified issuer/audience/expiry/subject, and fail closed on unavailable or invalid keys. Do not introduce a shared secret in an exposed JWKS or silently accept unsigned tokens.
+- Implement a real standards-based OIDC authorization-code + PKCE browser sign-in/out flow (including state and nonce checks where applicable). Provider setup is an explicit deployment prerequisite; choose no provider without operator direction.
+- Secure HttpOnly, Secure, appropriately SameSite session cookies, session expiry/rotation, CSRF protection for browser cookie-authenticated mutations, and logging/redaction. Keep tokens and provider secrets off client-visible payloads.
+- Load roles and corpus grants from the server-side database by immutable issuer + subject. Changes and revocations take effect without trusting token role claims; administer role changes transactionally and audit them.
+- Preserve the local-operator CLI trust boundary; browser RBAC does not protect local shell or database credentials.
+
+### Acceptance criteria
+
+- Sign-in and sign-out actually work with an approved provider or a standards-compliant isolated synthetic provider in acceptance tests; the page does not claim a configured sign-in when it is only a placeholder.
+- Wrong issuer/audience/algorithm, malformed JWK, forged/expired token, replayed state, invalid session, provider outage, client-supplied roles, and CSRF failure deny securely.
+- Admin/editor/viewer role changes are enforced by Rust even with stale browser UI; direct Axum access does not bypass policy.
+- No public deployment or real-family multi-user enrollment without operator-configured OIDC, TLS, secure cookies, and initial-admin bootstrap.
+
+### Verification
+
+- Rust OIDC/security tests using generated synthetic signing keys; login/session/CSRF browser integration tests; role revocation/permission audit integration and negative tests.
+
+## TRAN-003D — Authorized genealogy read APIs on TRAN-002
+
+**Dependencies:** TRAN-003A; TRAN-003C.
+
+### Deliverables
+
+- Connect Rust handlers to the **existing** separate genealogy database through the guarded GENEALOGY_DATABASE_URL; do not copy or rebuild the person/assertion/branch/source evidence tables in the identity or RAG database.
+- Implement the browser-required read endpoints, including GET /api/genealogy/records and GET /api/genealogy/head-of-family, plus needed person, relationship, and citation-detail reads. Specify response contracts, pagination, statuses, and grant scopes.
+- Read existing TRAN-002 verified/unverified assertions and source-page links. Show candidate identities, conflicts, and uncertain relations as such; do not render candidate links as verified relatives.
+- Authorize before consulting genealogy DB or emitting existence-sensitive responses; ensure 401/403/no-access and error bodies cannot disclose protected names, pages, or branch associations.
+
+### Acceptance criteria
+
+- Authorized synthetic users can fetch a cited verified relationship and distinguish it from unknown, disputed, or missing evidence.
+- Anonymous and ungranted requests disclose neither records nor source existence; direct Rust and proxied Next.js behavior agrees.
+- Genealogy read operations use only the genealogy DB; RAG data and its migrations remain unchanged. Missing/unusable genealogy DB fails closed without falling back.
+
+### Verification
+
+- Disposable-DB Axum integration and response-schema tests; private-record non-disclosure tests; browser API-contract tests.
+
+## TRAN-003E — Head of Family nomination, appointment, and review
+
+**Dependencies:** TRAN-003C; TRAN-003D.
+
+### Deliverables
+
+- Reuse TRAN-002's pure eligibility decision and reviewed assertion/evidence rules. Branch 3 means the **verified third branch**, not generation 3; the first-born male's status and birth order must be evidenced, not inferred.
+- Extend genealogy/migrations/ additively for nomination, one-active-appointment-per-branch constraints, appointment evidence snapshots, reviewer/approver identity, status, revocation/suspension, and append-only audit events. Never duplicate TRAN-002 people/branches/assertions tables.
+- Implement editor nomination, admin approval/rejection, and admin revocation/suspension routes matching the Next.js contract. Authenticate and authorize each write; identify the person by stable key, not a free-text name.
+- In a genealogy-DB transaction, lock or serialize the competing appointment/eligible subject, re-evaluate verified evidence and living status, prevent stale approvals, enforce unique active appointment, and atomically record the appointment plus audit.
+- If living status becomes deceased, unknown, or disputed, suspend/revoke any affected designation according to an explicit reviewed policy. Never auto-appoint a successor or grant any administrator permission through the family title.
+- No actual family head is appointed by implementation or test runs. Real appointments require authorized review of current evidence, then explicit operator/family approval under the unresolved succession policy.
+
+### Acceptance criteria
+
+- Fully synthetic, independently verified first-born living male in the documented third branch can be approved only by an admin; verified evidence IDs and reviewer are recorded.
+- All missing/contested/deceased/younger/wrong-branch or gender/birth-order conditions are denied or reported undetermined, without automatic succession.
+- Two simultaneous approvals yield at most one active appointment. Evidence changes or revoked living-status verification cannot leave an unreviewed active title.
+- Viewer/editor cannot approve/revoke; Head of Family status does not alter RBAC privileges. Every real mutation is audited and cannot be mistaken for a placeholder success.
+
+### Verification
+
+- Synthetic domain tests plus transactional PostgreSQL concurrency, rollback, revocation, and eligibility/role separation tests; negative direct API and browser tests.
+
+## TRAN-003F — Browser and user-flow integration
+
+**Dependencies:** TRAN-003C; TRAN-003D; TRAN-003E.
+
+### Deliverables
+
+- Wire sign-in, sign-out, session-aware account menu, record browsing, citation drill-down, and the Head of Family view to real API results.
+- Keep upload/nomination/approval/revocation controls role-aware but always enforce the same permissions in Rust. Use real stable person/nomination/appointment IDs, not labels as identifiers.
+- Ensure POST/PUT/DELETE actions send the required CSRF header/token, await responses, surface success **only after** server confirmation, and show meaningful 401/403/409 and missing-evidence states.
+- Avoid leaked token/cookie/database/identity fields in HTML, client JavaScript, browser logs, and JSON response payloads.
+
+### Acceptance criteria
+
+- Playwright tests cover authenticated viewer, editor, admin, signed-out and expired cases, real upload denial, reviewed record queries, nomination, approval and revocation, and unresolved-evidence display.
+- Browser button clicks change persisted authorized state on the server in integration tests, rather than only dismiss confirmation dialogs.
+- No Head of Family designation appears without a verified active appointment. No LLM answer can cause an appointment.
+
+### Verification
+
+- make web-check and make web-e2e with a synthetic OIDC test authority and disposable databases; direct and proxied authorization parity tests.
+
+## TRAN-003G — End-to-end security, privacy, and closure
+
+**Dependencies:** TRAN-003A, TRAN-003B, TRAN-003C, TRAN-003D, TRAN-003E, TRAN-003F.
+
+### Deliverables
+
+- Validate clean installs and upgrades for both **distinct** database migration families, preserving existing documents and verified genealogy review history.
+- Record post-TRAN-002 integration evidence, all authorization/cryptography negatives, corpus-leakage and appointment-race results, browser outcomes, deployment prerequisites, and known limitations.
+- Update docs for OIDC provider setup, admin bootstrap, family-user invite/revocation, corpus grants, privacy, backup/restore, appointment evidence, and succession-policy ambiguity.
+- Record only public-safe synthetic validation and nonidentifying metrics in tracked evidence docs. Keep private real-data audit outputs under ignored docs/tran/audit/ and preserve the four original source file hashes.
+- Update existing PR #7 description and publish a focused verification report. Do not automatically merge, deploy, historicalize an unfinished plan, or delete worktrees/evidence.
+
+### Acceptance criteria
+
+- Deterministic required gates pass on the reconciled feature branch and GitHub Actions CI passes on that same commit.
+- Rust enforces all permissions, the separate genealogy-DB guard works, and all six stages have verifiable acceptance evidence.
+- No real genealogy record is promoted or appointed by a synthetic test; all source privacy checks pass; no real-person data appears in tracked diffs or CI.
+- SOP final result is PASS with no unresolved required approval and PR #7 is merge-ready on latest main, subject to explicit operator merge authorization.
+
+### Verification
+
+Run focused tests during development. At closure, run:
+
+~~~bash
 cargo fmt --check
+cargo build --locked
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 make rust-check
 make web-check
 make web-e2e
-```
+git diff --check
+git ls-files docs/tran/
+git check-ignore -v docs/tran/
+~~~
 
-Run focused tests after local changes; rerun the affected web/Rust checks as needed. Run the full integration gates at completion. If migrations change, verify clean install and upgrade against a copy of existing data, including rollback/backup instructions. Never weaken an acceptance check to obtain a green result.
+Run synthetic PostgreSQL migration clean-install and upgrade checks, genealogy provenance/rollback tests, OIDC-negative tests, two-corpus isolation tests, concurrent appointment tests, and applicable direct Rust API and real-browser acceptance checks. Verify the **staged diff** for private data; a green CI checkout by itself does not prove local privacy.
 
-### Definition of done
+## Dependencies
 
-1. New migrations and code are covered by deterministic tests; all supported test gates pass or record a concrete environmental blocker.
-2. Permissions are enforced by Rust services; browser UI only reflects them.
-3. Genealogy Head of Family eligibility is enforced server-side and auditable.
-4. Existing indexed family documents remain intact; identical filenames in distinct corpora are isolated.
-5. `docs/` describes setup, invite/admin operations, backup, role matrix, eligibility evidence, unresolved succession rule, and recovery.
-6. Open a PR with summary, test evidence, migration safety, rollout considerations, and remaining risks. Do not merge until approval and required CI gates pass.
+~~~text
+TRAN-003A -> TRAN-003B -> TRAN-003C -> TRAN-003D -> TRAN-003E -> TRAN-003F
+       \___________________________________________________________/
+                             TRAN-003G
+~~~
 
-## Stop conditions / explicit decisions
+Stages B and C may be developed independently after the preflight contracts are recorded, but the end-to-end security and privacy gates remain mandatory for G.
 
-- Stop before production/public deployment if an OIDC provider, TLS, secure session configuration, or administrative bootstrap is not available.
-- Do not approve any real Head of Family if canonical third-branch mapping, first-born male evidence, or recent living-status verification is missing or disputed. Keep the candidate **pending**.
-- Do not infer successor eligibility when the first-born male has died. Request a separate family-policy decision before changing succession behavior.
-- Stop before potentially destructive migration or reassignment if data must be reclassified without verified provenance. Require a backup and operator approval.
-- Continue automatically through nonblocked tasks; ask for approval only at genuine security, data, or merge gates.
+## Stop conditions and explicit operator decisions
 
-## SOP execution instruction
+- Stop before external/public deployment if a real OIDC provider, correct cryptographic verification, TLS, secure sessions, or initial-admin setup is unavailable. Local synthetic verification may continue.
+- Stop before any real Head of Family designation while third-branch mapping, first-born male parentage/birth order, recent living status, or original-source provenance is missing, disputed, or out of date. Never infer a successor; ask for a separate succession decision.
+- Stop before destructive migrations, production data moves, or ambiguous source reassignment. Require backups and operator approval. Do not reset actual family or RAG databases.
+- Stop on failing required deterministic gates and investigate without relaxing checks or fabricating PASS. Continue unaffected tasks only where SOP permits.
+- No plan execution, successful CI, or green local test authorizes an automatic merge, public rollout, private-data publication, or deletion of untracked SOP artifacts.
 
-Implement this plan end to end in `imhttran/tran`. Create a feature branch, fix the verified corpus isolation defect first, then add auth/RBAC, Head of Family rules, UI, tests, and documentation. Preserve unchanged passing evidence. Run focused verification after each phase and full integration verification before PR publication. Continue without repeated prompts until a real blocker or approval gate is reached. Do not assign a person as Head of Family unless all required source evidence is verified; do not invent an alternative succession rule.
+## Completion and PR policy
+
+The completion path is the **existing PR #7** against current origin/main. Use SOP read-only review and focused implementation/repair as appropriate; keep task-by-task verification and evidence. After gates pass, update that PR and request operator merge approval. After a confirmed merge, use /sop-publish to historicalize the eligible plan and safely preserve evidence; do not historicalize from CI success alone.
+
+The application remains private. A live family-tree experience and a real Head of Family appointment are distinct operational decisions, not side effects of merging code.
