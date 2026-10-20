@@ -21,9 +21,12 @@
 //! never carry display names, dates, source excerpts, or private hashes.
 
 pub mod candidate;
+pub mod reservation;
 pub mod username;
 
 pub use candidate::{
     classify, preview_candidates, CandidateError, CandidatePreview, CandidateRow, Classification,
     PreviewSummary, Reason,
 };
+pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
+pub use username::NameParts;
