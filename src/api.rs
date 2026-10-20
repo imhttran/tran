@@ -29,7 +29,7 @@ use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::genealogy::{
-    appointments, query as genealogy_query, resolve_genealogy_dsn, GenealogyError,
+    appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -177,6 +177,7 @@ impl AppState {
                 post(approve_head_of_family),
             )
             .route("/api/genealogy/records", get(genealogy_records))
+            .route("/api/genealogy/tree", get(genealogy_tree))
             .route(
                 "/api/genealogy/head-of-family",
                 get(genealogy_head_of_family),
@@ -1167,6 +1168,51 @@ async fn genealogy_records(State(state): State<AppState>, headers: HeaderMap) ->
                 "genealogy_unavailable",
                 "the genealogy task failed",
             )
+        }
+    }
+}
+
+/// Authorized, bounded, read-only genealogy graph.
+async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        genealogy_tree::load_tree(&mut client).map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(graph)) => {
+            let people: Vec<_> = graph.people.iter().map(|person| serde_json::json!({
+                "record_id": person.person_key,
+                "person_label": person.display_name,
+                "evidence_status": person.evidence_status,
+            })).collect();
+            let links: Vec<_> = graph.links.iter().map(|link| serde_json::json!({
+                "from_id": link.from_key,
+                "to_id": link.to_key,
+                "kind": link.kind,
+                "evidence_status": link.evidence_status,
+                "evidence": evidence_json(&link.citations),
+            })).collect();
+            Json(serde_json::json!({
+                "people": people,
+                "links": links,
+                "truncated": graph.truncated,
+            })).into_response()
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: genealogy tree failed: {message}");
+            error(StatusCode::SERVICE_UNAVAILABLE, "genealogy_unavailable",
+                "the genealogy store is unavailable")
+        }
+        Err(err) => {
+            eprintln!("api: genealogy tree task failed: {err}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "genealogy_unavailable",
+                "the genealogy task failed")
         }
     }
 }
