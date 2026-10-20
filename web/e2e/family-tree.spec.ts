@@ -181,6 +181,18 @@ test("reveal and layout terminate on cycles, shared ancestors, and multiple pare
   expect([...next]).toEqual(["U"]); // Only C's collapsed ancestors were expanded.
 });
 
+test("reveal reaches a person whose only route is a spouse of a hidden branch", () => {
+  // R → S, S married to A, parent cycle A ⇄ B; collapsing R hides S.
+  const g: TreeGraph = {
+    people: [p("R"), p("S"), p("A"), p("B")],
+    links: [pc("R", "S"), { ...pc("S", "A"), kind: "spouse" }, pc("A", "B"), pc("B", "A")],
+    truncated: false,
+  };
+  const collapsed = new Set(["R"]);
+  expect(shown(g, revealPerson(g, collapsed, "A"))).toContain("A");
+  expect(shown(g, revealPerson(g, collapsed, "S"))).toContain("S");
+});
+
 const branchGraph = {
   people: branches.people.map((x) => ({ ...x, person_label: "Person " + x.record_id })),
   links: [
