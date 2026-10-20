@@ -277,7 +277,10 @@ const PAGE_MARKERS: [&str; 4] = ["trang", "page", "p.", "pdf"];
 fn extract_pages(text: &str) -> (Vec<u32>, Vec<String>) {
     let mut pages = Vec::new();
     let mut unresolved = Vec::new();
-    let lower = text.to_lowercase();
+    // The markers are ASCII, so use the length-preserving lowering. A full
+    // `to_lowercase` can change byte length (for example `İ`), which would make
+    // `abs` an invalid boundary in `text`.
+    let lower = text.to_ascii_lowercase();
     for marker in PAGE_MARKERS {
         let mut search = 0;
         while let Some(pos) = lower[search..].find(marker) {
@@ -512,8 +515,12 @@ fn strip_heading(line: &str) -> String {
 fn extract_name_variants(raw: &str) -> Vec<String> {
     let mut variants = Vec::new();
     for line in raw.lines() {
+        // `idx` comes from the ASCII lowering and is used to slice `line`, so it
+        // must be byte-length preserving. The Unicode keyword check below keeps
+        // its own full lowercasing.
+        let ascii_lower = line.to_ascii_lowercase();
         let lower = line.to_lowercase();
-        if let Some(idx) = lower.find("alias") {
+        if let Some(idx) = ascii_lower.find("alias") {
             if let Some(pos) = line[idx..].find([':', '=']) {
                 let value = line[idx + pos + 1..].trim();
                 if !value.is_empty() {
@@ -560,50 +567,59 @@ fn extract_relationships(raw: &str) -> Vec<RawRelationship> {
     let mut out = Vec::new();
     for line in raw.lines() {
         let lower = line.to_lowercase();
-        let is_parent = lower.contains("cha")
-            || lower.contains("mẹ")
-            || lower.contains("me:")
-            || lower.contains("parent")
-            || lower.contains("con");
-        let is_spouse = lower.contains("vợ")
-            || lower.contains("vo:")
-            || lower.contains("chồng")
-            || lower.contains("chong")
-            || lower.contains("spouse")
-            || lower.contains("wife")
-            || lower.contains("husband");
+        let Some(pos) = line.find([':', '=']) else {
+            continue;
+        };
+        // Match the field label, not a substring of the whole line: `contains("con")`
+        // would turn "second marriage" into a parent-child assertion, and
+        // `contains("cha")` would match "Chandler".
+        let label = line[..pos]
+            .rsplit('|')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        let label_matches =
+            |keyword: &str| label == keyword || label.ends_with(&format!(" {keyword}"));
+        let is_parent = [
+            "cha", "mẹ", "me", "parent", "con", "child", "father", "mother",
+        ]
+        .iter()
+        .any(|keyword| label_matches(keyword));
+        let is_spouse = ["vợ", "vo", "chồng", "chong", "spouse", "wife", "husband"]
+            .iter()
+            .any(|keyword| label_matches(keyword));
         if !(is_parent || is_spouse) {
             continue;
         }
-        if let Some(pos) = line.find([':', '=']) {
-            let value = line[pos + 1..].trim();
-            if value.is_empty() {
-                continue;
-            }
-            let kind = if is_spouse {
-                AssertionKind::Spouse
-            } else {
-                AssertionKind::ParentChild
-            };
-            // A relationship that names no distinct person and only repeats a
-            // same-name mention is unsourced.
-            let reason = if lower.contains("cùng tên")
-                || lower.contains("cung ten")
-                || lower.contains("same name")
-                || lower.contains("đoán")
-                || lower.contains("doan")
-                || lower.contains("suy")
-            {
-                Some(ReasonCode::UnsourcedRelationship)
-            } else {
-                None
-            };
-            out.push(RawRelationship {
-                kind,
-                value: value.to_string(),
-                reason,
-            });
+        let value = line[pos + 1..].trim();
+        if value.is_empty() {
+            continue;
         }
+        let kind = if is_spouse {
+            AssertionKind::Spouse
+        } else {
+            AssertionKind::ParentChild
+        };
+        // A relationship that names no distinct person and only repeats a
+        // same-name mention is unsourced.
+        let reason = if lower.contains("cùng tên")
+            || lower.contains("cung ten")
+            || lower.contains("same name")
+            || lower.contains("đoán")
+            || lower.contains("doan")
+            || lower.contains("suy")
+        {
+            Some(ReasonCode::UnsourcedRelationship)
+        } else {
+            None
+        };
+        out.push(RawRelationship {
+            kind,
+            value: value.to_string(),
+            reason,
+        });
     }
     out.sort_by(|a, b| a.value.cmp(&b.value));
     out

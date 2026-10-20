@@ -38,12 +38,17 @@ use r2d2_postgres::{postgres::NoTls, PostgresConnectionManager};
 use thiserror::Error;
 
 use crate::corpus::Corpus;
+use crate::document::Chunk;
 use crate::storage::{
     validate_embedding_dim, DimensionMismatchError, DocumentStore, StoredChunk, EMBEDDING_DIM,
 };
 use crate::transaction::{validate_all_dims, validate_chunk_corpora, ReplaceError, SourceReplacer};
 
 type PgPoolManager = PostgresConnectionManager<NoTls>;
+
+/// The document columns in write order, shared by the single-row and batch
+/// inserts so a column addition cannot drift between them.
+const DOCUMENT_COLUMNS: &str = "content, source, section, chunk_index, language, page, corpus, content_hash, embed_model, embedding_dim, chunker_config, ingested_at, embedding";
 
 /// A reusable pool of Postgres connections.
 ///
@@ -56,21 +61,27 @@ pub type PgPool = Pool<PgPoolManager>;
 /// reads).
 #[derive(Debug, Error)]
 pub enum PgStoreError {
+    /// The DSN could not be parsed.
+    #[error("invalid Postgres DSN: {0}")]
+    Config(#[source] postgres::Error),
     /// The connection pool could not be built from the DSN.
     #[error("failed to build the Postgres connection pool: {0}")]
     Pool(String),
     /// A pooled connection could not be obtained.
     #[error("failed to acquire a pooled Postgres connection: {0}")]
-    Connection(String),
+    Connection(#[source] r2d2::Error),
     /// The database returned an error for a statement.
     #[error("Postgres query failed: {0}")]
-    Query(String),
+    Query(#[source] postgres::Error),
     /// The embedding dimension did not match the schema.
     #[error(transparent)]
     Dimension(#[from] DimensionMismatchError),
     /// A stored `embedding` value could not be decoded into `Vec<f64>`.
     #[error("failed to decode the stored embedding: {0}")]
     Embedding(String),
+    /// A stored row did not match the expected column types.
+    #[error("failed to decode a stored row: {0}")]
+    Decode(#[source] postgres::Error),
     /// A corpus identity was missing or invalid.
     #[error("invalid corpus: {0}")]
     Corpus(String),
@@ -84,7 +95,7 @@ pub enum PgStoreError {
 pub fn create_pool(dsn: &str) -> Result<PgPool, PgStoreError> {
     let config = dsn
         .parse::<r2d2_postgres::postgres::Config>()
-        .map_err(|err| PgStoreError::Pool(format!("invalid DSN: {err}")))?;
+        .map_err(PgStoreError::Config)?;
     let manager = PostgresConnectionManager::new(config, NoTls);
     // `build_unchecked` does not wait for a connection, matching the documented
     // lazy contract (r2d2's `build` eagerly establishes `min_idle` connections).
@@ -196,7 +207,7 @@ impl PgStore {
                  FROM documents WHERE corpus = $1 AND source = $2 ORDER BY chunk_index, id",
                 &[&corpus, &source],
             )
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -234,9 +245,7 @@ impl PgStore {
     /// Returns a pooled connection. The connection returns to the pool when it
     /// is dropped, so the pool is reused rather than reopened per operation.
     fn connection(&self) -> Result<PooledConnection<PgPoolManager>, PgStoreError> {
-        self.pool
-            .get()
-            .map_err(|err| PgStoreError::Connection(err.to_string()))
+        self.pool.get().map_err(PgStoreError::Connection)
     }
 
     /// Reads every row matching `content_hash`, optionally narrowed by `source`,
@@ -271,7 +280,7 @@ impl PgStore {
                 &[&corpus.as_str(), &content_hash],
             ),
         }
-        .map_err(|err| PgStoreError::Query(err.to_string()))?;
+        .map_err(PgStoreError::Query)?;
 
         rows.iter().map(row_to_chunk).collect()
     }
@@ -290,9 +299,50 @@ impl PgStore {
                  FROM documents WHERE corpus = $1 ORDER BY id",
                 &[&corpus],
             )
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
 
         rows.iter().map(row_to_chunk).collect()
+    }
+
+    /// Reads the retrieval fields for `corpus` without the embedding.
+    ///
+    /// Expansion only needs content and provenance. Selecting `embedding::text`
+    /// and parsing 768 floats per row would make every query pay for data it
+    /// discards.
+    pub fn chunks_for_corpus(&self, corpus: &str) -> Result<Vec<Chunk>, PgStoreError> {
+        let mut conn = self.connection()?;
+        let rows = conn
+            .query(
+                "SELECT content, source, section, chunk_index, language, page \
+                 FROM documents WHERE corpus = $1 ORDER BY id",
+                &[&corpus],
+            )
+            .map_err(PgStoreError::Query)?;
+
+        rows.iter()
+            .map(|row| {
+                let chunk_index: Option<i32> =
+                    row.try_get("chunk_index").map_err(PgStoreError::Decode)?;
+                let page: Option<i32> = row.try_get("page").map_err(PgStoreError::Decode)?;
+                Ok(Chunk {
+                    content: row.try_get("content").map_err(PgStoreError::Decode)?,
+                    source: row
+                        .try_get::<_, Option<String>>("source")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    section: row
+                        .try_get::<_, Option<String>>("section")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    language: row
+                        .try_get::<_, Option<String>>("language")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    chunk_index: chunk_index.unwrap_or(0).max(0) as u32,
+                    page: page.and_then(|page| u32::try_from(page).ok()),
+                })
+            })
+            .collect()
     }
 
     /// Searches `corpus` by vector similarity using pgvector, returning at most
@@ -316,12 +366,10 @@ impl PgStore {
                  ORDER BY embedding <=> $1::text::vector LIMIT $3",
                 &[&literal, &corpus, &(top_k as i64)],
             )
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
         rows.iter()
             .map(|row| {
-                let similarity: f64 = row
-                    .try_get(14)
-                    .map_err(|err| PgStoreError::Query(err.to_string()))?;
+                let similarity: f64 = row.try_get(14).map_err(PgStoreError::Query)?;
                 Ok(SqlHit {
                     row: row_to_chunk(row)?,
                     similarity,
@@ -358,12 +406,10 @@ impl PgStore {
                  ORDER BY rank DESC LIMIT $2",
                 &[&query, &(top_k as i64), &config, &corpus],
             )
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
         rows.iter()
             .map(|row| {
-                let keyword_score: f64 = row
-                    .try_get(14)
-                    .map_err(|err| PgStoreError::Query(err.to_string()))?;
+                let keyword_score: f64 = row.try_get(14).map_err(PgStoreError::Query)?;
                 Ok(SqlHit {
                     row: row_to_chunk(row)?,
                     similarity: 0.0,
@@ -378,8 +424,7 @@ impl PgStore {
     /// point an unreachable database is observed.
     pub fn ping(&self) -> Result<(), PgStoreError> {
         let mut conn = self.connection()?;
-        conn.execute("SELECT 1", &[])
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+        conn.execute("SELECT 1", &[]).map_err(PgStoreError::Query)?;
         Ok(())
     }
 
@@ -438,7 +483,7 @@ impl PgStore {
         let mut conn = self.connection()?;
         let rows = conn
             .query(sql.as_str(), &params)
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
         rows.iter().map(row_to_chunk).collect()
     }
 
@@ -460,7 +505,7 @@ impl PgStore {
                  FROM documents WHERE corpus = $1 AND id = $2",
                 &[&corpus.as_str(), &id],
             )
-            .map_err(|err| PgStoreError::Query(err.to_string()))?;
+            .map_err(PgStoreError::Query)?;
 
         match rows.first() {
             Some(row) => Ok(Some(row_to_chunk(row)?)),
@@ -474,26 +519,38 @@ impl PgStore {
 /// The selected column order matches the `SELECT` list in [`PgStore`]'s read
 /// functions and the field order of [`StoredChunk`].
 fn row_to_chunk(row: &Row) -> Result<StoredChunkRow, PgStoreError> {
-    let embedding_text: String = row
-        .try_get(13)
-        .map_err(|err| PgStoreError::Embedding(err.to_string()))?;
+    let embedding_text: String = row.try_get(13).map_err(PgStoreError::Decode)?;
     let embedding = parse_vector(&embedding_text)?;
 
+    // Every column is decoded fallibly. A schema or type change must surface as
+    // an error, never as a panic or a silently zeroed provenance field.
     Ok(StoredChunkRow {
-        id: row.get("id"),
+        id: row.try_get("id").map_err(PgStoreError::Decode)?,
         chunk: StoredChunk {
-            content: row.get("content"),
-            source: row.get("source"),
-            section: row.get("section"),
-            chunk_index: row.get("chunk_index"),
-            language: row.get("language"),
-            page: row.get("page"),
-            corpus: row.get("corpus"),
-            content_hash: row.try_get("content_hash").unwrap_or_default(),
-            embed_model: row.try_get("embed_model").unwrap_or_default(),
-            embedding_dim: row.try_get("embedding_dim").unwrap_or(0),
-            chunker_config: row.try_get("chunker_config").unwrap_or_default(),
-            ingested_at: row.try_get("ingested_at").unwrap_or_default(),
+            content: row.try_get("content").map_err(PgStoreError::Decode)?,
+            source: row.try_get("source").map_err(PgStoreError::Decode)?,
+            section: row.try_get("section").map_err(PgStoreError::Decode)?,
+            chunk_index: row.try_get("chunk_index").map_err(PgStoreError::Decode)?,
+            language: row.try_get("language").map_err(PgStoreError::Decode)?,
+            page: row.try_get("page").map_err(PgStoreError::Decode)?,
+            corpus: row.try_get("corpus").map_err(PgStoreError::Decode)?,
+            content_hash: row
+                .try_get::<_, Option<String>>("content_hash")
+                .map_err(PgStoreError::Decode)?
+                .unwrap_or_default(),
+            embed_model: row
+                .try_get::<_, Option<String>>("embed_model")
+                .map_err(PgStoreError::Decode)?
+                .unwrap_or_default(),
+            embedding_dim: row
+                .try_get::<_, Option<i32>>("embedding_dim")
+                .map_err(PgStoreError::Decode)?
+                .unwrap_or(0),
+            chunker_config: row
+                .try_get::<_, Option<String>>("chunker_config")
+                .map_err(PgStoreError::Decode)?
+                .unwrap_or_default(),
+            ingested_at: row.try_get("ingested_at").map_err(PgStoreError::Decode)?,
             embedding,
         },
     })
@@ -518,13 +575,14 @@ impl DocumentStore for PgStore {
         Corpus::new(corpus).map_err(|err| PgStoreError::Corpus(err.to_string()))?;
 
         let embedding_literal = format_vector(&chunk.embedding);
+        let sql = format!(
+            "INSERT INTO documents ({DOCUMENT_COLUMNS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::timestamptz, $13::text::vector)"
+        );
 
         let mut conn = self.connection()?;
         conn.execute(
-            "INSERT INTO documents \
-             (content, source, section, chunk_index, language, page, corpus, \
-              content_hash, embed_model, embedding_dim, chunker_config, ingested_at, embedding) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::timestamptz, $13::text::vector)",
+            &sql,
             &[
                 &chunk.content as &(dyn ToSql + Sync),
                 &chunk.source,
@@ -541,7 +599,7 @@ impl DocumentStore for PgStore {
                 &embedding_literal,
             ],
         )
-        .map_err(|err| PgStoreError::Query(err.to_string()))?;
+        .map_err(PgStoreError::Query)?;
 
         Ok(())
     }
@@ -567,10 +625,10 @@ impl SourceReplacer for PgStore {
 
         let mut conn = self
             .connection()
-            .map_err(|err| ReplaceError::Store(err.to_string()))?;
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
         let mut tx = conn
             .transaction()
-            .map_err(|err| ReplaceError::Store(err.to_string()))?;
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
 
         // The delete is keyed by the pair. A different corpus with the same
         // source name is never touched.
@@ -578,36 +636,64 @@ impl SourceReplacer for PgStore {
             "DELETE FROM documents WHERE corpus = $1 AND source = $2",
             &[&corpus.as_str(), &source],
         )
-        .map_err(|err| ReplaceError::Store(err.to_string()))?;
+        .map_err(|err| ReplaceError::Store(Box::new(err)))?;
 
-        for chunk in chunks {
-            let embedding_literal = format_vector(&chunk.embedding);
+        // One statement for the whole document. A per-chunk loop would hold the
+        // transaction open for N round trips and extend the WAL/lock window.
+        if !chunks.is_empty() {
+            let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+            let sources: Vec<Option<&str>> = chunks.iter().map(|c| c.source.as_deref()).collect();
+            let sections: Vec<Option<&str>> = chunks.iter().map(|c| c.section.as_deref()).collect();
+            let chunk_indices: Vec<i32> = chunks.iter().map(|c| c.chunk_index).collect();
+            let languages: Vec<Option<&str>> =
+                chunks.iter().map(|c| c.language.as_deref()).collect();
+            let pages: Vec<Option<i32>> = chunks.iter().map(|c| c.page).collect();
+            let corpora: Vec<Option<&str>> = chunks.iter().map(|c| c.corpus.as_deref()).collect();
+            let content_hashes: Vec<&str> =
+                chunks.iter().map(|c| c.content_hash.as_str()).collect();
+            let embed_models: Vec<&str> = chunks.iter().map(|c| c.embed_model.as_str()).collect();
+            let embedding_dims: Vec<i32> = chunks.iter().map(|c| c.embedding_dim).collect();
+            let chunker_configs: Vec<&str> =
+                chunks.iter().map(|c| c.chunker_config.as_str()).collect();
+            let ingested_ats: Vec<&str> = chunks.iter().map(|c| c.ingested_at.as_str()).collect();
+            let embeddings: Vec<String> =
+                chunks.iter().map(|c| format_vector(&c.embedding)).collect();
+
+            let sql = format!(
+                "INSERT INTO documents ({DOCUMENT_COLUMNS}) \
+                 SELECT content, source, section, chunk_index, language, page, corpus, \
+                        content_hash, embed_model, embedding_dim, chunker_config, \
+                        ingested_at::timestamptz, embedding::vector \
+                   FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], \
+                               $6::int[], $7::text[], $8::text[], $9::text[], $10::int[], \
+                               $11::text[], $12::text[], $13::text[]) \
+                        AS t(content, source, section, chunk_index, language, page, corpus, \
+                             content_hash, embed_model, embedding_dim, chunker_config, \
+                             ingested_at, embedding)"
+            );
             tx.execute(
-                "INSERT INTO documents \
-                 (content, source, section, chunk_index, language, page, corpus, \
-                  content_hash, embed_model, embedding_dim, chunker_config, ingested_at, embedding) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::timestamptz, $13::text::vector)",
+                &sql,
                 &[
-                    &chunk.content as &(dyn ToSql + Sync),
-                    &chunk.source,
-                    &chunk.section,
-                    &chunk.chunk_index,
-                    &chunk.language,
-                    &chunk.page,
-                    &chunk.corpus,
-                    &chunk.content_hash,
-                    &chunk.embed_model,
-                    &chunk.embedding_dim,
-                    &chunk.chunker_config,
-                    &chunk.ingested_at,
-                    &embedding_literal,
+                    &contents,
+                    &sources,
+                    &sections,
+                    &chunk_indices,
+                    &languages,
+                    &pages,
+                    &corpora,
+                    &content_hashes,
+                    &embed_models,
+                    &embedding_dims,
+                    &chunker_configs,
+                    &ingested_ats,
+                    &embeddings,
                 ],
             )
-            .map_err(|err| ReplaceError::Store(err.to_string()))?;
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
         }
 
         tx.commit()
-            .map_err(|err| ReplaceError::Store(err.to_string()))?;
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
         Ok(())
     }
 }
@@ -745,10 +831,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_dsn_is_a_pool_error() {
+    fn invalid_dsn_is_a_config_error() {
         assert!(matches!(
             create_pool("not a dsn"),
-            Err(PgStoreError::Pool(_))
+            Err(PgStoreError::Config(_))
         ));
     }
 

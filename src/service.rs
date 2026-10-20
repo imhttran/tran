@@ -35,6 +35,7 @@ impl<'a, E, R, S> IngestService<'a, E, R, S>
 where
     E: Embedder,
     R: FingerprintReader,
+    R::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     S: SourceReplacer,
 {
     /// Builds the service over the three ports and the settings.

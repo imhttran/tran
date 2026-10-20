@@ -37,7 +37,16 @@ pub enum GenealogyError {
     Store(#[from] PgStoreError),
     /// A genealogy query failed.
     #[error("genealogy query failed: {0}")]
-    Query(String),
+    Query(#[from] postgres::Error),
+    /// A report or export could not be encoded.
+    #[error("genealogy encoding failed: {0}")]
+    Encode(#[from] serde_json::Error),
+    /// A report, migration, or export could not be read or written.
+    #[error("genealogy I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// A review operation failed.
+    #[error("genealogy review failed: {0}")]
+    Review(String),
     /// A domain rule rejected the requested operation.
     #[error("genealogy domain error: {0}")]
     Domain(String),

@@ -30,7 +30,8 @@ use crate::fingerprint::{
 };
 use crate::ingest::{gate_pdf, gate_sections, IngestRejection};
 use crate::loader::{load_markdown, load_pdf, load_text, PdfError, PdfExtraction};
-use crate::storage::StoredChunk;
+use crate::ollama::OllamaError;
+use crate::storage::{StoredChunk, EMBEDDING_DIM};
 use crate::transaction::{validate_all_dims, ReplaceError, SourceReplacer};
 
 /// Errors raised by the ingest pipeline after the guard passed.
@@ -44,10 +45,13 @@ pub enum PipelineError {
     Corpus(#[from] CorpusError),
     /// The unchanged-source read failed. No effect occurred.
     #[error("unchanged-source read failed: {0}")]
-    Fingerprint(String),
+    Fingerprint(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// An embedding call failed. No database write occurred.
     #[error(transparent)]
     Embed(#[from] EmbeddingError),
+    /// The Ollama client could not be constructed. No effect occurred.
+    #[error(transparent)]
+    Client(#[from] OllamaError),
     /// The transactional replacement failed and rolled back.
     #[error(transparent)]
     Replace(#[from] ReplaceError),
@@ -110,6 +114,7 @@ impl<'a, E, R, S> IngestPipeline<'a, E, R, S>
 where
     E: Embedder,
     R: FingerprintReader,
+    R::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     S: SourceReplacer,
 {
     /// Builds a pipeline over the three ports and the settings.
@@ -229,10 +234,15 @@ where
         chunks: Vec<Chunk>,
     ) -> Result<IngestOutcome, PipelineError> {
         let corpus = Corpus::new(&self.config.corpus)?;
-        let decision =
-            unchanged_source(self.reader, &corpus, source, content_hash).map_err(|_| {
-                PipelineError::Fingerprint(format!("unchanged-source read failed for {source}"))
-            })?;
+        let decision = unchanged_source(
+            self.reader,
+            &corpus,
+            source,
+            content_hash,
+            &self.config.embed_model,
+            EMBEDDING_DIM as i32,
+        )
+        .map_err(|err| PipelineError::Fingerprint(err.into()))?;
         if let UnchangedSource::Unchanged { rows } = decision {
             return Ok(IngestOutcome::Unchanged {
                 fingerprint: content_hash.to_string(),

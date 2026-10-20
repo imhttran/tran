@@ -19,7 +19,7 @@ use std::path::Path;
 use postgres::{Client, Transaction};
 use serde::Serialize;
 
-use super::validation::{self, Violation};
+use super::validation;
 use super::GenealogyError;
 
 /// One unresolved assertion entry.
@@ -66,7 +66,7 @@ pub fn unresolved_assertion_ids(conn: &mut Client) -> Result<Vec<i64>, Genealogy
               ORDER BY assertion_id",
             &[],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows.iter().map(|r| r.get(0)).collect())
 }
 
@@ -86,18 +86,25 @@ pub fn build_unresolved_report(conn: &mut Client) -> Result<UnresolvedReport, Ge
               ORDER BY a.assertion_id",
             &[],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
+
+    let mut tx: Transaction<'_> = conn.transaction().map_err(GenealogyError::Query)?;
 
     let mut entries = Vec::with_capacity(rows.len());
     for row in rows {
-        let assertion_id: i64 = row.get(0);
-        let person_id: i64 = row.get(1);
-        let kind: String = row.get(2);
-        let key: String = row.get(3);
-        let status: String = row.get(4);
-        let last_reviewer: Option<String> = row.get(5);
-        let last_timestamp: Option<String> = row.get(6);
-        let violations = run_validation(conn, assertion_id)?;
+        let assertion_id: i64 = row.try_get(0)?;
+        let person_id: i64 = row.try_get(1)?;
+        let kind: String = row.try_get(2)?;
+        let key: String = row.try_get(3)?;
+        let status: String = row.try_get(4)?;
+        let last_reviewer: Option<String> = row.try_get(5)?;
+        let last_timestamp: Option<String> = row.try_get(6)?;
+        // One transaction for the whole report: validating each assertion in
+        // its own transaction made a report O(N) transactions.
+        let violations: Vec<String> = validation::validate_candidate(&mut tx, assertion_id)?
+            .iter()
+            .map(|violation| violation.to_string())
+            .collect();
         entries.push(UnresolvedEntry {
             assertion_id,
             person_id,
@@ -109,17 +116,8 @@ pub fn build_unresolved_report(conn: &mut Client) -> Result<UnresolvedReport, Ge
             violations,
         });
     }
+    tx.commit().map_err(GenealogyError::Query)?;
     Ok(UnresolvedReport { entries })
-}
-
-fn run_validation(conn: &mut Client, assertion_id: i64) -> Result<Vec<String>, GenealogyError> {
-    let mut tx: Transaction<'_> = conn
-        .transaction()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    let violations: Vec<Violation> = validation::validate_candidate(&mut tx, assertion_id)?;
-    tx.commit()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    Ok(violations.iter().map(|v| v.to_string()).collect())
 }
 
 /// Serializes and writes the report to `path` atomically.
@@ -128,23 +126,18 @@ pub fn write_unresolved_report(
     path: &Path,
 ) -> Result<UnresolvedReport, GenealogyError> {
     let report = build_unresolved_report(conn)?;
-    let json = serde_json::to_string_pretty(&report)
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    let json = serde_json::to_string_pretty(&report)?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| GenealogyError::Query(err.to_string()))?;
+            std::fs::create_dir_all(parent)?;
         }
     }
     let temp = path.with_extension("json.tmp");
     {
-        let mut file =
-            std::fs::File::create(&temp).map_err(|err| GenealogyError::Query(err.to_string()))?;
-        file.write_all(json.as_bytes())
-            .map_err(|err| GenealogyError::Query(err.to_string()))?;
-        file.sync_all()
-            .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
     }
-    std::fs::rename(&temp, path).map_err(|err| GenealogyError::Query(err.to_string()))?;
+    std::fs::rename(&temp, path)?;
     Ok(report)
 }

@@ -43,8 +43,9 @@ fn run() -> Result<ExitCode, String> {
         PgStore::connect(&config.database_url)
             .map_err(|err| format!("connect to the document store: {err}"))?,
     );
-    let service = QueryService::from_config(&config, store, corpus)?;
-    let answer = service.answer(&question)?;
+    let service =
+        QueryService::from_config(&config, store, corpus).map_err(|err| err.to_string())?;
+    let answer = service.answer(&question).map_err(|err| err.to_string())?;
 
     println!("{}", answer.text);
     for reference in &answer.references {

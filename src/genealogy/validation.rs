@@ -3,7 +3,7 @@
 //! [`validate_candidate`] runs the blocking checks for one assertion:
 //!  (a) self-parenting over `parent_child_link` and `parent_child` assertions;
 //!  (b) transitive parent-child cycles;
-//!  (c) duplicate parent-child or spouse relations;
+//!  (c) duplicate spouse relations;
 //!  (d) incompatible branch claims (`branch_claim` assertions);
 //!  (e) contradictory vital-status assertions (`vital_status` assertions).
 //!
@@ -22,8 +22,6 @@ pub enum Violation {
     SelfParenting { person_id: i64 },
     /// A parent-child cycle was found.
     Cycle { person_id: i64 },
-    /// A duplicate parent-child relation exists.
-    DuplicateParentChild { parent_id: i64, child_id: i64 },
     /// A duplicate spouse relation exists.
     DuplicateSpouse { person_id: i64, spouse_id: i64 },
     /// Two distinct verified branch keys exist for one person.
@@ -55,9 +53,6 @@ impl fmt::Display for Violation {
                 write!(f, "self_parenting(person={person_id})")
             }
             Violation::Cycle { person_id } => write!(f, "parent_child_cycle(person={person_id})"),
-            Violation::DuplicateParentChild { parent_id, child_id } => {
-                write!(f, "duplicate_parent_child(parent={parent_id},child={child_id})")
-            }
             Violation::DuplicateSpouse { person_id, spouse_id } => {
                 write!(f, "duplicate_spouse(person={person_id},spouse={spouse_id})")
             }
@@ -94,7 +89,7 @@ pub fn validate_candidate(
                FROM assertion WHERE assertion_id = $1",
             &[&assertion_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let row = match row {
         Some(row) => row,
         None => return Ok(Vec::new()),
@@ -109,7 +104,6 @@ pub fn validate_candidate(
     if kind == "parent_child" {
         check_self_parenting_link(tx, person_id, &mut found)?;
         check_cycle(tx, person_id, &mut found)?;
-        check_duplicate_parent_child(tx, person_id, &mut found)?;
         // A self-referential parent_child assertion.
         if let Some(name) = &value {
             let is_self: Option<bool> = tx
@@ -117,7 +111,7 @@ pub fn validate_candidate(
                     "SELECT p.person_key = $2 FROM person p WHERE p.person_id = $1",
                     &[&person_id, name],
                 )
-                .map_err(|err| GenealogyError::Query(err.to_string()))?
+                .map_err(GenealogyError::Query)?
                 .map(|r| r.get(0));
             if is_self == Some(true) {
                 found.push(Violation::SelfParenting { person_id });
@@ -146,7 +140,7 @@ fn check_self_parenting_link(
             "SELECT count(*) FROM parent_child_link WHERE parent_id = $1 AND child_id = $1",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .map_err(GenealogyError::Query)?
         .get(0);
     if count > 0 {
         found.push(Violation::SelfParenting { person_id });
@@ -171,40 +165,10 @@ fn check_cycle(
              SELECT EXISTS (SELECT 1 FROM reach WHERE node = $1)",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let cyclic: bool = row.get(0);
     if cyclic {
         found.push(Violation::Cycle { person_id });
-    }
-    Ok(())
-}
-
-fn check_duplicate_parent_child(
-    tx: &mut Transaction<'_>,
-    person_id: i64,
-    found: &mut Vec<Violation>,
-) -> Result<(), GenealogyError> {
-    let rows = tx
-        .query(
-            "SELECT parent_id, child_id FROM parent_child_link
-              WHERE parent_id = $1 OR child_id = $1",
-            &[&person_id],
-        )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    // The unique constraint prevents exact duplicates, so detect duplicates
-    // through repeated assertions that name the same child under a different key
-    // via the parent_child assertions, plus link row multiplicity.
-    let mut seen: Vec<(i64, i64)> = Vec::new();
-    for row in rows {
-        let pair: (i64, i64) = (row.get(0), row.get(1));
-        if seen.contains(&pair) {
-            found.push(Violation::DuplicateParentChild {
-                parent_id: pair.0,
-                child_id: pair.1,
-            });
-        } else {
-            seen.push(pair);
-        }
     }
     Ok(())
 }
@@ -220,7 +184,7 @@ fn check_duplicate_spouse(
               WHERE person_id = $1 OR spouse_id = $1",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let mut seen: Vec<(i64, i64)> = Vec::new();
     for row in rows {
         let raw: (i64, i64) = (row.get(0), row.get(1));
@@ -252,7 +216,7 @@ fn check_incompatible_branch(
                 AND value_text IS NOT NULL",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let mut keys: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
     if let Some(value) = value {
         keys.push(value.to_string());
@@ -284,7 +248,7 @@ fn check_contradictory_vital(
                 AND value_text IS NOT NULL",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     for row in rows {

@@ -24,15 +24,7 @@ pub const DEFAULT_EMBED_PROVIDER: &str = provider::DEFAULT;
 pub const DEFAULT_GEN_PROVIDER: &str = provider::DEFAULT;
 pub const DEFAULT_CHUNK_SIZE: i64 = 50;
 pub const DEFAULT_CHUNK_OVERLAP: i64 = 20;
-pub const DEFAULT_EMBED_WORKERS: i64 = 4;
-pub const DEFAULT_EMBED_RETRIES: i64 = 3;
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.6;
-pub const DEFAULT_LLM_RERANK: bool = false;
-pub const DEFAULT_LEXICAL_RERANK: bool = false;
-pub const DEFAULT_RERANK_TIMEOUT: Duration = Duration::from_secs(0);
-pub const DEFAULT_ANSWERABILITY_GATE: bool = false;
-pub const DEFAULT_FACT_JUDGE: bool = false;
-pub const DEFAULT_REWRITE_ONLY: bool = false;
 pub const DEFAULT_QUERY_REWRITE: bool = true;
 pub const DEFAULT_RAG_ANSWERABILITY_GATE: bool = true;
 pub const DEFAULT_RAG_CITATION_VALIDATION: bool = false;
@@ -43,9 +35,6 @@ pub const DEFAULT_MAX_QUESTION_BYTES: i64 = 0;
 pub const DEFAULT_MAX_INPUT_BYTES: i64 = 0;
 pub const DEFAULT_LANGUAGE: &str = "";
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-pub const OUTPUT_HUMAN: &str = "human";
-pub const OUTPUT_JSON: &str = "json";
-pub const DEFAULT_OBSERVABILITY_FORMAT: &str = OUTPUT_HUMAN;
 pub const DEFAULT_JWKS_CACHE_TTL_SECS: i64 = 300;
 pub const DEFAULT_AUTH_CLOCK_SKEW_SECS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
@@ -91,21 +80,11 @@ pub struct Config {
     pub context_budget: i64,
     pub max_question_bytes: i64,
     pub max_input_bytes: i64,
-    pub embed_workers: i64,
-    pub embed_retries: i64,
     pub min_similarity: f64,
-    pub lexical_rerank: bool,
-    pub llm_rerank: bool,
-    pub rag_llm_rerank: bool,
-    pub rerank_timeout: Duration,
-    pub answerability_gate: bool,
-    pub fact_judge: bool,
-    pub rewrite_only: bool,
     pub rag_answerability_gate: bool,
     pub rag_citation_validation: bool,
     pub request_timeout: Duration,
     pub query_rewrite: bool,
-    pub observability_format: String,
     pub auth_issuer: String,
     pub auth_audience: String,
     pub jwks_url: String,
@@ -183,20 +162,7 @@ impl Config {
                 DEFAULT_MAX_QUESTION_BYTES,
             )?,
             max_input_bytes: non_negative_int(&get, "MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES)?,
-            embed_workers: positive_int(&get, "EMBED_WORKERS", DEFAULT_EMBED_WORKERS)?,
-            embed_retries: non_negative_int(&get, "EMBED_RETRIES", DEFAULT_EMBED_RETRIES)?,
             min_similarity: unit_float(&get, "MIN_SIMILARITY", DEFAULT_MIN_SIMILARITY)?,
-            lexical_rerank: bool_setting(&get, "EVAL_LEXICAL_RERANK", DEFAULT_LEXICAL_RERANK)?,
-            llm_rerank: bool_setting(&get, "EVAL_LLM_RERANK", DEFAULT_LLM_RERANK)?,
-            rag_llm_rerank: bool_setting(&get, "RAG_LLM_RERANK", false)?,
-            rerank_timeout: non_negative_duration(&get, "RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT)?,
-            answerability_gate: bool_setting(
-                &get,
-                "EVAL_ANSWERABILITY_GATE",
-                DEFAULT_ANSWERABILITY_GATE,
-            )?,
-            fact_judge: bool_setting(&get, "EVAL_FACT_JUDGE", DEFAULT_FACT_JUDGE)?,
-            rewrite_only: bool_setting(&get, "EVAL_REWRITE_ONLY", DEFAULT_REWRITE_ONLY)?,
             rag_answerability_gate: bool_setting(
                 &get,
                 "RAG_ANSWERABILITY_GATE",
@@ -209,11 +175,6 @@ impl Config {
             )?,
             request_timeout: positive_duration(&get, "REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT)?,
             query_rewrite: bool_setting(&get, "QUERY_REWRITE", DEFAULT_QUERY_REWRITE)?,
-            observability_format: output_format(
-                &get,
-                "OBSERVABILITY_FORMAT",
-                DEFAULT_OBSERVABILITY_FORMAT,
-            )?,
             auth_issuer: get("AUTH_ISSUER").unwrap_or_default(),
             auth_audience: get("AUTH_AUDIENCE").unwrap_or_default(),
             jwks_url: get("JWKS_URL").unwrap_or_default(),
@@ -256,12 +217,6 @@ impl Config {
                 "{HOF_THIRD_BRANCH_KEY_VAR} must be set to the verified third-branch key"
             ))),
         }
-    }
-
-    /// Reports whether the configured output format selects the opt-in JSON
-    /// structured record instead of the human-readable stream.
-    pub fn observability_json(&self) -> bool {
-        self.observability_format == OUTPUT_JSON
     }
 }
 
@@ -386,23 +341,6 @@ where
     Ok(value)
 }
 
-fn non_negative_duration<F>(get: &F, key: &str, fallback: Duration) -> Result<Duration, ConfigError>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    let Some(raw) = get(key) else {
-        return Ok(fallback);
-    };
-
-    let value = parse_duration(&raw).ok_or_else(|| {
-        ConfigError::Invalid(format!(
-            "{key} must be a duration such as 30s or 5m, got \"{raw}\""
-        ))
-    })?;
-
-    Ok(value)
-}
-
 /// Parses a Go-style duration such as `30s`, `5m`, or `1h30m`. A leading sign
 /// and a `0` (meaning disabled) are accepted, mirroring `time.ParseDuration`.
 fn parse_duration(raw: &str) -> Option<Duration> {
@@ -446,17 +384,20 @@ fn parse_duration(raw: &str) -> Option<Duration> {
         let value: f64 = number.parse().ok()?;
         number.clear();
 
-        let unit_duration = match unit.as_str() {
-            "ns" => Duration::from_nanos(1),
-            "us" | "µs" => Duration::from_micros(1),
-            "ms" => Duration::from_millis(1),
-            "s" => Duration::from_secs(1),
-            "m" => Duration::from_secs(60),
-            "h" => Duration::from_secs(60 * 60),
+        let seconds = match unit.as_str() {
+            "ns" => value / 1_000_000_000.0,
+            "us" | "µs" => value / 1_000_000.0,
+            "ms" => value / 1_000.0,
+            "s" => value,
+            "m" => value * 60.0,
+            "h" => value * 3600.0,
             _ => return None,
         };
 
-        total += unit_duration.mul_f64(value);
+        // `Duration::mul_f64` panics on NaN or overflow; a malformed setting
+        // must surface as `ConfigError`, so use the checked constructor.
+        let scaled = Duration::try_from_secs_f64(seconds).ok()?;
+        total = total.checked_add(scaled)?;
         matched = true;
     }
 
@@ -484,26 +425,6 @@ where
         "0" | "f" | "F" | "false" | "FALSE" | "False" => Ok(false),
         _ => Err(ConfigError::Invalid(format!(
             "{key} must be a boolean such as true or false, got \"{raw}\""
-        ))),
-    }
-}
-
-/// Reads the observability output-format setting. It accepts only the
-/// enumerated values (`human`, `json`); a present but unknown value is an error
-/// naming the variable, never a silent fallback to the default.
-fn output_format<F>(get: &F, key: &str, fallback: &str) -> Result<String, ConfigError>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    let Some(raw) = get(key) else {
-        return Ok(fallback.to_string());
-    };
-
-    match raw.to_lowercase().as_str() {
-        OUTPUT_HUMAN => Ok(OUTPUT_HUMAN.to_string()),
-        OUTPUT_JSON => Ok(OUTPUT_JSON.to_string()),
-        _ => Err(ConfigError::Invalid(format!(
-            "{key} must be \"{OUTPUT_HUMAN}\" or \"{OUTPUT_JSON}\", got \"{raw}\""
         ))),
     }
 }
@@ -542,21 +463,11 @@ mod tests {
         assert_eq!(cfg.context_budget, 0);
         assert_eq!(cfg.max_question_bytes, 0);
         assert_eq!(cfg.max_input_bytes, 0);
-        assert_eq!(cfg.embed_workers, 4);
-        assert_eq!(cfg.embed_retries, 3);
         assert_eq!(cfg.min_similarity, 0.6);
-        assert!(!cfg.lexical_rerank);
-        assert!(!cfg.llm_rerank);
-        assert!(!cfg.rag_llm_rerank);
-        assert_eq!(cfg.rerank_timeout, Duration::from_secs(0));
-        assert!(!cfg.answerability_gate);
-        assert!(!cfg.fact_judge);
-        assert!(!cfg.rewrite_only);
         assert!(cfg.rag_answerability_gate);
         assert!(!cfg.rag_citation_validation);
         assert_eq!(cfg.request_timeout, Duration::from_secs(300));
         assert!(cfg.query_rewrite);
-        assert_eq!(cfg.observability_format, "human");
         assert_eq!(cfg.language, "");
         assert_eq!(cfg.question, "");
         // No genealogy fallback: an absent key stays absent.
@@ -577,7 +488,6 @@ mod tests {
             ("MIN_SIMILARITY", "0.9"),
             ("QUERY_REWRITE", "false"),
             ("REQUEST_TIMEOUT", "30s"),
-            ("OBSERVABILITY_FORMAT", "JSON"),
         ])
         .unwrap();
         assert_eq!(cfg.chunk_size, 100);
@@ -585,7 +495,6 @@ mod tests {
         assert_eq!(cfg.min_similarity, 0.9);
         assert!(!cfg.query_rewrite);
         assert_eq!(cfg.request_timeout, Duration::from_secs(30));
-        assert!(cfg.observability_json());
     }
 
     #[test]
@@ -614,10 +523,10 @@ mod tests {
 
     #[test]
     fn negative_non_negative_setting_is_rejected() {
-        let err = load(&[("EMBED_RETRIES", "-1")]).unwrap_err();
+        let err = load(&[("CONTEXT_BUDGET", "-1")]).unwrap_err();
         assert_eq!(
             err,
-            ConfigError::Invalid("EMBED_RETRIES must be 0 or greater, got -1".into())
+            ConfigError::Invalid("CONTEXT_BUDGET must be 0 or greater, got -1".into())
         );
     }
 
@@ -646,17 +555,6 @@ mod tests {
             err,
             ConfigError::Invalid(
                 "QUERY_REWRITE must be a boolean such as true or false, got \"maybe\"".into()
-            )
-        );
-    }
-
-    #[test]
-    fn invalid_output_format_is_rejected() {
-        let err = load(&[("OBSERVABILITY_FORMAT", "xml")]).unwrap_err();
-        assert_eq!(
-            err,
-            ConfigError::Invalid(
-                "OBSERVABILITY_FORMAT must be \"human\" or \"json\", got \"xml\"".into()
             )
         );
     }
@@ -701,6 +599,16 @@ mod tests {
     fn duration_supports_compound_units() {
         let cfg = load(&[("REQUEST_TIMEOUT", "1h30m")]).unwrap();
         assert_eq!(cfg.request_timeout, Duration::from_secs(5400));
+    }
+
+    #[test]
+    fn overflowing_duration_is_rejected_without_panicking() {
+        let huge = format!("{}h", "9".repeat(30));
+        let err = load(&[("REQUEST_TIMEOUT", &huge)]).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Invalid(message) if message.contains("REQUEST_TIMEOUT")),
+            "an out-of-range duration must be a config error, got {err:?}"
+        );
     }
 
     #[test]

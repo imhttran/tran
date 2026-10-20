@@ -13,11 +13,6 @@ pub fn render_page(passage: &ContextPassage) -> String {
     }
 }
 
-/// Renders the reference for each passage, in order.
-pub fn render_pages(passages: &[ContextPassage]) -> Vec<String> {
-    passages.iter().map(render_page).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,11 +40,5 @@ mod tests {
             render_page(&passage("doc.md", "Payments", None)),
             "doc.md - Payments"
         );
-    }
-
-    #[test]
-    fn renders_each_passage() {
-        let out = render_pages(&[passage("a.md", "A", Some(1)), passage("b.md", "B", None)]);
-        assert_eq!(out, vec!["a.md - A - p.1", "b.md - B"]);
     }
 }

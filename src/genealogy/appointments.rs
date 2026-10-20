@@ -56,7 +56,7 @@ fn audit(
          VALUES ($1, $2, $3, $4, $5::text::jsonb)",
         &[&appointment_id, &nomination_id, &actor, &action, &detail],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
     Ok(())
 }
 
@@ -74,7 +74,7 @@ pub fn list_active_appointments(
               ORDER BY a.branch_key",
             &[],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| {
@@ -103,7 +103,7 @@ pub fn list_pending_nominations(client: &mut Client) -> Result<Vec<NominationRow
               WHERE status = 'pending' ORDER BY created_at",
             &[],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| {
@@ -135,7 +135,7 @@ pub fn nominate(
     }
     let exists = client
         .query_opt("SELECT 1 FROM person WHERE person_key = $1", &[&person_key])
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     if exists.is_none() {
         return Err(GenealogyError::Domain("unknown person".into()));
     }
@@ -153,7 +153,7 @@ pub fn nominate(
              RETURNING nomination_id",
             &[&person_key, &branch_key, &actor, &evidence_json],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(row.get(0))
 }
 
@@ -164,16 +164,14 @@ pub fn reject(
     actor: &str,
     note: Option<&str>,
 ) -> Result<(), GenealogyError> {
-    let mut tx = client
-        .transaction()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    let mut tx = client.transaction().map_err(GenealogyError::Query)?;
     let row = tx
         .query_opt(
             "SELECT status FROM head_of_family_nomination \
               WHERE nomination_id = $1 FOR UPDATE",
             &[&nomination_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let Some(row) = row else {
         return Err(GenealogyError::Domain("unknown nomination".into()));
     };
@@ -186,7 +184,7 @@ pub fn reject(
           WHERE nomination_id = $1",
         &[&nomination_id, &actor, &note],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
     audit(
         &mut tx,
         actor,
@@ -195,8 +193,7 @@ pub fn reject(
         Some(nomination_id),
         "{}",
     )?;
-    tx.commit()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    tx.commit().map_err(GenealogyError::Query)?;
     Ok(())
 }
 
@@ -216,9 +213,7 @@ pub fn approve(
             "branch and approver are required".into(),
         ));
     }
-    let mut tx = client
-        .transaction()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    let mut tx = client.transaction().map_err(GenealogyError::Query)?;
 
     // Serialize competing approvals for this branch.
     let lock_key = format!("hof:{branch_key}");
@@ -226,7 +221,7 @@ pub fn approve(
         "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
         &[&lock_key],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
 
     let row = tx
         .query_opt(
@@ -234,7 +229,7 @@ pub fn approve(
               WHERE nomination_id = $1 FOR UPDATE",
             &[&nomination_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let Some(row) = row else {
         return Err(GenealogyError::Domain("unknown nomination".into()));
     };
@@ -256,7 +251,7 @@ pub fn approve(
               WHERE branch_key = $1 AND status = 'active' FOR UPDATE",
             &[&branch_key],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     if active.is_some() {
         return Err(GenealogyError::Domain(
             "an active Head of Family already exists for this branch".into(),
@@ -288,7 +283,7 @@ pub fn approve(
                 &evidence_json,
             ],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .map_err(GenealogyError::Query)?
         .get(0);
 
     tx.execute(
@@ -297,7 +292,7 @@ pub fn approve(
           WHERE nomination_id = $1",
         &[&nomination_id, &admin],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
 
     audit(
         &mut tx,
@@ -308,8 +303,7 @@ pub fn approve(
         "{}",
     )?;
 
-    tx.commit()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    tx.commit().map_err(GenealogyError::Query)?;
 
     Ok(AppointmentRow {
         appointment_id,
@@ -334,16 +328,14 @@ pub fn end_appointment(
     if reason.trim().is_empty() {
         return Err(GenealogyError::Domain("reason is required".into()));
     }
-    let mut tx = client
-        .transaction()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    let mut tx = client.transaction().map_err(GenealogyError::Query)?;
     let row = tx
         .query_opt(
             "SELECT status FROM head_of_family_appointment \
               WHERE appointment_id = $1 FOR UPDATE",
             &[&appointment_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let Some(row) = row else {
         return Err(GenealogyError::Domain("unknown appointment".into()));
     };
@@ -357,7 +349,7 @@ pub fn end_appointment(
           WHERE appointment_id = $1",
         &[&appointment_id, &status, &reason],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
     audit(
         &mut tx,
         actor,
@@ -370,8 +362,7 @@ pub fn end_appointment(
         None,
         "{}",
     )?;
-    tx.commit()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    tx.commit().map_err(GenealogyError::Query)?;
     Ok(())
 }
 
@@ -389,7 +380,7 @@ pub fn citations_for_assertions(
               WHERE assertion_id = ANY($1) ORDER BY document_ref, page",
             &[&assertion_ids],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| Citation {

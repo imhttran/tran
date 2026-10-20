@@ -54,9 +54,10 @@ fn main() -> ExitCode {
 }
 
 fn run(root: &Path, report_path: &Path) -> Result<ExitCode, String> {
-    reject_report_path(root, report_path)?;
+    reject_report_path(root, report_path).map_err(|err| err.to_string())?;
 
-    let report = assess_source(root, PDF_RELATIVE_PATH, TRANSCRIPTION_RELATIVE_PATH)?;
+    let report = assess_source(root, PDF_RELATIVE_PATH, TRANSCRIPTION_RELATIVE_PATH)
+        .map_err(|err| err.to_string())?;
     let markdown = render_markdown(&report);
     write_report(report_path, &markdown)?;
 

@@ -152,3 +152,35 @@ fn dry_run_writes_report_to_temp_path() {
     );
     assert!(output.exists(), "report file must be written");
 }
+
+#[test]
+fn expanding_unicode_before_a_page_marker_does_not_panic() {
+    // `İ` lowercases to `i` plus a combining dot, which is one byte longer.
+    // Reusing that offset to slice the original text used to panic.
+    let (pages, _) = extract_pages("İİTrang: 7");
+    assert_eq!(pages, vec![7]);
+}
+
+#[test]
+fn relationship_keywords_only_match_the_field_label() {
+    let parse =
+        parse_catalog("1. An\nNotes: second marriage of An\nChandler: not a parent\nVợ: Bình\n");
+    let relationships: Vec<&CandidateAssertion> = parse.entries[0]
+        .assertions
+        .iter()
+        .filter(|assertion| {
+            matches!(
+                assertion.kind,
+                AssertionKind::ParentChild | AssertionKind::Spouse
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        relationships.len(),
+        1,
+        "only the `Vợ` label is a relationship"
+    );
+    assert_eq!(relationships[0].kind, AssertionKind::Spouse);
+    assert_eq!(relationships[0].value_text, "Bình");
+}

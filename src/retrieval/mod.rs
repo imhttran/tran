@@ -1,20 +1,16 @@
 //! Retrieval layer: vector search, full-text search, rank fusion,
-//! similarity filtering, deduplication, section expansion, reranking and
-//! fallback.
+//! deduplication, and section expansion.
 //!
 //! Ported from the Go baseline under `internal/retrieval/`. The search
 //! operations read from an in-memory candidate source that mirrors the
-//! storage boundary; the fusion, filter and dedup steps are pure functions
+//! storage boundary; the fusion and dedup steps are pure functions
 //! over candidate lists so they are deterministic and testable with fixed
 //! vectors.
 
 pub mod dedup;
 pub mod expand;
-pub mod fallback;
-pub mod filter;
 pub mod fts;
 pub mod fusion;
-pub mod rerank;
 pub mod vector;
 
 use crate::document::{Chunk, RetrievedDocument};

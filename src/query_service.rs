@@ -11,10 +11,11 @@
 
 use std::sync::Arc;
 
-use crate::answer::service::{Answer, AnswerService, RetrievalSource};
+use thiserror::Error;
+
+use crate::answer::service::{Answer, AnswerError, AnswerService, RetrievalSource};
 use crate::config::Config;
 use crate::corpus::Corpus;
-use crate::document::Chunk;
 use crate::embedding::{Embedder, OllamaEmbedder};
 use crate::generation::OllamaGenerator;
 use crate::ollama::{HttpTransport, OllamaClient};
@@ -24,6 +25,37 @@ use crate::storage_pg::PgStore;
 
 /// Default character budget for the model context, matching `bin/query`.
 const DEFAULT_CONTEXT_BUDGET: usize = 4000;
+
+/// Errors raised while building or running the shared query service.
+#[derive(Debug, Error)]
+pub enum QueryServiceError {
+    /// The corpus identity is invalid.
+    #[error(transparent)]
+    Corpus(#[from] crate::corpus::CorpusError),
+    /// The Ollama HTTP client could not be built.
+    #[error(transparent)]
+    Client(#[from] crate::ollama::OllamaError),
+    /// Answering failed.
+    #[error(transparent)]
+    Answer(#[from] AnswerError),
+}
+
+/// Errors from one retrieval pass, with the stage that failed.
+#[derive(Debug, Error)]
+enum DbRetrievalError {
+    #[error("load corpus {corpus:?}: {source}")]
+    Corpus {
+        corpus: String,
+        #[source]
+        source: crate::storage_pg::PgStoreError,
+    },
+    #[error("embed question: {0}")]
+    Embedding(#[source] crate::embedding::EmbeddingError),
+    #[error("vector search: {0}")]
+    Vector(#[source] crate::storage_pg::PgStoreError),
+    #[error("keyword search: {0}")]
+    Keyword(#[source] crate::storage_pg::PgStoreError),
+}
 
 /// Retrieves ranked candidates for a question from the PostgreSQL corpus.
 pub struct DbRetrieval<'a> {
@@ -38,49 +70,42 @@ pub struct DbRetrieval<'a> {
 }
 
 impl RetrievalSource for DbRetrieval<'_> {
-    fn retrieve(&self, question: &str) -> Result<Vec<Candidate>, String> {
-        let rows = self
+    fn retrieve(
+        &self,
+        question: &str,
+    ) -> Result<Vec<Candidate>, crate::answer::service::RetrievalError> {
+        let chunks = self
             .store
-            .rows_for_corpus(self.corpus)
-            .map_err(|err| format!("load corpus {:?}: {err}", self.corpus))?;
-        if rows.is_empty() {
+            .chunks_for_corpus(self.corpus)
+            .map_err(|source| DbRetrievalError::Corpus {
+                corpus: self.corpus.to_string(),
+                source,
+            })?;
+        if chunks.is_empty() {
             return Ok(Vec::new());
         }
-
-        let chunks: Vec<Chunk> = rows.iter().map(stored_chunk).collect();
 
         let query = self
             .embedder
             .embed(question)
-            .map_err(|err| format!("embed question: {err}"))?;
+            .map_err(DbRetrievalError::Embedding)?;
 
         let vector_hits: Vec<_> = self
             .store
             .vector_search(self.corpus, &query, self.candidate_k)
-            .map_err(|err| format!("vector search: {err}"))?
+            .map_err(DbRetrievalError::Vector)?
             .into_iter()
             .filter(|hit| hit.similarity >= self.min_similarity)
             .collect();
         let keyword_hits = self
             .store
             .keyword_search(self.corpus, question, self.candidate_k, self.language)
-            .map_err(|err| format!("keyword search: {err}"))?;
+            .map_err(DbRetrievalError::Keyword)?;
         let mut candidates = retrieval_pg::fuse(&[vector_hits, keyword_hits], self.candidate_k);
         candidates = dedup::dedup(candidates);
         candidates = expand::expand(&candidates, &chunks, self.expand_limit);
         candidates.truncate(self.final_k);
         Ok(candidates)
-    }
-}
-
-fn stored_chunk(row: &crate::storage_pg::StoredChunkRow) -> Chunk {
-    Chunk {
-        source: row.chunk.source.clone().unwrap_or_default(),
-        section: row.chunk.section.clone().unwrap_or_default(),
-        language: row.chunk.language.clone().unwrap_or_default(),
-        chunk_index: row.chunk.chunk_index.max(0) as u32,
-        content: row.chunk.content.clone(),
-        page: row.chunk.page.and_then(|page| u32::try_from(page).ok()),
     }
 }
 
@@ -97,6 +122,8 @@ pub struct QueryService {
     language: String,
     budget: usize,
     citation_validation: bool,
+    query_rewrite: bool,
+    answerability_gate: bool,
 }
 
 impl QueryService {
@@ -105,10 +132,10 @@ impl QueryService {
         config: &Config,
         store: Arc<PgStore>,
         corpus: impl Into<String>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, QueryServiceError> {
         let corpus: String = corpus.into();
-        let corpus = Corpus::new(&corpus).map_err(|err| err.to_string())?;
-        let embed_transport = Arc::new(HttpTransport::new(config.request_timeout));
+        let corpus = Corpus::new(&corpus)?;
+        let embed_transport = Arc::new(HttpTransport::new(config.request_timeout)?);
         let embed_client = OllamaClient::new(
             config.ollama_url.clone(),
             embed_transport,
@@ -117,7 +144,7 @@ impl QueryService {
         let embedder = OllamaEmbedder::new(embed_client, config.embed_model.clone())
             .with_embed_dim(config.embed_dim as usize);
 
-        let gen_transport = Arc::new(HttpTransport::new(config.request_timeout));
+        let gen_transport = Arc::new(HttpTransport::new(config.request_timeout)?);
         let gen_client = OllamaClient::new(
             config.ollama_url.clone(),
             gen_transport,
@@ -142,12 +169,14 @@ impl QueryService {
             language: config.language.clone(),
             budget,
             citation_validation: config.rag_citation_validation,
+            query_rewrite: config.query_rewrite,
+            answerability_gate: config.rag_answerability_gate,
         })
     }
 
     /// Answers `question` through the shared retrieval, generation, and citation
     /// validation path. Insufficient evidence returns the baseline refusal.
-    pub fn answer(&self, question: &str) -> Result<Answer, String> {
+    pub fn answer(&self, question: &str) -> Result<Answer, QueryServiceError> {
         let retrieval = DbRetrieval {
             store: &self.store,
             embedder: &self.embedder,
@@ -159,8 +188,14 @@ impl QueryService {
             language: &self.language,
         };
         let service = AnswerService::new(&retrieval, &self.generator, self.budget)
-            .with_citation_validation(self.citation_validation);
-        service.answer(question).map_err(|err| err.to_string())
+            .with_citation_validation(self.citation_validation)
+            .with_answerability_gate(self.answerability_gate);
+        let retrieval_query = if self.query_rewrite {
+            crate::answer::query_rewrite::rewrite(&self.generator, question)
+        } else {
+            question.to_string()
+        };
+        Ok(service.answer_with_retrieval_query(question, &retrieval_query)?)
     }
 
     /// The corpus this service reads.

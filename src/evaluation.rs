@@ -27,17 +27,17 @@
 //!   one expected document); a run with no answerable case reports `0.00`.
 
 use std::collections::HashSet;
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::document::Chunk;
-use crate::embedding::Embedder;
+use crate::embedding::{Embedder, EmbeddingError};
 use crate::retrieval::vector::{self, IndexedVector};
 use crate::retrieval::{dedup, expand, fts, fusion, Candidate};
-use crate::storage_pg::{PgStore, StoredChunkRow};
+use crate::storage_pg::{PgStore, PgStoreError, StoredChunkRow};
 
 /// The dataset scored when `EVAL_DATASET` is unset or empty, matching the Go
 /// baseline's `defaultDatasetPath`.
@@ -140,31 +140,38 @@ pub struct Aggregate {
 }
 
 /// Error returned by the evaluation harness. Each message names the offending
-/// artifact so a mistaken setting is actionable.
-#[derive(Debug)]
+/// artifact so a mistaken setting is actionable, and the underlying source is
+/// preserved.
+#[derive(Debug, Error)]
 pub enum EvalError {
-    /// The dataset could not be read; names the path.
-    Dataset(String),
-    /// The dataset did not match the schema; names the path and field.
-    Schema(String),
-    /// The document store could not be reached or the corpus is empty.
-    Database(String),
+    /// The dataset could not be read.
+    #[error("read evaluation dataset {path}: {source}")]
+    Dataset {
+        /// The dataset path.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The dataset was not valid JSON.
+    #[error("parse evaluation dataset {path}: {source}")]
+    Schema {
+        /// The dataset path.
+        path: String,
+        /// The underlying JSON error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The dataset failed semantic validation.
+    #[error("invalid evaluation dataset: {0}")]
+    Invalid(String),
+    /// The document store could not be reached.
+    #[error("document store: {0}")]
+    Database(#[from] PgStoreError),
     /// A question could not be embedded.
-    Embedding(String),
+    #[error("embed question: {0}")]
+    Embedding(#[from] EmbeddingError),
 }
-
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EvalError::Dataset(message) => write!(f, "read evaluation dataset: {message}"),
-            EvalError::Schema(message) => write!(f, "parse evaluation dataset: {message}"),
-            EvalError::Database(message) => write!(f, "document store: {message}"),
-            EvalError::Embedding(message) => write!(f, "embed question: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for EvalError {}
 
 /// Returns the dataset path selected by `path`, falling back to
 /// [`DEFAULT_DATASET_PATH`] when it is absent or blank.
@@ -177,20 +184,18 @@ pub fn dataset_path(path: Option<&str>) -> PathBuf {
 
 /// Loads and validates the dataset at `path`.
 pub fn load_dataset(path: &Path) -> Result<Vec<EvalCase>, EvalError> {
-    let data = fs::read_to_string(path)
-        .map_err(|err| EvalError::Dataset(format!("{}: {err}", path.display())))?;
+    let data = fs::read_to_string(path).map_err(|source| EvalError::Dataset {
+        path: path.display().to_string(),
+        source,
+    })?;
     parse_dataset(&data, path)
 }
 
 /// Parses and validates `data`; `path` appears only in error messages.
 pub fn parse_dataset(data: &str, path: &Path) -> Result<Vec<EvalCase>, EvalError> {
-    let cases: Vec<EvalCase> = serde_json::from_str(data).map_err(|err| {
-        EvalError::Schema(format!(
-            "{}: {err} at line {} column {}",
-            path.display(),
-            err.line(),
-            err.column()
-        ))
+    let cases: Vec<EvalCase> = serde_json::from_str(data).map_err(|source| EvalError::Schema {
+        path: path.display().to_string(),
+        source,
     })?;
 
     validate_cases(&cases, path)?;
@@ -200,20 +205,20 @@ pub fn parse_dataset(data: &str, path: &Path) -> Result<Vec<EvalCase>, EvalError
 fn validate_cases(cases: &[EvalCase], path: &Path) -> Result<(), EvalError> {
     for (index, case) in cases.iter().enumerate() {
         if case.question.trim().is_empty() {
-            return Err(EvalError::Schema(format!(
+            return Err(EvalError::Invalid(format!(
                 "{}: cases[{index}].question must not be empty",
                 path.display()
             )));
         }
         for (doc_index, expected) in case.expected.iter().enumerate() {
             if expected.source.trim().is_empty() {
-                return Err(EvalError::Schema(format!(
+                return Err(EvalError::Invalid(format!(
                     "{}: cases[{index}].expected[{doc_index}].source must not be empty",
                     path.display()
                 )));
             }
             if expected.section.trim().is_empty() {
-                return Err(EvalError::Schema(format!(
+                return Err(EvalError::Invalid(format!(
                     "{}: cases[{index}].expected[{doc_index}].section must not be empty",
                     path.display()
                 )));
@@ -229,20 +234,20 @@ pub fn load_corpus(
     store: &PgStore,
     corpus: &str,
 ) -> Result<(Vec<Chunk>, Vec<IndexedVector>), EvalError> {
-    let rows: Vec<StoredChunkRow> = store
-        .rows_for_corpus(corpus)
-        .map_err(|err| EvalError::Database(format!("load corpus {corpus:?}: {err}")))?;
+    let rows: Vec<StoredChunkRow> = store.rows_for_corpus(corpus)?;
     if rows.is_empty() {
-        return Err(EvalError::Database(format!(
+        return Err(EvalError::Invalid(format!(
             "corpus {corpus:?} is empty in the document store"
         )));
     }
 
     let chunks: Vec<Chunk> = rows.iter().map(stored_chunk).collect();
-    let index: Vec<IndexedVector> = rows
+    let index: Vec<IndexedVector> = chunks
         .iter()
-        .map(|row| IndexedVector {
-            chunk: stored_chunk(row),
+        .cloned()
+        .zip(rows.iter())
+        .map(|(chunk, row)| IndexedVector {
+            chunk,
             embedding: row.chunk.embedding.clone(),
         })
         .collect();
@@ -292,7 +297,7 @@ pub fn evaluate<E: Embedder + ?Sized>(
     for case in cases {
         let query_embedding = embedder
             .embed(&case.question)
-            .map_err(|err| EvalError::Embedding(format!("{err}")))?;
+            .map_err(EvalError::Embedding)?;
         let candidates = rank(index, chunks, &case.question, &query_embedding, settings);
         let ranking: Vec<RankedChunk> = candidates
             .iter()
@@ -328,16 +333,16 @@ pub fn evaluate_sql<E: Embedder + ?Sized>(
     for case in cases {
         let query_embedding = embedder
             .embed(&case.question)
-            .map_err(|err| EvalError::Embedding(format!("{err}")))?;
+            .map_err(EvalError::Embedding)?;
         let vector_hits: Vec<_> = store
             .vector_search(corpus, &query_embedding, candidate_k)
-            .map_err(|err| EvalError::Database(format!("vector search: {err}")))?
+            .map_err(EvalError::Database)?
             .into_iter()
             .filter(|hit| hit.similarity >= settings.min_similarity)
             .collect();
         let keyword_hits = store
             .keyword_search(corpus, &case.question, candidate_k, &settings.language)
-            .map_err(|err| EvalError::Database(format!("keyword search: {err}")))?;
+            .map_err(EvalError::Database)?;
         let fused =
             crate::retrieval_pg::fuse(&[vector_hits, keyword_hits], settings.final_k.max(1));
         // The Go baseline deduplicates sections after fusing at FINAL_K, so a

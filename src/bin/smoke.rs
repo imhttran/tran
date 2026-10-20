@@ -37,7 +37,13 @@ fn main() -> ExitCode {
     println!("embed model: {}", config.embed_model);
     println!("chat model: {}", config.chat_model);
 
-    let transport = Arc::new(HttpTransport::new(config.request_timeout));
+    let transport = match HttpTransport::new(config.request_timeout) {
+        Ok(transport) => Arc::new(transport),
+        Err(err) => {
+            eprintln!("could not build the Ollama HTTP client: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let embed_client = OllamaClient::new(
         config.ollama_url.clone(),

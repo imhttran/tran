@@ -54,8 +54,11 @@ impl Generator for FailingGenerator {
 struct FailingRetrieval;
 
 impl RetrievalSource for FailingRetrieval {
-    fn retrieve(&self, _question: &str) -> Result<Vec<Candidate>, String> {
-        Err("database unavailable".to_string())
+    fn retrieve(
+        &self,
+        _question: &str,
+    ) -> Result<Vec<Candidate>, rag_foundation::answer::service::RetrievalError> {
+        Err("database unavailable".into())
     }
 }
 
@@ -124,7 +127,7 @@ fn retrieval_dependency_failure_is_reported() {
 
     match service.answer("what?") {
         Err(AnswerError::Retrieval(message)) => {
-            assert!(message.contains("database unavailable"))
+            assert!(message.to_string().contains("database unavailable"))
         }
         other => panic!("want a retrieval error, got {other:?}"),
     }

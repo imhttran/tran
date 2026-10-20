@@ -272,7 +272,7 @@ fn verified_evidence<C: GenericClient>(
                   ORDER BY assertion_id LIMIT 1",
                 &[&person_id, &kind, &key],
             )
-            .map_err(|err| GenealogyError::Query(err.to_string()))?,
+            .map_err(GenealogyError::Query)?,
         None => client
             .query_opt(
                 "SELECT assertion_id, value_text FROM assertion
@@ -281,7 +281,7 @@ fn verified_evidence<C: GenericClient>(
                   ORDER BY assertion_id LIMIT 1",
                 &[&person_id, &kind],
             )
-            .map_err(|err| GenealogyError::Query(err.to_string()))?,
+            .map_err(GenealogyError::Query)?,
     };
     Ok(row.map(|row| CandidateEvidence {
         assertion_id: row.get(0),
@@ -305,7 +305,7 @@ pub fn load_input<C: GenericClient>(
             "SELECT person_id FROM person WHERE person_key = $1",
             &[&person_key],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let Some(row) = row else {
         return Ok(EligibilityInput {
             person_key: person_key.to_string(),

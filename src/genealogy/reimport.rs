@@ -74,12 +74,9 @@ pub fn reimport_document(
     conn: &mut postgres::Client,
     document: &ImportDocument,
 ) -> Result<ReimportReport, GenealogyError> {
-    let mut tx = conn
-        .transaction()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    let mut tx = conn.transaction().map_err(GenealogyError::Query)?;
     let report = reimport_in_transaction(&mut tx, document)?;
-    tx.commit()
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    tx.commit().map_err(GenealogyError::Query)?;
     Ok(report)
 }
 
@@ -100,7 +97,7 @@ fn reimport_in_transaction(
                 &document.source_kind,
             ],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .map_err(GenealogyError::Query)?
         .get(0);
 
     // Persons are upserted inside this transaction. If any later assertion
@@ -111,7 +108,7 @@ fn reimport_in_transaction(
              ON CONFLICT (person_key) DO UPDATE SET display_name = EXCLUDED.display_name",
             &[&person.person_key, &person.display_name],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     }
 
     let mut report = ReimportReport::default();
@@ -121,7 +118,7 @@ fn reimport_in_transaction(
                 "SELECT person_id FROM person WHERE person_key = $1",
                 &[&assertion.person_key],
             )
-            .map_err(|err| GenealogyError::Query(err.to_string()))?
+            .map_err(GenealogyError::Query)?
             .get(0);
 
         let existing: Option<(i64, String)> = tx
@@ -130,7 +127,7 @@ fn reimport_in_transaction(
                   WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3",
                 &[&person_id, &assertion.kind, &assertion.key],
             )
-            .map_err(|err| GenealogyError::Query(err.to_string()))?
+            .map_err(GenealogyError::Query)?
             .map(|r| (r.get(0), r.get(1)));
 
         let assertion_id = match existing {
@@ -169,7 +166,7 @@ fn reimport_in_transaction(
                             &assertion.value_text,
                         ],
                     )
-                    .map_err(|err| GenealogyError::Query(err.to_string()))?
+                    .map_err(GenealogyError::Query)?
                     .get(0);
                 sync_evidence(tx, id, document_id, assertion)?;
                 report.inserted += 1;
@@ -213,7 +210,7 @@ fn sync_evidence(
             )",
         &[&assertion_id, &document_id, &document_refs, &pages],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
 
     for (document_ref, page) in &assertion.evidence {
         let source_evidence_id = source_evidence_id(tx, document_id, *page)?;
@@ -225,7 +222,7 @@ fn sync_evidence(
                 SET source_evidence_id = EXCLUDED.source_evidence_id",
             &[&assertion_id, &source_evidence_id, document_ref, page],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     }
     Ok(())
 }
@@ -243,14 +240,14 @@ fn source_evidence_id(
               ORDER BY source_evidence_id LIMIT 1",
             &[&document_id, &page],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .map_err(GenealogyError::Query)?
     {
         let id: i64 = row.get(0);
         tx.execute(
             "UPDATE source_evidence SET locator = 'page' WHERE source_evidence_id = $1",
             &[&id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
         return Ok(id);
     }
 
@@ -261,7 +258,7 @@ fn source_evidence_id(
              RETURNING source_evidence_id",
             &[&document_id, &page],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?
+        .map_err(GenealogyError::Query)?
         .get(0))
 }
 
@@ -273,7 +270,7 @@ fn review_baseline(
         "SELECT evidence_fingerprint FROM assertion_review_baseline WHERE assertion_id = $1",
         &[&assertion_id],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))
+    .map_err(GenealogyError::Query)
     .map(|row| row.map(|r| r.get(0)))
 }
 
@@ -282,7 +279,7 @@ fn current_status(tx: &mut Transaction<'_>, assertion_id: i64) -> Result<String,
         "SELECT review_status FROM assertion WHERE assertion_id = $1",
         &[&assertion_id],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))
+    .map_err(GenealogyError::Query)
     .map(|row| row.get(0))
 }
 
@@ -313,7 +310,7 @@ fn reopen_if_evidence_changed(
         return Ok(false);
     }
     let current = evidence_fingerprint(tx, assertion_id)
-        .map_err(|err| GenealogyError::Query(format!("evidence fingerprint: {err}")))?;
+        .map_err(|err| GenealogyError::Review(format!("evidence fingerprint: {err}")))?;
     let status_after = current_status(tx, assertion_id)?;
     if !should_reopen(was_verified, baseline, &current, &status_after) {
         return Ok(false);
@@ -328,12 +325,12 @@ fn reopen_if_evidence_changed(
           WHERE assertion_id = $1 AND review_status = 'verified'",
         &[&assertion_id],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
     tx.execute(
         "DELETE FROM assertion_review_baseline WHERE assertion_id = $1",
         &[&assertion_id],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
 
     let evidence_ref = baseline.unwrap_or(&current);
     tx.execute(
@@ -342,7 +339,7 @@ fn reopen_if_evidence_changed(
          VALUES ($1, 'reimport', 'verified', 'needs_review', $2, 'evidence_changed')",
         &[&assertion_id, &evidence_ref],
     )
-    .map_err(|err| GenealogyError::Query(err.to_string()))?;
+    .map_err(GenealogyError::Query)?;
     Ok(true)
 }
 
