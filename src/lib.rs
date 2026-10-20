@@ -22,6 +22,7 @@ pub mod evaluation;
 pub mod fingerprint;
 pub mod generation;
 pub mod ingest;
+pub mod inventory;
 pub mod loader;
 pub mod ollama;
 pub mod pipeline;

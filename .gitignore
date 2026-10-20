@@ -16,3 +16,5 @@ target/
 
 # Over-engineering audit report, written by .agents/scripts/audit-agent.sh
 AUDIT.md*
+
+/docs/tran/

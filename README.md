@@ -130,6 +130,40 @@ regenerated from Rust.
 Frozen assets (`migrations/*.sql`, `evals/`, `examples/`, `docker-compose.yml`,
 `fixtures/`) are read-only inputs.
 
+`inventory` writes the TRAN-001A source manifest. It is read-only on the
+source tree and writes only the manifest file:
+
+```text
+cargo run --locked --bin inventory [SOURCE_ROOT] MANIFEST_PATH
+```
+
+`SOURCE_ROOT` defaults to `docs/tran`. The canonical local manifest path (not
+tracked by git) is `target/inventory.json`:
+
+```bash
+cargo run --locked --bin inventory docs/tran target/inventory.json
+```
+
+The command walks the source root recursively, skips symlinks, and records every
+regular file. The manifest is a JSON object with these fields per record:
+
+- `relative_path` — path relative to the source root, `/` separated
+- `format` — `pdf`, `md`, `txt`, or `other`
+- `size_bytes` — byte length read at hash time
+- `sha256` — lowercase SHA-256 hex of the file bytes, `null` when unreadable
+- `pdf_page_count` — page count for PDFs, `null` otherwise
+- `notes` — `scanned`, `incomplete-text-layer`, `not-a-pdf: …`, or the missing/unreadable error
+
+The manifest also lists `duplicates`: groups of two or more records that share a
+SHA-256. Exit codes:
+
+- `0` — complete inventory, no missing files (duplicates do not fail the run)
+- `1` — one or more source files were missing or unreadable
+- `2` — usage error, rejected manifest path, or inventory error
+
+The command refuses a manifest under the frozen directories (`examples/`,
+`fixtures/`, `migrations/`, `evals/`) and a manifest path equal to a source file.
+
 `expbilingual` is evaluation-only: it does **not** modify production retrieval.
 It selects an arm with `ARM` (`A`, `B`, `C`, `D1`, `D2`, `E`, or `all`), reads its
 cases from `EVAL_DATASET`, pins generation (temperature 0, fixed seed, bounded
