@@ -17,9 +17,33 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::inventory::{build_record, sha256_hex, SourceRecord};
 use crate::loader::pdf::{load_pdf, PdfError, PdfExtraction};
+
+/// Errors returned by the read-only PDF assessment helpers.
+#[derive(Debug, Error)]
+pub enum PdfAssessmentError {
+    /// The PDF named by the manifest does not exist under the root.
+    #[error("pdf source missing: {0}")]
+    MissingSource(String),
+    /// The manifest carries no page count for the PDF.
+    #[error("cannot count pages: {0}")]
+    PageCount(String),
+    /// A file could not be read.
+    #[error("cannot read {path}: {source}")]
+    Read {
+        /// The path that failed.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The report path was rejected by the inventory guard.
+    #[error("report path rejected: {0}")]
+    ReportPath(String),
+}
 
 /// The prefix that a transcription page marker uses in the Markdown source.
 const TRANSCRIPTION_PAGE_PREFIX: &str = "Trang PDF ";
@@ -255,19 +279,27 @@ pub fn assess_source(
     root: &Path,
     pdf_rel: &str,
     transcription_rel: &str,
-) -> Result<PdfAssessmentReport, String> {
+) -> Result<PdfAssessmentReport, PdfAssessmentError> {
     let pdf_path = Path::new(pdf_rel);
     let record = build_record(root, pdf_path);
     if record.is_missing() {
-        return Err(format!("pdf source missing: {pdf_rel}"));
+        return Err(PdfAssessmentError::MissingSource(pdf_rel.to_string()));
     }
     let page_count = record
         .pdf_page_count
-        .ok_or_else(|| format!("cannot count pages: {pdf_rel}"))?;
-    let bytes = std::fs::read(root.join(pdf_path))
-        .map_err(|err| format!("cannot read {}: {err}", root.join(pdf_path).display()))?;
-    let markdown = std::fs::read_to_string(root.join(transcription_rel))
-        .map_err(|err| format!("cannot read {transcription_rel}: {err}"))?;
+        .ok_or_else(|| PdfAssessmentError::PageCount(pdf_rel.to_string()))?;
+    let pdf_path = root.join(pdf_path);
+    let bytes = std::fs::read(&pdf_path).map_err(|source| PdfAssessmentError::Read {
+        path: pdf_path.display().to_string(),
+        source,
+    })?;
+    let transcription_path = root.join(transcription_rel);
+    let markdown = std::fs::read_to_string(&transcription_path).map_err(|source| {
+        PdfAssessmentError::Read {
+            path: transcription_path.display().to_string(),
+            source,
+        }
+    })?;
     let assessment = assess_bytes(&bytes, page_count);
     let assessment = apply_transcription(assessment, &markdown, transcription_rel);
     Ok(PdfAssessmentReport {
@@ -360,14 +392,16 @@ fn status_label(status: TextLayerStatus) -> &'static str {
 
 /// Rejects a report path that collides with a source file or a frozen tree.
 /// Thin wrapper over [`crate::inventory::reject_manifest_path`].
-pub fn reject_report_path(root: &Path, report: &Path) -> Result<(), String> {
-    crate::inventory::reject_manifest_path(root, report)
+pub fn reject_report_path(root: &Path, report: &Path) -> Result<(), PdfAssessmentError> {
+    crate::inventory::reject_manifest_path(root, report).map_err(PdfAssessmentError::ReportPath)
 }
 
 /// Computes a SHA-256 of a file's bytes; helper for before/after checks.
-pub fn file_sha256(path: &Path) -> Result<String, String> {
-    let bytes =
-        std::fs::read(path).map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+pub fn file_sha256(path: &Path) -> Result<String, PdfAssessmentError> {
+    let bytes = std::fs::read(path).map_err(|source| PdfAssessmentError::Read {
+        path: path.display().to_string(),
+        source,
+    })?;
     Ok(sha256_hex(&bytes))
 }
 

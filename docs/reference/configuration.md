@@ -11,40 +11,30 @@ cp .env.example .env
 set -a; source .env; set +a
 ```
 
-| Variable                  | Default                                                 | Used by        |
-| ------------------------- | ------------------------------------------------------- | -------------- |
-| `OLLAMA_URL`              | `http://localhost:11434`                                | all            |
-| `OLLAMA_EMBED_MODEL`      | `nomic-embed-text`                                      | all            |
-| `OLLAMA_CHAT_MODEL`       | `qwen3.8:27b-mlx`                                       | rag, eval      |
-| `DATABASE_URL`            | `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable` | all            |
-| `EMBED_DIM`               | `768`                                                   | all            |
-| `EMBED_PROVIDER`          | `ollama`                                                | all            |
-| `GEN_PROVIDER`            | `ollama`                                                | all            |
-| `CHUNK_SIZE`              | `50`                                                    | ingest         |
-| `CHUNK_OVERLAP`           | `20`                                                    | ingest         |
-| `EMBED_WORKERS`           | `4`                                                     | ingest         |
-| `EMBED_RETRIES`           | `3`                                                     | ingest         |
-| `CORPUS_LANGUAGE`         | _(empty — baseline `english` FTS)_                      | ingest, rag    |
-| `TOP_K`                   | `4`                                                     | rag, eval      |
-| `FINAL_K`                 | `3`                                                     | rag, eval      |
-| `EXPAND_LIMIT`            | `20`                                                    | rag, eval      |
-| `MIN_SIMILARITY`          | `0.6`                                                   | rag, eval      |
-| `CONTEXT_BUDGET`          | `0` (disabled)                                          | rag            |
-| `MAX_QUESTION_BYTES`      | `0` (disabled)                                          | rag            |
-| `MAX_INPUT_BYTES`         | `0` (disabled)                                          | rag            |
-| `REQUEST_TIMEOUT`         | `5m`                                                    | all            |
-| `RAG_ANSWERABILITY_GATE`  | `true`                                                  | rag            |
-| `RAG_LLM_RERANK`          | `false`                                                 | rag            |
-| `RAG_CITATION_VALIDATION` | `false`                                                 | rag            |
-| `RERANK_TIMEOUT`          | `0s` (disabled)                                         | rag, eval      |
-| `OBSERVABILITY_FORMAT`    | `human`                                                 | rag            |
-| `QUERY_REWRITE`           | `true`                                                  | rag, eval      |
-| `EVAL_LEXICAL_RERANK`     | `false`                                                 | eval           |
-| `EVAL_LLM_RERANK`         | `false`                                                 | eval           |
-| `EVAL_ANSWERABILITY_GATE` | `false`                                                 | eval           |
-| `EVAL_FACT_JUDGE`         | `false`                                                 | eval           |
-| `EVAL_REWRITE_ONLY`       | `false`                                                 | eval           |
-| `QUESTION`                | _(none — pass it as an argument, or type it)_           | rag            |
+| Variable                  | Default                                                 | Used by     |
+| ------------------------- | ------------------------------------------------------- | ----------- |
+| `OLLAMA_URL`              | `http://localhost:11434`                                | all         |
+| `OLLAMA_EMBED_MODEL`      | `nomic-embed-text`                                      | all         |
+| `OLLAMA_CHAT_MODEL`       | `qwen3.8:27b-mlx`                                       | rag, eval   |
+| `DATABASE_URL`            | `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable` | all         |
+| `EMBED_DIM`               | `768`                                                   | all         |
+| `EMBED_PROVIDER`          | `ollama`                                                | all         |
+| `GEN_PROVIDER`            | `ollama`                                                | all         |
+| `CHUNK_SIZE`              | `50`                                                    | ingest      |
+| `CHUNK_OVERLAP`           | `20`                                                    | ingest      |
+| `CORPUS_LANGUAGE`         | _(empty — baseline `english` FTS)_                      | ingest, rag |
+| `TOP_K`                   | `4`                                                     | rag, eval   |
+| `FINAL_K`                 | `3`                                                     | rag, eval   |
+| `EXPAND_LIMIT`            | `20`                                                    | rag, eval   |
+| `MIN_SIMILARITY`          | `0.6`                                                   | rag, eval   |
+| `CONTEXT_BUDGET`          | `0` (disabled)                                          | rag         |
+| `MAX_QUESTION_BYTES`      | `0` (disabled)                                          | rag         |
+| `MAX_INPUT_BYTES`         | `0` (disabled)                                          | rag         |
+| `REQUEST_TIMEOUT`         | `5m`                                                    | all         |
+| `RAG_ANSWERABILITY_GATE`  | `true`                                                  | rag         |
+| `RAG_CITATION_VALIDATION` | `false`                                                 | rag         |
+| `QUERY_REWRITE`           | `true`                                                  | rag         |
+| `QUESTION`                | _(none — pass it as an argument, or type it)_           | rag         |
 
 `all` = every command; `rag` = `src/bin/query.rs` only; `eval` = `src/bin/eval.rs` only;
 `ingest` = `src/bin/ingest.rs` only; `rag, eval` = both commands.
@@ -68,24 +58,20 @@ Each defaults to the pre-change behaviour, so an unset value changes nothing:
 - **`MAX_QUESTION_BYTES` / `MAX_INPUT_BYTES`** (`rag`) — fail-fast size limits for
   the question and the assembled retrieved context. `0` (default) disables each
   check; an oversized input errors before any model call, naming the variable.
-- **`RERANK_TIMEOUT`** (`rag`, `eval`) — bounds the LLM reranker; `0s` (default)
-  disables the guard. A malformed, slow, or failed reranker degrades to the fused
-  order instead of failing the request.
-- **`OBSERVABILITY_FORMAT`** (`rag`) — `human` (default) keeps the existing stage
-  output; `json` emits one correlated `log/slog` record per run with a run ID,
-  stage timings, retrieved/filtered counts, and context usage. See
-  the Rust CLI/API (no separate reporter).
+- **`RAG_ANSWERABILITY_GATE`** (`rag`) — when enabled (default), a question with no
+  budgeted passage returns the baseline refusal without a generation call. Set it
+  to `false` to generate anyway.
+- **`QUERY_REWRITE`** (`rag`) — when enabled (default), the chat model rewrites the
+  question into a retrieval query. The answer prompt and citations still use the
+  original question. A blank or failed rewrite falls back to the original.
 - **`EMBED_PROVIDER` / `GEN_PROVIDER`** (`all`) — provider-registry selectors
   (`ollama` by default), **honoured by the commands**: `src/bin/ingest.rs`, `src/bin/query.rs`, and
   `src/bin/eval.rs` resolve the embedder/generator through
   `config.Config.Embedder()` / `Generator()` (dispatching via `src/provider.rs`)
   rather than constructing a vendor client directly. An **unregistered name fails
   fast at `config.Load`** with an error naming the variable and the value — it is
-  never silently ignored. `GEN_PROVIDER` is consulted only when a generator is
-  actually built (`src/bin/query.rs` always; `src/bin/eval.rs` only when `EVAL_ANSWERABILITY_GATE`,
-  `EVAL_FACT_JUDGE`, `EVAL_LLM_RERANK`, or `QUERY_REWRITE` is enabled). Only
-  `ollama` is registered today; adding another provider means registering a
-  constructor in [`src/provider.rs`](../../src/provider.rs).
+  never silently ignored. Only `ollama` is registered today; adding another
+  provider means registering a constructor in [`src/provider.rs`](../../src/provider.rs).
 
 `EMBED_DIM` must match the stored `documents.embedding` column. The guard
 `ingestion.CheckEmbeddingDim` fails fast otherwise and points at

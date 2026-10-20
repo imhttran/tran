@@ -13,7 +13,7 @@
 //! configuration flag that disables enforcement.
 
 use std::path::Path as FsPath;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
@@ -22,6 +22,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::config::Config;
 use crate::corpus::Corpus;
@@ -31,12 +32,12 @@ use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
-use crate::ollama::{HttpTransport, OllamaClient};
+use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
 use crate::service::IngestService;
-use crate::storage_pg::PgStore;
+use crate::storage_pg::{PgStore, PgStoreError};
 
 /// Default loopback host. The API never binds a public interface by default.
 pub const DEFAULT_HOST: &str = "127.0.0.1";
@@ -61,6 +62,32 @@ pub fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+/// Errors raised while constructing or running the API server.
+#[derive(Debug, Error)]
+pub enum ApiError {
+    /// The configured corpus identity is invalid.
+    #[error(transparent)]
+    Corpus(#[from] crate::corpus::CorpusError),
+    /// The document store could not be built.
+    #[error(transparent)]
+    Store(#[from] PgStoreError),
+    /// The listener could not bind.
+    #[error("bind {address}: {source}")]
+    Bind {
+        /// The requested address.
+        address: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The bound address could not be read.
+    #[error("read the bound address: {0}")]
+    Address(#[source] std::io::Error),
+    /// The server stopped with an error.
+    #[error("serve: {0}")]
+    Serve(String),
+}
+
 /// Shared API state. Every field is immutable after startup.
 #[derive(Clone)]
 pub struct AppState {
@@ -70,6 +97,13 @@ pub struct AppState {
     auth: Arc<AuthConfig>,
     jwks: Arc<JwksCache<JwksFetcher>>,
     limiter: Arc<RateLimiter>,
+    /// The query service is built once, on the first query, inside a blocking
+    /// task. Rebuilding it per request would create two HTTP clients and two
+    /// connection pools each time.
+    query_service: Arc<Mutex<Option<Arc<QueryService>>>>,
+    /// One shared client for the health probe, so polling does not rebuild a
+    /// connection pool each time.
+    health_client: Arc<Mutex<Option<reqwest::blocking::Client>>>,
 }
 
 /// The JWKS fetcher type held by the cached verifier.
@@ -81,13 +115,10 @@ impl AppState {
     /// Only the database pool is created here. The Ollama clients are built per
     /// request inside a blocking task: `reqwest::blocking` must not be
     /// constructed on a Tokio runtime thread.
-    pub fn new(config: Config, corpus: impl Into<String>) -> Result<Self, String> {
+    pub fn new(config: Config, corpus: impl Into<String>) -> Result<Self, ApiError> {
         let corpus: String = corpus.into();
-        let corpus = Corpus::new(&corpus).map_err(|err| err.to_string())?;
-        let store = Arc::new(
-            PgStore::connect(&config.database_url)
-                .map_err(|err| format!("connect to the document store: {err}"))?,
-        );
+        let corpus = Corpus::new(&corpus)?;
+        let store = Arc::new(PgStore::connect(&config.database_url)?);
         let auth = AuthConfig::new(
             config.auth_issuer.clone(),
             config.auth_audience.clone(),
@@ -111,6 +142,8 @@ impl AppState {
             auth: Arc::new(auth),
             jwks,
             limiter,
+            query_service: Arc::new(Mutex::new(None)),
+            health_client: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -167,7 +200,7 @@ fn fetch_jwks(url: &str) -> Result<Jwks, AuthError> {
 }
 
 /// Binds and serves the API until the process stops.
-pub async fn serve(config: Config) -> Result<(), String> {
+pub async fn serve(config: Config) -> Result<(), ApiError> {
     let host = std::env::var("API_HOST")
         .ok()
         .map(|value| value.trim().to_string())
@@ -186,14 +219,15 @@ pub async fn serve(config: Config) -> Result<(), String> {
     let state = AppState::new(config, corpus)?;
     let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
-        .map_err(|err| format!("bind {host}:{port}: {err}"))?;
-    let address = listener
-        .local_addr()
-        .map_err(|err| format!("read the bound address: {err}"))?;
+        .map_err(|source| ApiError::Bind {
+            address: format!("{host}:{port}"),
+            source,
+        })?;
+    let address = listener.local_addr().map_err(ApiError::Address)?;
     eprintln!("api: listening on http://{address}");
     axum::serve(listener, state.router())
         .await
-        .map_err(|err| format!("serve: {err}"))
+        .map_err(|err| ApiError::Serve(err.to_string()))
 }
 
 #[derive(Serialize)]
@@ -388,12 +422,11 @@ fn load_identity_blocking(
 
 // --- health ----------------------------------------------------------------
 
-fn model_reachable(url: &str) -> bool {
+fn model_reachable(client: &reqwest::blocking::Client, url: &str) -> bool {
     let endpoint = format!("{}/api/tags", url.trim_end_matches('/'));
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .and_then(|client| client.get(endpoint).send())
+    client
+        .get(endpoint)
+        .send()
         .map(|response| response.status().is_success())
         .unwrap_or(false)
 }
@@ -405,9 +438,24 @@ async fn health(State(state): State<AppState>) -> Response {
         .await
         .unwrap_or(false);
     let url = state.config.ollama_url.clone();
-    let model_ok = tokio::task::spawn_blocking(move || model_reachable(&url))
-        .await
-        .unwrap_or(false);
+    let health_client = state.health_client.clone();
+    let model_ok = tokio::task::spawn_blocking(move || {
+        let client = {
+            let Ok(mut guard) = health_client.lock() else {
+                return false;
+            };
+            if guard.is_none() {
+                *guard = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(3))
+                    .build()
+                    .ok();
+            }
+            guard.clone()
+        };
+        client.is_some_and(|client| model_reachable(&client, &url))
+    })
+    .await
+    .unwrap_or(false);
     let healthy = database_ok && model_ok;
     let body = serde_json::json!({
         "status": if healthy { "ok" } else { "degraded" },
@@ -578,12 +626,39 @@ fn extension(name: &str) -> Option<String> {
 }
 
 fn is_dependency_error(error: &PipelineError) -> bool {
-    let text = error.to_string().to_ascii_lowercase();
-    text.contains("connection")
-        || text.contains("pool")
-        || text.contains("timeout")
-        || text.contains("request")
-        || text.contains("connect")
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(err) = source {
+        if let Some(ollama) = err.downcast_ref::<OllamaError>() {
+            return matches!(
+                ollama,
+                OllamaError::Transport { .. }
+                    | OllamaError::Timeout { .. }
+                    | OllamaError::Status { .. }
+                    | OllamaError::Cancelled { .. }
+            );
+        }
+        if let Some(store) = err.downcast_ref::<PgStoreError>() {
+            return matches!(
+                store,
+                PgStoreError::Config(_)
+                    | PgStoreError::Pool(_)
+                    | PgStoreError::Connection(_)
+                    | PgStoreError::Query(_)
+                    | PgStoreError::Embedding(_)
+                    | PgStoreError::Decode(_)
+            );
+        }
+        source = err.source();
+    }
+    false
+}
+
+/// Why an ingest blocking task failed.
+enum IngestTaskError {
+    /// The upload could not be staged to disk.
+    Storage(String),
+    /// The pipeline ran and failed.
+    Pipeline(PipelineError),
 }
 
 async fn ingest(
@@ -661,6 +736,14 @@ async fn ingest(
                 format!("the upload exceeds the {} byte limit", MAX_UPLOAD_BYTES),
             );
         }
+        let max_input = state.config.max_input_bytes;
+        if max_input > 0 && bytes.len() > usize::try_from(max_input).unwrap_or(usize::MAX) {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file_too_large",
+                format!("the upload exceeds the {max_input} byte input limit"),
+            );
+        }
         if bytes.is_empty() {
             return error(
                 StatusCode::BAD_REQUEST,
@@ -679,58 +762,56 @@ async fn ingest(
         );
     };
 
-    let temp_dir = std::env::temp_dir().join(format!(
-        "rag-api-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|value| value.as_nanos())
-            .unwrap_or(0)
-    ));
-    if let Err(err) = std::fs::create_dir_all(&temp_dir) {
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_error",
-            format!("could not stage the upload: {err}"),
-        );
-    }
-    let extension = extension(&source).unwrap_or_else(|| "bin".to_string());
-    let staged = temp_dir.join(format!("source.{extension}"));
-    if let Err(err) = std::fs::write(&staged, &bytes) {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_error",
-            format!("could not stage the upload: {err}"),
-        );
-    }
-
+    let temp_extension = extension(&source).unwrap_or_else(|| "bin".to_string());
     let config = state.config.clone();
     let store = state.store.clone();
     let corpus = state.corpus.clone();
     let source_for_run = source.clone();
-    let staged_for_run = staged.clone();
-    let chunker = ChunkerConfig::new(config.chunk_size as usize, config.chunk_overlap as usize);
-    let content_hash = fingerprint(&bytes, &chunker);
 
+    // Staging, hashing, and cleanup are blocking filesystem work; keep them off
+    // the async executor.
     let outcome = tokio::task::spawn_blocking(move || {
-        let transport = Arc::new(HttpTransport::new(config.request_timeout));
-        let client =
-            OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
-        let embedder = OllamaEmbedder::new(client, config.embed_model.clone())
-            .with_embed_dim(config.embed_dim as usize);
-        let pipeline_config = PipelineConfig::new(
-            config.language.clone(),
-            chunker,
-            config.embed_model.clone(),
-            corpus,
-        );
-        let service = IngestService::new(&embedder, &*store, &*store, pipeline_config);
-        service.ingest_source(&staged_for_run, &source_for_run, &content_hash)
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rag-api-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&temp_dir).map_err(|err| {
+            IngestTaskError::Storage(format!("could not stage the upload: {err}"))
+        })?;
+        let staged = temp_dir.join(format!("source.{temp_extension}"));
+        if let Err(err) = std::fs::write(&staged, &bytes) {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(IngestTaskError::Storage(format!(
+                "could not stage the upload: {err}"
+            )));
+        }
+
+        let chunker = ChunkerConfig::new(config.chunk_size as usize, config.chunk_overlap as usize);
+        let content_hash = fingerprint(&bytes, &chunker);
+        let result = (|| -> Result<IngestOutcome, PipelineError> {
+            let transport = Arc::new(HttpTransport::new(config.request_timeout)?);
+            let client =
+                OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
+            let embedder = OllamaEmbedder::new(client, config.embed_model.clone())
+                .with_embed_dim(config.embed_dim as usize);
+            let pipeline_config = PipelineConfig::new(
+                config.language.clone(),
+                chunker,
+                config.embed_model.clone(),
+                corpus,
+            );
+            let service = IngestService::new(&embedder, &*store, &*store, pipeline_config);
+            service.ingest_source(&staged, &source_for_run, &content_hash)
+        })();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        result.map_err(IngestTaskError::Pipeline)
     })
     .await;
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 
     match outcome {
         Ok(Ok(IngestOutcome::Replaced { chunks, .. })) => (
@@ -778,7 +859,7 @@ async fn ingest(
             "extraction_failed",
             format!("{message}; no data was written"),
         ),
-        Ok(Err(err)) => {
+        Ok(Err(IngestTaskError::Pipeline(err))) => {
             eprintln!("api: ingest failed for {source}: {err}");
             if is_dependency_error(&err) {
                 error(
@@ -793,6 +874,10 @@ async fn ingest(
                     "ingestion failed; no data was written",
                 )
             }
+        }
+        Ok(Err(IngestTaskError::Storage(message))) => {
+            eprintln!("api: ingest staging failed for {source}: {message}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", message)
         }
         Err(err) => {
             eprintln!("api: ingest task failed for {source}: {err}");
@@ -887,6 +972,14 @@ async fn query(
             "the question must not be empty",
         );
     }
+    let max_question = state.config.max_question_bytes;
+    if max_question > 0 && question.len() > usize::try_from(max_question).unwrap_or(usize::MAX) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "question_too_large",
+            format!("the question exceeds the {max_question} byte limit"),
+        );
+    }
     if let Some(top_k) = request.top_k {
         if !(1..=50).contains(&top_k) {
             return error(
@@ -899,9 +992,24 @@ async fn query(
     let config = state.config.clone();
     let store = state.store.clone();
     let corpus = state.corpus.clone();
+    let cell = state.query_service.clone();
     let answer = tokio::task::spawn_blocking(move || {
-        let service = QueryService::from_config(&config, store, corpus)?;
-        service.answer(&question)
+        let service = {
+            let mut guard = cell
+                .lock()
+                .map_err(|_| "the query service lock is poisoned".to_string())?;
+            if guard.is_none() {
+                *guard = Some(Arc::new(
+                    QueryService::from_config(&config, store, corpus)
+                        .map_err(|err| err.to_string())?,
+                ));
+            }
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "the query service was not initialized".to_string())?
+        };
+        service.answer(&question).map_err(|err| err.to_string())
     })
     .await;
     match answer {

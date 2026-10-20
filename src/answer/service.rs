@@ -17,12 +17,15 @@ use thiserror::Error;
 
 /// Supplies ranked retrieval candidates for a question.
 ///
+/// A boxed retrieval error, preserving the underlying source chain.
+pub type RetrievalError = Box<dyn std::error::Error + Send + Sync>;
+
 /// Implementations must return candidates produced by the single retrieval
 /// implementation ([`crate::retrieval`]). Tests inject fixed candidates;
 /// production wires the retrieval stack here.
 pub trait RetrievalSource {
     /// Returns ranked candidates for `question`.
-    fn retrieve(&self, question: &str) -> Result<Vec<Candidate>, String>;
+    fn retrieve(&self, question: &str) -> Result<Vec<Candidate>, RetrievalError>;
 }
 
 /// A retrieval source backed by a fixed candidate list.
@@ -42,7 +45,7 @@ impl FixedRetrieval {
 }
 
 impl RetrievalSource for FixedRetrieval {
-    fn retrieve(&self, _question: &str) -> Result<Vec<Candidate>, String> {
+    fn retrieve(&self, _question: &str) -> Result<Vec<Candidate>, RetrievalError> {
         Ok(self.candidates.clone())
     }
 }
@@ -52,7 +55,7 @@ impl RetrievalSource for FixedRetrieval {
 pub enum AnswerError {
     /// The retrieval dependency failed.
     #[error("retrieval failed: {0}")]
-    Retrieval(String),
+    Retrieval(#[source] RetrievalError),
     /// The generation dependency failed.
     #[error(transparent)]
     Generation(#[from] GenerationError),
@@ -78,6 +81,7 @@ pub struct AnswerService<'a, R, G> {
     generator: &'a G,
     budget: usize,
     citation_validation: bool,
+    answerability_gate: bool,
 }
 
 impl<'a, R, G> AnswerService<'a, R, G>
@@ -93,6 +97,7 @@ where
             generator,
             budget,
             citation_validation: true,
+            answerability_gate: true,
         }
     }
 
@@ -108,6 +113,15 @@ where
         self
     }
 
+    /// Enables or disables the answerability gate.
+    ///
+    /// Enabled by default. When disabled, a question with no budgeted passage
+    /// still reaches generation instead of returning the baseline refusal.
+    pub fn with_answerability_gate(mut self, enabled: bool) -> Self {
+        self.answerability_gate = enabled;
+        self
+    }
+
     /// Answers `question` with cited evidence, or returns the baseline refusal.
     ///
     /// The flow: retrieve candidates -> budget into passages -> answerability
@@ -115,13 +129,25 @@ where
     /// generate -> repair citations -> render page references. Insufficient
     /// evidence returns the refusal without a generation call.
     pub fn answer(&self, question: &str) -> Result<Answer, AnswerError> {
+        self.answer_with_retrieval_query(question, question)
+    }
+
+    /// Answers `question` while retrieving with `retrieval_query`.
+    ///
+    /// The prompt and citations use `question`; only retrieval sees the
+    /// rewritten query. This keeps a rewrite from leaking into the answer text.
+    pub fn answer_with_retrieval_query(
+        &self,
+        question: &str,
+        retrieval_query: &str,
+    ) -> Result<Answer, AnswerError> {
         let candidates = self
             .retrieval
-            .retrieve(question)
+            .retrieve(retrieval_query)
             .map_err(AnswerError::Retrieval)?;
         let passages = context_budget::budget(&candidates, self.budget);
 
-        if !answerability::is_answerable(&passages) {
+        if self.answerability_gate && !answerability::is_answerable(&passages) {
             return Ok(Answer {
                 text: answerability::refusal(),
                 references: Vec::new(),
@@ -420,8 +446,8 @@ mod tests {
     struct FailingRetrieval;
 
     impl RetrievalSource for FailingRetrieval {
-        fn retrieve(&self, _question: &str) -> Result<Vec<Candidate>, String> {
-            Err("database unavailable".to_string())
+        fn retrieve(&self, _question: &str) -> Result<Vec<Candidate>, RetrievalError> {
+            Err("database unavailable".into())
         }
     }
 
@@ -445,7 +471,7 @@ mod tests {
         let service = AnswerService::new(&retrieval, &generator, 1000);
         match service.answer("what?") {
             Err(AnswerError::Retrieval(message)) => {
-                assert!(message.contains("database unavailable"));
+                assert!(message.to_string().contains("database unavailable"));
             }
             other => panic!("want a retrieval error, got {other:?}"),
         }

@@ -93,13 +93,13 @@ fn recorded_versions(conn: &mut postgres::Client) -> Result<Vec<String>, Genealo
             "SELECT 1 FROM information_schema.tables WHERE table_name = $1",
             &[&VERSION_TABLE],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     if exists.is_none() {
         return Ok(Vec::new());
     }
     let rows = conn
         .query(&format!("SELECT version FROM {VERSION_TABLE}"), &[])
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
@@ -111,9 +111,9 @@ fn recorded_versions(conn: &mut postgres::Client) -> Result<Vec<String>, Genealo
 pub fn run_migrations(config: &Config, dir: &Path) -> Result<MigrationReport, GenealogyError> {
     let dsn = resolve_genealogy_dsn(config)?;
     let pool = create_pool(&dsn)?;
-    let mut conn = pool.get().map_err(|err| {
-        GenealogyError::Store(crate::storage_pg::PgStoreError::Connection(err.to_string()))
-    })?;
+    let mut conn = pool
+        .get()
+        .map_err(|err| GenealogyError::Store(crate::storage_pg::PgStoreError::Connection(err)))?;
 
     let applied_versions = recorded_versions(&mut conn)?;
     let plan = plan_migrations(dir, &applied_versions)?;
@@ -127,9 +127,7 @@ pub fn run_migrations(config: &Config, dir: &Path) -> Result<MigrationReport, Ge
         let sql = fs::read_to_string(&migration.path).map_err(|err| {
             GenealogyError::Migration(format!("cannot read {}: {err}", migration.path.display()))
         })?;
-        let mut tx = conn
-            .transaction()
-            .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        let mut tx = conn.transaction().map_err(GenealogyError::Query)?;
         tx.batch_execute(&sql)
             .map_err(|err| GenealogyError::Migration(format!("{}: {err}", migration.version)))?;
         tx.execute(
@@ -137,8 +135,7 @@ pub fn run_migrations(config: &Config, dir: &Path) -> Result<MigrationReport, Ge
             &[&migration.version],
         )
         .map_err(|err| GenealogyError::Migration(format!("{}: {err}", migration.version)))?;
-        tx.commit()
-            .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        tx.commit().map_err(GenealogyError::Query)?;
         report.applied.push(migration.version);
     }
     Ok(report)

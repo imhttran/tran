@@ -53,7 +53,8 @@ fn run() -> Result<(), String> {
         .unwrap_or_else(|| DEFAULT_CORPUS.to_string());
     let corpus = Corpus::new(corpus).map_err(|err| format!("invalid RAG_CORPUS: {err}"))?;
 
-    let transport = Arc::new(HttpTransport::new(config.request_timeout));
+    let transport =
+        Arc::new(HttpTransport::new(config.request_timeout).map_err(|err| err.to_string())?);
     let client = OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
     let embedder = OllamaEmbedder::new(client, config.embed_model.clone())
         .with_embed_dim(config.embed_dim as usize);

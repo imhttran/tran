@@ -80,6 +80,10 @@ pub enum OllamaError {
     /// The caller cancelled the request before it completed.
     #[error("call ollama {path} cancelled")]
     Cancelled { path: String },
+
+    /// The HTTP client could not be built with the configured settings.
+    #[error("build the Ollama HTTP client: {message}")]
+    Client { message: String },
 }
 
 impl OllamaError {
@@ -92,6 +96,7 @@ impl OllamaError {
             | OllamaError::Decode { path, .. }
             | OllamaError::Timeout { path, .. }
             | OllamaError::Cancelled { path } => Some(path.as_str()),
+            OllamaError::Client { .. } => None,
         }
     }
 }
@@ -120,13 +125,20 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     /// Builds a transport whose requests time out after `timeout`.
-    pub fn new(timeout: Duration) -> Self {
+    ///
+    /// The builder is fallible (TLS initialization, invalid configuration). A
+    /// failure is returned rather than replaced with a differently configured
+    /// client, so the timeout and redirect policy the caller asked for are never
+    /// silently lost.
+    pub fn new(timeout: Duration) -> Result<Self, OllamaError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
-        Self { client }
+            .map_err(|err| OllamaError::Client {
+                message: err.to_string(),
+            })?;
+        Ok(Self { client })
     }
 }
 

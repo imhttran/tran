@@ -28,7 +28,7 @@ pub enum ReplaceError {
     Dimension(#[from] DimensionMismatchError),
     /// The store failed during the transaction; the transaction is rolled back.
     #[error("replace source failed: {0}")]
-    Store(String),
+    Store(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// A chunk did not carry the corpus named by the replacement.
     #[error("corpus mismatch: {0}")]
     Corpus(String),

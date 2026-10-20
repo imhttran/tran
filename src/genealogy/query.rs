@@ -5,7 +5,7 @@
 //! synthesizes a relationship: an assertion with no evidence or a non-verified
 //! status is reported as such.
 
-use postgres::Client;
+use postgres::{Client, Row};
 
 use super::GenealogyError;
 
@@ -68,7 +68,7 @@ fn load_citations(client: &mut Client, assertion_id: i64) -> Result<Vec<Citation
               WHERE assertion_id = $1 ORDER BY document_ref, page",
             &[&assertion_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| Citation {
@@ -84,25 +84,52 @@ fn assertion_rows(
 ) -> Result<Vec<AssertionRow>, GenealogyError> {
     let rows = client
         .query(
-            "SELECT assertion_id, assertion_kind, assertion_key, value_text, review_status
-               FROM assertion WHERE person_id = $1
-              ORDER BY assertion_kind, assertion_key",
+            "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
+                    a.review_status, ae.document_ref, ae.page
+               FROM assertion a
+               LEFT JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
+              WHERE a.person_id = $1
+              ORDER BY a.assertion_kind, a.assertion_key, ae.document_ref, ae.page",
             &[&person_id],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    let mut result = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let assertion_id: i64 = row.get(0);
-        result.push(AssertionRow {
-            assertion_id,
-            kind: row.get(1),
-            key: row.get(2),
-            value_text: row.get(3),
-            review_status: row.get(4),
-            citations: load_citations(client, assertion_id)?,
-        });
+        .map_err(GenealogyError::Query)?;
+    group_assertion_rows(&rows)
+}
+
+/// Groups a joined assertion/evidence result into one row per assertion.
+///
+/// The query orders by the assertion fields, so each assertion's citations are
+/// contiguous. Decoding is fallible so a schema drift cannot panic a report.
+fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyError> {
+    let mut out: Vec<AssertionRow> = Vec::new();
+    for row in rows {
+        let assertion_id: i64 = row.try_get(0)?;
+        let document_ref: Option<String> = row.try_get(5)?;
+        let page: Option<i32> = row.try_get(6)?;
+        let citation = match (document_ref, page) {
+            (Some(document_ref), Some(page)) => Some(Citation { document_ref, page }),
+            _ => None,
+        };
+
+        match out.last_mut() {
+            Some(last) if last.assertion_id == assertion_id => {
+                if let Some(citation) = citation {
+                    last.citations.push(citation);
+                }
+            }
+            _ => {
+                out.push(AssertionRow {
+                    assertion_id,
+                    kind: row.try_get(1)?,
+                    key: row.try_get(2)?,
+                    value_text: row.try_get(3)?,
+                    review_status: row.try_get(4)?,
+                    citations: citation.into_iter().collect(),
+                });
+            }
+        }
     }
-    Ok(result)
+    Ok(out)
 }
 
 /// Looks up one person and all assertions by person key.
@@ -117,7 +144,7 @@ pub fn lookup_person(
             "SELECT person_id, display_name FROM person WHERE person_key = $1",
             &[&person_key],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -156,7 +183,7 @@ pub fn lookup_relationship(
               LIMIT 1",
             &[&from_person_key, &to_person_key],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
 
     let relationship_kind = link
         .map(|row| row.get::<_, String>(0))
@@ -174,7 +201,7 @@ pub fn lookup_relationship(
               LIMIT 1",
             &[&from_person_key, &to_person_key],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
+        .map_err(GenealogyError::Query)?;
 
     match assertion {
         Some(row) => {
@@ -206,24 +233,14 @@ pub fn lookup_relationship(
 pub fn unresolved_assertions(client: &mut Client) -> Result<Vec<AssertionRow>, GenealogyError> {
     let rows = client
         .query(
-            "SELECT assertion_id, assertion_kind, assertion_key, value_text, review_status
-               FROM assertion
-              WHERE review_status IN ('unverified', 'needs_review', 'disputed')
-              ORDER BY assertion_id",
+            "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
+                    a.review_status, ae.document_ref, ae.page
+               FROM assertion a
+               LEFT JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
+              WHERE a.review_status IN ('unverified', 'needs_review', 'disputed')
+              ORDER BY a.assertion_id, ae.document_ref, ae.page",
             &[],
         )
-        .map_err(|err| GenealogyError::Query(err.to_string()))?;
-    let mut result = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let assertion_id: i64 = row.get(0);
-        result.push(AssertionRow {
-            assertion_id,
-            kind: row.get(1),
-            key: row.get(2),
-            value_text: row.get(3),
-            review_status: row.get(4),
-            citations: load_citations(client, assertion_id)?,
-        });
-    }
-    Ok(result)
+        .map_err(GenealogyError::Query)?;
+    group_assertion_rows(&rows)
 }

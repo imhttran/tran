@@ -70,7 +70,8 @@ fn run() -> Result<(), String> {
     let store = PgStore::connect(&config.database_url).map_err(|err| database(&err))?;
     store.ping().map_err(|err| database(&err))?;
 
-    let embed_transport = Arc::new(HttpTransport::new(config.request_timeout));
+    let embed_transport =
+        Arc::new(HttpTransport::new(config.request_timeout).map_err(|err| err.to_string())?);
     let embed_client = OllamaClient::new(
         config.ollama_url.clone(),
         embed_transport,
@@ -84,7 +85,7 @@ fn run() -> Result<(), String> {
     let gen_timeout = settings.gen_timeout.min(config.request_timeout);
     let gen_client = OllamaClient::new(
         config.ollama_url.clone(),
-        Arc::new(HttpTransport::new(gen_timeout)),
+        Arc::new(HttpTransport::new(gen_timeout).map_err(|err| err.to_string())?),
         gen_timeout,
     );
     let generator = OllamaQueryGenerator::new(gen_client);

@@ -132,24 +132,34 @@ impl UnchangedSource {
 
 /// Decides whether `source` is unchanged against `content_hash`.
 ///
-/// Returns [`UnchangedSource::Unchanged`] when at least one stored row for the
-/// same source carries the computed fingerprint, and
-/// [`UnchangedSource::Changed`] when no such row exists (including the first
+/// Returns [`UnchangedSource::Unchanged`] only when the stored rows share the
+/// computed fingerprint **and** were produced by `embed_model` at
+/// `embedding_dim`. A model or dimension change therefore forces a re-embed
+/// even when the bytes are identical. Legacy rows with empty provenance are
+/// treated as changed.
+///
+/// Returns [`UnchangedSource::Changed`] when no row matches (including the first
 /// ingest, where the store is empty for the source).
 pub fn unchanged_source<R>(
     reader: &R,
     corpus: &Corpus,
     source: &str,
     content_hash: &str,
+    embed_model: &str,
+    embedding_dim: i32,
 ) -> Result<UnchangedSource, R::Error>
 where
     R: FingerprintReader,
 {
     let rows = reader.rows_for_hash(corpus, content_hash, source)?;
-    if rows.is_empty() {
-        Ok(UnchangedSource::Changed)
-    } else {
+    let same_model = !rows.is_empty()
+        && rows.iter().all(|row| {
+            row.chunk.embed_model == embed_model && row.chunk.embedding_dim == embedding_dim
+        });
+    if same_model {
         Ok(UnchangedSource::Unchanged { rows: rows.len() })
+    } else {
+        Ok(UnchangedSource::Changed)
     }
 }
 
@@ -264,7 +274,15 @@ mod tests {
             queries: RefCell::new(Vec::new()),
         };
         assert_eq!(
-            unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap(),
+            unchanged_source(
+                &reader,
+                &corpus("trusted"),
+                "doc.md",
+                "hash",
+                "nomic-embed-text",
+                768
+            )
+            .unwrap(),
             UnchangedSource::Changed
         );
         assert_eq!(reader.queries.borrow().len(), 1);
@@ -277,7 +295,15 @@ mod tests {
             queries: RefCell::new(Vec::new()),
         };
         assert_eq!(
-            unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap(),
+            unchanged_source(
+                &reader,
+                &corpus("trusted"),
+                "doc.md",
+                "hash",
+                "nomic-embed-text",
+                768
+            )
+            .unwrap(),
             UnchangedSource::Unchanged { rows: 2 }
         );
     }
@@ -288,7 +314,15 @@ mod tests {
             rows: vec![row("hash", "other.md")],
             queries: RefCell::new(Vec::new()),
         };
-        let decision = unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap();
+        let decision = unchanged_source(
+            &reader,
+            &corpus("trusted"),
+            "doc.md",
+            "hash",
+            "nomic-embed-text",
+            768,
+        )
+        .unwrap();
         assert!(!decision.is_unchanged());
     }
 
@@ -298,8 +332,66 @@ mod tests {
             rows: vec![row_in("other-corpus", "hash", "doc.md")],
             queries: RefCell::new(Vec::new()),
         };
-        let decision = unchanged_source(&reader, &corpus("trusted"), "doc.md", "hash").unwrap();
+        let decision = unchanged_source(
+            &reader,
+            &corpus("trusted"),
+            "doc.md",
+            "hash",
+            "nomic-embed-text",
+            768,
+        )
+        .unwrap();
         assert!(!decision.is_unchanged());
+    }
+
+    #[test]
+    fn matching_hash_from_another_model_reads_as_changed() {
+        let mut stored = row("hash", "doc.md");
+        stored.chunk.embed_model = "another-model".to_string();
+        let reader = FakeReader {
+            rows: vec![stored],
+            queries: RefCell::new(Vec::new()),
+        };
+
+        let decision = unchanged_source(
+            &reader,
+            &corpus("trusted"),
+            "doc.md",
+            "hash",
+            "nomic-embed-text",
+            768,
+        )
+        .unwrap();
+
+        assert!(
+            !decision.is_unchanged(),
+            "a different embedding model must force a re-embed"
+        );
+    }
+
+    #[test]
+    fn matching_hash_with_another_dimension_reads_as_changed() {
+        let mut stored = row("hash", "doc.md");
+        stored.chunk.embedding_dim = 384;
+        let reader = FakeReader {
+            rows: vec![stored],
+            queries: RefCell::new(Vec::new()),
+        };
+
+        let decision = unchanged_source(
+            &reader,
+            &corpus("trusted"),
+            "doc.md",
+            "hash",
+            "nomic-embed-text",
+            768,
+        )
+        .unwrap();
+
+        assert!(
+            !decision.is_unchanged(),
+            "a different embedding dimension must force a re-embed"
+        );
     }
 
     #[test]
@@ -310,16 +402,30 @@ mod tests {
             rows: Vec::new(),
             queries: RefCell::new(Vec::new()),
         };
-        assert!(!unchanged_source(&empty, &corpus("trusted"), "doc.md", &fp)
-            .unwrap()
-            .is_unchanged());
+        assert!(!unchanged_source(
+            &empty,
+            &corpus("trusted"),
+            "doc.md",
+            &fp,
+            "nomic-embed-text",
+            768
+        )
+        .unwrap()
+        .is_unchanged());
 
         let stored = FakeReader {
             rows: vec![row(&fp, "doc.md")],
             queries: RefCell::new(Vec::new()),
         };
-        assert!(unchanged_source(&stored, &corpus("trusted"), "doc.md", &fp)
-            .unwrap()
-            .is_unchanged());
+        assert!(unchanged_source(
+            &stored,
+            &corpus("trusted"),
+            "doc.md",
+            &fp,
+            "nomic-embed-text",
+            768
+        )
+        .unwrap()
+        .is_unchanged());
     }
 }

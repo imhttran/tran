@@ -128,6 +128,19 @@ advisory.
 
 ### Medium
 
+> **Resolution (`fix/rust-best-practices-mediums`):** M1–M20 are addressed. The
+> API classifies dependency failures by type, builds the query service and health
+> client once, reads a corpus projection without embeddings, moves staging and
+> hashing into `spawn_blocking`, and enforces both question and input limits.
+> Storage decodes every column fallibly, uses one batch insert, and validates the
+> embedding model and dimension before reporting a source unchanged. Genealogy
+> uses one joined citation query and one validation transaction, matches
+> relationship labels instead of substrings, and no longer claims an unreachable
+> duplicate check. Errors are typed across storage, pipeline, genealogy, PDF,
+> evaluation, query service, and API boundaries. Inert config settings and the
+> unreachable rerank/filter/render helpers were removed; `QUERY_REWRITE` and
+> `RAG_ANSWERABILITY_GATE` are now wired.
+
 #### M1. HTTP status codes are chosen by substring-matching error text
 
 `src/api.rs:200-207`
@@ -519,7 +532,7 @@ cargo test --locked
 - `cargo clippy ... -D warnings`: clean (`rag-foundation` and all targets).
 - `cargo test --locked` with the local PostgreSQL container: **all targets pass**,
   including the extended `tests/genealogy_repairs.rs` (the pre-existing
-  hash-change reopen test still passes). Library tests: **311 passed, 0 failed**.
+  hash-change reopen test still passes). Library tests: **307 passed, 0 failed**.
 - Acceptance crate compilation: `acceptance/ingest_cli` builds.
 - Additional targeted lints (`redundant_clone`, `needless_collect`, `map_unwrap_or`,
   `large_enum_variant`, `missing_errors_doc`) surfaced only eight library warnings, one

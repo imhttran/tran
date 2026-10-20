@@ -18,18 +18,18 @@ use crate::storage_pg::{SqlHit, StoredChunkRow};
 /// ascending, matching the Go `FuseRankings` contract. At most `top_k` results
 /// are returned.
 pub fn fuse(rankings: &[Vec<SqlHit>], top_k: usize) -> Vec<Candidate> {
-    struct Entry {
-        hit: SqlHit,
+    struct Entry<'a> {
+        row: &'a StoredChunkRow,
         score: f64,
         best_rank: usize,
     }
 
-    let mut entries: HashMap<i64, Entry> = HashMap::new();
+    let mut entries: HashMap<i64, Entry<'_>> = HashMap::new();
     for list in rankings {
         for (index, hit) in list.iter().enumerate() {
             let rank = index + 1;
             let entry = entries.entry(hit.row.id).or_insert_with(|| Entry {
-                hit: hit.clone(),
+                row: &hit.row,
                 score: 0.0,
                 best_rank: rank,
             });
@@ -37,27 +37,21 @@ pub fn fuse(rankings: &[Vec<SqlHit>], top_k: usize) -> Vec<Candidate> {
             if rank < entry.best_rank {
                 entry.best_rank = rank;
             }
-            if hit.similarity > entry.hit.similarity {
-                entry.hit.similarity = hit.similarity;
-            }
-            if hit.keyword_score > entry.hit.keyword_score {
-                entry.hit.keyword_score = hit.keyword_score;
-            }
         }
     }
 
-    let mut fused: Vec<Entry> = entries.into_values().collect();
+    let mut fused: Vec<Entry<'_>> = entries.into_values().collect();
     fused.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.best_rank.cmp(&b.best_rank))
-            .then_with(|| a.hit.row.id.cmp(&b.hit.row.id))
+            .then_with(|| a.row.id.cmp(&b.row.id))
     });
     fused.truncate(top_k.min(fused.len()));
     fused
         .into_iter()
-        .map(|entry| Candidate::new(chunk(&entry.hit.row), entry.score))
+        .map(|entry| Candidate::new(chunk(entry.row), entry.score))
         .collect()
 }
 

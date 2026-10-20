@@ -881,18 +881,32 @@ pub fn recall_at_k(expected: &[ExpectedDoc], ranking: &[RankedSection], k: usize
 /// (case-insensitively) in an expanded chunk of the same source/section; 0
 /// when there is no evidence.
 pub fn evidence_recall(expected: &[ExpectedDoc], chunks: &[StoredChunkRow]) -> f64 {
+    // Lowercase each chunk once per (source, section), not once per evidence
+    // string. Vietnamese lowercasing is real Unicode work and allocating a new
+    // String inside the innermost loop was the dominant cost here.
+    let mut haystacks: HashMap<(&str, &str), Vec<String>> = HashMap::new();
+    for row in chunks {
+        let key = (
+            row.chunk.source.as_deref().unwrap_or_default(),
+            row.chunk.section.as_deref().unwrap_or_default(),
+        );
+        haystacks
+            .entry(key)
+            .or_default()
+            .push(row.chunk.content.to_lowercase());
+    }
+
     let mut total = 0usize;
     let mut found = 0usize;
     for doc in expected {
+        let contents = haystacks
+            .get(&(doc.source.as_str(), doc.section.as_str()))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         for evidence in &doc.evidence {
             total += 1;
             let needle = evidence.to_lowercase();
-            let hit = chunks.iter().any(|row| {
-                row.chunk.source.as_deref().unwrap_or_default() == doc.source
-                    && row.chunk.section.as_deref().unwrap_or_default() == doc.section
-                    && row.chunk.content.to_lowercase().contains(&needle)
-            });
-            if hit {
+            if contents.iter().any(|content| content.contains(&needle)) {
                 found += 1;
             }
         }
