@@ -93,7 +93,8 @@ function FamilyTree({ role }: { role: Role | null }) {
   const matches = useMemo(() => {
     const term = normalizedName(search.trim());
     if (!graph || !term) return [];
-    return graph.people.filter((p) => normalizedName(p.person_label).includes(term)).slice(0, 25);
+    return graph.people.filter((p) => (normalizedName(p.person_label).includes(term) ||
+      p.aliases.some((alias) => normalizedName(alias).includes(term)))).slice(0, 25);
   }, [graph, search]);
   const selectedPerson = graph?.people.find((p) => p.record_id === selected) ?? null;
 
