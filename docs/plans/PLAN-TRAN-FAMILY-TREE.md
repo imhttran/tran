@@ -2,7 +2,7 @@
 
 **Status:** PROPOSED — documentation and design only; no implementation has started.
 **Repository:** https://github.com/imhttran/tran
-**Inspected baseline:** `c8ad555ebb196e19c2c8f6c9ab1fa8359bcf0f25` (2026-10-20; PR #10 and PR #11 merged).
+**Inspected baseline:** `cd9a5dbf3f88db54b0156bdec208142283bd9d28` (2026-10-20; PR #10, PR #11, and PR #12 merged).
 **Suggested SOP identity:** `plan-tran-family-experience`.
 **Design reference:** [Mockup and review guide](../mockups/family-experience/README.md).
 **Precedence:** Existing [RBAC requirements](PLAN-TRAN-RBAC.md), [integration follow-up](PLAN-TRAN-RBAC-INTEGRATION-FOLLOWUP.md), and TRAN-002 provenance rules remain authoritative.
@@ -38,9 +38,9 @@ The mockup defines visual direction and user flow. It does not prove that a back
 
 ### FAM-001 preflight baseline (2026-10-20)
 
-- **Baseline:** `origin/main` = `c8ad555`; PR #10 (RBAC/OIDC/genealogy/Head of
-  Family), PR #11 (Rust best-practices), and PR #9 (genealogy reimport/CI) are
-  merged.
+- **Baseline:** `origin/main` = `cd9a5db`; PR #10 (RBAC/OIDC/genealogy/Head of
+  Family), PR #11 (Rust best-practices), PR #12 (family archive plan/mockups),
+  and PR #9 (genealogy reimport/CI) are merged.
 - **Routes available for reuse:** `GET /api/genealogy/records`,
   `GET /api/genealogy/head-of-family`, person/relationship detail reads,
   nomination/appointment reads and writes, `GET /api/account`, and the admin
@@ -201,7 +201,7 @@ or provenance for the new workflow. The policy is:
 
 | Task | Deliverable | Acceptance |
 | --- | --- | --- |
-| FAM-001: Reconcile | Current-main review at `c8ad555`, SOP preflight, legacy-row inventory, route/permission/data-owner matrix, RBAC dependency mapping | Identify merged behavior, legacy inventory, and required changes; preserve historical SOP evidence |
+| FAM-001: Reconcile | Current-main review at `cd9a5db`, SOP preflight, legacy-row inventory, route/permission/data-owner matrix, RBAC dependency mapping | Identify merged behavior, legacy inventory, and required changes; preserve historical SOP evidence |
 | FAM-002: Contracts and persistence | Typed APIs, additive metadata/version/review/job migrations, explicit legacy backfill/quarantine policy, asset ownership and visibility | Stable IDs; both database boundaries remain intact; legacy rows preserved and quarantined; clean-install and upgrade cases pass; approved version/scope is explicit |
 | FAM-003: Upload and review | Profile assets, general submissions, admin review, confirmed account/person link | Roles enforced by Rust; pending, rejected, and legacy content cannot enter the approved RAG path; promotion requires review and successful processing |
 | FAM-004: Processing | Durable queue or database job runner using existing ingestion services; audited legacy backfill dry-run/apply | Idempotent processing and backfill; stale jobs cannot publish; failures/retries are visible |
