@@ -27,6 +27,7 @@ const APPROVER = process.env.E2E_APPROVER_TOKEN || "";
 const REVIEWER = process.env.E2E_REVIEWER_TOKEN || "";
 const REVIEWER_OFF = process.env.E2E_REVIEWER_OFF_TOKEN || "";
 const VIEWER = process.env.E2E_VIEWER_TOKEN || "";
+const PRIVATE_MARKER = process.env.E2E_PRIVATE_PROFILE_MARKER || "";
 const REVIEWER_ACCOUNT_ID = Number(process.env.E2E_REVIEWER_ACCOUNT_ID || 0);
 const APPROVER_ACCOUNT_ID = Number(process.env.E2E_APPROVER_ACCOUNT_ID || 0);
 const REVIEWER_OFF_ACCOUNT_ID = Number(
@@ -39,6 +40,7 @@ const READY = Boolean(
     REVIEWER &&
     REVIEWER_OFF &&
     VIEWER &&
+    PRIVATE_MARKER &&
     REVIEWER_ACCOUNT_ID &&
     APPROVER_ACCOUNT_ID &&
     REVIEWER_OFF_ACCOUNT_ID,
@@ -356,6 +358,7 @@ test.describe.serial("branch review security acceptance", () => {
     expect(profileCalls).toEqual([]);
     const body = await page.locator("body").innerText();
     for (const forbidden of [
+      PRIVATE_MARKER,
       "owner_private",
       "current_location",
       "contact_email",
@@ -363,6 +366,18 @@ test.describe.serial("branch review security acceptance", () => {
     ]) {
       expect(body).not.toContain(forbidden);
     }
+
+    // The reviewed person really holds an approved owner-private value with
+    // this exact text (the harness fails the run when the fixture is missing),
+    // so this is a value-leak assertion rather than a field-name assertion.
+    const queue = await api(
+      request,
+      REVIEWER,
+      "GET",
+      "/api/branch-review/submissions?branch=branch-1",
+    );
+    expect(queue.status).toBe(200);
+    expect(JSON.stringify(queue.body)).not.toContain(PRIVATE_MARKER);
     const detail = await api(
       request,
       REVIEWER,
@@ -370,6 +385,7 @@ test.describe.serial("branch review security acceptance", () => {
       `/api/branch-review/submissions/${visibleId}`,
     );
     expect(detail.status).toBe(200);
+    expect(JSON.stringify(detail.body)).not.toContain(PRIVATE_MARKER);
     expect(JSON.stringify(detail.body)).not.toContain("owner_private");
 
     // Restore the approver to branch-1 for the following specs.

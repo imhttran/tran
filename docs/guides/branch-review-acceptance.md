@@ -20,6 +20,13 @@ issuer, seeds the disposable genealogy database, and deletes only its own rows.
 
 ## Matrix
 
+Status legend:
+
+- **PASS** — the scenario is proven end to end by an executed test.
+- **PARTIAL** — the part that exists is proven; a named policy or harness gap
+  remains and is listed under _Gaps_ below.
+- **NOT COVERED** — no evidence yet.
+
 | # | Scenario | Evidence | Result |
 | --- | --- | --- | --- |
 | 1 | Administrator grants branch-review authority | `tests/onboarding_branch_grants.rs::grants_are_explicit_scoped_and_audited`; `web/e2e/branch-grants.spec.ts` (grant, list, revoke, re-grant) | PASS |
@@ -35,9 +42,9 @@ issuer, seeds the disposable genealogy database, and deletes only its own rows.
 | 11 | Head of Family without an explicit grant has no reviewer access | `tests/branch_review.rs::head_of_family_without_a_grant_has_no_review_authority` (active appointment, still no grants, queue, detail, or decision) | PASS |
 | 12 | Concurrent decisions cannot produce conflicting approved facts | `tests/branch_review.rs::concurrent_decisions_have_exactly_one_winner` (coordinated competing transactions, not sleeps); repeated decision is refused with 409 in `branch-review.spec.ts` | PASS |
 | 13 | Disputed evidence cannot silently become verified | `tests/branch_review.rs::a_disputed_fact_is_not_verified_by_submission_alone` | PASS |
-| 14 | Shared or cross-branch relationships require appropriate authority | `tests/branch_review.rs::ambiguous_branch_membership_blocks_proposals`, `::proposals_are_scoped_to_the_person_branch_not_the_reviewer` | PASS (person scope), see gap 1 |
+| 14 | Shared or cross-branch relationships require appropriate authority | `tests/branch_review.rs::ambiguous_branch_membership_blocks_proposals`, `::proposals_are_scoped_to_the_person_branch_not_the_reviewer` | **PARTIAL** — person-scope authority is proven; cross-branch relationship escalation does not exist yet (gap 1) |
 | 15 | Administrator role and branch reviewer role remain independent | `web/e2e/branch-review-security.spec.ts` (reviewer denied `/api/admin/reviews`, `/api/admin/family-members`, grant administration, and admin navigation; admin without a grant sees no branch authority); `tests/branch_review.rs::a_grant_without_an_audited_appointment_confers_no_authority` | PASS |
-| 16 | No private profile, owner-private media, or unapproved content leaks through UI, API, logs, or RAG | `tests/branch_review.rs::branch_review_reads_never_return_private_profile_values`, `::proposal_content_never_enters_the_rag_corpus`; `web/e2e/branch-review-security.spec.ts` (no `/api/profile` request, no private markers in the DOM or API, pending document submissions are review-only); `web/e2e/branch-review.spec.ts` | PASS |
+| 16 | No private profile, owner-private media, or unapproved content leaks through UI, API, logs, or RAG | `tests/branch_review.rs::branch_review_reads_never_return_private_profile_values`, `::proposal_content_never_enters_the_rag_corpus`; `web/e2e/branch-review-security.spec.ts` (a seeded approved owner-private value is absent from the queue JSON, the detail JSON, and the rendered page; no `/api/profile` request; pending document submissions are review-only); `web/e2e/branch-review.spec.ts` | **PARTIAL** — UI, API, and RAG are proven with a real seeded value; log leakage is not asserted (gap 3) |
 
 ## How the guarantees are enforced
 
@@ -59,8 +66,12 @@ issuer, seeds the disposable genealogy database, and deletes only its own rows.
 - **Nothing private is read.** The module only ever selects genealogy
   assertions, source evidence, and the proposal ledger. Private profile values,
   contact fields, drafts, and owner-private media are never joined, so they
-  cannot appear in a response, a log line, or the DOM. The browser page never
-  requests `/api/profile`.
+  cannot appear in a response or the DOM. The browser fixture stores a
+  distinctive approved owner-private value (`current_location`) for the person
+  under review, and the acceptance run asserts that exact value is absent from
+  the queue JSON, the detail JSON, and the rendered page — and fails the run if
+  the fixture was not seeded, so the negative assertion cannot pass vacuously.
+  The browser page never requests `/api/profile`.
 - **Nothing unapproved is published.** Proposals live only in the genealogy
   database. A proposed value is never written to the retrieval corpus, and a
   pending document submission writes no chunks and is invisible to family
@@ -92,7 +103,8 @@ deterministically instead of assuming it stayed open.
 
 ## Gaps and explicit limits
 
-1. **Cross-branch relationships are not an approval workflow.** A fact that
+1. **Cross-branch relationships are not an approval workflow** (scenario 14 is
+   PARTIAL). A fact that
    spans two people (for example a parent-child claim between branches) is
    stored on the reviewed person and validated by the existing genealogy rules.
    There is no escalation path that requires authority over both branches. The
@@ -101,9 +113,10 @@ deterministically instead of assuming it stayed open.
 2. **Head of Family remains a genealogy status.** An active appointment confers
    no application permission, and a lapsed appointment is not re-derived here.
    The appointment-validity recheck belongs to BR-004.
-3. **Logs are content-free by construction, not by test.** The branch review
-   handlers log an error variant and never a value, note, evidence locator, or
-   storage key. There is no log-capture harness in this repository, so the
-   property is reviewed by inspection rather than asserted.
+3. **Logs are content-free by construction, not by test** (scenario 16 is
+   PARTIAL). The branch review handlers log an error variant and never a value,
+   note, evidence locator, or storage key. There is no log-capture harness in
+   this repository, so the property is reviewed by inspection rather than
+   asserted.
 4. **The security add-on is not available.** `sop security scan` reports
    `NOT_APPLICABLE` for this project; this matrix is the substitute evidence.

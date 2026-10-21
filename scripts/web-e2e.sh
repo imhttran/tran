@@ -94,6 +94,11 @@ export E2E_REVIEWER_TOKEN
 # reviewer used by the other branch-review specs keeps its access.
 E2E_REVIEWER_OFF_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-reviewer-off --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_REVIEWER_OFF_TOKEN
+# A distinctive synthetic value stored as an approved, owner-private profile
+# value for the reviewed person. The security suite proves this exact value is
+# absent from every branch review response and page.
+E2E_PRIVATE_PROFILE_MARKER="ZX-PRIVATE-PROFILE-MARKER-4f21"
+export E2E_PRIVATE_PROFILE_MARKER
 
 echo "web-e2e: seeding test identities"
 # Base RAG schema and the FAM-002 document lifecycle metadata. These are
@@ -202,7 +207,15 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v reviewer_fingerprint="$E2E_REVIEWER_FINGERPRINT" \
 	-v off_account_id="$E2E_REVIEWER_OFF_ACCOUNT_ID" \
 	-v off_fingerprint="$E2E_REVIEWER_OFF_FINGERPRINT" \
+	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
+# The privacy assertion is only meaningful if the private value really exists.
+seeded_private=$(psql "$GENEALOGY_DATABASE_URL" -tAc \
+	"SELECT count(*) FROM onboarding_profile_value WHERE value_text = '$E2E_PRIVATE_PROFILE_MARKER'")
+if [ "$seeded_private" != "1" ]; then
+	echo "web-e2e: the private profile fixture was not seeded (found ${seeded_private:-none})" >&2
+	exit 1
+fi
 
 # Intentionally override any inherited MEDIA_ROOT: browser tests must only write
 # synthetic media into this run's disposable directory.

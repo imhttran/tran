@@ -223,9 +223,14 @@ impl Drop for TestDb {
         // Delete dependent rows first: a shared, long-lived test database may
         // currently lack the migration 0020 foreign keys (an earlier schema
         // reset can drop them), so cleanup must not depend on ON DELETE CASCADE.
-        // Proposal events are append-only by design and are never deleted; they
-        // hold no file content and no foreign key.
+        // Only rows this test created are matched, always by its unique prefix,
+        // so real records are never touched. Proposal and audit events are
+        // append-only by design and are never deleted; they hold no file content
+        // and no foreign key.
         for statement in [
+            // The appointment stores its person by key, not by id, so it has no
+            // cascade and must be removed explicitly.
+            "DELETE FROM head_of_family_appointment WHERE person_key LIKE $1",
             "DELETE FROM onboarding_person_account_link \
               WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
             "DELETE FROM genealogy_fact_proposal \

@@ -6,7 +6,12 @@
 -- dates, addresses, or source material.
 --
 -- psql variables: reviewer_account_id, reviewer_fingerprint,
--- off_account_id, off_fingerprint.
+-- off_account_id, off_fingerprint, marker.
+--
+-- `marker` is a distinctive synthetic value written as an approved,
+-- owner-private profile value for the reviewed person. The browser acceptance
+-- suite proves that exact value never reaches the branch review API or page,
+-- so the assertion is about a real value rather than a field name.
 
 BEGIN;
 
@@ -72,6 +77,45 @@ UPDATE assertion a
  WHERE p.person_id = a.person_id
    AND p.person_key LIKE 'e2e-branch-%'
    AND a.assertion_kind = 'branch_claim';
+
+-- One approved owner-private profile value for the person under review. The
+-- guard only accepts an approved value that matches an approved revision, so
+-- this walks the same draft -> submitted -> approved path the product uses.
+INSERT INTO onboarding_profile_revision
+    (person_id, field_key, prior_value_text, prior_approved_revision_number,
+     new_value_text, changed_by, revision_number, status, visibility)
+SELECT person_id, 'current_location', NULL, 0, :'marker', 'e2e-seed', 1,
+       'draft', 'owner_private'
+  FROM person
+ WHERE person_key = 'e2e-branch-subject';
+
+UPDATE onboarding_profile_revision r
+   SET status = 'pending_review', submitted_at = now()
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'current_location'
+   AND r.status = 'draft';
+
+UPDATE onboarding_profile_revision r
+   SET status = 'approved', reviewed_at = now(),
+       reviewed_by = 'e2e-seed-reviewer', review_note = 'synthetic fixture'
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'current_location'
+   AND r.status = 'pending_review';
+
+INSERT INTO onboarding_profile_value
+    (person_id, field_key, value_text, visibility, updated_by,
+     approved_revision_number, approved_revision_id)
+SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
+       r.revision_number, r.revision_id
+  FROM onboarding_profile_revision r
+  JOIN person p ON p.person_id = r.person_id
+ WHERE p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'current_location'
+   AND r.status = 'approved';
 
 INSERT INTO onboarding_person_account_link
     (person_id, account_id, linked_by, identity_fingerprint)
