@@ -33,8 +33,8 @@ pub use batch::{
 };
 pub use branch_review::{
     active_branch_grants, grant_branches, has_active_branch_grant, list_branches,
-    list_grant_events, list_grants, revoke_grant, BranchGrantError, BranchGrantEvent,
-    BranchReviewerGrant, BranchSummary, GRANT_REASON_MAX_CHARS,
+    read_grant_snapshot, revoke_grant, BranchGrantError, BranchGrantEvent, BranchReviewerGrant,
+    BranchSummary, GRANT_REASON_MAX_CHARS,
 };
 pub use candidate::{
     classify, load_name_parts, name_parts, preview_candidates, reclassify_person,

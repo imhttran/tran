@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
     active_branch_grants, grant_branches, has_active_branch_grant, list_branches,
-    list_grant_events, list_grants, revoke_grant, BranchGrantError, IdentityAccount,
+    read_grant_snapshot, revoke_grant, BranchGrantError, IdentityAccount,
 };
 
 const MIGRATIONS: [&str; 19] = [
@@ -200,7 +200,9 @@ fn grants_are_explicit_scoped_and_audited() {
     assert!(has_active_branch_grant(&mut db.genealogy, &account, &branch_a).expect("branch a"));
     assert!(!has_active_branch_grant(&mut db.genealogy, &account, &branch_c).expect("branch c"));
 
-    let events = list_grant_events(&mut db.genealogy, Some(account.account_id)).expect("events");
+    let events = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 100)
+        .expect("snapshot")
+        .events;
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|event| event.event == "granted"));
     assert!(events
@@ -247,7 +249,9 @@ fn grants_are_explicit_scoped_and_audited() {
     assert_ne!(regranted[0].grant_id, first);
     assert!(regranted[0].active);
     assert!(regranted[0].usable);
-    let events = list_grant_events(&mut db.genealogy, Some(account.account_id)).expect("events");
+    let events = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 100)
+        .expect("snapshot")
+        .events;
     assert_eq!(events.len(), 4);
     assert_eq!(
         events
@@ -264,7 +268,9 @@ fn grants_are_explicit_scoped_and_audited() {
         3
     );
 
-    let history = list_grants(&mut db.genealogy, Some(account.account_id)).expect("history");
+    let history = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 100)
+        .expect("snapshot")
+        .grants;
     assert_eq!(history.len(), 3);
     assert_eq!(history.iter().filter(|grant| grant.active).count(), 2);
 }
@@ -355,6 +361,11 @@ fn account_replacement_does_not_inherit_grants() {
         .expect("first active")
         .is_empty());
     assert!(!has_active_branch_grant(&mut db.genealogy, &first, &branch).expect("first check"));
+    let first_grants =
+        read_grant_snapshot(&mut db.genealogy, Some(first.account_id), None, None, 100)
+            .expect("first grants")
+            .grants;
+    assert!(first_grants.iter().all(|grant| !grant.usable));
 
     db.link(&second, person);
     assert!(active_branch_grants(&mut db.genealogy, &second)
@@ -486,7 +497,9 @@ fn concurrent_grants_have_exactly_one_winner() {
         .expect("grant count")
         .get(0);
     assert_eq!(grants, 1);
-    let events = list_grant_events(&mut db.genealogy, Some(account.account_id)).expect("events");
+    let events = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 100)
+        .expect("snapshot")
+        .events;
     assert_eq!(
         events
             .iter()
@@ -533,4 +546,86 @@ fn grant_events_are_append_only() {
         &[&event_id],
     );
     assert!(delete.is_err(), "grant events must not be deletable");
+}
+
+#[test]
+fn blank_branch_entries_are_rejected_atomically() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("blank");
+    let person = db.person("blank");
+    let branch = db.branch("blank");
+    db.link(&account, person);
+
+    assert_eq!(
+        grant_branches(
+            &mut db.genealogy,
+            &account,
+            &[branch, "   ".to_string()],
+            "admin",
+            "mixed blank selection",
+        ),
+        Err(BranchGrantError::BlankBranch)
+    );
+    let grants: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT count(*) FROM onboarding_branch_reviewer_grant WHERE account_id = $1",
+            &[&account.account_id],
+        )
+        .expect("grant count")
+        .get(0);
+    assert_eq!(
+        grants, 0,
+        "a rejected multi-branch grant must write nothing"
+    );
+}
+
+#[test]
+fn grant_listing_is_bounded_and_cursor_paginated() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("pagination");
+    let person = db.person("pagination");
+    db.link(&account, person);
+    let branches = [
+        db.branch("page-a"),
+        db.branch("page-b"),
+        db.branch("page-c"),
+    ];
+    grant_branches(
+        &mut db.genealogy,
+        &account,
+        &branches,
+        "admin",
+        "pagination grant",
+    )
+    .expect("grant three branches");
+
+    let first = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 2)
+        .expect("first snapshot");
+    assert_eq!(first.limit, 2);
+    assert_eq!(first.grants.len(), 2);
+    assert_eq!(first.events.len(), 2);
+    assert!(first.grants_next_cursor.is_some());
+    assert!(first.events_next_cursor.is_some());
+
+    let second = read_grant_snapshot(
+        &mut db.genealogy,
+        Some(account.account_id),
+        first.grants_next_cursor,
+        first.events_next_cursor,
+        2,
+    )
+    .expect("second snapshot");
+    assert_eq!(second.grants.len(), 1);
+    assert_eq!(second.events.len(), 1);
+    assert_eq!(second.grants_next_cursor, None);
+    assert_eq!(second.events_next_cursor, None);
+    assert_ne!(
+        first.grants[0].grant_id, second.grants[0].grant_id,
+        "pages must not repeat a grant"
+    );
 }
