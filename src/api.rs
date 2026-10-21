@@ -35,8 +35,8 @@ use crate::document_lifecycle::{
     self, AccessScope, Category, DocumentStorage, DocumentVersion, NewSubmission,
 };
 use crate::genealogy::{
-    appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree,
-    GenealogyError,
+    appointments, branch_review, query as genealogy_query, resolve_genealogy_dsn,
+    tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -244,6 +244,23 @@ impl AppState {
             .route(
                 "/api/profile/media/{id}",
                 get(profile_media).delete(withdraw_profile_media),
+            )
+            .route("/api/branch-review/grants/me", get(branch_review_grants))
+            .route(
+                "/api/branch-review/submissions",
+                get(branch_review_queue).post(create_branch_review_proposal),
+            )
+            .route(
+                "/api/branch-review/submissions/{id}",
+                get(branch_review_proposal),
+            )
+            .route(
+                "/api/branch-review/persons/{person_key}/evidence",
+                get(branch_review_person_evidence),
+            )
+            .route(
+                "/api/branch-review/submissions/{id}/decision",
+                post(decide_branch_review_proposal),
             )
             .route("/api/admin/roles", post(change_role))
             .route(
@@ -892,6 +909,9 @@ struct BranchReviewerRevokeRequest {
 #[derive(Deserialize)]
 struct BranchReviewerListQuery {
     account_id: Option<i64>,
+    grant_cursor: Option<i64>,
+    event_cursor: Option<i64>,
+    limit: Option<i64>,
 }
 
 /// Lists grantable family branches.
@@ -930,22 +950,47 @@ async fn list_branch_reviewers(
     if let Err(response) = authorize(&state, &headers, Operation::BranchReviewerAdmin) {
         return response;
     }
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_limit",
+            "limit must be between 1 and 100",
+        );
+    }
+    if query.grant_cursor.is_some_and(|cursor| cursor <= 0)
+        || query.event_cursor.is_some_and(|cursor| cursor <= 0)
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursors must be positive ids",
+        );
+    }
     let config = state.config.clone();
     let account_id = query.account_id;
+    let grant_cursor = query.grant_cursor;
+    let event_cursor = query.event_cursor;
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
-        let grants =
-            onboarding::list_grants(&mut genealogy, account_id).map_err(branch_grant_error)?;
-        let events = onboarding::list_grant_events(&mut genealogy, account_id)
-            .map_err(branch_grant_error)?;
-        Ok((grants, events))
+        onboarding::read_grant_snapshot(
+            &mut genealogy,
+            account_id,
+            grant_cursor,
+            event_cursor,
+            limit,
+        )
+        .map_err(branch_grant_error)
     })
     .await;
     match result {
-        Ok(Ok((grants, events))) => Json(serde_json::json!({
+        Ok(Ok(snapshot)) => Json(serde_json::json!({
             "ok": true,
-            "grants": grants.iter().map(grant_json).collect::<Vec<_>>(),
-            "events": events.iter().map(grant_event_json).collect::<Vec<_>>(),
+            "limit": snapshot.limit,
+            "grants": snapshot.grants.iter().map(grant_json).collect::<Vec<_>>(),
+            "events": snapshot.events.iter().map(grant_event_json).collect::<Vec<_>>(),
+            "grants_next_cursor": snapshot.grants_next_cursor,
+            "events_next_cursor": snapshot.events_next_cursor,
         }))
         .into_response(),
         Ok(Err(response)) => response,
@@ -1067,6 +1112,7 @@ fn branch_grant_error(err: onboarding::BranchGrantError) -> Response {
     eprintln!("api: branch reviewer grant failed: {err}");
     match err {
         onboarding::BranchGrantError::EmptySelection
+        | onboarding::BranchGrantError::BlankBranch
         | onboarding::BranchGrantError::UnknownBranch(_)
         | onboarding::BranchGrantError::InvalidActor
         | onboarding::BranchGrantError::InvalidReason => error(
@@ -1148,6 +1194,375 @@ fn grant_event_json(event: &onboarding::BranchGrantEvent) -> serde_json::Value {
         "reason": event.reason,
         "created_at": event.created_at,
     })
+}
+
+#[derive(Deserialize)]
+struct BranchReviewQueueQuery {
+    branch: Option<String>,
+    status: Option<String>,
+    cursor: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[allow(clippy::result_large_err)]
+async fn branch_review_person_evidence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::person_evidence(&mut genealogy, &account, &person_key)
+            .map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(evidence)) => Json(serde_json::json!({
+            "ok": true,
+            "evidence": evidence.iter().map(|item| serde_json::json!({
+                "source_evidence_id": item.source_evidence_id,
+                "document_ref": item.document_ref,
+                "page": item.page,
+                "locator": item.locator,
+                "assertion_kind": item.assertion_kind,
+                "assertion_key": item.assertion_key,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch evidence task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BranchProposalRequest {
+    person_key: String,
+    branch_key: String,
+    assertion_kind: String,
+    assertion_key: String,
+    proposed_value: String,
+    evidence: Vec<branch_review::ProposalEvidence>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BranchProposalDecisionRequest {
+    decision: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Returns only the caller's effective branch grants.
+#[allow(clippy::result_large_err)]
+async fn branch_review_grants(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::effective_grants(&mut genealogy, &account).map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(grants)) => Json(serde_json::json!({
+            "ok": true,
+            "grants": grants.iter().map(|grant| serde_json::json!({
+                "branch_key": grant.branch_key,
+                "branch_label": grant.branch_label,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch grants task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn branch_review_queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<BranchReviewQueueQuery>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let limit = query.limit.unwrap_or(25);
+    if !(1..=branch_review::PROPOSAL_LIMIT_MAX).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_limit",
+            "limit must be between 1 and 100",
+        );
+    }
+    if query.cursor.is_some_and(|cursor| cursor <= 0) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursor must be a positive proposal id",
+        );
+    }
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let branch = query.branch;
+    let status = query.status;
+    let cursor = query.cursor;
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::list_proposals(
+            &mut genealogy,
+            &account,
+            branch.as_deref(),
+            status.as_deref(),
+            cursor,
+            limit,
+        )
+        .map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(page)) => Json(serde_json::json!({
+            "ok": true,
+            "status": page.status,
+            "limit": page.limit,
+            "next_cursor": page.next_cursor,
+            "submissions": page.submissions.iter().map(proposal_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch queue task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn branch_review_proposal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(proposal_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::read_proposal(&mut genealogy, &account, proposal_id)
+            .map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(detail)) => Json(serde_json::json!({
+            "ok": true,
+            "proposal": proposal_json(&detail.summary),
+            "current_assertion": detail.current_assertion.as_ref().map(current_assertion_json),
+            "events": detail.events.iter().map(proposal_event_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch proposal task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn create_branch_review_proposal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BranchProposalRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::propose_fact(
+            &mut genealogy,
+            &account,
+            &request.person_key,
+            &request.branch_key,
+            &request.assertion_kind,
+            &request.assertion_key,
+            &request.proposed_value,
+            &request.evidence,
+            request.note.as_deref(),
+        )
+        .map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(proposal_id)) => Json(serde_json::json!({
+            "ok": true,
+            "proposal_id": proposal_id,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch proposal create task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn decide_branch_review_proposal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(proposal_id): Path<i64>,
+    Json(request): Json<BranchProposalDecisionRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        branch_review::decide_proposal(
+            &mut genealogy,
+            &account,
+            proposal_id,
+            &request.decision,
+            request.note.as_deref(),
+        )
+        .map_err(branch_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(decision)) => Json(serde_json::json!({
+            "ok": true,
+            "proposal_id": decision.proposal_id,
+            "status": decision.status,
+            "applied_assertion_id": decision.applied_assertion_id,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch proposal decision task failed: {err}");
+            branch_review_unavailable()
+        }
+    }
+}
+
+fn proposal_json(proposal: &branch_review::ProposalSummary) -> serde_json::Value {
+    serde_json::json!({
+        "proposal_id": proposal.proposal_id,
+        "person_key": proposal.person_key,
+        "display_name": proposal.display_name,
+        "branch_key": proposal.branch_key,
+        "assertion_kind": proposal.assertion_kind,
+        "assertion_key": proposal.assertion_key,
+        "prior_value_text": proposal.prior_value_text,
+        "prior_review_status": proposal.prior_review_status,
+        "proposed_value_text": proposal.proposed_value_text,
+        "evidence": proposal.evidence,
+        "submitted_at": proposal.submitted_at,
+        "status": proposal.status,
+        "can_decide": proposal.can_decide,
+        "decision_block": proposal.decision_block,
+    })
+}
+
+fn current_assertion_json(assertion: &branch_review::CurrentAssertion) -> serde_json::Value {
+    serde_json::json!({
+        "assertion_id": assertion.assertion_id,
+        "value_text": assertion.value_text,
+        "review_status": assertion.review_status,
+        "reviewed_at": assertion.reviewed_at,
+    })
+}
+
+fn proposal_event_json(event: &branch_review::ProposalEvent) -> serde_json::Value {
+    serde_json::json!({
+        "event": event.event,
+        "actor": event.actor,
+        "note": event.note,
+        "created_at": event.created_at,
+    })
+}
+
+#[allow(clippy::result_large_err)]
+fn branch_review_error(err: branch_review::BranchReviewError) -> Response {
+    eprintln!("api: branch review failed: {err}");
+    match err {
+        branch_review::BranchReviewError::NotGranted
+        | branch_review::BranchReviewError::SelfReview
+        | branch_review::BranchReviewError::OwnerReview => error(
+            StatusCode::FORBIDDEN,
+            "branch_review_forbidden",
+            "the account may not review this branch or submission",
+        ),
+        branch_review::BranchReviewError::UnknownProposal => error(
+            StatusCode::NOT_FOUND,
+            "branch_review_not_found",
+            "no such submission is available to this reviewer",
+        ),
+        branch_review::BranchReviewError::OpenProposal
+        | branch_review::BranchReviewError::InvalidTransition
+        | branch_review::BranchReviewError::Stale => error(
+            StatusCode::CONFLICT,
+            "branch_review_conflict",
+            "the submission conflicts with the current review state",
+        ),
+        branch_review::BranchReviewError::MissingBranch
+        | branch_review::BranchReviewError::BranchAmbiguous
+        | branch_review::BranchReviewError::NotInBranch
+        | branch_review::BranchReviewError::InvalidField
+        | branch_review::BranchReviewError::InvalidEvidence
+        | branch_review::BranchReviewError::ReviewNoteRequired
+        | branch_review::BranchReviewError::Review(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "branch_review_invalid",
+            "the branch review request is invalid",
+        ),
+        branch_review::BranchReviewError::Database(_) => branch_review_unavailable(),
+    }
+}
+
+fn branch_review_unavailable() -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "branch_review_unavailable",
+        "the branch review store is unavailable",
+    )
 }
 
 #[derive(Deserialize)]

@@ -31,12 +31,12 @@ administrator process. The designation itself grants no application permission.
 
 All routes require `Operation::BranchReviewerAdmin` (system administrator).
 
-| Route | Purpose |
-| --- | --- |
-| `GET /api/admin/branch-reviewers/branches` | List grantable branch keys and labels. |
-| `GET /api/admin/branch-reviewers?account_id=` | List current/historical grants and events, optionally for one account. |
-| `POST /api/admin/branch-reviewers` | Grant one or more branches to a verified, active, reviewed-linked account. |
-| `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason. |
+| Route                                                | Purpose                                                                    |
+| ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/admin/branch-reviewers/branches`           | List grantable branch keys and labels.                                     |
+| `GET /api/admin/branch-reviewers?account_id=`        | List current/historical grants and events, optionally for one account.     |
+| `POST /api/admin/branch-reviewers`                   | Grant one or more branches to a verified, active, reviewed-linked account. |
+| `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason.                            |
 
 Grant request:
 
@@ -67,8 +67,10 @@ fingerprint, timestamps, reason, `active`, and `usable`.
 - A grant or revocation requires a non-empty reason; the actor is the verified
   administrator fingerprint.
 - Duplicate active grants are rejected (`409 branch_grant_exists`).
-- Granting multiple branches is atomic: every requested branch must be valid, or
-  none is written.
+- Grant and event listings use descending id cursors and a hard limit of 100;
+  grants and events in one response come from the same repeatable-read snapshot.
+- Granting multiple branches is atomic: every requested branch must be valid and
+  non-blank, or none is written.
 - A branch reviewer does not gain any administrator capability. Admin APIs still
   require the administrator role.
 
@@ -92,3 +94,53 @@ and append-only event enforcement.
 
 The browser harness seeds `branch-1`–`branch-3` and resets synthetic grants in
 the disposable E2E database only.
+
+## Branch-scoped shared-fact review (USR-005B)
+
+Branch reviewers use narrowly scoped operations, not the administrator review
+operation. Every request resolves the caller from the verified OIDC identity and
+requires the exact reviewed account-person link.
+
+| Route                                                               | Purpose                                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /api/branch-review/grants/me`                                  | The caller's active, link-bound branch grants.                               |
+| `GET /api/branch-review/submissions?branch=&status=&cursor=&limit=` | Pending or historical proposals within granted branches.                     |
+| `GET /api/branch-review/submissions/{id}`                           | One in-scope proposal, its current authoritative fact, evidence, and events. |
+| `POST /api/branch-review/submissions`                               | Submit a source-backed shared-fact proposal.                                 |
+| `POST /api/branch-review/submissions/{id}/decision`                 | Approve, reject, or request changes.                                         |
+
+- A proposal stores the proposed value, the prior verified snapshot, branch key,
+  submitter fingerprint, evidence references, and an append-only event ledger
+  (`genealogy_fact_proposal`, migration `0020`).
+- A usable grant is an administrator appointment: it must be active, bound to
+  the caller's exact verified identity, still backed by the reviewed
+  account-person link, and recorded by the append-only `granted` audit event.
+  A grant row created out of band confers no authority, and a genealogy title
+  never substitutes for a grant.
+- Creation requires exactly one verified `branch_claim` for the person and the
+  requested branch. Ambiguous or unverified membership is rejected.
+- Every evidence reference must resolve to the cited original, non-derivative
+  source document at the stated page; a mismatched `document_ref` is rejected so
+  an approval cannot record a citation that does not exist.
+- A linked owner may propose for their own person; a branch reviewer may propose
+  only within a granted branch.
+- Decisions recheck the active grant, current link, proposal status, and prior
+  verified snapshot inside one transaction. Submitters and linked owners cannot
+  decide. Rejection and needs-changes require a note.
+- Approval applies the proposal through the existing assertion evidence,
+  provenance, validation, review-event, and baseline workflow. Pending proposals
+  never replace a verified fact.
+- Approval updates the single authoritative assertion in place, exactly as the
+  existing assertion review does. The superseded value is never lost: it stays
+  immutable on the approved proposal row (`prior_value_text`,
+  `prior_review_status`), and the proposal event ledger remains the change
+  history for that fact.
+- Queue and detail filters never expose an off-branch person or proposal. No
+  member-private profile fields, drafts, contact details, personal documents, or
+  owner-private media are read by this module.
+- Cross-branch relationships and title-derived authority are intentionally not
+  inferred. Ambiguous membership and multi-branch relationships must be escalated
+  through an explicit policy decision.
+
+The `/branch-review` UI is USR-005C. The complete negative-security and browser
+acceptance suite is USR-005D.

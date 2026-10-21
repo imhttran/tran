@@ -308,7 +308,7 @@ fn current_status(tx: &mut Transaction<'_>, assertion_id: i64) -> Result<String,
     Ok(row.get(0))
 }
 
-fn review_in_transaction(
+pub(crate) fn review_in_transaction(
     tx: &mut Transaction<'_>,
     request: &ReviewRequest<'_>,
 ) -> Result<ReviewOutcome, ReviewError> {

@@ -138,6 +138,10 @@ pub enum Operation {
     RoleChange,
     /// Granting or revoking explicit branch reviewer authority.
     BranchReviewerAdmin,
+    /// Reading branch-scoped shared-genealogy review queues and details.
+    BranchReviewRead,
+    /// Submitting or deciding branch-scoped shared-genealogy proposals.
+    BranchReviewWrite,
     /// Reading authorized genealogy records and evidence.
     GenealogyRead,
     /// Drafting a Head of Family nomination with citations.
@@ -191,7 +195,10 @@ impl Operation {
             | Operation::PasswordReset
             | Operation::DocumentReview
             | Operation::DocumentProcess => Some(Role::Admin),
-            Operation::ProfileRead | Operation::ProfileWrite => None,
+            Operation::ProfileRead
+            | Operation::ProfileWrite
+            | Operation::BranchReviewRead
+            | Operation::BranchReviewWrite => None,
         }
     }
 
@@ -207,6 +214,7 @@ impl Operation {
                 | Operation::OnboardingDryRun
                 | Operation::MemberDirectory
                 | Operation::DocumentRead
+                | Operation::BranchReviewRead
         )
     }
 
@@ -228,6 +236,8 @@ impl Operation {
             Operation::ProfileWrite => "profile_write",
             Operation::ProfileReview => "profile_review",
             Operation::BranchReviewerAdmin => "branch_reviewer_admin",
+            Operation::BranchReviewRead => "branch_review_read",
+            Operation::BranchReviewWrite => "branch_review_write",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
             Operation::OnboardingPreview => "onboarding_preview",
             Operation::OnboardingInvite => "onboarding_invite",
@@ -292,6 +302,8 @@ mod tests {
             Operation::ProfileReview,
             Operation::RoleChange,
             Operation::BranchReviewerAdmin,
+            Operation::BranchReviewRead,
+            Operation::BranchReviewWrite,
             Operation::HeadOfFamilyApproval,
             Operation::OnboardingPreview,
             Operation::OnboardingInvite,

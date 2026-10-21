@@ -5,6 +5,7 @@
 //! the migration runner. It never falls back to the RAG `DATABASE_URL`.
 
 pub mod appointments;
+pub mod branch_review;
 pub mod eligibility;
 pub mod label;
 pub mod migrate;
