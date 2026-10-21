@@ -143,3 +143,131 @@ export function askQuestion(question: string): Promise<QueryResponse> {
     body: JSON.stringify({ question }),
   });
 }
+
+// --- profile and private media --------------------------------------------
+
+export type ProfileVisibility = "owner_private" | "family";
+export type ProfileStatus =
+  "draft" | "pending_review" | "approved" | "rejected" | "needs_changes";
+
+export type ApprovedProfileValue = {
+  field_key: string;
+  value: string;
+  visibility: ProfileVisibility;
+  approved_revision_number: number;
+  approved_revision_id: number | null;
+  updated_at: string;
+};
+
+export type ProfileRevision = {
+  revision_id: number;
+  field_key: string;
+  revision_number: number;
+  prior_value_text: string | null;
+  prior_approved_revision_number: number;
+  value: string;
+  visibility: ProfileVisibility;
+  status: ProfileStatus;
+  changed_at: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+};
+
+export type ProfileMediaAsset = {
+  media_id: number;
+  revision_id: number;
+  kind: "profile_photo" | "personal_document";
+  mime_type: string;
+  byte_size: number;
+  file_name: string;
+  visibility: ProfileVisibility;
+  width: number | null;
+  height: number | null;
+  status: ProfileStatus;
+  created_at: string;
+};
+
+export type ProfileResponse = {
+  ok: true;
+  linked: boolean;
+  profile?: {
+    display_name: string;
+    approved: ApprovedProfileValue[];
+    pending: ProfileRevision[];
+    history: ProfileRevision[];
+  };
+  media?: ProfileMediaAsset[];
+};
+
+export function getProfile(): Promise<ProfileResponse> {
+  return request<ProfileResponse>("/api/profile");
+}
+
+export function createProfileDraft(input: {
+  field_key: string;
+  value: string;
+  visibility: ProfileVisibility;
+}): Promise<{ ok: true; revision: ProfileRevision }> {
+  return request("/api/profile/drafts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProfileDraft(
+  revisionId: number,
+  input: { value: string; visibility: ProfileVisibility },
+): Promise<{ ok: true; revision: ProfileRevision }> {
+  return request(`/api/profile/drafts/${revisionId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function submitProfileDraft(
+  revisionId: number,
+): Promise<{ ok: true; revision: ProfileRevision }> {
+  return request(`/api/profile/drafts/${revisionId}/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export function cancelProfileDraft(
+  revisionId: number,
+): Promise<{ ok: true; revision: ProfileRevision }> {
+  return request(`/api/profile/drafts/${revisionId}/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export function uploadProfileMedia(
+  kind: "photo" | "document",
+  file: File,
+  visibility: ProfileVisibility,
+): Promise<{ ok: true; media: ProfileMediaAsset }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("visibility", visibility);
+  const path =
+    kind === "photo"
+      ? "/api/profile/media/photo"
+      : "/api/profile/media/personal-document";
+  return request(path, { method: "POST", body: form });
+}
+
+export function withdrawProfileMedia(
+  mediaId: number,
+): Promise<{ ok: true; withdrawn: true }> {
+  return request(`/api/profile/media/${mediaId}`, { method: "DELETE" });
+}
+
+export function profileMediaUrl(mediaId: number): string {
+  return `/api/profile/media/${mediaId}`;
+}

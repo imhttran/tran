@@ -315,7 +315,7 @@ test.describe("navigation", () => {
     await page.goto("/head-of-family");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
     await expect(nav.getByRole("link")).toHaveText([
-      /Family tree/, /Ask the archive/, /Head of Family/,
+      /My profile/, /Family tree/, /Ask the archive/, /Head of Family/,
     ]);
     await expect(nav.getByRole("link", { name: /Head of Family/ })).toHaveAttribute("aria-current", "page");
     await nav.getByRole("link", { name: /Ask the archive/ }).click();

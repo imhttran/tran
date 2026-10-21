@@ -103,7 +103,12 @@ test.describe("role enforcement through both paths", () => {
 
     const roleChange = await request.post(`${API_URL}/api/admin/roles`, {
       headers: { authorization: `Bearer ${VIEWER_TOKEN}` },
-      data: { subject: "e2e-viewer", role: "admin", revoke: false },
+      data: {
+        subject: "e2e-viewer",
+        role: "admin",
+        issuer: process.env.E2E_ISSUER || "http://127.0.0.1:9099",
+        revoke: false,
+      },
     });
     expect(roleChange.status()).toBe(403);
   });

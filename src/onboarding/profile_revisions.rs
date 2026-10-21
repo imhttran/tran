@@ -15,7 +15,19 @@ use thiserror::Error;
 use crate::onboarding::account_map::IdentityAccount;
 
 /// Profile fields the owner may propose in this slice.
-pub const ALLOWED_PROFILE_FIELDS: [&str; 3] = ["display_name", "preferred_name", "biography"];
+pub const ALLOWED_PROFILE_FIELDS: [&str; 11] = [
+    "display_name",
+    "preferred_name",
+    "biography",
+    "current_location",
+    "contact_preferences",
+    "facebook_url",
+    "linkedin_url",
+    "snapchat",
+    "whatsapp",
+    "my_story",
+    "family_memories",
+];
 /// Media fields use the same revision lifecycle but are created only by the
 /// validated media upload path.
 pub const MEDIA_PROFILE_FIELDS: [&str; 2] = ["profile_photo", "personal_document"];
@@ -24,6 +36,8 @@ pub const MEDIA_PROFILE_FIELDS: [&str; 2] = ["profile_photo", "personal_document
 pub const NAME_MAX_CHARS: usize = 200;
 /// Maximum length for a biography.
 pub const BIOGRAPHY_MAX_CHARS: usize = 5_000;
+/// Maximum length for a long personal narrative.
+pub const NARRATIVE_MAX_CHARS: usize = 20_000;
 /// Maximum length for a reviewer note.
 pub const REVIEW_NOTE_MAX_CHARS: usize = 2_000;
 /// A media revision stores the opaque media id as text.
@@ -254,6 +268,11 @@ fn field_limit(field_key: &str) -> Option<usize> {
     match field_key {
         "display_name" | "preferred_name" => Some(NAME_MAX_CHARS),
         "biography" => Some(BIOGRAPHY_MAX_CHARS),
+        "current_location" => Some(NAME_MAX_CHARS),
+        "contact_preferences" | "facebook_url" | "linkedin_url" | "snapchat" | "whatsapp" => {
+            Some(500)
+        }
+        "my_story" | "family_memories" => Some(NARRATIVE_MAX_CHARS),
         "profile_photo" | "personal_document" => Some(MEDIA_REF_MAX_CHARS),
         _ => None,
     }
