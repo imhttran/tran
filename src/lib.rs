@@ -16,6 +16,7 @@
 //! JWKS), [`identity_store`] (transactional, audited role changes), and
 //! [`ratelimit`].
 
+pub mod admin_members;
 pub mod answer;
 pub mod api;
 pub mod bilingual;
