@@ -184,6 +184,10 @@ impl AppState {
                 post(submit_profile_draft),
             )
             .route(
+                "/api/profile/drafts/{id}/cancel",
+                post(cancel_profile_draft),
+            )
+            .route(
                 "/api/profile/revisions/{id}/review",
                 post(review_profile_revision),
             )
@@ -715,6 +719,29 @@ async fn submit_profile_draft(
         let account = resolve_profile_account(&config, &issuer, &subject)?;
         let mut genealogy = open_genealogy_response(&config)?;
         onboarding::submit_owned_revision(&mut genealogy, &account, revision_id)
+            .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+async fn cancel_profile_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::cancel_owned_draft(&mut genealogy, &account, revision_id)
             .map_err(revision_error)
     })
     .await;

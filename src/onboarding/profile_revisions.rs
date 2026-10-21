@@ -676,6 +676,55 @@ pub fn submit_owned_revision(
     Ok(revision)
 }
 
+fn cancel_draft_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    revision_id: i64,
+    actor: &str,
+    required_person: Option<i64>,
+) -> Result<ProfileRevision, RevisionError> {
+    let actor = clean_actor(actor)?;
+    let revision = revision_by_id_in_tx(tx, revision_id, true)?;
+    if let Some(person_id) = required_person {
+        if revision.person_id != person_id {
+            return Err(RevisionError::NotOwner);
+        }
+    }
+    if revision.changed_by != actor {
+        return Err(RevisionError::NotOwner);
+    }
+    if revision.status != RevisionStatus::Draft {
+        return Err(RevisionError::InvalidTransition);
+    }
+    lock_field(tx, revision.person_id, &revision.field_key)?;
+    let deleted = tx.execute(
+        "DELETE FROM onboarding_profile_revision \
+          WHERE revision_id = $1 AND status = 'draft'",
+        &[&revision_id],
+    )?;
+    if deleted == 0 {
+        return Err(RevisionError::InvalidTransition);
+    }
+    Ok(revision)
+}
+
+/// Cancels an owner draft and releases the actor-scoped open slot.
+pub fn cancel_owned_draft(
+    client: &mut postgres::Client,
+    account: &IdentityAccount,
+    revision_id: i64,
+) -> Result<ProfileRevision, RevisionError> {
+    let mut tx = client.transaction()?;
+    let person_id = owner_person_in_tx(&mut tx, account)?;
+    let revision = cancel_draft_in_tx(
+        &mut tx,
+        revision_id,
+        &account.identity_fingerprint,
+        Some(person_id),
+    )?;
+    tx.commit()?;
+    Ok(revision)
+}
+
 /// Applies an independent reviewer's decision. Approval atomically replaces the
 /// current approved value; rejection and needs_changes leave it untouched.
 pub fn review_revision(
@@ -716,15 +765,6 @@ pub fn review_revision(
         return Err(RevisionError::ReviewNoteRequired);
     }
     lock_field(&mut tx, revision.person_id, &revision.field_key)?;
-    let current = current_approved_value(&mut tx, revision.person_id, &revision.field_key)?;
-    if !prior_matches(
-        &current,
-        revision.prior_value_text.as_deref(),
-        revision.prior_approved_revision_number,
-    ) {
-        return Err(RevisionError::VersionConflict);
-    }
-
     let status = decision.status();
 
     // Move the revision to its terminal state first. The approved-value guard
@@ -743,6 +783,17 @@ pub fn review_revision(
         .ok_or(RevisionError::InvalidTransition)?;
 
     if decision == ReviewDecision::Approve {
+        // A stale approval cannot overwrite a newer approved value. Rejection
+        // and needs_changes remain available so a superseded submission can
+        // still reach a terminal state.
+        let current = current_approved_value(&mut tx, revision.person_id, &revision.field_key)?;
+        if !prior_matches(
+            &current,
+            revision.prior_value_text.as_deref(),
+            revision.prior_approved_revision_number,
+        ) {
+            return Err(RevisionError::VersionConflict);
+        }
         let value_text = clean_value(&revision.field_key, &revision.new_value_text)?;
         tx.execute(
             "INSERT INTO onboarding_profile_value \

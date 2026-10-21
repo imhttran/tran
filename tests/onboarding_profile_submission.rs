@@ -14,10 +14,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::identity::{decide, Decision, Operation, Role, VerifiedIdentity};
 use rag_foundation::onboarding::{
-    create_owned_draft, identity_fingerprint, link_for_account, link_reviewed,
-    read_approved_values, read_owner_profile, resolve_account, review_revision, revoke_link,
-    submit_owned_revision, update_owned_draft, IdentityAccount, LinkDecision, ProfileAudience,
-    ProfileVisibility, ReviewDecision, RevisionError, RevisionStatus,
+    cancel_owned_draft, create_owned_draft, identity_fingerprint, link_for_account, link_reviewed,
+    read_approved_values, read_owner_profile, resolve_account, review_revision, revision_by_id,
+    revoke_link, submit_owned_revision, update_owned_draft, IdentityAccount, LinkDecision,
+    ProfileAudience, ProfileVisibility, ReviewDecision, RevisionError, RevisionStatus,
 };
 
 const IDENTITY_MIGRATIONS: [&str; 3] = [
@@ -26,7 +26,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 13] = [
+const GENEALOGY_MIGRATIONS: [&str; 14] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -40,6 +40,7 @@ const GENEALOGY_MIGRATIONS: [&str; 13] = [
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
     "genealogy/migrations/0012_profile_revisions.sql",
     "genealogy/migrations/0013_profile_revision_actor_scope.sql",
+    "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
 ];
 
 const ISSUER: &str = "https://synthetic-issuer.example";
@@ -612,6 +613,151 @@ fn concurrent_link_creation_is_serialized_with_review() {
 }
 
 #[test]
+fn stale_pending_revision_can_still_be_rejected() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("stale-pending");
+    let person = db.person("stale-pending");
+    db.link(&owner, person);
+    db.approved(
+        person,
+        "biography",
+        "Base biography",
+        ProfileVisibility::OwnerPrivate,
+    );
+    let draft = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Stale pending biography",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("draft");
+    submit_owned_revision(&mut db.genealogy, &owner, draft.revision_id).expect("submit");
+
+    db.genealogy
+        .execute("SET session_replication_role = replica", &[])
+        .expect("disable guards for synthetic external change");
+    db.genealogy
+        .execute(
+            "UPDATE onboarding_profile_value \
+                SET value_text = 'Newer approved value', approved_revision_number = 2 \
+              WHERE person_id = $1 AND field_key = 'biography'",
+            &[&person],
+        )
+        .expect("advance approved value externally");
+    db.genealogy
+        .execute("SET session_replication_role = origin", &[])
+        .expect("restore guards");
+
+    let rejected = review_revision(
+        &mut db.genealogy,
+        draft.revision_id,
+        "reviewer-a",
+        ReviewDecision::Reject,
+        Some("superseded by newer value"),
+    )
+    .expect("a stale pending revision can still be rejected");
+    assert_eq!(rejected.status, RevisionStatus::Rejected);
+}
+
+#[test]
+fn owner_can_cancel_a_stale_draft_and_open_a_new_one() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("cancel");
+    let person = db.person("cancel");
+    db.link(&owner, person);
+    db.approved(
+        person,
+        "biography",
+        "Base biography",
+        ProfileVisibility::OwnerPrivate,
+    );
+    let draft = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Stale draft",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("draft");
+
+    db.genealogy
+        .execute("SET session_replication_role = replica", &[])
+        .expect("disable guards for synthetic external change");
+    db.genealogy
+        .execute(
+            "UPDATE onboarding_profile_value \
+                SET value_text = 'Newer approved value', approved_revision_number = 2 \
+              WHERE person_id = $1 AND field_key = 'biography'",
+            &[&person],
+        )
+        .expect("advance approved value externally");
+    db.genealogy
+        .execute("SET session_replication_role = origin", &[])
+        .expect("restore guards");
+
+    let cancelled = cancel_owned_draft(&mut db.genealogy, &owner, draft.revision_id)
+        .expect("cancel stale draft");
+    assert_eq!(cancelled.revision_id, draft.revision_id);
+    assert_eq!(
+        revision_by_id(&mut db.genealogy, draft.revision_id),
+        Err(RevisionError::UnknownRevision),
+        "withdrawing a draft removes the unsubmitted row"
+    );
+    let replacement = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Replacement draft after cancel",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("new draft after cancel");
+    assert_ne!(replacement.revision_id, draft.revision_id);
+}
+
+#[test]
+fn cancel_requires_a_linked_owner() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("cancel-auth-owner");
+    let person = db.person("cancel-auth");
+    db.link(&owner, person);
+    let draft = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Cancel authorization draft",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("draft");
+
+    let unlinked = db.account("cancel-auth-unlinked");
+    assert_eq!(
+        cancel_owned_draft(&mut db.genealogy, &unlinked, draft.revision_id),
+        Err(RevisionError::Unlinked)
+    );
+
+    let other = db.account("cancel-auth-other");
+    let other_person = db.person("cancel-auth-other");
+    db.link(&other, other_person);
+    assert_eq!(
+        cancel_owned_draft(&mut db.genealogy, &other, draft.revision_id),
+        Err(RevisionError::NotOwner)
+    );
+    assert_eq!(
+        revision_by_id(&mut db.genealogy, draft.revision_id)
+            .expect("draft still exists")
+            .status,
+        RevisionStatus::Draft
+    );
+}
+
+#[test]
 fn revoked_link_blocks_further_owner_writes() {
     let Some(mut db) = TestDb::new() else {
         return;
@@ -829,6 +975,7 @@ fn submission_routes_are_registered() {
         "/api/profile/drafts",
         "/api/profile/drafts/{id}",
         "/api/profile/drafts/{id}/submit",
+        "/api/profile/drafts/{id}/cancel",
         "/api/profile/revisions/{id}/review",
     ] {
         assert!(source.contains(route), "missing route {route}");
@@ -838,4 +985,5 @@ fn submission_routes_are_registered() {
     assert!(source.contains("create_owned_draft"));
     assert!(source.contains("update_owned_draft"));
     assert!(source.contains("submit_owned_revision"));
+    assert!(source.contains("cancel_owned_draft"));
 }
