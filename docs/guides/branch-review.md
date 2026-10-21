@@ -1,0 +1,94 @@
+# Branch reviewer grants
+
+USR-005A adds explicit, audited branch reviewer authority. A grant is a
+technical permission issued by a system administrator; it is never inferred from
+a genealogy title, Head of Family appointment, birth order, branch membership, or
+profile role.
+
+## Grant model
+
+- At most one **active** grant row per `(account_id, family_branch_id)`; revoked rows remain as immutable history.
+- The row is bound to the exact reviewed `identity_fingerprint` of the
+  account-person link.
+- A grant is usable only while all of these remain true:
+  - the row is not revoked;
+  - the account still has the reviewed link with the same account id and
+    fingerprint;
+  - the branch still exists.
+- Replacing the account or revoking the link makes the old grant unusable. A new
+  account never inherits it.
+- Legacy active grant rows without a fingerprint are fail-closed. An administrator
+  can re-grant the branch to bind that active row to the reviewed identity.
+- Revocation keeps the row as history. Re-granting the same branch creates a new
+  active row and appends a new grant event.
+- Grant and revocation events are append-only and survive account, link, branch,
+  or grant-row cleanup.
+
+A Head of Family may receive a grant, but only through this same explicit
+administrator process. The designation itself grants no application permission.
+
+## Admin APIs
+
+All routes require `Operation::BranchReviewerAdmin` (system administrator).
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/admin/branch-reviewers/branches` | List grantable branch keys and labels. |
+| `GET /api/admin/branch-reviewers?account_id=` | List current/historical grants and events, optionally for one account. |
+| `POST /api/admin/branch-reviewers` | Grant one or more branches to a verified, active, reviewed-linked account. |
+| `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason. |
+
+Grant request:
+
+```json
+{
+  "issuer": "https://issuer.example",
+  "subject": "opaque-subject",
+  "branch_keys": ["branch-1", "branch-2"],
+  "reason": "Approved by family council"
+}
+```
+
+Revoke request:
+
+```json
+{ "reason": "Reviewer term ended" }
+```
+
+The response never returns a raw OIDC subject, token, email, or credential. It
+returns the opaque account id, identity fingerprint, branch key/label, actor
+fingerprint, timestamps, reason, `active`, and `usable`.
+
+## Authorization rules
+
+- The target account must resolve in the identity store and be active.
+- The target account must have a reviewed `onboarding_person_account_link` row
+  with the same account id and identity fingerprint.
+- A grant or revocation requires a non-empty reason; the actor is the verified
+  administrator fingerprint.
+- Duplicate active grants are rejected (`409 branch_grant_exists`).
+- Granting multiple branches is atomic: every requested branch must be valid, or
+  none is written.
+- A branch reviewer does not gain any administrator capability. Admin APIs still
+  require the administrator role.
+
+## Database
+
+`0019_branch_reviewer_grants.sql` is additive:
+
+- adds `identity_fingerprint`, grant/revoke reason and actor columns, and
+  `updated_at` to `onboarding_branch_reviewer_grant`;
+- adds the append-only `onboarding_branch_reviewer_grant_event` ledger;
+- adds active-account and event indexes.
+
+No grant is created by the migration, and no existing grant is deleted.
+
+## Verification
+
+`tests/onboarding_branch_grants.rs` covers multi-branch grants, branch scope,
+duplicate rejection, revoke/regrant history, unlinked and fingerprint-mismatch
+accounts, account replacement, legacy fingerprint-less rows, concurrent grants,
+and append-only event enforcement.
+
+The browser harness seeds `branch-1`–`branch-3` and resets synthetic grants in
+the disposable E2E database only.

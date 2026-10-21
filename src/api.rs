@@ -216,6 +216,18 @@ impl AppState {
                 get(profile_media).delete(withdraw_profile_media),
             )
             .route("/api/admin/roles", post(change_role))
+            .route(
+                "/api/admin/branch-reviewers",
+                get(list_branch_reviewers).post(grant_branch_reviewers),
+            )
+            .route(
+                "/api/admin/branch-reviewers/branches",
+                get(branch_reviewer_branches),
+            )
+            .route(
+                "/api/admin/branch-reviewers/{id}/revoke",
+                post(revoke_branch_reviewer),
+            )
             .route("/api/admin/reviews", get(review_queue))
             .route("/api/admin/reviews/media/{id}", get(review_profile_media))
             .route("/api/admin/reviews/{id}", get(review_detail))
@@ -832,6 +844,280 @@ async fn review_profile_revision(
     })
     .await;
     revision_response(result)
+}
+
+#[derive(Deserialize)]
+struct BranchReviewerGrantRequest {
+    issuer: String,
+    subject: String,
+    branch_keys: Vec<String>,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+struct BranchReviewerRevokeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+struct BranchReviewerListQuery {
+    account_id: Option<i64>,
+}
+
+/// Lists grantable family branches.
+#[allow(clippy::result_large_err)]
+async fn branch_reviewer_branches(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::list_branches(&mut genealogy).map_err(branch_grant_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(branches)) => Json(serde_json::json!({
+            "ok": true,
+            "branches": branches.iter().map(branch_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch list task failed: {err}");
+            branch_admin_unavailable("the family branches could not be loaded")
+        }
+    }
+}
+
+/// Lists current/historical grants and the immutable grant/revocation events.
+#[allow(clippy::result_large_err)]
+async fn list_branch_reviewers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<BranchReviewerListQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        return response;
+    }
+    let config = state.config.clone();
+    let account_id = query.account_id;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let grants =
+            onboarding::list_grants(&mut genealogy, account_id).map_err(branch_grant_error)?;
+        let events = onboarding::list_grant_events(&mut genealogy, account_id)
+            .map_err(branch_grant_error)?;
+        Ok((grants, events))
+    })
+    .await;
+    match result {
+        Ok(Ok((grants, events))) => Json(serde_json::json!({
+            "ok": true,
+            "grants": grants.iter().map(grant_json).collect::<Vec<_>>(),
+            "events": events.iter().map(grant_event_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch grant list task failed: {err}");
+            branch_admin_unavailable("the branch reviewer grants could not be loaded")
+        }
+    }
+}
+
+/// Grants explicit reviewer authority for one or more branches.
+#[allow(clippy::result_large_err)]
+async fn grant_branch_reviewers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BranchReviewerGrantRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let issuer = request.issuer.trim().to_string();
+    let subject = request.subject.trim().to_string();
+    if issuer.is_empty() || subject.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_identity",
+            "issuer and subject are required",
+        );
+    }
+    if request.branch_keys.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_branch_selection",
+            "at least one branch is required",
+        );
+    }
+    if !valid_grant_reason(&request.reason) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_branch_reason",
+            "a non-empty reason of at most 1000 characters is required",
+        );
+    }
+    let config = state.config.clone();
+    let actor = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let branch_keys = request.branch_keys;
+    let reason = request.reason;
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::grant_branches(&mut genealogy, &account, &branch_keys, &actor, &reason)
+            .map_err(branch_grant_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(grants)) => Json(serde_json::json!({
+            "ok": true,
+            "grants": grants.iter().map(grant_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch grant task failed: {err}");
+            branch_admin_unavailable("the branch reviewer grant failed")
+        }
+    }
+}
+
+/// Revokes one active grant, preserving the grant/revocation history.
+#[allow(clippy::result_large_err)]
+async fn revoke_branch_reviewer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<i64>,
+    Json(request): Json<BranchReviewerRevokeRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if !valid_grant_reason(&request.reason) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_branch_reason",
+            "a non-empty reason of at most 1000 characters is required",
+        );
+    }
+    let config = state.config.clone();
+    let actor = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let reason = request.reason;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::revoke_grant(&mut genealogy, grant_id, &actor, &reason)
+            .map_err(branch_grant_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(grant)) => Json(serde_json::json!({
+            "ok": true,
+            "grant": grant_json(&grant),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch revoke task failed: {err}");
+            branch_admin_unavailable("the branch reviewer revocation failed")
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn valid_grant_reason(reason: &str) -> bool {
+    let reason = reason.trim();
+    !reason.is_empty() && reason.chars().count() <= onboarding::GRANT_REASON_MAX_CHARS
+}
+
+fn branch_grant_error(err: onboarding::BranchGrantError) -> Response {
+    eprintln!("api: branch reviewer grant failed: {err}");
+    match err {
+        onboarding::BranchGrantError::EmptySelection
+        | onboarding::BranchGrantError::UnknownBranch(_)
+        | onboarding::BranchGrantError::InvalidActor
+        | onboarding::BranchGrantError::InvalidReason => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_branch_grant",
+            "the branch grant request is invalid",
+        ),
+        onboarding::BranchGrantError::Unlinked => error(
+            StatusCode::CONFLICT,
+            "account_not_linked",
+            "the account has no reviewed person link",
+        ),
+        onboarding::BranchGrantError::AlreadyActive(_) => error(
+            StatusCode::CONFLICT,
+            "branch_grant_exists",
+            "an active grant already exists for this account and branch",
+        ),
+        onboarding::BranchGrantError::NotActive(_) => error(
+            StatusCode::CONFLICT,
+            "branch_grant_not_active",
+            "the grant is not active",
+        ),
+        onboarding::BranchGrantError::UnknownGrant => error(
+            StatusCode::NOT_FOUND,
+            "branch_grant_not_found",
+            "no such branch reviewer grant",
+        ),
+        onboarding::BranchGrantError::Database(_) => {
+            branch_admin_unavailable("the branch reviewer store is unavailable")
+        }
+    }
+}
+
+fn branch_admin_unavailable(message: &'static str) -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "branch_reviewer_unavailable",
+        message,
+    )
+}
+
+fn branch_json(branch: &onboarding::BranchSummary) -> serde_json::Value {
+    serde_json::json!({
+        "family_branch_id": branch.family_branch_id,
+        "branch_key": branch.branch_key,
+        "branch_label": branch.branch_label,
+    })
+}
+
+fn grant_json(grant: &onboarding::BranchReviewerGrant) -> serde_json::Value {
+    serde_json::json!({
+        "grant_id": grant.grant_id,
+        "account_id": grant.account_id,
+        "identity_fingerprint": grant.identity_fingerprint,
+        "family_branch_id": grant.family_branch_id,
+        "branch_key": grant.branch_key,
+        "branch_label": grant.branch_label,
+        "granted_by": grant.granted_by,
+        "granted_reason": grant.granted_reason,
+        "created_at": grant.created_at,
+        "updated_at": grant.updated_at,
+        "revoked_at": grant.revoked_at,
+        "revoked_by": grant.revoked_by,
+        "revoke_reason": grant.revoke_reason,
+        "active": grant.active,
+        "usable": grant.usable,
+    })
+}
+
+fn grant_event_json(event: &onboarding::BranchGrantEvent) -> serde_json::Value {
+    serde_json::json!({
+        "event_id": event.event_id,
+        "grant_id": event.grant_id,
+        "account_id": event.account_id,
+        "family_branch_id": event.family_branch_id,
+        "branch_key": event.branch_key,
+        "event": event.event,
+        "actor": event.actor,
+        "reason": event.reason,
+        "created_at": event.created_at,
+    })
 }
 
 #[derive(Deserialize)]
