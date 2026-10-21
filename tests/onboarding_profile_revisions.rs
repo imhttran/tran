@@ -17,7 +17,7 @@ use rag_foundation::onboarding::{
     RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
-const MIGRATIONS: [&str; 12] = [
+const MIGRATIONS: [&str; 14] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -30,6 +30,8 @@ const MIGRATIONS: [&str; 12] = [
     "genealogy/migrations/0010_onboarding_foreign_keys.sql",
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
     "genealogy/migrations/0012_profile_revisions.sql",
+    "genealogy/migrations/0013_profile_revision_actor_scope.sql",
+    "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
 ];
 
 const PERSON_CHILD_TABLES: [&str; 8] = [
@@ -99,19 +101,53 @@ impl TestDb {
     }
 
     fn approved(&mut self, person_id: i64, field_key: &str, value: &str) {
+        self.approved_with_visibility(person_id, field_key, value, "owner_private");
+    }
+
+    fn approved_with_visibility(
+        &mut self,
+        person_id: i64,
+        field_key: &str,
+        value: &str,
+        visibility: &str,
+    ) {
+        let revision_id: i64 = self
+            .genealogy
+            .query_one(
+                "INSERT INTO onboarding_profile_revision \
+                     (person_id, field_key, prior_value_text, \
+                      prior_approved_revision_number, new_value_text, changed_by, \
+                      revision_number, status, visibility) \
+                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-seed', 1, 'draft', $4) \
+                 RETURNING revision_id",
+                &[&person_id, &field_key, &value, &visibility],
+            )
+            .expect("insert seed revision")
+            .get(0);
         self.genealogy
             .execute(
-                "DELETE FROM onboarding_profile_value \
-                  WHERE person_id = $1 AND field_key = $2",
-                &[&person_id, &field_key],
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'pending_review', submitted_at = now() \
+                  WHERE revision_id = $1",
+                &[&revision_id],
             )
-            .expect("clear approved value");
+            .expect("submit seed revision");
+        self.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'approved', reviewed_at = now(), \
+                        reviewed_by = 'synthetic-seed-reviewer', review_note = 'seed' \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("approve seed revision");
         self.genealogy
             .execute(
                 "INSERT INTO onboarding_profile_value \
-                     (person_id, field_key, value_text, updated_by) \
-                 VALUES ($1, $2, $3, 'synthetic-owner')",
-                &[&person_id, &field_key, &value],
+                     (person_id, field_key, value_text, visibility, updated_by, \
+                      approved_revision_number, approved_revision_id) \
+                 VALUES ($1, $2, $3, $4, 'synthetic-owner', 1, $5)",
+                &[&person_id, &field_key, &value, &visibility, &revision_id],
             )
             .expect("seed approved value");
     }
@@ -244,7 +280,7 @@ fn draft_and_submission_keep_the_approved_value_until_independent_approval() {
         )
         .expect("read approved metadata");
     assert_eq!(approved_row.get::<_, String>(0), "reviewer-a");
-    assert_eq!(approved_row.get::<_, i64>(1), 1);
+    assert_eq!(approved_row.get::<_, i64>(1), draft.revision_number);
     assert_eq!(
         approved_row.get::<_, Option<i64>>(2),
         Some(draft.revision_id)
@@ -274,7 +310,7 @@ fn draft_edits_are_owner_only_and_submitted_content_is_immutable() {
             draft.revision_id,
             "owner-b",
             "Hijacked biography",
-            ProfileVisibility::OwnerPrivate
+            Some(ProfileVisibility::OwnerPrivate)
         ),
         Err(RevisionError::NotOwner)
     );
@@ -284,7 +320,7 @@ fn draft_edits_are_owner_only_and_submitted_content_is_immutable() {
         draft.revision_id,
         "owner-a",
         "Edited biography",
-        ProfileVisibility::Family,
+        Some(ProfileVisibility::Family),
     )
     .expect("owner edits draft");
     assert_eq!(edited.new_value_text, "Edited biography");
@@ -298,7 +334,7 @@ fn draft_edits_are_owner_only_and_submitted_content_is_immutable() {
             draft.revision_id,
             "owner-a",
             "Late edit",
-            ProfileVisibility::OwnerPrivate
+            Some(ProfileVisibility::OwnerPrivate)
         ),
         Err(RevisionError::InvalidTransition)
     );
@@ -312,6 +348,33 @@ fn draft_edits_are_owner_only_and_submitted_content_is_immutable() {
         direct.is_err(),
         "submitted content must be immutable in SQL"
     );
+}
+
+#[test]
+fn updating_without_visibility_preserves_the_draft_visibility() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("preserve-visibility");
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-a",
+        "biography",
+        "Family-visible draft",
+        ProfileVisibility::Family,
+    )
+    .expect("create family draft");
+
+    let edited = update_draft(
+        &mut db.genealogy,
+        draft.revision_id,
+        "owner-a",
+        "Edited family draft",
+        None,
+    )
+    .expect("edit without visibility");
+    assert_eq!(edited.visibility, ProfileVisibility::Family);
 }
 
 #[test]
@@ -355,7 +418,7 @@ fn rejection_and_needs_changes_leave_the_approved_value_unchanged() {
         ProfileVisibility::OwnerPrivate,
     )
     .expect("second draft after terminal decision");
-    assert_eq!(second.revision_number, 2);
+    assert_eq!(second.revision_number, 3);
     submit_revision(&mut db.genealogy, second.revision_id, "owner-a").expect("submit second");
     let needs_changes = review_revision(
         &mut db.genealogy,
@@ -390,24 +453,22 @@ fn version_conflicts_block_submission_and_approval() {
     )
     .expect("create draft");
 
-    // Simulate a concurrent approved-value replacement. The approved-value
-    // guard rejects ordinary updates, so the replacement deletes and reinserts
-    // a newer approved version.
+    // Simulate a privileged external replacement that bypassed the guard. The
+    // service must still detect the changed text/version.
+    db.genealogy
+        .execute("SET session_replication_role = replica", &[])
+        .expect("disable guards for synthetic external change");
     db.genealogy
         .execute(
-            "DELETE FROM onboarding_profile_value \
+            "UPDATE onboarding_profile_value \
+                SET value_text = 'Changed Elsewhere', approved_revision_number = 2 \
               WHERE person_id = $1 AND field_key = 'display_name'",
             &[&person],
         )
-        .expect("remove approved value");
+        .expect("change approved value externally");
     db.genealogy
-        .execute(
-            "INSERT INTO onboarding_profile_value \
-                 (person_id, field_key, value_text, updated_by, approved_revision_number) \
-             VALUES ($1, 'display_name', 'Changed Elsewhere', 'external', 1)",
-            &[&person],
-        )
-        .expect("replace approved value");
+        .execute("SET session_replication_role = origin", &[])
+        .expect("restore guards");
 
     assert_eq!(
         submit_revision(&mut db.genealogy, draft.revision_id, "owner-a"),
@@ -545,21 +606,6 @@ fn approved_revision_number_is_part_of_the_conflict_check() {
     };
     let person = db.person("version-number");
     db.approved(person, "display_name", "Base Name");
-    db.genealogy
-        .execute(
-            "DELETE FROM onboarding_profile_value \
-              WHERE person_id = $1 AND field_key = 'display_name'",
-            &[&person],
-        )
-        .expect("remove seeded value");
-    db.genealogy
-        .execute(
-            "INSERT INTO onboarding_profile_value \
-                 (person_id, field_key, value_text, updated_by, approved_revision_number) \
-             VALUES ($1, 'display_name', 'Base Name', 'synthetic-owner', 1)",
-            &[&person],
-        )
-        .expect("seed approved version 1");
 
     let draft = create_draft(
         &mut db.genealogy,
@@ -572,22 +618,22 @@ fn approved_revision_number_is_part_of_the_conflict_check() {
     .expect("create draft");
     assert_eq!(draft.prior_approved_revision_number, 1);
 
-    // Same text, different approved version: this is still a conflict.
+    // Same text, different approved version: this is still a conflict. A
+    // privileged external writer bypassed the ordinary guard.
+    db.genealogy
+        .execute("SET session_replication_role = replica", &[])
+        .expect("disable guards for synthetic external change");
     db.genealogy
         .execute(
-            "DELETE FROM onboarding_profile_value \
+            "UPDATE onboarding_profile_value \
+                SET approved_revision_number = 2 \
               WHERE person_id = $1 AND field_key = 'display_name'",
             &[&person],
         )
-        .expect("remove version 1");
+        .expect("advance approved version externally");
     db.genealogy
-        .execute(
-            "INSERT INTO onboarding_profile_value \
-                 (person_id, field_key, value_text, updated_by, approved_revision_number) \
-             VALUES ($1, 'display_name', 'Base Name', 'external', 2)",
-            &[&person],
-        )
-        .expect("replace with version 2");
+        .execute("SET session_replication_role = origin", &[])
+        .expect("restore guards");
     assert_eq!(
         submit_revision(&mut db.genealogy, draft.revision_id, "owner-a"),
         Err(RevisionError::VersionConflict)
@@ -600,15 +646,8 @@ fn approved_values_are_filtered_by_audience() {
         return;
     };
     let person = db.person("audience");
-    db.genealogy
-        .execute(
-            "INSERT INTO onboarding_profile_value \
-                 (person_id, field_key, value_text, visibility, updated_by, approved_revision_number) \
-             VALUES ($1, 'biography', 'owner only', 'owner_private', 'reviewer', 1), \
-                    ($1, 'display_name', 'family visible', 'family', 'reviewer', 2)",
-            &[&person],
-        )
-        .expect("seed approved values");
+    db.approved_with_visibility(person, "biography", "owner only", "owner_private");
+    db.approved_with_visibility(person, "display_name", "family visible", "family");
 
     let owner = read_approved_values(&mut db.genealogy, person, ProfileAudience::Owner)
         .expect("owner read");

@@ -131,7 +131,9 @@ for migration in \
 	0010_onboarding_foreign_keys.sql \
 	0011_onboarding_foreign_key_reconciliation.sql \
 	0012_profile_revisions.sql \
-	0013_onboarding_batch.sql; do
+	0013_profile_revision_actor_scope.sql \
+	0014_profile_revision_draft_withdrawal.sql \
+	0015_onboarding_batch.sql; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration" >/dev/null
 done

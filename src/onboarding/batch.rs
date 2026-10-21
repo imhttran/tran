@@ -7,7 +7,7 @@
 //! every database mutation commits per person inside this module.
 //!
 //! Idempotency comes from two stable keys plus unique constraints in migration
-//! `0013_onboarding_batch.sql`:
+//! `0015_onboarding_batch.sql`:
 //!
 //!  * `batch_idempotency_key` = `batch:<actor>:<confirmed_count>:<sha256(sorted person ids)>`
 //!  * `person_idempotency_key` = `<batch_idempotency_key>:<person_id>`

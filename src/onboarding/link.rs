@@ -104,14 +104,13 @@ pub fn link_reviewed(
         .transaction()
         .map_err(|err| LinkError::Database(err.to_string()))?;
 
-    let exists: bool = transaction
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM person WHERE person_id = $1)",
+    let locked_person = transaction
+        .query_opt(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
             &[&person_id],
         )
-        .map_err(|err| LinkError::Database(err.to_string()))?
-        .get(0);
-    if !exists {
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    if locked_person.is_none() {
         return Err(LinkError::UnknownPerson);
     }
 
@@ -195,20 +194,36 @@ pub fn revoke_link(
     let mut transaction = client
         .transaction()
         .map_err(|err| LinkError::Database(err.to_string()))?;
-    let row = transaction
+    let link = transaction
         .query_opt(
-            "DELETE FROM onboarding_person_account_link \
-              WHERE link_id = $1 \
-              RETURNING person_id, account_id, identity_fingerprint",
+            "SELECT person_id, account_id, identity_fingerprint \
+               FROM onboarding_person_account_link WHERE link_id = $1",
             &[&link_id],
         )
         .map_err(|err| LinkError::Database(err.to_string()))?;
-    let Some(row) = row else {
+    let Some(link) = link else {
         return Err(LinkError::UnknownLink);
     };
-    let person_id: i64 = row.get(0);
-    let account_id: i64 = row.get(1);
-    let fingerprint: String = row.get(2);
+    let person_id: i64 = link.get(0);
+    // Serialize link changes with profile review, which locks the person row
+    // before checking whether the reviewer already owns the person.
+    let _ = transaction
+        .query_opt(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+            &[&person_id],
+        )
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    let deleted = transaction
+        .execute(
+            "DELETE FROM onboarding_person_account_link WHERE link_id = $1",
+            &[&link_id],
+        )
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    if deleted == 0 {
+        return Err(LinkError::UnknownLink);
+    }
+    let account_id: i64 = link.get(1);
+    let fingerprint: String = link.get(2);
     transaction
         .execute(
             "INSERT INTO onboarding_link_audit \
