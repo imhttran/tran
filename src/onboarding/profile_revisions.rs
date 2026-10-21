@@ -16,6 +16,9 @@ use crate::onboarding::account_map::IdentityAccount;
 
 /// Profile fields the owner may propose in this slice.
 pub const ALLOWED_PROFILE_FIELDS: [&str; 3] = ["display_name", "preferred_name", "biography"];
+/// Media fields use the same revision lifecycle but are created only by the
+/// validated media upload path.
+pub const MEDIA_PROFILE_FIELDS: [&str; 2] = ["profile_photo", "personal_document"];
 
 /// Maximum length for a display/preferred name.
 pub const NAME_MAX_CHARS: usize = 200;
@@ -23,6 +26,8 @@ pub const NAME_MAX_CHARS: usize = 200;
 pub const BIOGRAPHY_MAX_CHARS: usize = 5_000;
 /// Maximum length for a reviewer note.
 pub const REVIEW_NOTE_MAX_CHARS: usize = 2_000;
+/// A media revision stores the opaque media id as text.
+const MEDIA_REF_MAX_CHARS: usize = 20;
 
 /// The lifecycle state of one profile revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +195,8 @@ pub enum RevisionError {
     VersionConflict,
     #[error("a rejection or needs-changes decision requires a review note")]
     ReviewNoteRequired,
+    #[error("a media revision has no matching stored asset")]
+    MediaRevisionMissing,
     #[error("invalid profile field")]
     InvalidField,
     #[error("invalid profile value")]
@@ -247,18 +254,34 @@ fn field_limit(field_key: &str) -> Option<usize> {
     match field_key {
         "display_name" | "preferred_name" => Some(NAME_MAX_CHARS),
         "biography" => Some(BIOGRAPHY_MAX_CHARS),
+        "profile_photo" | "personal_document" => Some(MEDIA_REF_MAX_CHARS),
         _ => None,
     }
 }
 
-/// Reports whether a field key is accepted by this slice.
+/// Reports whether a field is one of the media fields.
+pub fn is_media_field(field_key: &str) -> bool {
+    MEDIA_PROFILE_FIELDS.contains(&field_key)
+}
+
+/// Reports whether a field is an owner-editable text field. Media fields are
+/// created only through the media upload path.
+pub fn is_text_profile_field(field_key: &str) -> bool {
+    field_limit(field_key).is_some() && !is_media_field(field_key)
+}
+
+/// Reports whether a field key is accepted by the owner text submission API.
 pub fn is_allowed_profile_field(field_key: &str) -> bool {
+    is_text_profile_field(field_key)
+}
+
+fn is_known_profile_field(field_key: &str) -> bool {
     field_limit(field_key).is_some()
 }
 
 fn clean_field(field_key: &str) -> Result<String, RevisionError> {
     let field_key = field_key.trim();
-    if !is_allowed_profile_field(field_key) {
+    if !is_known_profile_field(field_key) {
         return Err(RevisionError::InvalidField);
     }
     Ok(field_key.to_string())
@@ -267,6 +290,15 @@ fn clean_field(field_key: &str) -> Result<String, RevisionError> {
 fn clean_value(field_key: &str, value_text: &str) -> Result<String, RevisionError> {
     let limit = field_limit(field_key).ok_or(RevisionError::InvalidField)?;
     let value_text = value_text.trim();
+    if is_media_field(field_key) {
+        if value_text.is_empty()
+            || value_text.len() > limit
+            || !value_text.chars().all(|ch| ch.is_ascii_digit())
+        {
+            return Err(RevisionError::InvalidValue);
+        }
+        return Ok(value_text.to_string());
+    }
     if value_text.is_empty() || value_text.chars().count() > limit {
         return Err(RevisionError::InvalidValue);
     }
@@ -408,6 +440,9 @@ fn create_draft_in_tx(
 ) -> Result<ProfileRevision, RevisionError> {
     let actor = clean_actor(actor)?;
     let field_key = clean_field(field_key)?;
+    if is_media_field(&field_key) {
+        return Err(RevisionError::InvalidField);
+    }
     let value_text = clean_value(&field_key, value_text)?;
 
     lock_field(tx, person_id, &field_key)?;
@@ -538,6 +573,9 @@ fn update_draft_in_tx(
     }
     if revision.status != RevisionStatus::Draft {
         return Err(RevisionError::InvalidTransition);
+    }
+    if is_media_field(&revision.field_key) {
+        return Err(RevisionError::InvalidField);
     }
     let value_text = clean_value(&revision.field_key, value_text)?;
     let visibility = visibility.unwrap_or(revision.visibility);
@@ -794,6 +832,34 @@ pub fn review_revision(
         ) {
             return Err(RevisionError::VersionConflict);
         }
+        if is_media_field(&revision.field_key) {
+            let stored_mime: Option<String> = tx
+                .query_opt(
+                    "SELECT mime_type FROM onboarding_media_metadata \
+                      WHERE revision_id = $1 AND person_id = $2 \
+                        AND media_kind = $3 AND visibility = $4",
+                    &[
+                        &revision.revision_id,
+                        &revision.person_id,
+                        &revision.field_key,
+                        &revision.visibility.as_str(),
+                    ],
+                )?
+                .map(|row| row.get(0));
+            let Some(stored_mime) = stored_mime else {
+                return Err(RevisionError::MediaRevisionMissing);
+            };
+            let valid = match revision.field_key.as_str() {
+                "profile_photo" => stored_mime == "image/png",
+                "personal_document" => {
+                    matches!(stored_mime.as_str(), "application/pdf" | "text/plain")
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(RevisionError::MediaRevisionMissing);
+            }
+        }
         let value_text = clean_value(&revision.field_key, &revision.new_value_text)?;
         tx.execute(
             "INSERT INTO onboarding_profile_value \
@@ -914,6 +980,7 @@ fn approved_values_in_tx(
                 approved_revision_number, approved_revision_id \
            FROM onboarding_profile_value \
           WHERE person_id = $1 AND ($2 = 'owner' OR visibility = 'family') \
+            AND field_key NOT IN ('profile_photo', 'personal_document') \
           ORDER BY field_key",
         &[&person_id, &audience.as_str()],
     )?;
