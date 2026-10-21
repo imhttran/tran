@@ -17,7 +17,7 @@ use rag_foundation::onboarding::{
     RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
-const MIGRATIONS: [&str; 14] = [
+const MIGRATIONS: [&str; 16] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -32,6 +32,8 @@ const MIGRATIONS: [&str; 14] = [
     "genealogy/migrations/0012_profile_revisions.sql",
     "genealogy/migrations/0013_profile_revision_actor_scope.sql",
     "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
+    "genealogy/migrations/0015_profile_media.sql",
+    "genealogy/migrations/0016_profile_media_withdrawal.sql",
 ];
 
 const PERSON_CHILD_TABLES: [&str; 8] = [

@@ -18,3 +18,6 @@ target/
 AUDIT.md*
 
 /docs/tran/
+
+# Private owner media written by the API (never commit real family files).
+/data/
