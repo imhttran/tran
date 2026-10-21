@@ -540,6 +540,27 @@ pub fn record_operator_import(
     let storage_key = storage.put(&sha256, extension, bytes)?;
     let document_key = slug(source);
     let mut tx = client.transaction()?;
+    // Re-running the same trusted import with unchanged content is a no-op.
+    let existing: Option<i64> = tx
+        .query_opt(
+            "SELECT version_id FROM document_version
+              WHERE corpus = $1 AND source = $2 AND content_sha256 = $3
+                AND origin = 'operator_import' AND review_status = 'approved'
+                AND processing_status = 'ready'
+              ORDER BY version_id DESC LIMIT 1",
+            &[&corpus, &source, &sha256],
+        )?
+        .map(|row| row.get(0));
+    if let Some(version_id) = existing {
+        tx.execute(
+            "UPDATE documents SET document_version_id = $1
+              WHERE corpus = $2 AND source = $3",
+            &[&version_id, &corpus, &source],
+        )?;
+        let version = fetch_version(&mut tx, version_id)?;
+        tx.commit()?;
+        return Ok(version);
+    }
     let version_number: i32 = tx
         .query_one(
             "SELECT coalesce(max(version_number), 0) + 1
