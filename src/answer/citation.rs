@@ -29,11 +29,35 @@ fn normalize(citation: &str) -> String {
     citation.replace(['\u{2013}', '\u{2014}'], "-")
 }
 
-/// Normalizes a source for comparison: trim, lowercase, and drop a trailing
-/// `.md` suffix, matching the Go baseline.
+/// Normalizes a source for comparison: trim, lowercase, drop a trailing
+/// `.md` suffix, and drop the lifecycle version suffix used to keep two
+/// versions of the same document distinct in storage.
+///
+/// The model may cite the human-readable filename without the internal
+/// `(shortkey) (vN)` suffix, so both the passage source and the citation source
+/// are normalized before comparison.
 fn normalize_source(source: &str) -> String {
     let trimmed = source.trim().to_lowercase();
-    trimmed.strip_suffix(".md").unwrap_or(&trimmed).to_string()
+    let mut base = trimmed.as_str();
+    // Drop a trailing " (vN)".
+    if base.ends_with(')') {
+        if let Some(index) = base.rfind(" (v") {
+            let inner = &base[index + 3..base.len() - 1];
+            if !inner.is_empty() && inner.chars().all(|ch| ch.is_ascii_digit()) {
+                base = base[..index].trim_end();
+            }
+        }
+    }
+    // Drop a trailing " (8 hex)" version key.
+    if base.ends_with(')') {
+        if let Some(index) = base.rfind(" (") {
+            let inner = &base[index + 2..base.len() - 1];
+            if inner.len() == 8 && inner.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                base = base[..index].trim_end();
+            }
+        }
+    }
+    base.strip_suffix(".md").unwrap_or(base).to_string()
 }
 
 fn parse_page_segment(segment: &str) -> Option<u32> {

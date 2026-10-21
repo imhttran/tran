@@ -10,10 +10,14 @@ import {
   ApiRequestError,
   changeDocumentScope,
   listDocumentSubmissions,
+  listDocumentJobs,
   processDocument,
   removeDocument,
+  retryDocumentJob,
+  runDocumentJobs,
   reviewDocument,
   submitDocument,
+  type DocumentJob,
   type DocumentSubmission,
 } from "@/lib/api";
 import { canAdmin, canUpload, type Role } from "@/lib/experience-contract";
@@ -42,6 +46,7 @@ export default function DocumentsPage() {
 
 function DocumentsContent({ role }: { role: Role | null }) {
   const [submissions, setSubmissions] = useState<DocumentSubmission[]>([]);
+  const [jobs, setJobs] = useState<DocumentJob[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -57,6 +62,10 @@ function DocumentsContent({ role }: { role: Role | null }) {
     try {
       const body = await listDocumentSubmissions();
       setSubmissions(body.submissions);
+      if (canAdmin(role)) {
+        const jobBody = await listDocumentJobs();
+        setJobs(jobBody.jobs);
+      }
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -183,6 +192,53 @@ function DocumentsContent({ role }: { role: Role | null }) {
           </button>
         </div>
       </section>
+
+      {admin ? (
+        <section className="status-panel" data-testid="document-jobs">
+          <h2>Processing queue</h2>
+          <div className="documents-actions">
+            <button
+              type="button"
+              disabled={busy}
+              data-testid="run-document-jobs"
+              onClick={() => void act(async () => {
+                const result = await runDocumentJobs();
+                setMessage(`Processed ${result.processed.length} queued job(s).`);
+              }, "Processing queue run complete.")}
+            >
+              Run processing queue
+            </button>
+          </div>
+          {jobs.length === 0 ? (
+            <p className="hint">No processing jobs yet.</p>
+          ) : (
+            <table className="bulk-table">
+              <thead>
+                <tr><th scope="col">Job</th><th scope="col">Version</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Error</th><th scope="col">Action</th></tr>
+              </thead>
+              <tbody>
+                {jobs.map((job) => (
+                  <tr key={job.job_id}>
+                    <td>{job.job_id}</td>
+                    <td>{job.version_id}</td>
+                    <td><span className="badge">{job.status}</span></td>
+                    <td>{job.attempts}/{job.max_attempts}</td>
+                    <td className="hint">{job.last_error ?? "—"}</td>
+                    <td>
+                      {job.status === "failed" ? (
+                        <button type="button" disabled={busy} onClick={() => void act(
+                          () => retryDocumentJob(job.job_id),
+                          `Retried job ${job.job_id}.`,
+                        )}>Retry</button>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      ) : null}
 
       <section className="status-panel" data-testid="document-list">
         <h2>Submissions</h2>

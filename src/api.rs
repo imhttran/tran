@@ -34,6 +34,8 @@ use crate::corpus::Corpus;
 use crate::document_lifecycle::{
     self, AccessScope, Category, DocumentStorage, DocumentVersion, NewSubmission,
 };
+use crate::document_processing;
+use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
     appointments, query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree,
     GenealogyError,
@@ -41,6 +43,7 @@ use crate::genealogy::{
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
+use crate::ollama::{HttpTransport, OllamaClient};
 use crate::onboarding::{
     self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
     MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary,
@@ -212,6 +215,9 @@ impl AppState {
                 "/api/documents/legacy/{id}/promote",
                 post(promote_legacy_document),
             )
+            .route("/api/documents/jobs", get(list_document_jobs))
+            .route("/api/documents/jobs/run", post(run_document_jobs))
+            .route("/api/documents/jobs/{id}/retry", post(retry_document_job))
             .route("/api/documents/{source}/status", get(status))
             .route("/api/query", post(query))
             .route("/api/account", get(account))
@@ -4978,6 +4984,156 @@ async fn promote_legacy_document(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "promotion_failed",
                 "the legacy document promotion failed",
+            )
+        }
+    }
+}
+
+fn processing_error(err: document_processing::ProcessingError) -> Response {
+    eprintln!("api: document processing failed: {err}");
+    match err {
+        document_processing::ProcessingError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "unknown_job",
+            "no such processing job",
+        ),
+        document_processing::ProcessingError::StaleApproval => error(
+            StatusCode::CONFLICT,
+            "stale_approval",
+            "the document approval is no longer valid",
+        ),
+        document_processing::ProcessingError::MissingOriginal => error(
+            StatusCode::CONFLICT,
+            "document_original_missing",
+            "the document original is unavailable",
+        ),
+        document_processing::ProcessingError::Ingest(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "processing_failed",
+            "the document could not be processed",
+        ),
+        document_processing::ProcessingError::Storage
+        | document_processing::ProcessingError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "processing_unavailable",
+            "the document processor is unavailable",
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn list_document_jobs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentProcess) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_processing::list_jobs(&mut client).map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(jobs)) => Json(serde_json::json!({ "ok": true, "jobs": jobs })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document jobs task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document jobs could not be listed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn run_document_jobs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentProcess) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let store = PgStore::connect(&config.database_url).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "processing_unavailable",
+                "the document processor is unavailable",
+            )
+        })?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        let transport = Arc::new(HttpTransport::new(config.request_timeout).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "processing_unavailable",
+                "the model transport is unavailable",
+            )
+        })?);
+        let model = OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
+        let embedder = OllamaEmbedder::new(model, config.embed_model.clone())
+            .with_embed_dim(config.embed_dim as usize);
+        document_processing::run_due_jobs(
+            &mut client,
+            &store,
+            &embedder,
+            &storage,
+            &config,
+            "api-worker",
+            10,
+        )
+        .map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcomes)) => Json(serde_json::json!({
+            "ok": true,
+            "processed": outcomes,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document run task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document jobs could not be run",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn retry_document_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentProcess) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_processing::retry_job(&mut client, job_id, &actor).map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(job)) => Json(serde_json::json!({
+            "ok": true,
+            "job_id": job.job_id,
+            "version_id": job.version_id,
+            "status": "queued",
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document retry task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document job could not be retried",
             )
         }
     }
