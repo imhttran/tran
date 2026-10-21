@@ -31,12 +31,12 @@ administrator process. The designation itself grants no application permission.
 
 All routes require `Operation::BranchReviewerAdmin` (system administrator).
 
-| Route | Purpose |
-| --- | --- |
-| `GET /api/admin/branch-reviewers/branches` | List grantable branch keys and labels. |
-| `GET /api/admin/branch-reviewers?account_id=` | List current/historical grants and events, optionally for one account. |
-| `POST /api/admin/branch-reviewers` | Grant one or more branches to a verified, active, reviewed-linked account. |
-| `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason. |
+| Route                                                | Purpose                                                                    |
+| ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/admin/branch-reviewers/branches`           | List grantable branch keys and labels.                                     |
+| `GET /api/admin/branch-reviewers?account_id=`        | List current/historical grants and events, optionally for one account.     |
+| `POST /api/admin/branch-reviewers`                   | Grant one or more branches to a verified, active, reviewed-linked account. |
+| `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason.                            |
 
 Grant request:
 
@@ -101,19 +101,22 @@ Branch reviewers use narrowly scoped operations, not the administrator review
 operation. Every request resolves the caller from the verified OIDC identity and
 requires the exact reviewed account-person link.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /api/branch-review/grants/me` | The caller's active, link-bound branch grants. |
-| `GET /api/branch-review/submissions?branch=&status=&cursor=&limit=` | Pending or historical proposals within granted branches. |
-| `GET /api/branch-review/submissions/{id}` | One in-scope proposal, its current authoritative fact, evidence, and events. |
-| `POST /api/branch-review/submissions` | Submit a source-backed shared-fact proposal. |
-| `POST /api/branch-review/submissions/{id}/decision` | Approve, reject, or request changes. |
+| Route                                                               | Purpose                                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /api/branch-review/grants/me`                                  | The caller's active, link-bound branch grants.                               |
+| `GET /api/branch-review/submissions?branch=&status=&cursor=&limit=` | Pending or historical proposals within granted branches.                     |
+| `GET /api/branch-review/submissions/{id}`                           | One in-scope proposal, its current authoritative fact, evidence, and events. |
+| `POST /api/branch-review/submissions`                               | Submit a source-backed shared-fact proposal.                                 |
+| `POST /api/branch-review/submissions/{id}/decision`                 | Approve, reject, or request changes.                                         |
 
 - A proposal stores the proposed value, the prior verified snapshot, branch key,
   submitter fingerprint, evidence references, and an append-only event ledger
   (`genealogy_fact_proposal`, migration `0020`).
 - Creation requires exactly one verified `branch_claim` for the person and the
   requested branch. Ambiguous or unverified membership is rejected.
+- Every evidence reference must resolve to the cited original, non-derivative
+  source document at the stated page; a mismatched `document_ref` is rejected so
+  an approval cannot record a citation that does not exist.
 - A linked owner may propose for their own person; a branch reviewer may propose
   only within a granted branch.
 - Decisions recheck the active grant, current link, proposal status, and prior

@@ -122,6 +122,12 @@ CREATE TRIGGER genealogy_fact_proposal_insert_guard
 
 CREATE TABLE IF NOT EXISTS genealogy_fact_proposal_event (
     event_id        BIGSERIAL PRIMARY KEY,
+    -- No foreign key to genealogy_fact_proposal on purpose. Events are the
+    -- append-only audit record and must survive the deletion of a synthetic or
+    -- withdrawn proposal, so the reference is documented by value together with
+    -- the person and branch it belongs to. The no-mutation trigger below is what
+    -- makes the history immutable; a cascading foreign key would either delete
+    -- history or block a legitimate person deletion.
     proposal_id     BIGINT NOT NULL,
     person_id       BIGINT NOT NULL,
     branch_key      TEXT NOT NULL,

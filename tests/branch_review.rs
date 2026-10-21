@@ -305,8 +305,17 @@ fn branch_reviewer_approves_an_in_scope_source_backed_proposal() {
     let grants = effective_grants(&mut db.genealogy, &reviewer).expect("grants");
     assert_eq!(grants[0].branch_key, branch);
 
-    let queue =
-        list_proposals(&mut db.genealogy, &reviewer, Some(&branch), None, None, 25).expect("queue");
+    let queue = list_proposals(
+        &mut db.genealogy,
+        &reviewer,
+        Some(&branch),
+        Some("pending"),
+        None,
+        25,
+    )
+    .expect("queue");
+    // The alias "pending" is echoed back as the canonical status label.
+    assert_eq!(queue.status, "pending_review");
     assert_eq!(queue.submissions.len(), 1);
     assert!(queue.submissions[0].can_decide);
     let detail = read_proposal(&mut db.genealogy, &reviewer, proposal_id).expect("detail");
@@ -519,6 +528,74 @@ fn cross_branch_and_revoked_grants_are_denied() {
     let page = list_proposals(&mut db.genealogy, &reviewer, None, None, None, 25)
         .expect("queue after revoke");
     assert!(page.submissions.is_empty());
+}
+
+#[test]
+fn evidence_must_belong_to_the_cited_document_and_pages() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("owner-evidence");
+    let (person_id, person_key) = db.person("evidence");
+    let branch = db.branch("evidence");
+    db.link(&owner, person_id);
+    db.verified_branch(person_id, &branch);
+
+    let evidence = db.evidence();
+    let mismatched = ProposalEvidence {
+        document_ref: format!("{}/not-the-cited-document.md", db.prefix),
+        ..evidence.clone()
+    };
+    assert_eq!(
+        propose_fact(
+            &mut db.genealogy,
+            &owner,
+            &person_key,
+            &branch,
+            "gender",
+            "gender",
+            "female",
+            &[mismatched],
+            None,
+        ),
+        Err(BranchReviewError::InvalidEvidence)
+    );
+
+    let wrong_page = ProposalEvidence {
+        page: evidence.page + 1,
+        ..evidence.clone()
+    };
+    assert_eq!(
+        propose_fact(
+            &mut db.genealogy,
+            &owner,
+            &person_key,
+            &branch,
+            "gender",
+            "gender",
+            "female",
+            &[wrong_page],
+            None,
+        ),
+        Err(BranchReviewError::InvalidEvidence)
+    );
+
+    // The matching reference is accepted. The branch queue itself is reviewer
+    // only, so an owner without a grant sees nothing there by design.
+    let proposal_id = propose_fact(
+        &mut db.genealogy,
+        &owner,
+        &person_key,
+        &branch,
+        "gender",
+        "gender",
+        "female",
+        &[evidence],
+        None,
+    )
+    .expect("matching evidence");
+    assert!(proposal_id > 0);
+    assert!(list_proposals(&mut db.genealogy, &owner, Some(&branch), None, None, 25,).is_err());
 }
 
 #[test]

@@ -221,6 +221,8 @@ cleanup() {
 		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer')" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer') OR person_key LIKE 'e2e-branch-%'" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM source_document WHERE relative_path = 'synthetic/e2e-branch-review-source.md'" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM

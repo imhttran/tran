@@ -644,20 +644,24 @@ fn parse_statuses(value: Option<&str>) -> Result<(Vec<String>, String), BranchRe
         .unwrap_or("pending_review")
         .trim()
         .to_ascii_lowercase();
-    let statuses = match raw.as_str() {
-        "" | "pending" | "pending_review" => vec!["pending_review".to_string()],
-        "approved" => vec!["approved".to_string()],
-        "rejected" => vec!["rejected".to_string()],
-        "needs_changes" | "needs-changes" => vec!["needs_changes".to_string()],
-        "all" => vec![
-            "pending_review".to_string(),
-            "approved".to_string(),
-            "rejected".to_string(),
-            "needs_changes".to_string(),
-        ],
+    // The returned label is the canonical filter, never the raw client input.
+    let (statuses, label) = match raw.as_str() {
+        "" | "pending" | "pending_review" => (vec!["pending_review".to_string()], "pending_review"),
+        "approved" => (vec!["approved".to_string()], "approved"),
+        "rejected" => (vec!["rejected".to_string()], "rejected"),
+        "needs_changes" | "needs-changes" => (vec!["needs_changes".to_string()], "needs_changes"),
+        "all" => (
+            vec![
+                "pending_review".to_string(),
+                "approved".to_string(),
+                "rejected".to_string(),
+                "needs_changes".to_string(),
+            ],
+            "all",
+        ),
         _ => return Err(BranchReviewError::InvalidField),
     };
-    Ok((statuses, raw))
+    Ok((statuses, label.to_string()))
 }
 
 fn require_single_verified_branch(
@@ -735,25 +739,28 @@ fn validate_evidence(
     evidence: &[ProposalEvidence],
 ) -> Result<(), BranchReviewError> {
     for item in evidence {
-        if item.source_evidence_id <= 0 || item.document_ref.trim().is_empty() || item.page < 1 {
+        let document_ref = item.document_ref.trim();
+        if item.source_evidence_id <= 0 || document_ref.is_empty() || item.page < 1 {
             return Err(BranchReviewError::InvalidEvidence);
         }
-        let valid: bool = tx
-            .query_one(
-                "SELECT EXISTS (SELECT 1 \
-                                  FROM source_evidence se \
-                                  JOIN source_document sd \
-                                    ON sd.source_document_id = se.source_document_id \
-                                 WHERE se.source_evidence_id = $1 \
-                                   AND se.page = $2 \
-                                   AND se.locator IS NOT NULL \
-                                   AND btrim(se.locator) <> '' \
-                                   AND sd.source_kind = 'original' \
-                                   AND sd.derived_from_source_document_id IS NULL)",
+        // The cited document must be the one the evidence row actually belongs
+        // to, so an approval cannot record a mismatched citation.
+        let relative_path: Option<String> = tx
+            .query_opt(
+                "SELECT sd.relative_path \
+                   FROM source_evidence se \
+                   JOIN source_document sd \
+                     ON sd.source_document_id = se.source_document_id \
+                  WHERE se.source_evidence_id = $1 \
+                    AND se.page = $2 \
+                    AND se.locator IS NOT NULL \
+                    AND btrim(se.locator) <> '' \
+                    AND sd.source_kind = 'original' \
+                    AND sd.derived_from_source_document_id IS NULL",
                 &[&item.source_evidence_id, &item.page],
             )?
-            .get(0);
-        if !valid {
+            .map(|row| row.get(0));
+        if relative_path.as_deref() != Some(document_ref) {
             return Err(BranchReviewError::InvalidEvidence);
         }
     }
