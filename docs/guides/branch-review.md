@@ -94,3 +94,40 @@ and append-only event enforcement.
 
 The browser harness seeds `branch-1`–`branch-3` and resets synthetic grants in
 the disposable E2E database only.
+
+## Branch-scoped shared-fact review (USR-005B)
+
+Branch reviewers use narrowly scoped operations, not the administrator review
+operation. Every request resolves the caller from the verified OIDC identity and
+requires the exact reviewed account-person link.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/branch-review/grants/me` | The caller's active, link-bound branch grants. |
+| `GET /api/branch-review/submissions?branch=&status=&cursor=&limit=` | Pending or historical proposals within granted branches. |
+| `GET /api/branch-review/submissions/{id}` | One in-scope proposal, its current authoritative fact, evidence, and events. |
+| `POST /api/branch-review/submissions` | Submit a source-backed shared-fact proposal. |
+| `POST /api/branch-review/submissions/{id}/decision` | Approve, reject, or request changes. |
+
+- A proposal stores the proposed value, the prior verified snapshot, branch key,
+  submitter fingerprint, evidence references, and an append-only event ledger
+  (`genealogy_fact_proposal`, migration `0020`).
+- Creation requires exactly one verified `branch_claim` for the person and the
+  requested branch. Ambiguous or unverified membership is rejected.
+- A linked owner may propose for their own person; a branch reviewer may propose
+  only within a granted branch.
+- Decisions recheck the active grant, current link, proposal status, and prior
+  verified snapshot inside one transaction. Submitters and linked owners cannot
+  decide. Rejection and needs-changes require a note.
+- Approval applies the proposal through the existing assertion evidence,
+  provenance, validation, review-event, and baseline workflow. Pending proposals
+  never replace a verified fact.
+- Queue and detail filters never expose an off-branch person or proposal. No
+  member-private profile fields, drafts, contact details, personal documents, or
+  owner-private media are read by this module.
+- Cross-branch relationships and title-derived authority are intentionally not
+  inferred. Ambiguous membership and multi-branch relationships must be escalated
+  through an explicit policy decision.
+
+The `/branch-review` UI is USR-005C. The complete negative-security and browser
+acceptance suite is USR-005D.
