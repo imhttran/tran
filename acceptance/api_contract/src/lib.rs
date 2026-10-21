@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -113,6 +113,78 @@ pub fn build_api() -> PathBuf {
         .expect("run cargo build for api");
     assert!(status.success(), "cargo build --bin api failed");
     root.join("target/debug/api")
+}
+
+/// Builds the operator ingest binary and returns its path.
+pub fn build_ingest() -> PathBuf {
+    let root = repo_root();
+    let status = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "build",
+            "--locked",
+            "--manifest-path",
+            "Cargo.toml",
+            "--bin",
+            "ingest",
+        ])
+        .status()
+        .expect("run cargo build for ingest");
+    assert!(status.success(), "cargo build --bin ingest failed");
+    root.join("target/debug/ingest")
+}
+
+/// The trusted local operator ingest, used to publish documents explicitly.
+///
+/// API submissions stay pending and write no chunks, so the only publication
+/// path in this stage is this operator boundary. It records an approved
+/// `operator_import` version and links the chunks it wrote.
+pub struct OperatorIngest {
+    binary: PathBuf,
+    document_root: PathBuf,
+}
+
+impl OperatorIngest {
+    pub fn new() -> Self {
+        let binary = build_ingest();
+        let document_root =
+            std::env::temp_dir().join(unique_tag("api-contract-operator-documents"));
+        fs::create_dir_all(&document_root).expect("create the operator document root");
+        Self {
+            binary,
+            document_root,
+        }
+    }
+
+    /// Publishes one source file and panics if the operator boundary refuses it.
+    pub fn publish(&self, dsn: &str, corpus: &str, ollama_url: &str, path: &Path) {
+        let output = Command::new(&self.binary)
+            .env("DATABASE_URL", dsn)
+            .env("RAG_CORPUS", corpus)
+            .env("OLLAMA_URL", ollama_url)
+            .env("OLLAMA_EMBED_MODEL", "parity-embed")
+            .env("OLLAMA_CHAT_MODEL", "parity-chat")
+            .env("EMBED_DIM", EMBEDDING_DIM.to_string())
+            .env("REQUEST_TIMEOUT", "10s")
+            .env("CORPUS_LANGUAGE", "english")
+            .env("DOCUMENT_ROOT", &self.document_root)
+            .arg(path)
+            .output()
+            .expect("run the operator ingest CLI");
+        assert!(
+            output.status.success(),
+            "operator ingest failed for {}: {}{}",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+impl Drop for OperatorIngest {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.document_root);
+    }
 }
 
 /// Reserves a loopback port by binding and immediately releasing it.
