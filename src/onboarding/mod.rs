@@ -45,7 +45,7 @@ pub use profile_revisions::{
     submit_owned_revision, submit_revision, update_draft, update_owned_draft, ApprovedProfileValue,
     OwnerProfile, ProfileAudience, ProfileRevision, ProfileVisibility, ReviewDecision,
     RevisionError, RevisionStatus, ALLOWED_PROFILE_FIELDS, BIOGRAPHY_MAX_CHARS,
-    MEDIA_PROFILE_FIELDS, NAME_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
+    MEDIA_PROFILE_FIELDS, NAME_MAX_CHARS, NARRATIVE_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
 };
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
 pub use username::NameParts;

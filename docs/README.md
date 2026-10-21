@@ -62,6 +62,7 @@ their content here.
 | [reference/testing.md](reference/testing.md) | You want to run or extend the unit and integration tests. |
 | [reference/experiments.md](reference/experiments.md) | You want the decisions driven by the recorded experiment results. |
 | [guides/usage.md](guides/usage.md) | You want to set up, ingest a document, or ask a question. |
+| [guides/my-profile.md](guides/my-profile.md) | You are building or reviewing the member My Profile surface and its privacy boundary. |
 | [guides/evaluation.md](guides/evaluation.md) | You want to score retrieval or compare settings/models. |
 | [guides/agent-scripts.md](guides/agent-scripts.md) | You are working with the git hooks or the `.agents/scripts/` helpers. |
 | [operations/embedding-dimension.md](operations/embedding-dimension.md) | You are changing `EMBED_DIM` (the operator-run procedure). |

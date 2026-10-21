@@ -79,14 +79,16 @@ export E2E_VIEWER_TOKEN
 # A second admin: a nomination cannot be approved by its own nominator.
 E2E_APPROVER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-approver --role admin --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_APPROVER_TOKEN
+E2E_DEACTIVATED_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-deactivated --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_DEACTIVATED_TOKEN
 
 echo "web-e2e: seeding test identities"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/007_user_lifecycle.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER')" >/dev/null
+	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -112,8 +114,44 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "DROP TABLE IF EXISTS head_of_family_audit_event, head_of_family_appointment, head_of_family_nomination CASCADE" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f genealogy/migrations/0006_head_of_family.sql >/dev/null
+for migration in 0007_onboarding 0008_onboarding_identity 0009_onboarding_link_audit \
+	0010_onboarding_foreign_keys 0011_onboarding_foreign_key_reconciliation \
+	0012_profile_revisions 0013_profile_revision_actor_scope \
+	0014_profile_revision_draft_withdrawal 0015_profile_media \
+	0016_profile_media_withdrawal 0017_profile_media_withdrawal_audit; do
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-f "genealogy/migrations/$migration.sql" >/dev/null
+done
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f scripts/seed-genealogy-e2e.sql >/dev/null
+
+# USR-004D: seed synthetic profile members. No real family data is used. The
+# links are inserted directly so the browser can exercise the real owner-scoped
+# profile API; the viewer link is created and revoked by the browser spec itself.
+echo "web-e2e: seeding synthetic profile members"
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO person (person_key, display_name) VALUES ('e2e-profile-admin', 'Synthetic E2E Admin Member'), ('e2e-profile-approver', 'Synthetic E2E Approver Member'), ('e2e-profile-deactivated', 'Synthetic E2E Deactivated Member'), ('e2e-profile-viewer', 'Synthetic E2E Viewer Member')" >/dev/null
+
+E2E_ADMIN_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-admin' AND issuer = '$E2E_ISSUER'")
+E2E_APPROVER_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-approver' AND issuer = '$E2E_ISSUER'")
+E2E_DEACTIVATED_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-deactivated' AND issuer = '$E2E_ISSUER'")
+E2E_ADMIN_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-admin)
+E2E_APPROVER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-approver)
+E2E_DEACTIVATED_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-deactivated)
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_ADMIN_ACCOUNT_ID, 'e2e-seed', '$E2E_ADMIN_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-admin'" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_APPROVER_ACCOUNT_ID, 'e2e-seed', '$E2E_APPROVER_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-approver'" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_DEACTIVATED_ACCOUNT_ID, 'e2e-seed', '$E2E_DEACTIVATED_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-deactivated'" >/dev/null
+
+E2E_MEDIA_ROOT=$(mktemp -d)
+export MEDIA_ROOT="$E2E_MEDIA_ROOT"
+export E2E_API_URL="http://127.0.0.1:${API_PORT}"
+export E2E_ISSUER="$E2E_ISSUER"
+export E2E_ADMIN_ACCOUNT_ID E2E_APPROVER_ACCOUNT_ID E2E_DEACTIVATED_ACCOUNT_ID
 
 echo "web-e2e: building the API"
 cargo build --locked --bin api
@@ -128,13 +166,16 @@ cleanup() {
 	kill "$AUTH_PID" 2>/dev/null || true
 	wait "$AUTH_PID" 2>/dev/null || true
 	rm -f "$E2E_KEY_FILE"
+	rm -rf "$E2E_MEDIA_ROOT"
 	./scripts/web-control.sh stop >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM

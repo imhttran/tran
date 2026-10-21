@@ -581,6 +581,15 @@ pub fn store_submission(
           WHERE revision_id = $1 AND status = 'draft'",
         &[&revision_id, &media_id.to_string()],
     )?;
+    // Media submissions follow the same append-only transition log as text
+    // submissions. Without this the submission event would be missing before
+    // withdrawal even had a chance to cascade it away.
+    tx.execute(
+        "INSERT INTO onboarding_profile_review_event \
+             (revision_id, person_id, event, actor, note) \
+         VALUES ($1, $2, 'pending_review', $3, NULL)",
+        &[&revision_id, &person_id, &account.identity_fingerprint],
+    )?;
 
     let temp = storage.write_temp(person_id, &storage_key, &prepared.bytes)?;
     if let Err(err) = storage.finalize(&temp, person_id, &storage_key, prepared.extension) {
@@ -688,7 +697,7 @@ pub fn withdraw_owned_media(
     let row = tx
         .query_opt(
             "SELECT m.person_id, m.storage_key, m.mime_type, m.revision_id, \
-                    r.status, r.changed_by \
+                    r.status, r.changed_by, m.media_kind \
                FROM onboarding_media_metadata m \
                JOIN onboarding_profile_revision r ON r.revision_id = m.revision_id \
               WHERE m.media_id = $1 \
@@ -702,6 +711,7 @@ pub fn withdraw_owned_media(
     let revision_id: i64 = row.get(3);
     let status: String = row.get(4);
     let changed_by: String = row.get(5);
+    let media_kind: String = row.get(6);
     let owner_person = owner_person_in_tx(&mut tx, account)?;
     if owner_person != person_id || changed_by != account.identity_fingerprint {
         return Err(MediaError::NotFound);
@@ -709,6 +719,21 @@ pub fn withdraw_owned_media(
     if status != "pending_review" {
         return Err(MediaError::InvalidTransition);
     }
+    // Record the withdrawal before the cascade removes the pending revision and
+    // its review events. The ledger keeps references and the actor only; no
+    // file content, file name, hash, or storage path is retained.
+    tx.execute(
+        "INSERT INTO onboarding_media_withdrawal \
+            (media_id, revision_id, person_id, media_kind, action, actor) \
+         VALUES ($1, $2, $3, $4, 'withdraw', $5)",
+        &[
+            &media_id,
+            &revision_id,
+            &person_id,
+            &media_kind,
+            &account.identity_fingerprint,
+        ],
+    )?;
     tx.execute(
         "DELETE FROM onboarding_media_metadata WHERE media_id = $1",
         &[&media_id],

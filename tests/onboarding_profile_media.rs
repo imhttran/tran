@@ -24,7 +24,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 16] = [
+const GENEALOGY_MIGRATIONS: [&str; 17] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -41,14 +41,16 @@ const GENEALOGY_MIGRATIONS: [&str; 16] = [
     "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
     "genealogy/migrations/0015_profile_media.sql",
     "genealogy/migrations/0016_profile_media_withdrawal.sql",
+    "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
 ];
 
 const ISSUER: &str = "https://synthetic-issuer.example";
 
-const PERSON_CHILD_TABLES: [&str; 8] = [
+const PERSON_CHILD_TABLES: [&str; 9] = [
     "onboarding_profile_review_event",
     "onboarding_profile_revision",
     "onboarding_profile_value",
+    "onboarding_media_withdrawal",
     "onboarding_media_metadata",
     "onboarding_link_audit",
     "onboarding_person_account_link",
@@ -641,6 +643,129 @@ fn owner_can_withdraw_pending_media_and_reupload() {
         )
         .expect("reupload after withdrawal");
     assert!(db.download(&owner, replacement.media_id).is_ok());
+}
+
+#[test]
+fn withdrawal_audit_retains_references_after_revision_deletion() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("audit-owner");
+    let person = db.person("audit");
+    db.link(&owner, person);
+    let document = db
+        .upload(
+            &owner,
+            MediaKind::PersonalDocument,
+            "audit.txt",
+            b"synthetic family document for the withdrawal audit test",
+            ProfileVisibility::Family,
+        )
+        .expect("upload document");
+
+    let events_before: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT count(*) FROM onboarding_profile_review_event WHERE revision_id = $1",
+            &[&document.revision_id],
+        )
+        .expect("count review events")
+        .get(0);
+    assert!(events_before > 0, "a submission records a review event");
+
+    withdraw_owned_media(&mut db.genealogy, &db.storage, &owner, document.media_id)
+        .expect("withdraw pending document");
+
+    let revision_exists: bool = db
+        .genealogy
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM onboarding_profile_revision WHERE revision_id = $1)",
+            &[&document.revision_id],
+        )
+        .expect("revision lookup")
+        .get(0);
+    assert!(!revision_exists, "withdrawal removes the pending revision");
+
+    let audit = db
+        .genealogy
+        .query_one(
+            "SELECT media_id, revision_id, person_id, media_kind, action, actor, \
+                    created_at::text, \
+                    (SELECT count(*) FROM pg_attribute \
+                      WHERE attrelid = 'onboarding_media_withdrawal'::regclass \
+                        AND attname IN ('storage_key', 'file_name', 'sha256', 'content')) \
+               FROM onboarding_media_withdrawal WHERE media_id = $1",
+            &[&document.media_id],
+        )
+        .expect("withdrawal audit row survives revision deletion");
+    assert_eq!(audit.get::<_, i64>(0), document.media_id);
+    assert_eq!(audit.get::<_, i64>(1), document.revision_id);
+    assert_eq!(audit.get::<_, i64>(2), person);
+    assert_eq!(audit.get::<_, String>(3), "personal_document");
+    assert_eq!(audit.get::<_, String>(4), "withdraw");
+    assert_eq!(audit.get::<_, String>(5), owner.identity_fingerprint);
+    assert!(!audit.get::<_, String>(6).trim().is_empty());
+    assert_eq!(
+        audit.get::<_, i64>(7),
+        0,
+        "the audit ledger must not retain private payload columns"
+    );
+}
+
+#[test]
+fn unauthorized_or_repeated_withdrawal_writes_no_audit() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("audit-negative-owner");
+    let other = db.account("audit-negative-other");
+    let person = db.person("audit-negative");
+    let other_person = db.person("audit-negative-other");
+    db.link(&owner, person);
+    db.link(&other, other_person);
+    let photo = db
+        .upload(
+            &owner,
+            MediaKind::Photo,
+            "negative.png",
+            &png_bytes(),
+            ProfileVisibility::OwnerPrivate,
+        )
+        .expect("upload photo");
+
+    assert_eq!(
+        withdraw_owned_media(&mut db.genealogy, &db.storage, &other, photo.media_id),
+        Err(MediaError::NotFound),
+        "another account cannot withdraw the owner's media"
+    );
+    let audit_count = |db: &mut TestDb| -> i64 {
+        db.genealogy
+            .query_one(
+                "SELECT count(*) FROM onboarding_media_withdrawal WHERE media_id = $1",
+                &[&photo.media_id],
+            )
+            .expect("count audit rows")
+            .get(0)
+    };
+    assert_eq!(
+        audit_count(&mut db),
+        0,
+        "a denied withdrawal is not audited"
+    );
+
+    withdraw_owned_media(&mut db.genealogy, &db.storage, &owner, photo.media_id)
+        .expect("owner withdraws pending photo");
+    assert_eq!(audit_count(&mut db), 1);
+    assert_eq!(
+        withdraw_owned_media(&mut db.genealogy, &db.storage, &owner, photo.media_id),
+        Err(MediaError::NotFound),
+        "a withdrawn media submission cannot be withdrawn twice"
+    );
+    assert_eq!(
+        audit_count(&mut db),
+        1,
+        "repeat withdrawal adds no audit row"
+    );
 }
 
 #[test]
