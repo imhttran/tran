@@ -599,6 +599,63 @@ fn evidence_must_belong_to_the_cited_document_and_pages() {
 }
 
 #[test]
+fn a_grant_without_an_audited_appointment_confers_no_authority() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("owner-unaudited");
+    let reviewer = db.account("reviewer-unaudited");
+    let (person_id, person_key) = db.person("unaudited");
+    let (reviewer_person, _) = db.person("reviewer-unaudited");
+    let branch = db.branch("unaudited");
+    db.link(&owner, person_id);
+    db.link(&reviewer, reviewer_person);
+    db.verified_branch(person_id, &branch);
+
+    // A grant row written out of band carries a valid link and fingerprint but
+    // no append-only appointment event, so it must confer no authority.
+    db.genealogy
+        .execute(
+            "INSERT INTO onboarding_branch_reviewer_grant \
+                 (account_id, family_branch_id, identity_fingerprint, granted_by, granted_reason) \
+             SELECT $1, family_branch_id, $2, 'out-of-band', 'no audited appointment' \
+               FROM family_branch WHERE branch_key = $3",
+            &[
+                &reviewer.account_id,
+                &reviewer.identity_fingerprint,
+                &branch,
+            ],
+        )
+        .expect("out-of-band grant");
+
+    assert!(effective_grants(&mut db.genealogy, &reviewer)
+        .expect("grants")
+        .is_empty());
+
+    let proposal_id = proposal(
+        &mut db,
+        &owner,
+        &person_key,
+        &branch,
+        "gender",
+        "gender",
+        "female",
+    );
+    assert_eq!(
+        list_proposals(&mut db.genealogy, &reviewer, Some(&branch), None, None, 25),
+        Err(BranchReviewError::NotGranted)
+    );
+    assert_eq!(
+        read_proposal(&mut db.genealogy, &reviewer, proposal_id),
+        Err(BranchReviewError::UnknownProposal)
+    );
+    assert_eq!(
+        decide_proposal(&mut db.genealogy, &reviewer, proposal_id, "approve", None),
+        Err(BranchReviewError::NotGranted)
+    );
+}
+
+#[test]
 fn ambiguous_branch_membership_blocks_proposals() {
     let Some(mut db) = TestDb::new() else {
         return;

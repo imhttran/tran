@@ -5,6 +5,11 @@
 //! snapshot, and source evidence. Approval applies the value through the existing
 //! assertion evidence/provenance validation and review-event workflow. Draft
 //! profile content, contact fields, and private media are outside this module.
+//!
+//! A usable grant is an administrator appointment, not a genealogy status: it
+//! must be active, bound to this exact verified identity, still backed by the
+//! reviewed account-person link, and recorded by an append-only `granted` audit
+//! event. A grant row created out of band therefore confers no authority.
 
 use postgres::{Client, Transaction};
 use serde::{Deserialize, Serialize};
@@ -224,6 +229,10 @@ pub fn effective_grants(
             AND EXISTS (SELECT 1 FROM onboarding_person_account_link l \
                          WHERE l.account_id = g.account_id \
                            AND l.identity_fingerprint = g.identity_fingerprint) \
+            AND EXISTS (SELECT 1 FROM onboarding_branch_reviewer_grant_event e \
+                         WHERE e.account_id = g.account_id \
+                           AND e.family_branch_id = g.family_branch_id \
+                           AND e.event = 'granted') \
           ORDER BY b.branch_key",
         &[&account.account_id, &account.identity_fingerprint],
     )?;
@@ -395,7 +404,12 @@ pub fn list_proposals(
                          WHERE g.account_id = $6 \
                            AND g.identity_fingerprint = $2 \
                            AND g.revoked_at IS NULL \
-                           AND b.branch_key = p.branch_key) \
+                           AND b.branch_key = p.branch_key \
+                           AND EXISTS (SELECT 1 \
+                                         FROM onboarding_branch_reviewer_grant_event e \
+                                        WHERE e.account_id = g.account_id \
+                                          AND e.family_branch_id = g.family_branch_id \
+                                          AND e.event = 'granted')) \
           ORDER BY p.proposal_id DESC \
           LIMIT $5",
         &[
@@ -453,7 +467,12 @@ pub fn read_proposal(
                              WHERE g.account_id = $2 \
                                AND g.identity_fingerprint = $3 \
                                AND g.revoked_at IS NULL \
-                               AND b.branch_key = p.branch_key)",
+                               AND b.branch_key = p.branch_key \
+                               AND EXISTS (SELECT 1 \
+                                             FROM onboarding_branch_reviewer_grant_event e \
+                                            WHERE e.account_id = g.account_id \
+                                              AND e.family_branch_id = g.family_branch_id \
+                                              AND e.event = 'granted'))",
             &[
                 &proposal_id,
                 &account.account_id,
@@ -710,7 +729,12 @@ fn has_branch_grant<C: postgres::GenericClient>(
                              WHERE g.account_id = $1 \
                                AND g.identity_fingerprint = $2 \
                                AND g.revoked_at IS NULL \
-                               AND b.branch_key = $3)",
+                               AND b.branch_key = $3 \
+                               AND EXISTS (SELECT 1 \
+                                             FROM onboarding_branch_reviewer_grant_event e \
+                                            WHERE e.account_id = g.account_id \
+                                              AND e.family_branch_id = g.family_branch_id \
+                                              AND e.event = 'granted'))",
             &[
                 &account.account_id,
                 &account.identity_fingerprint,

@@ -112,6 +112,11 @@ requires the exact reviewed account-person link.
 - A proposal stores the proposed value, the prior verified snapshot, branch key,
   submitter fingerprint, evidence references, and an append-only event ledger
   (`genealogy_fact_proposal`, migration `0020`).
+- A usable grant is an administrator appointment: it must be active, bound to
+  the caller's exact verified identity, still backed by the reviewed
+  account-person link, and recorded by the append-only `granted` audit event.
+  A grant row created out of band confers no authority, and a genealogy title
+  never substitutes for a grant.
 - Creation requires exactly one verified `branch_claim` for the person and the
   requested branch. Ambiguous or unverified membership is rejected.
 - Every evidence reference must resolve to the cited original, non-derivative
