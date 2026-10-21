@@ -252,6 +252,24 @@ test.describe.serial("branch review security acceptance", () => {
     await page.goto("/branch-review");
     await expect(page.getByTestId("denied-view")).toBeVisible();
     await expect(page.getByTestId("branch-review-console")).toHaveCount(0);
+
+    // The identity is dedicated to this scenario, but the run still restores
+    // it: provisioning reactivates the same (issuer, subject) row, so a reused
+    // database is never left with a deactivated seeded account. This also
+    // proves the capability comes back with the account, not with a grant.
+    const restored = await api(request, ADMIN, "POST", "/api/admin/users", {
+      issuer: ISSUER,
+      subject: "e2e-reviewer-off",
+    });
+    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+    const restoredGrants = await api(
+      request,
+      REVIEWER_OFF,
+      "GET",
+      "/api/branch-review/grants/me",
+    );
+    expect(restoredGrants.status).toBe(200);
+    expect(restoredGrants.body.grants).toHaveLength(1);
   });
 
   // Scenario 15.
@@ -377,8 +395,10 @@ test.describe.serial("branch review security acceptance", () => {
     }
 
     // The reviewed person really holds an approved owner-private value with
-    // this exact text (the harness fails the run when the fixture is missing),
-    // so this is a value-leak assertion rather than a field-name assertion.
+    // this exact text: scripts/web-e2e.sh seeds it and aborts the run when the
+    // row is missing, so this is a value-leak assertion rather than a vacuous
+    // absence check. The assertion below confirms the proposal under test is
+    // about that very person.
     const queue = await api(
       request,
       REVIEWER,
@@ -386,6 +406,9 @@ test.describe.serial("branch review security acceptance", () => {
       "/api/branch-review/submissions?branch=branch-1",
     );
     expect(queue.status).toBe(200);
+    const queued = (queue.body.submissions as { proposal_id: number; person_key: string }[])
+      .find((row) => row.proposal_id === visibleId);
+    expect(queued?.person_key).toBe("e2e-branch-subject");
     expect(JSON.stringify(queue.body)).not.toContain(PRIVATE_MARKER);
     const detail = await api(
       request,
@@ -394,6 +417,7 @@ test.describe.serial("branch review security acceptance", () => {
       `/api/branch-review/submissions/${visibleId}`,
     );
     expect(detail.status).toBe(200);
+    expect(detail.body.proposal.person_key).toBe("e2e-branch-subject");
     expect(JSON.stringify(detail.body)).not.toContain(PRIVATE_MARKER);
     expect(JSON.stringify(detail.body)).not.toContain("owner_private");
 
