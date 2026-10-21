@@ -5,7 +5,8 @@
 -- and the reviewer's own account link. It contains no real family names,
 -- dates, addresses, or source material.
 --
--- psql variables: reviewer_account_id, reviewer_fingerprint.
+-- psql variables: reviewer_account_id, reviewer_fingerprint,
+-- off_account_id, off_fingerprint.
 
 BEGIN;
 
@@ -29,16 +30,19 @@ SELECT source_document_id, 1, 'p.1'
 ON CONFLICT (source_document_id, page, locator) DO NOTHING;
 
 -- A review subject in branch 1, a second-branch person the reviewer may not
--- touch, and the reviewer's own linked person (linked-owner independence).
+-- touch, the reviewer's own linked person (linked-owner independence), and a
+-- dedicated identity the security suite grants and then deactivates.
 INSERT INTO person (person_key, display_name) VALUES
     ('e2e-branch-subject', 'Synthetic Branch Subject'),
     ('e2e-branch-other', 'Synthetic Second Branch Subject'),
-    ('e2e-branch-owner', 'Synthetic Linked Reviewer Person');
+    ('e2e-branch-owner', 'Synthetic Linked Reviewer Person'),
+    ('e2e-branch-off', 'Synthetic Offboarding Reviewer Person');
 
 WITH branch_claims (person_key, branch_key) AS (
     VALUES ('e2e-branch-subject', 'branch-1'),
            ('e2e-branch-other', 'branch-2'),
-           ('e2e-branch-owner', 'branch-1')
+           ('e2e-branch-owner', 'branch-1'),
+           ('e2e-branch-off', 'branch-1')
 ), claimed AS (
     INSERT INTO assertion
         (person_id, assertion_kind, assertion_key, value_text, review_status)
@@ -74,5 +78,12 @@ INSERT INTO onboarding_person_account_link
 SELECT p.person_id, :reviewer_account_id, 'e2e-seed', :'reviewer_fingerprint'
   FROM person p
  WHERE p.person_key = 'e2e-branch-owner';
+
+-- Dedicated to the deactivation scenario so the shared reviewer stays active.
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :off_account_id, 'e2e-seed', :'off_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-off';
 
 COMMIT;

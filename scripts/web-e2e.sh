@@ -90,6 +90,10 @@ export E2E_DEACTIVATED_TOKEN
 # branch grant itself is created by the branch-review spec through the admin API.
 E2E_REVIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-reviewer --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_REVIEWER_TOKEN
+# A dedicated reviewer identity the security suite deactivates, so the shared
+# reviewer used by the other branch-review specs keeps its access.
+E2E_REVIEWER_OFF_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-reviewer-off --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_REVIEWER_OFF_TOKEN
 
 echo "web-e2e: seeding test identities"
 # Base RAG schema and the FAM-002 document lifecycle metadata. These are
@@ -105,9 +109,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subjec
 # No password-reset provider in E2E: the reset action must fail closed.
 unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER')" >/dev/null
+	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER')" >/dev/null
 # A disposable account the admin accounts test changes and deactivates.
 # The address uses the reserved .test domain; nothing is ever sent to it.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -115,9 +119,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject IN ('e2e-viewer', 'e2e-reviewer')" >/dev/null
+	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject IN ('e2e-viewer', 'e2e-reviewer', 'e2e-reviewer-off')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member', 'e2e-reviewer')" >/dev/null
+	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off')" >/dev/null
 
 if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
 	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
@@ -177,10 +181,12 @@ E2E_ADMIN_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE sub
 E2E_APPROVER_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-approver' AND issuer = '$E2E_ISSUER'")
 E2E_DEACTIVATED_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-deactivated' AND issuer = '$E2E_ISSUER'")
 E2E_REVIEWER_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-reviewer' AND issuer = '$E2E_ISSUER'")
+E2E_REVIEWER_OFF_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-reviewer-off' AND issuer = '$E2E_ISSUER'")
 E2E_ADMIN_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-admin)
 E2E_APPROVER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-approver)
 E2E_DEACTIVATED_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-deactivated)
 E2E_REVIEWER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-reviewer)
+E2E_REVIEWER_OFF_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-reviewer-off)
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_ADMIN_ACCOUNT_ID, 'e2e-seed', '$E2E_ADMIN_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-admin'" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -194,6 +200,8 @@ echo "web-e2e: seeding branch-review fixture"
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v reviewer_account_id="$E2E_REVIEWER_ACCOUNT_ID" \
 	-v reviewer_fingerprint="$E2E_REVIEWER_FINGERPRINT" \
+	-v off_account_id="$E2E_REVIEWER_OFF_ACCOUNT_ID" \
+	-v off_fingerprint="$E2E_REVIEWER_OFF_FINGERPRINT" \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
 
 # Intentionally override any inherited MEDIA_ROOT: browser tests must only write
@@ -204,6 +212,7 @@ export E2E_API_URL="http://127.0.0.1:${API_PORT}"
 export E2E_ISSUER="$E2E_ISSUER"
 export E2E_ADMIN_ACCOUNT_ID E2E_APPROVER_ACCOUNT_ID E2E_DEACTIVATED_ACCOUNT_ID
 export E2E_REVIEWER_ACCOUNT_ID
+export E2E_REVIEWER_OFF_ACCOUNT_ID
 
 echo "web-e2e: building the API"
 cargo build --locked --bin api
@@ -223,9 +232,9 @@ cleanup() {
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off')" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer') OR person_key LIKE 'e2e-branch-%'" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \

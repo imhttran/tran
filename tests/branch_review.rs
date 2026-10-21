@@ -890,3 +890,357 @@ fn linked_owner_and_replaced_account_cannot_use_a_grant() {
             .is_empty()
     );
 }
+
+// --- USR-005D acceptance scenarios -----------------------------------------
+//
+// These are the server-side scenarios from the branch review acceptance matrix
+// that the USR-005B suite does not already cover. Scenarios 1-8, 10, and 12 are
+// proven by the tests above and by tests/onboarding_branch_grants.rs; scenario 9
+// and the role half of scenario 15 are proven at the HTTP boundary in
+// web/e2e/branch-review-security.spec.ts, because deactivation and roles live in
+// the identity store, not in the genealogy database.
+
+/// Scenario 11: a Head of Family designation is genealogy status, not permission.
+#[test]
+fn head_of_family_without_a_grant_has_no_review_authority() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let hof = db.account("hof");
+    let (hof_person, hof_key) = db.person("hof");
+    let branch = db.branch("hof-third");
+    db.link(&hof, hof_person);
+    db.verified_branch(hof_person, &branch);
+    db.genealogy
+        .execute(
+            "INSERT INTO head_of_family_appointment \
+                 (person_key, branch_key, approved_by, evidence_assertion_ids) \
+             VALUES ($1, $2, 'synthetic-admin', '[]'::jsonb)",
+            &[&hof_key, &branch],
+        )
+        .expect("active appointment");
+
+    let owner = db.account("owner-hof");
+    let (subject, subject_key) = db.person("hof-subject");
+    db.link(&owner, subject);
+    db.verified_branch(subject, &branch);
+    let proposal_id = proposal(
+        &mut db,
+        &owner,
+        &subject_key,
+        &branch,
+        "gender",
+        "gender",
+        "female",
+    );
+
+    // The title confers nothing: no grant means no effective authority at all.
+    assert!(effective_grants(&mut db.genealogy, &hof)
+        .expect("grants")
+        .is_empty());
+    assert_eq!(
+        list_proposals(&mut db.genealogy, &hof, Some(&branch), None, None, 25),
+        Err(BranchReviewError::NotGranted)
+    );
+    assert_eq!(
+        read_proposal(&mut db.genealogy, &hof, proposal_id),
+        Err(BranchReviewError::UnknownProposal)
+    );
+    assert_eq!(
+        decide_proposal(&mut db.genealogy, &hof, proposal_id, "approve", None),
+        Err(BranchReviewError::NotGranted)
+    );
+}
+
+/// Scenario 13: a disputed fact is only re-verified by an explicit decision.
+#[test]
+fn a_disputed_fact_is_not_verified_by_submission_alone() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("owner-disputed");
+    let reviewer = db.account("reviewer-disputed");
+    let (person_id, person_key) = db.person("disputed");
+    let (reviewer_person, _) = db.person("reviewer-disputed");
+    let branch = db.branch("disputed");
+    db.link(&owner, person_id);
+    db.link(&reviewer, reviewer_person);
+    db.verified_branch(person_id, &branch);
+    db.assertion(person_id, "gender", "gender", "male", "disputed");
+    grant_branches(
+        &mut db.genealogy,
+        &reviewer,
+        std::slice::from_ref(&branch),
+        "admin",
+        "branch reviewer",
+    )
+    .expect("grant");
+
+    let proposal_id = proposal(
+        &mut db,
+        &owner,
+        &person_key,
+        &branch,
+        "gender",
+        "gender",
+        "female",
+    );
+
+    // Submission records the disputed snapshot and changes nothing.
+    let after_submission =
+        read_proposal(&mut db.genealogy, &reviewer, proposal_id).expect("detail after submission");
+    assert_eq!(
+        after_submission.summary.prior_review_status.as_deref(),
+        Some("disputed")
+    );
+    let (value, status): (String, String) = db
+        .genealogy
+        .query_one(
+            "SELECT value_text, review_status FROM assertion \
+              WHERE person_id = $1 AND assertion_kind = 'gender'",
+            &[&person_id],
+        )
+        .map(|row| (row.get(0), row.get(1)))
+        .expect("authoritative fact");
+    assert_eq!((value.as_str(), status.as_str()), ("male", "disputed"));
+
+    // Only an independent, audited approval promotes the disputed fact.
+    let decision = decide_proposal(
+        &mut db.genealogy,
+        &reviewer,
+        proposal_id,
+        "approve",
+        Some("independently re-verified against the cited page"),
+    )
+    .expect("approve disputed fact");
+    assert_eq!(decision.status, "approved");
+    let (value, status): (String, String) = db
+        .genealogy
+        .query_one(
+            "SELECT value_text, review_status FROM assertion \
+              WHERE person_id = $1 AND assertion_kind = 'gender'",
+            &[&person_id],
+        )
+        .map(|row| (row.get(0), row.get(1)))
+        .expect("authoritative fact after approval");
+    assert_eq!((value.as_str(), status.as_str()), ("female", "verified"));
+    let after = read_proposal(&mut db.genealogy, &reviewer, proposal_id).expect("detail");
+    assert!(after.events.iter().any(|event| event.event == "approved"));
+}
+
+/// Scenario 14: review authority follows the person's branch, not the reviewer's
+/// wish to see another branch. Cross-branch relationships stay out of scope.
+#[test]
+fn proposals_are_scoped_to_the_person_branch_not_the_reviewer() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("owner-scope");
+    let reviewer_one = db.account("reviewer-one");
+    let reviewer_two = db.account("reviewer-two");
+    let (person, person_key) = db.person("scope-one");
+    let (one_person, _) = db.person("scope-reviewer-one");
+    let (two_person, _) = db.person("scope-reviewer-two");
+    let branch_one = db.branch("scope-one");
+    let branch_two = db.branch("scope-two");
+    db.link(&owner, person);
+    db.link(&reviewer_one, one_person);
+    db.link(&reviewer_two, two_person);
+    db.verified_branch(person, &branch_one);
+    let proposal_id = proposal(
+        &mut db,
+        &owner,
+        &person_key,
+        &branch_one,
+        "gender",
+        "gender",
+        "female",
+    );
+
+    for (reviewer, branch) in [(&reviewer_one, &branch_one), (&reviewer_two, &branch_two)] {
+        grant_branches(
+            &mut db.genealogy,
+            reviewer,
+            std::slice::from_ref(branch),
+            "admin",
+            "branch reviewer",
+        )
+        .expect("grant");
+    }
+
+    // The branch-one reviewer can read the proposal; the branch-two reviewer
+    // cannot see or decide it at all, and their own queue stays empty.
+    assert!(read_proposal(&mut db.genealogy, &reviewer_one, proposal_id).is_ok());
+    assert_eq!(
+        read_proposal(&mut db.genealogy, &reviewer_two, proposal_id),
+        Err(BranchReviewError::UnknownProposal)
+    );
+    assert_eq!(
+        decide_proposal(
+            &mut db.genealogy,
+            &reviewer_two,
+            proposal_id,
+            "approve",
+            None
+        ),
+        Err(BranchReviewError::NotGranted)
+    );
+    assert!(list_proposals(
+        &mut db.genealogy,
+        &reviewer_two,
+        Some(&branch_two),
+        None,
+        None,
+        25
+    )
+    .expect("branch two queue")
+    .submissions
+    .is_empty());
+}
+
+/// Scenario 16 (API): branch review never returns member-private profile data.
+#[test]
+fn branch_review_reads_never_return_private_profile_values() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("owner-private");
+    let reviewer = db.account("reviewer-private");
+    let (person_id, person_key) = db.person("private");
+    let (reviewer_person, _) = db.person("reviewer-private");
+    let branch = db.branch("private");
+    db.link(&owner, person_id);
+    db.link(&reviewer, reviewer_person);
+    db.verified_branch(person_id, &branch);
+    grant_branches(
+        &mut db.genealogy,
+        &reviewer,
+        std::slice::from_ref(&branch),
+        "admin",
+        "branch reviewer",
+    )
+    .expect("grant");
+
+    // Private profile values exist for the same person and must never surface.
+    // The value guard only accepts an approved revision, so the fixture walks
+    // the real draft -> submitted -> approved path before writing each value.
+    let marker = format!("{}-private-marker", db.prefix);
+    for (field, value) in [
+        ("current_location", format!("{marker}-home")),
+        ("contact_email", format!("{marker}-email")),
+        ("phone", format!("{marker}-phone")),
+    ] {
+        let revision_id: i64 = db
+            .genealogy
+            .query_one(
+                "INSERT INTO onboarding_profile_revision \
+                     (person_id, field_key, prior_value_text, \
+                      prior_approved_revision_number, new_value_text, changed_by, \
+                      revision_number, status, visibility) \
+                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-owner', 1, 'draft', \
+                         'owner_private') \
+                 RETURNING revision_id",
+                &[&person_id, &field, &value],
+            )
+            .expect("profile revision")
+            .get(0);
+        db.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'pending_review', submitted_at = now() \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("submit profile revision");
+        db.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'approved', reviewed_at = now(), \
+                        reviewed_by = 'synthetic-reviewer', review_note = 'synthetic' \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("approve profile revision");
+        db.genealogy
+            .execute(
+                "INSERT INTO onboarding_profile_value \
+                     (person_id, field_key, value_text, visibility, updated_by, \
+                      approved_revision_number, approved_revision_id) \
+                 VALUES ($1, $2, $3, 'owner_private', 'synthetic-owner', 1, $4)",
+                &[&person_id, &field, &value, &revision_id],
+            )
+            .expect("profile value");
+    }
+
+    let proposal_id = proposal(
+        &mut db,
+        &owner,
+        &person_key,
+        &branch,
+        "gender",
+        "gender",
+        "female",
+    );
+    let queue =
+        list_proposals(&mut db.genealogy, &reviewer, Some(&branch), None, None, 25).expect("queue");
+    let detail = read_proposal(&mut db.genealogy, &reviewer, proposal_id).expect("detail");
+
+    for rendered in [format!("{queue:?}"), format!("{detail:?}")] {
+        assert!(
+            !rendered.contains(&marker),
+            "branch review leaked a private profile value: {rendered}"
+        );
+    }
+}
+
+/// Scenario 16 (RAG): proposed shared facts never enter the retrieval corpus.
+#[test]
+fn proposal_content_never_enters_the_rag_corpus() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let rag_dsn = match std::env::var("DATABASE_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            eprintln!("DATABASE_URL unset; skipping the RAG corpus assertion");
+            return;
+        }
+    };
+    let owner = db.account("owner-rag");
+    let (person_id, person_key) = db.person("rag");
+    let branch = db.branch("rag");
+    db.link(&owner, person_id);
+    db.verified_branch(person_id, &branch);
+
+    let marker = format!("{}-rag-marker", db.prefix);
+    proposal(
+        &mut db,
+        &owner,
+        &person_key,
+        &branch,
+        "name",
+        "name",
+        &marker,
+    );
+
+    let mut rag = Client::connect(&rag_dsn, NoTls).expect("rag database");
+    let has_documents: bool = rag
+        .query_one("SELECT to_regclass('public.documents') IS NOT NULL", &[])
+        .expect("documents table probe")
+        .get(0);
+    if !has_documents {
+        eprintln!("documents table absent; skipping the RAG corpus assertion");
+        return;
+    }
+    let count: i64 = rag
+        .query_one(
+            "SELECT count(*) FROM documents WHERE content LIKE $1",
+            &[&format!("%{marker}%")],
+        )
+        .expect("corpus probe")
+        .get(0);
+    assert_eq!(
+        count, 0,
+        "a proposed shared fact must never be readable from the RAG corpus"
+    );
+}
