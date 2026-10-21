@@ -125,13 +125,16 @@ pub fn reserve(
         .transaction()
         .map_err(|err| ReservationError::Database(err.to_string()))?;
 
-    let exists: bool = transaction
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM person WHERE person_id = $1)",
+    // Lock the person row for the reservation transaction. Two concurrent
+    // reservations for the same person serialize here: the loser sees the
+    // committed reservation below instead of inserting a second one.
+    let exists = transaction
+        .query_opt(
+            "SELECT person_id FROM person WHERE person_id = $1 FOR UPDATE",
             &[&person_id],
         )
         .map_err(|err| ReservationError::Database(err.to_string()))?
-        .get(0);
+        .is_some();
     if !exists {
         return Err(ReservationError::UnknownPerson);
     }

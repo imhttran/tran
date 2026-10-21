@@ -11,6 +11,10 @@ DECLARE
     v_assertion_id BIGINT;
     item RECORD;
 BEGIN
+    -- Check the verified-assertion evidence rule immediately. At commit time a
+    -- deferred check can observe the fixture's earlier source-document cleanup
+    -- rather than the evidence inserted by this block.
+    EXECUTE 'SET CONSTRAINTS ALL IMMEDIATE';
     DELETE FROM head_of_family_audit_event;
     DELETE FROM head_of_family_appointment;
     DELETE FROM head_of_family_nomination;

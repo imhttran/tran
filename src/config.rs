@@ -39,6 +39,13 @@ pub const DEFAULT_JWKS_CACHE_TTL_SECS: i64 = 300;
 pub const DEFAULT_AUTH_CLOCK_SKEW_SECS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 
+/// Bulk invitation delivery adapter: `unconfigured` (default) or `fake`.
+pub const DEFAULT_ONBOARDING_MAIL_ADAPTER: &str = "unconfigured";
+/// Base URL used to build the activation link handed to the adapter.
+pub const DEFAULT_ONBOARDING_ACTIVATION_URL: &str = "/activate";
+/// Minimum delay between bulk invitation sends, in milliseconds.
+pub const DEFAULT_ONBOARDING_SEND_INTERVAL_MS: i64 = 0;
+
 /// Name of the explicitly configured genealogy database DSN variable. It has no
 /// default, so a genealogy command can never silently target the RAG database.
 pub const GENEALOGY_DATABASE_URL_VAR: &str = "GENEALOGY_DATABASE_URL";
@@ -91,6 +98,13 @@ pub struct Config {
     pub jwks_cache_ttl_secs: i64,
     pub auth_clock_skew_secs: i64,
     pub auth_rate_limit: i64,
+    /// Bulk invitation delivery adapter name. Defaults to `unconfigured`, which
+    /// fails closed without creating an invitation.
+    pub onboarding_mail_adapter: String,
+    /// Base URL for the one-time activation link.
+    pub onboarding_activation_url: String,
+    /// Delay between bulk sends, in milliseconds.
+    pub onboarding_send_interval_ms: i64,
 }
 
 impl Config {
@@ -189,7 +203,34 @@ impl Config {
                 DEFAULT_AUTH_CLOCK_SKEW_SECS,
             )?,
             auth_rate_limit: positive_int(&get, "AUTH_RATE_LIMIT", DEFAULT_AUTH_RATE_LIMIT)?,
+            onboarding_mail_adapter: onboarding_mail_adapter(&get)?,
+            onboarding_activation_url: get("ONBOARDING_ACTIVATION_URL")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| DEFAULT_ONBOARDING_ACTIVATION_URL.to_string()),
+            onboarding_send_interval_ms: non_negative_int(
+                &get,
+                "ONBOARDING_SEND_INTERVAL_MS",
+                DEFAULT_ONBOARDING_SEND_INTERVAL_MS,
+            )?,
         })
+    }
+
+    /// Builds the configured bulk delivery adapter.
+    ///
+    /// Only the synthetic `fake` adapter is implemented. A production operator
+    /// must supply a real provider adapter and approve its configuration before
+    /// real invitations can be sent.
+    pub fn mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
+        match self.onboarding_mail_adapter.as_str() {
+            "fake" => Box::new(crate::onboarding::FakeAdapter::accepting()),
+            _ => Box::new(crate::onboarding::UnconfiguredAdapter),
+        }
+    }
+
+    /// The delay between bulk sends.
+    pub fn onboarding_send_throttle(&self) -> Duration {
+        Duration::from_millis(self.onboarding_send_interval_ms.max(0) as u64)
     }
 
     /// Returns the explicitly configured genealogy database DSN.
@@ -217,6 +258,23 @@ impl Config {
                 "{HOF_THIRD_BRANCH_KEY_VAR} must be set to the verified third-branch key"
             ))),
         }
+    }
+}
+
+/// Validates the bulk delivery adapter name. Only the fail-closed default and
+/// the synthetic test adapter exist today; an unknown name is an error rather
+/// than a silent fallback.
+fn onboarding_mail_adapter<F>(get: &F) -> Result<String, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let value = get("ONBOARDING_MAIL_ADAPTER")
+        .unwrap_or_else(|| DEFAULT_ONBOARDING_MAIL_ADAPTER.to_string());
+    match value.trim() {
+        "unconfigured" | "fake" => Ok(value.trim().to_string()),
+        other => Err(ConfigError::Invalid(format!(
+            "ONBOARDING_MAIL_ADAPTER must be unconfigured or fake, got {other:?}"
+        ))),
     }
 }
 

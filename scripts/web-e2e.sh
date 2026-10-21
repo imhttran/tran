@@ -50,6 +50,11 @@ export OIDC_TOKEN_ENDPOINT="${E2E_ISSUER}/token"
 export OIDC_END_SESSION_ENDPOINT="${E2E_ISSUER}/logout"
 export OIDC_COOKIE_SECURE="false"
 export HOF_THIRD_BRANCH_KEY="branch-3"
+# The fake adapter proves the send gate without real email. The Rust
+# integration suite separately proves the unconfigured adapter fails closed.
+export ONBOARDING_MAIL_ADAPTER="${ONBOARDING_MAIL_ADAPTER:-fake}"
+export ONBOARDING_ACTIVATION_URL="${ONBOARDING_ACTIVATION_URL:-http://127.0.0.1:3000/activate}"
+export ONBOARDING_SEND_INTERVAL_MS="${ONBOARDING_SEND_INTERVAL_MS:-0}"
 
 echo "web-e2e: starting the test OIDC issuer"
 python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --key-file "$E2E_KEY_FILE" >/tmp/tran-e2e-auth.log 2>&1 &
@@ -114,6 +119,24 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f genealogy/migrations/0006_head_of_family.sql >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f scripts/seed-genealogy-e2e.sql >/dev/null
+
+# Bulk onboarding (BULK-005). Recreate the onboarding schema so a reused
+# disposable database never carries a partial prior migration.
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DROP TABLE IF EXISTS onboarding_batch_audit, onboarding_batch_item, onboarding_batch, onboarding_recipient_contact, onboarding_link_audit, onboarding_person_account_link, onboarding_invitation, onboarding_username_reservation, onboarding_branch_reviewer_grant, onboarding_profile_review_event, onboarding_profile_revision, onboarding_profile_value, onboarding_media_metadata CASCADE" >/dev/null
+for migration in \
+	0007_onboarding.sql \
+	0008_onboarding_identity.sql \
+	0009_onboarding_link_audit.sql \
+	0010_onboarding_foreign_keys.sql \
+	0011_onboarding_foreign_key_reconciliation.sql \
+	0012_profile_revisions.sql \
+	0013_onboarding_batch.sql; do
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-f "genealogy/migrations/$migration" >/dev/null
+done
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f scripts/seed-bulk-onboarding-e2e.sql >/dev/null
 
 echo "web-e2e: building the API"
 cargo build --locked --bin api

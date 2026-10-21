@@ -8,13 +8,21 @@
 //! Classification precedence (first match wins):
 //!  1. `AlreadyLinked` — a row in `onboarding_person_account_link`;
 //!  2. `Invited` — a pending row in `onboarding_invitation`;
-//!  3. `NeedsReview` — contradictory, disputed, uncited, ambiguous, or
-//!     unresolved-duplicate vital evidence;
-//!  4. `EligibleForInvite` — verified living evidence with attributed citations;
-//!  5. `NotEligible` — no living evidence at all (for example deceased).
+//!  3. `AlreadyPrepared` — a `prepared` row in `onboarding_batch_item`;
+//!  4. `NeedsReview` — contradictory, disputed, uncited, ambiguous, or
+//!     unresolved-duplicate vital evidence, ambiguous name segmentation, or a
+//!     minor awaiting guardian review;
+//!  5. `EligibleForInvite` — verified living evidence with attributed citations;
+//!  6. `NotEligible` — no living evidence at all (for example deceased).
+//!
+//! Missing date of birth, a username collision, and a missing verified recipient
+//! contact are recorded as warnings on an eligible candidate: they do not block
+//! preparation, and a missing recipient blocks only sending.
 
 use postgres::Client;
 use thiserror::Error;
+
+use crate::onboarding::username::NameParts;
 
 /// The classification of one person for the onboarding inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +35,8 @@ pub enum Classification {
     AlreadyLinked,
     /// An invitation is already pending.
     Invited,
+    /// A batch already prepared this person.
+    AlreadyPrepared,
     /// No living evidence (for example a confident deceased person).
     NotEligible,
 }
@@ -39,6 +49,7 @@ impl Classification {
             Classification::NeedsReview => "needs_review",
             Classification::AlreadyLinked => "already_linked",
             Classification::Invited => "invited",
+            Classification::AlreadyPrepared => "already_prepared",
             Classification::NotEligible => "not_eligible",
         }
     }
@@ -66,8 +77,23 @@ pub enum Reason {
     AlreadyLinked,
     /// An invitation is already pending.
     AlreadyInvited,
+    /// A batch already prepared this person.
+    AlreadyPrepared,
     /// No living evidence was found.
     NoLivingEvidence,
+    /// Structured name parts segmented ambiguously.
+    AmbiguousSegmentation,
+    /// The candidate username collides with a taken reservation.
+    UsernameCollision,
+    /// The date of birth is missing, so age cannot be verified.
+    MissingDob,
+    /// A minor needs guardian review before onboarding.
+    MinorGuardianReview,
+    /// No verified contact email exists, so the candidate cannot be contacted.
+    MissingVerifiedContact,
+    /// The candidate is preparable but blocked from sending because no verified
+    /// recipient address exists.
+    BlockedMissingRecipient,
 }
 
 impl Reason {
@@ -82,7 +108,14 @@ impl Reason {
             Reason::UnresolvedDuplicate => "unresolved_duplicate",
             Reason::AlreadyLinked => "already_linked",
             Reason::AlreadyInvited => "already_invited",
+            Reason::AlreadyPrepared => "already_prepared",
             Reason::NoLivingEvidence => "no_living_evidence",
+            Reason::AmbiguousSegmentation => "ambiguous_segmentation",
+            Reason::UsernameCollision => "username_collision",
+            Reason::MissingDob => "missing_dob",
+            Reason::MinorGuardianReview => "minor_guardian_review",
+            Reason::MissingVerifiedContact => "missing_verified_contact",
+            Reason::BlockedMissingRecipient => "blocked_missing_recipient",
         }
     }
 }
@@ -97,6 +130,9 @@ pub struct CandidateRow {
     pub classification: Classification,
     /// The ordered, deduplicated reason codes.
     pub reasons: Vec<Reason>,
+    /// The proposed display username, when the verified name parts permit one.
+    /// This is a proposal only; preparation resolves collisions transactionally.
+    pub proposed_username: Option<String>,
 }
 
 /// The aggregated preview for the admin endpoint.
@@ -125,6 +161,8 @@ pub struct PreviewSummary {
     pub needs_review: usize,
     /// Count of `already_linked`.
     pub already_linked: usize,
+    /// Count of `already_prepared`.
+    pub already_prepared: usize,
     /// Count of `invited`.
     pub invited: usize,
     /// Count of `not_eligible`.
@@ -138,6 +176,7 @@ impl PreviewSummary {
             eligible_for_invite: preview.count(Classification::EligibleForInvite),
             needs_review: preview.count(Classification::NeedsReview),
             already_linked: preview.count(Classification::AlreadyLinked),
+            already_prepared: preview.count(Classification::AlreadyPrepared),
             invited: preview.count(Classification::Invited),
             not_eligible: preview.count(Classification::NotEligible),
         }
@@ -174,6 +213,18 @@ pub struct PersonEvidence {
     already_linked: bool,
     /// True when a pending invitation exists.
     invited: bool,
+    /// True when a batch item already prepared this person.
+    already_prepared: bool,
+    /// True when the structured name segments ambiguously.
+    ambiguous_segmentation: bool,
+    /// True when the candidate username collides with a taken reservation.
+    username_collision: bool,
+    /// True when the date of birth is missing.
+    missing_dob: bool,
+    /// True when the person is a minor or needs guardian review.
+    minor_guardian_review: bool,
+    /// True when no verified contact email is available.
+    missing_verified_contact: bool,
 }
 
 /// Returns `true` when the text names a living status. Only explicit living
@@ -183,6 +234,57 @@ fn is_living_value(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "alive" | "living"
     )
+}
+
+/// Splits a verified display name into structured parts without inventing a
+/// person: the first token is the family name, the middle tokens are the middle
+/// name, and the last token is the given name. Explicit structured columns win.
+///
+/// A one-token display name cannot be segmented safely; callers mark it
+/// ambiguous instead of guessing.
+pub fn name_parts(
+    family_name: Option<String>,
+    given_name: Option<String>,
+    display_name: &str,
+) -> NameParts {
+    let tokens: Vec<String> = display_name
+        .split_whitespace()
+        .map(|token| token.to_string())
+        .collect();
+    let family = family_name
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| tokens.first().cloned());
+    let given = given_name
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| tokens.last().cloned());
+    let middle = if tokens.len() >= 3 {
+        Some(tokens[1..tokens.len() - 1].join(" "))
+    } else {
+        None
+    };
+    NameParts {
+        family,
+        middle,
+        given,
+    }
+}
+
+/// Returns `true` when the display name cannot be segmented safely.
+pub fn segmentation_is_ambiguous(display_name: &str) -> bool {
+    display_name.split_whitespace().count() < 2
+}
+
+/// Reads the verified structured name parts for one person.
+pub fn load_name_parts(client: &mut Client, person_id: i64) -> Result<NameParts, CandidateError> {
+    let row = client
+        .query_opt(
+            "SELECT family_name, given_name, display_name FROM person WHERE person_id = $1",
+            &[&person_id],
+        )
+        .map_err(|err| CandidateError::Database(err.to_string()))?
+        .ok_or_else(|| CandidateError::Database("unknown person".to_string()))?;
+    let display: String = row.get(2);
+    Ok(name_parts(row.get(0), row.get(1), &display))
 }
 
 /// Loads the evidence state for one person id.
@@ -268,6 +370,58 @@ fn load_person_evidence(
         .map_err(|err| CandidateError::Database(err.to_string()))?
         .get(0);
 
+    let already_prepared: i64 = client
+        .query_one(
+            "SELECT count(*) FROM onboarding_batch_item
+              WHERE person_id = $1 AND status = 'prepared'",
+            &[&person_id],
+        )
+        .map_err(|err| CandidateError::Database(err.to_string()))?
+        .get(0);
+
+    let has_verified_contact: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM onboarding_recipient_contact
+                             WHERE person_id = $1 AND verified_at IS NOT NULL)",
+            &[&person_id],
+        )
+        .map_err(|err| CandidateError::Database(err.to_string()))?
+        .get(0);
+    let missing_verified_contact = !has_verified_contact;
+
+    let person = client
+        .query_opt(
+            "SELECT family_name, given_name, display_name, birth_year,
+                    (birth_year IS NULL OR btrim(birth_year) = '') AS missing_dob,
+                    CASE WHEN birth_year ~ '^[0-9]{4}$'
+                         THEN (EXTRACT(YEAR FROM now())::int - birth_year::int) < 18
+                         ELSE false END AS minor
+               FROM person WHERE person_id = $1",
+            &[&person_id],
+        )
+        .map_err(|err| CandidateError::Database(err.to_string()))?
+        .ok_or_else(|| CandidateError::Database("unknown person".to_string()))?;
+    let display_name: String = person.get(2);
+    let missing_dob: bool = person.get(4);
+    let minor_guardian_review: bool = person.get(5);
+    let ambiguous_segmentation = segmentation_is_ambiguous(&display_name);
+
+    let parts = name_parts(person.get(0), person.get(1), &display_name);
+    let username_collision = crate::onboarding::username::candidate_username(&parts)
+        .ok()
+        .map(|base| {
+            let key = crate::onboarding::username::key(&base);
+            client
+                .query_one(
+                    "SELECT count(*) FROM onboarding_username_reservation
+                      WHERE username_key = $1 AND status <> 'released'",
+                    &[&key],
+                )
+                .map(|row| row.get::<_, i64>(0) > 0)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
     Ok(PersonEvidence {
         has_verified_living,
         missing_citation,
@@ -276,7 +430,26 @@ fn load_person_evidence(
         duplicate_key,
         already_linked: already_linked > 0,
         invited: invited > 0,
+        already_prepared: already_prepared > 0,
+        ambiguous_segmentation,
+        username_collision,
+        missing_dob,
+        minor_guardian_review,
+        missing_verified_contact,
     })
+}
+
+/// Re-evaluates one person and returns the classification and reasons.
+///
+/// This is the shared server-side revalidation used by preview, dry-run, and
+/// batch preparation. It performs no writes.
+pub fn reclassify_person(
+    client: &mut Client,
+    person_id: i64,
+    person_key: &str,
+) -> Result<(Classification, Vec<Reason>), CandidateError> {
+    let evidence = load_person_evidence(client, person_id, person_key)?;
+    Ok(classify(&evidence))
 }
 
 /// Classifies one person's gathered evidence into a deterministic outcome.
@@ -290,31 +463,59 @@ pub fn classify(evidence: &PersonEvidence) -> (Classification, Vec<Reason>) {
     if evidence.invited {
         return (Classification::Invited, vec![Reason::AlreadyInvited]);
     }
-
-    let mut reasons: Vec<Reason> = Vec::new();
+    let mut blockers: Vec<Reason> = Vec::new();
     if evidence.duplicate_key {
-        reasons.push(Reason::UnresolvedDuplicate);
+        blockers.push(Reason::UnresolvedDuplicate);
     }
     if evidence.contradictory {
-        reasons.push(Reason::ContradictoryVital);
+        blockers.push(Reason::ContradictoryVital);
     }
     if evidence.disputed {
-        reasons.push(Reason::Disputed);
+        blockers.push(Reason::Disputed);
     }
     if evidence.missing_citation {
-        reasons.push(Reason::MissingCitation);
+        blockers.push(Reason::MissingCitation);
     }
-    if !reasons.is_empty() {
-        return (Classification::NeedsReview, reasons);
+    if evidence.ambiguous_segmentation {
+        blockers.push(Reason::AmbiguousSegmentation);
+    }
+    if evidence.minor_guardian_review {
+        blockers.push(Reason::MinorGuardianReview);
+    }
+
+    // Warnings do not block preparation. A username collision is resolved with
+    // a deterministic suffix, a missing DOB does not invalidate a verified
+    // living adult, and a missing recipient blocks only sending.
+    let mut warnings: Vec<Reason> = Vec::new();
+    if evidence.username_collision {
+        warnings.push(Reason::UsernameCollision);
+    }
+    if evidence.missing_dob {
+        warnings.push(Reason::MissingDob);
+    }
+    if evidence.missing_verified_contact {
+        warnings.push(Reason::MissingVerifiedContact);
+    }
+
+    if !blockers.is_empty() {
+        blockers.extend(warnings);
+        return (Classification::NeedsReview, blockers);
     }
 
     if evidence.has_verified_living {
-        (
-            Classification::EligibleForInvite,
-            vec![Reason::VerifiedLivingEvidence],
-        )
+        if evidence.already_prepared {
+            let mut reasons = vec![Reason::AlreadyPrepared];
+            reasons.extend(warnings);
+            (Classification::AlreadyPrepared, reasons)
+        } else {
+            let mut reasons = vec![Reason::VerifiedLivingEvidence];
+            reasons.extend(warnings);
+            (Classification::EligibleForInvite, reasons)
+        }
     } else {
-        (Classification::NotEligible, vec![Reason::NoLivingEvidence])
+        let mut reasons = vec![Reason::NoLivingEvidence];
+        reasons.extend(warnings);
+        (Classification::NotEligible, reasons)
     }
 }
 
@@ -336,10 +537,12 @@ pub fn preview_candidates(client: &mut Client) -> Result<CandidatePreview, Candi
         let person_key: String = person.get(1);
         let evidence = load_person_evidence(client, person_id, &person_key)?;
         let (classification, reasons) = classify(&evidence);
+        let parts = load_name_parts(client, person_id)?;
         rows.push(CandidateRow {
             person_key,
             classification,
             reasons,
+            proposed_username: crate::onboarding::username::candidate_username(&parts).ok(),
         });
     }
     Ok(CandidatePreview { rows })
@@ -358,6 +561,12 @@ mod tests {
             duplicate_key: false,
             already_linked: false,
             invited: false,
+            already_prepared: false,
+            ambiguous_segmentation: false,
+            username_collision: false,
+            missing_dob: false,
+            minor_guardian_review: false,
+            missing_verified_contact: false,
         }
     }
 
@@ -441,5 +650,79 @@ mod tests {
         assert!(is_living_value("Living"));
         assert!(!is_living_value("deceased"));
         assert!(!is_living_value(""));
+    }
+
+    #[test]
+    fn ambiguous_segmentation_is_needs_review() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.ambiguous_segmentation = true;
+        let (classification, reasons) = classify(&e);
+        assert_eq!(classification, Classification::NeedsReview);
+        assert!(reasons.contains(&Reason::AmbiguousSegmentation));
+    }
+
+    #[test]
+    fn username_collision_is_a_warning_not_a_blocker() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.username_collision = true;
+        let (classification, reasons) = classify(&e);
+        assert_eq!(classification, Classification::EligibleForInvite);
+        assert!(reasons.contains(&Reason::UsernameCollision));
+    }
+
+    #[test]
+    fn missing_dob_is_a_warning_not_a_blocker() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.missing_dob = true;
+        let (classification, reasons) = classify(&e);
+        assert_eq!(classification, Classification::EligibleForInvite);
+        assert!(reasons.contains(&Reason::MissingDob));
+    }
+
+    #[test]
+    fn minor_guardian_review_is_needs_review() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.minor_guardian_review = true;
+        let (classification, reasons) = classify(&e);
+        assert_eq!(classification, Classification::NeedsReview);
+        assert!(reasons.contains(&Reason::MinorGuardianReview));
+    }
+
+    #[test]
+    fn missing_verified_contact_is_preparable_but_not_sendable() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.missing_verified_contact = true;
+        let (classification, reasons) = classify(&e);
+        assert_eq!(classification, Classification::EligibleForInvite);
+        assert!(reasons.contains(&Reason::MissingVerifiedContact));
+    }
+
+    #[test]
+    fn revoked_evidence_blocks_an_already_prepared_person() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.disputed = true;
+        e.already_prepared = true;
+        assert_eq!(classify(&e).0, Classification::NeedsReview);
+    }
+
+    #[test]
+    fn eligible_and_already_prepared_is_already_prepared() {
+        let mut e = evidence();
+        e.has_verified_living = true;
+        e.already_prepared = true;
+        assert_eq!(classify(&e).0, Classification::AlreadyPrepared);
+    }
+
+    #[test]
+    fn missing_living_evidence_beats_already_prepared() {
+        let mut e = evidence();
+        e.already_prepared = true;
+        assert_eq!(classify(&e).0, Classification::NotEligible);
     }
 }

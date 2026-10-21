@@ -25,6 +25,9 @@ const NAV_ITEMS = [
   { href: "/head-of-family", label: "Head of Family", icon: "◈" },
 ];
 const UPLOAD_ITEM = { href: "/", label: "Add documents", icon: "＋" };
+const ADMIN_ITEMS = [
+  { href: "/admin/family-members", label: "Bulk onboard", icon: "✦" },
+];
 
 async function readSession(): Promise<SessionResult> {
   try {
@@ -100,7 +103,11 @@ export function ExperienceShell({ children }: Props) {
   }
 
   const role = roleOf(session);
-  const items = canUpload(role) ? [...NAV_ITEMS, UPLOAD_ITEM] : NAV_ITEMS;
+  const items = [
+    ...NAV_ITEMS,
+    ...(role === "admin" ? ADMIN_ITEMS : []),
+    ...(canUpload(role) ? [UPLOAD_ITEM] : []),
+  ];
   return (
     <div className="experience">
       <aside className="site-nav" data-testid="site-nav">

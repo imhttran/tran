@@ -26,7 +26,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 12] = [
+const GENEALOGY_MIGRATIONS: [&str; 13] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -39,6 +39,7 @@ const GENEALOGY_MIGRATIONS: [&str; 12] = [
     "genealogy/migrations/0010_onboarding_foreign_keys.sql",
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
     "genealogy/migrations/0012_profile_revisions.sql",
+    "genealogy/migrations/0013_onboarding_batch.sql",
 ];
 
 fn identity_dsn() -> Option<String> {

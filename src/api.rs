@@ -198,6 +198,17 @@ impl AppState {
                 "/api/admin/family-members/candidates",
                 get(family_member_candidates),
             )
+            .route("/api/admin/family-members/bulk/preview", post(bulk_preview))
+            .route("/api/admin/family-members/bulk/prepare", post(bulk_prepare))
+            .route(
+                "/api/admin/family-members/bulk/recipients",
+                post(bulk_recipient),
+            )
+            .route("/api/admin/family-members/bulk/send", post(bulk_send))
+            .route(
+                "/api/admin/family-members/bulk/batches/{id}",
+                get(bulk_batch_status),
+            )
             .route(
                 "/api/admin/family-members/invitations",
                 post(create_invitation),
@@ -2356,6 +2367,667 @@ async fn revoke_link(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "link_failed",
                 "the link failed",
+            )
+        }
+    }
+}
+
+// --- bulk onboarding -------------------------------------------------------
+
+/// A preview/dry-run request. The selector is explicit: selecting all means the
+/// eligible set as evaluated now, never a future stream of imported people.
+#[derive(Deserialize)]
+struct BulkPreviewRequest {
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    person_keys: Vec<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct BulkPreviewRowBody {
+    person_key: String,
+    classification: &'static str,
+    reasons: Vec<&'static str>,
+    proposed_username: Option<String>,
+    preparable: bool,
+    blocked_missing_recipient: bool,
+    sendable: bool,
+}
+
+#[derive(Serialize)]
+struct BulkSummaryBody {
+    eligible_for_invite: usize,
+    needs_review: usize,
+    already_linked: usize,
+    already_prepared: usize,
+    invited: usize,
+    not_eligible: usize,
+    blocked_missing_recipient: usize,
+}
+
+#[derive(Serialize)]
+struct BulkPreviewBody {
+    ok: bool,
+    rows: Vec<BulkPreviewRowBody>,
+    summary: BulkSummaryBody,
+    review_needed: Option<String>,
+}
+
+/// An admin-only dry run. It is strictly read-only: no reservation, invitation,
+/// link, role, or audit row is written.
+#[allow(clippy::result_large_err)]
+async fn bulk_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BulkPreviewRequest>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingDryRun) {
+        return response;
+    }
+    let selector = match request.selector.as_deref().unwrap_or("all") {
+        "explicit" => onboarding::Selector::ExplicitSelection(request.person_keys.clone()),
+        "all_eligible" => onboarding::Selector::AllCurrentlyEligible,
+        "all" => onboarding::Selector::All,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_selector",
+                "selector must be all_eligible or explicit",
+            )
+        }
+    };
+    let page = onboarding::Page {
+        limit: request.limit.unwrap_or(50).min(200),
+        offset: request.offset.unwrap_or(0),
+    };
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let preview = onboarding::preview_candidates(&mut client).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "preview_failed",
+                "the candidate preview failed",
+            )
+        })?;
+        Ok::<_, Response>(onboarding::preview_dry_run(
+            &preview,
+            &selector,
+            &onboarding::DryRunFilters::default(),
+            page,
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(report)) => {
+            let rows = report
+                .rows
+                .iter()
+                .map(|row| BulkPreviewRowBody {
+                    person_key: row.person_key.clone(),
+                    classification: row.classification.as_str(),
+                    reasons: row.reasons.iter().map(|reason| reason.as_str()).collect(),
+                    proposed_username: row.proposed_username.clone(),
+                    preparable: row.preparable,
+                    blocked_missing_recipient: row.blocked_missing_recipient,
+                    sendable: row.sendable,
+                })
+                .collect();
+            Json(BulkPreviewBody {
+                ok: true,
+                rows,
+                summary: BulkSummaryBody {
+                    eligible_for_invite: report.eligible_for_invite,
+                    needs_review: report.needs_review,
+                    already_linked: report.already_linked,
+                    already_prepared: report.already_prepared,
+                    invited: report.invited,
+                    not_eligible: report.not_eligible,
+                    blocked_missing_recipient: report.blocked_missing_recipient,
+                },
+                review_needed: report.review_needed,
+            })
+            .into_response()
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: bulk preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "preview_failed",
+                "the candidate preview failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BulkPrepareRequest {
+    person_keys: Vec<String>,
+    confirmed_count: usize,
+}
+
+#[derive(Serialize)]
+struct BulkItemBody {
+    person_key: String,
+    status: &'static str,
+    reason: Option<String>,
+    reservation_id: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct BulkPrepareBody {
+    ok: bool,
+    batch_id: i64,
+    batch_key: String,
+    created: bool,
+    prepared: usize,
+    skipped: usize,
+    needs_review: usize,
+    failed: usize,
+    items: Vec<BulkItemBody>,
+}
+
+/// Resolves opaque person keys to ids and rejects an unknown key before any
+/// write. Duplicate keys collapse to one id.
+#[allow(clippy::result_large_err)]
+fn resolve_person_keys(
+    client: &mut postgres::Client,
+    keys: &[String],
+) -> Result<Vec<(String, i64)>, Response> {
+    let mut resolved: Vec<(String, i64)> = Vec::new();
+    let mut seen: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for key in keys {
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let row = client
+            .query_opt(
+                "SELECT person_id FROM person WHERE person_key = $1",
+                &[&key],
+            )
+            .map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "genealogy_unavailable",
+                    "the genealogy store is unavailable",
+                )
+            })?;
+        let Some(row) = row else {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "unknown_person",
+                "one or more selected people no longer exist",
+            ));
+        };
+        let person_id: i64 = row.get(0);
+        if seen.insert(person_id) {
+            resolved.push((key.to_string(), person_id));
+        }
+    }
+    Ok(resolved)
+}
+
+/// Prepares an explicitly confirmed batch. It revalidates eligibility and
+/// reserves usernames, but never activates an account or sends a message.
+#[allow(clippy::result_large_err)]
+async fn bulk_prepare(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BulkPrepareRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingBulkPrepare) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let resolved = resolve_person_keys(&mut client, &request.person_keys)?;
+        let ids: Vec<i64> = resolved.iter().map(|(_, id)| *id).collect();
+        let report = onboarding::confirm_batch(&mut client, &actor, request.confirmed_count, &ids)
+            .map_err(batch_error)?;
+        let mut key_by_id: std::collections::BTreeMap<i64, String> =
+            std::collections::BTreeMap::new();
+        for (key, id) in resolved {
+            key_by_id.insert(id, key);
+        }
+        Ok::<_, Response>((report, key_by_id))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((report, keys))) => {
+            let prepared = report.count(onboarding::ItemStatus::Prepared);
+            let needs_review = report.count(onboarding::ItemStatus::NeedsReview);
+            let failed = report.count(onboarding::ItemStatus::Failed);
+            let skipped = report
+                .items
+                .iter()
+                .filter(|item| {
+                    !matches!(
+                        item.status,
+                        onboarding::ItemStatus::Prepared
+                            | onboarding::ItemStatus::NeedsReview
+                            | onboarding::ItemStatus::Failed
+                            | onboarding::ItemStatus::Pending
+                    )
+                })
+                .count();
+            let items = report
+                .items
+                .iter()
+                .map(|item| BulkItemBody {
+                    person_key: keys.get(&item.person_id).cloned().unwrap_or_default(),
+                    status: item.status.as_str(),
+                    reason: item.reason_code.clone(),
+                    reservation_id: item.reservation_id,
+                })
+                .collect();
+            Json(BulkPrepareBody {
+                ok: true,
+                batch_id: report.batch_id,
+                batch_key: report.batch_key,
+                created: report.created,
+                prepared,
+                skipped,
+                needs_review,
+                failed,
+                items,
+            })
+            .into_response()
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: bulk prepare task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "prepare_failed",
+                "the batch preparation failed",
+            )
+        }
+    }
+}
+
+fn batch_error(err: onboarding::BatchError) -> Response {
+    match err {
+        onboarding::BatchError::CountMismatch { .. } => error(
+            StatusCode::BAD_REQUEST,
+            "count_mismatch",
+            "the confirmation count does not match the selected people",
+        ),
+        onboarding::BatchError::EmptySelection => error(
+            StatusCode::BAD_REQUEST,
+            "empty_selection",
+            "select at least one person",
+        ),
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "prepare_failed",
+            "the batch preparation failed",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct BulkRecipientRequest {
+    person_key: String,
+    email: String,
+    /// Must be explicitly true. The admin is asserting that they verified the
+    /// address independently; the server never guesses one.
+    #[serde(default)]
+    confirmed: bool,
+}
+
+/// Records an explicitly verified recipient email for one person.
+#[allow(clippy::result_large_err)]
+async fn bulk_recipient(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BulkRecipientRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingBulkPrepare) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if !request.confirmed {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "recipient_confirmation_required",
+            "the recipient address must be explicitly confirmed",
+        );
+    }
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let person_id = person_id_for_key(&mut client, request.person_key.trim())
+            .map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "genealogy_unavailable",
+                    "the genealogy store is unavailable",
+                )
+            })?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_person", "no such person"))?;
+        onboarding::verify_recipient(&mut client, person_id, &request.email, &actor)
+            .map_err(delivery_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true, "verified": true })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: bulk recipient task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "recipient_failed",
+                "the recipient could not be recorded",
+            )
+        }
+    }
+}
+
+fn delivery_error(err: onboarding::DeliveryError) -> Response {
+    match err {
+        onboarding::DeliveryError::InvalidRecipient => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_recipient",
+            "the recipient address is not valid",
+        ),
+        onboarding::DeliveryError::NotConfigured => error(
+            StatusCode::CONFLICT,
+            "not_configured",
+            "no invitation delivery adapter is configured",
+        ),
+        onboarding::DeliveryError::MissingVerifiedContact => error(
+            StatusCode::CONFLICT,
+            "missing_verified_contact",
+            "a verified recipient address is required",
+        ),
+        onboarding::DeliveryError::NotPrepared => error(
+            StatusCode::CONFLICT,
+            "not_prepared",
+            "the person is not prepared for sending",
+        ),
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "delivery_failed",
+            "invitation delivery failed",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct BulkSendRequest {
+    batch_id: i64,
+    #[serde(default)]
+    person_keys: Vec<String>,
+    /// Must be explicitly true. Preparation never authorizes sending.
+    #[serde(default)]
+    approve: bool,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct BulkSendResultBody {
+    person_key: String,
+    status: &'static str,
+    provider: Option<String>,
+    reason: Option<&'static str>,
+}
+
+/// Sends invitations only after a separate explicit approval and a configured
+/// adapter. A failure never reports delivery. Tokens never leave the adapter.
+#[allow(clippy::result_large_err)]
+async fn bulk_send(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BulkSendRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingBulkSend) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if !request.approve {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "approval_required",
+            "sending requires an explicit approval",
+        );
+    }
+    let config = state.config.clone();
+    let adapter = config.mail_adapter();
+    if !adapter.is_configured() {
+        return error(
+            StatusCode::CONFLICT,
+            "not_configured",
+            "no invitation delivery adapter is configured",
+        );
+    }
+    let actor = identity.subject().to_string();
+    let activation = config.onboarding_activation_url.clone();
+    let throttle = config.onboarding_send_throttle();
+    let ttl = Duration::from_secs(
+        request
+            .ttl_secs
+            .unwrap_or(DEFAULT_INVITATION_TTL_SECS)
+            .clamp(1, MAX_INVITATION_TTL_SECS),
+    );
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let selected = if request.person_keys.is_empty() {
+            None
+        } else {
+            let resolved = resolve_person_keys(&mut client, &request.person_keys)?;
+            Some(resolved)
+        };
+        let (ids, key_by_id): (Option<Vec<i64>>, std::collections::BTreeMap<i64, String>) =
+            match selected {
+                Some(rows) => {
+                    let ids: Vec<i64> = rows.iter().map(|(_, id)| *id).collect();
+                    let keys = rows.into_iter().map(|(key, id)| (id, key)).collect();
+                    (Some(ids), keys)
+                }
+                None => {
+                    let rows = client
+                        .query(
+                            "SELECT item.person_id, person.person_key
+                           FROM onboarding_batch_item item
+                           JOIN person ON person.person_id = item.person_id
+                          WHERE item.batch_id = $1",
+                            &[&request.batch_id],
+                        )
+                        .map_err(|_| {
+                            error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "genealogy_unavailable",
+                                "the genealogy store is unavailable",
+                            )
+                        })?;
+                    let keys = rows
+                        .iter()
+                        .map(|row| (row.get::<_, i64>(0), row.get::<_, String>(1)))
+                        .collect();
+                    (None, keys)
+                }
+            };
+        let outcomes = onboarding::send_batch(
+            &mut client,
+            request.batch_id,
+            ids.as_deref(),
+            adapter.as_ref(),
+            &activation,
+            ttl,
+            &actor,
+            throttle,
+        )
+        .map_err(delivery_error)?;
+        Ok::<_, Response>((outcomes, key_by_id))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((outcomes, keys))) => {
+            let results = outcomes
+                .into_iter()
+                .map(|outcome| BulkSendResultBody {
+                    person_key: keys.get(&outcome.person_id).cloned().unwrap_or_default(),
+                    status: outcome.status.as_str(),
+                    provider: outcome.provider,
+                    reason: outcome.reason,
+                })
+                .collect::<Vec<_>>();
+            Json(serde_json::json!({
+                "ok": true,
+                "configured": true,
+                "results": results,
+            }))
+            .into_response()
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: bulk send task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "send_failed",
+                "invitation sending failed",
+            )
+        }
+    }
+}
+
+/// Reports batch and per-item preparation and delivery state. It never returns
+/// an invitation token or a recipient address.
+#[allow(clippy::result_large_err)]
+async fn bulk_batch_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(batch_id): Path<i64>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingDryRun) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "genealogy_unavailable",
+                "the genealogy store is unavailable",
+            )
+        })?;
+        let _ = onboarding::sync_invitation_status(&mut client, batch_id);
+        let batch = client
+            .query_opt(
+                "SELECT batch_id, status, confirmed_count, created_by, created_at::text, completed_at::text
+                   FROM onboarding_batch WHERE batch_id = $1",
+                &[&batch_id],
+            )
+            .map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "status_failed",
+                    "the batch status failed",
+                )
+            })?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_batch", "no such batch"))?;
+        let items = client
+            .query(
+                "SELECT person.person_key, item.status, item.reason_code,
+                        item.delivery_status, item.delivery_provider,
+                        item.delivery_attempts, reservation.username,
+                        invitation.status,
+                        EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
+                                 WHERE contact.person_id = item.person_id
+                                   AND contact.verified_at IS NOT NULL) AS has_verified_contact
+                   FROM onboarding_batch_item item
+                   JOIN person ON person.person_id = item.person_id
+                   LEFT JOIN onboarding_username_reservation reservation
+                     ON reservation.reservation_id = item.reservation_id
+                   LEFT JOIN onboarding_invitation invitation
+                     ON invitation.invitation_id = item.invitation_id
+                  WHERE item.batch_id = $1
+                  ORDER BY item.batch_item_id",
+                &[&batch_id],
+            )
+            .map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "status_failed",
+                    "the batch status failed",
+                )
+            })?;
+        let item_rows: Vec<serde_json::Value> = items
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "person_key": row.get::<_, String>(0),
+                    "status": row.get::<_, String>(1),
+                    "reason": row.get::<_, Option<String>>(2),
+                    "delivery_status": row.get::<_, String>(3),
+                    "provider": row.get::<_, Option<String>>(4),
+                    "attempts": row.get::<_, i32>(5),
+                    "username": row.get::<_, Option<String>>(6),
+                    "invitation_status": row.get::<_, Option<String>>(7),
+                    "has_verified_contact": row.get::<_, bool>(8),
+                })
+            })
+            .collect();
+        Ok::<_, Response>(serde_json::json!({
+            "ok": true,
+            "batch_id": batch.get::<_, i64>(0),
+            "status": batch.get::<_, String>(1),
+            "confirmed_count": batch.get::<_, i32>(2),
+            "created_by": batch.get::<_, String>(3),
+            "created_at": batch.get::<_, String>(4),
+            "completed_at": batch.get::<_, Option<String>>(5),
+            "items": item_rows,
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: bulk status task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "status_failed",
+                "the batch status failed",
             )
         }
     }
