@@ -102,9 +102,9 @@ function HomeContent({ role }: { role: Role | null }) {
         </p>
       ) : null}
       <SystemStatus
-        api={serviceAvailability(health ? health.status === "ok" : null)}
-        database={serviceAvailability(health ? health.database === "ok" : null)}
-        model={serviceAvailability(health ? health.model === "ok" : null)}
+        api={healthError ? "down" : serviceAvailability(health ? health.status === "ok" : null)}
+        database={healthError ? "down" : serviceAvailability(health ? health.database === "ok" : null)}
+        model={healthError ? "down" : serviceAvailability(health ? health.model === "ok" : null)}
       />
       {canUpload(role) ? (
         <section className="card" data-testid="upload-controls">

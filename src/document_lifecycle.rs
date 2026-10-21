@@ -468,12 +468,25 @@ pub fn create_submission(
             &[&input.corpus, &document_key],
         )?
         .get(0);
-    // Version-specific chunk source avoids replacing an older version's chunks
-    // before the new version is approved and ready.
+    // The chunk source keeps the original filename for citations while the
+    // short document-key suffix keeps two same-named uploads distinct. A
+    // version-specific suffix prevents a new version from replacing an older
+    // version's chunks before it is approved and ready.
+    let short_key: String = document_key
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     let source = if version_number <= 1 {
-        document_key.clone()
+        format!("{} ({short_key})", input.original_filename)
     } else {
-        format!("{document_key}#v{version_number}")
+        format!(
+            "{} [{short_key}] (v{version_number})",
+            input.original_filename
+        )
     };
     let version_id: i64 = tx
         .query_one(
