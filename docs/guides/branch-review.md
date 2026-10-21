@@ -142,5 +142,31 @@ requires the exact reviewed account-person link.
   inferred. Ambiguous membership and multi-branch relationships must be escalated
   through an explicit policy decision.
 
-The `/branch-review` UI is USR-005C. The complete negative-security and browser
-acceptance suite is USR-005D.
+## The `/branch-review` interface (USR-005C)
+
+`/branch-review` is available to any signed-in member, but it renders only what
+the Rust API authorizes. It reuses the review-console components and layout.
+
+- The branch picker is built from `GET /api/branch-review/grants/me`, so a
+  branch that was never granted cannot be selected.
+- The queue defaults to pending submissions and offers approved, rejected,
+  needs-changes, and all-decision filters, with bounded cursor pagination.
+- A row shows the person, the branch, the affected fact, the proposal id, the
+  submission time, and how many sources it cites.
+- The detail pane compares the currently verified value with the proposed one,
+  lists the proposal's cited sources and the other sources recorded for that
+  person, and shows the review history.
+- Approve, reject, and request-changes use a confirmation step. Rejection and
+  change requests require a note. A conflict (409) reloads the current state
+  instead of pretending the decision succeeded.
+- A proposal the caller submitted, or one about a person the caller is linked
+  to, renders an explanation instead of decision controls.
+
+Failure states are explicit and reveal nothing: an expired session, a denial,
+and the "no branch review authority" explanation are separate views. A member
+without a grant sees an invitation to ask an administrator, never an empty
+queue that implies data exists elsewhere.
+
+Browser coverage lives in `web/e2e/branch-review-ui.spec.ts` and runs through
+`scripts/web-e2e.sh` against synthetic identities, branches, and sources. The
+complete negative-security matrix is USR-005D.

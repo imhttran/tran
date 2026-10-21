@@ -503,6 +503,145 @@ export function decideProfileRevision(
   });
 }
 
+// --- branch-scoped shared-fact review --------------------------------------
+//
+// Every call is authorized by Rust. The client never sends an account id, a
+// reviewer identity, or a branch it merely wants: the server resolves the
+// caller from the verified session and checks the explicit branch grant.
+
+export type BranchGrant = {
+  branch_key: string;
+  branch_label: string | null;
+};
+
+export type BranchGrantsResponse = {
+  ok: true;
+  grants: BranchGrant[];
+};
+
+export type BranchProposalStatus =
+  | "pending_review"
+  | "approved"
+  | "rejected"
+  | "needs_changes";
+
+// The console sends canonical statuses only; the API still accepts the
+// `pending` alias for other callers.
+export type BranchQueueFilter = BranchProposalStatus | "all";
+
+export type BranchEvidenceRef = {
+  source_evidence_id: number;
+  document_ref: string;
+  page: number;
+};
+
+export type BranchProposal = {
+  proposal_id: number;
+  person_key: string;
+  display_name: string;
+  branch_key: string;
+  assertion_kind: string;
+  assertion_key: string;
+  prior_value_text: string | null;
+  prior_review_status: string | null;
+  proposed_value_text: string;
+  evidence: BranchEvidenceRef[];
+  submitted_at: string;
+  status: BranchProposalStatus;
+  can_decide: boolean;
+  decision_block: string | null;
+};
+
+export type BranchQueueResponse = {
+  ok: true;
+  status: string;
+  limit: number;
+  next_cursor: number | null;
+  submissions: BranchProposal[];
+};
+
+export type BranchCurrentAssertion = {
+  assertion_id: number;
+  value_text: string | null;
+  review_status: string;
+  reviewed_at: string | null;
+};
+
+export type BranchProposalEvent = {
+  event: string;
+  actor: string;
+  note: string | null;
+  created_at: string;
+};
+
+export type BranchProposalDetailResponse = {
+  ok: true;
+  proposal: BranchProposal;
+  current_assertion: BranchCurrentAssertion | null;
+  events: BranchProposalEvent[];
+};
+
+export type BranchDecision = "approve" | "reject" | "needs_changes";
+
+export type BranchPersonEvidence = {
+  source_evidence_id: number;
+  document_ref: string;
+  page: number;
+  locator: string | null;
+  assertion_kind: string;
+  assertion_key: string;
+};
+
+export function getBranchGrants(): Promise<BranchGrantsResponse> {
+  return request<BranchGrantsResponse>("/api/branch-review/grants/me");
+}
+
+export function getBranchQueue(params: {
+  branch?: string | null;
+  status: BranchQueueFilter;
+  cursor?: number | null;
+  limit?: number;
+}): Promise<BranchQueueResponse> {
+  const search = new URLSearchParams({ status: params.status });
+  if (params.branch) search.set("branch", params.branch);
+  if (params.cursor) search.set("cursor", String(params.cursor));
+  if (params.limit) search.set("limit", String(params.limit));
+  return request<BranchQueueResponse>(`/api/branch-review/submissions?${search}`);
+}
+
+export function getBranchProposal(
+  proposalId: number,
+): Promise<BranchProposalDetailResponse> {
+  return request<BranchProposalDetailResponse>(
+    `/api/branch-review/submissions/${proposalId}`,
+  );
+}
+
+export function decideBranchProposal(
+  proposalId: number,
+  decision: BranchDecision,
+  note: string,
+): Promise<{
+  ok: true;
+  proposal_id: number;
+  status: string;
+  applied_assertion_id: number | null;
+}> {
+  return request(`/api/branch-review/submissions/${proposalId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision, note }),
+  });
+}
+
+export function getBranchPersonEvidence(
+  personKey: string,
+): Promise<{ ok: true; evidence: BranchPersonEvidence[] }> {
+  return request(
+    `/api/branch-review/persons/${encodeURIComponent(personKey)}/evidence`,
+  );
+}
+
 // --- Admin > Family Members: accounts -----------------------------------------
 
 export type MemberStatus = "active" | "deactivated";
