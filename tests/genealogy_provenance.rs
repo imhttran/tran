@@ -73,6 +73,8 @@ fn reset_schema(client: &mut Client) {
                 source_document,
                 gravesite,
                 business_name,
+                genealogy_fact_proposal_event,
+                genealogy_fact_proposal,
                 person_name_variant,
                 person,
                 genealogy_schema_version
