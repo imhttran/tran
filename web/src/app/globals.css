@@ -247,3 +247,13 @@ a { color:var(--accent); }
   .review-detail-heading { flex-direction:column; }
   .review-actions button { flex:1 1 auto; }
 }
+
+/* Family document lifecycle (FAM-003). */
+.documents-form { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; align-items:end; }
+.documents-form label, .documents-note { display:grid; gap:4px; font-size:.9rem; color:var(--muted); }
+.documents-form input, .documents-form textarea, .documents-form select, .documents-note input { padding:8px; border:1px solid var(--line); border-radius:8px; font:inherit; background:#fff; }
+.documents-form button { margin:0; align-self:end; }
+.documents-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.documents-actions button { margin:0; padding:6px 9px; font-size:.85rem; }
+.documents-actions a { color:var(--accent); font-weight:600; }
+.documents-note { max-width:420px; margin-top:12px; }

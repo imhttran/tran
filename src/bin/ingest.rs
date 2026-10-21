@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use rag_foundation::config::Config;
 use rag_foundation::corpus::Corpus;
+use rag_foundation::document_lifecycle::{record_operator_import, DocumentStorage};
 use rag_foundation::embedding::OllamaEmbedder;
 use rag_foundation::fingerprint::{fingerprint, ChunkerConfig};
 use rag_foundation::ingest::IngestRejection;
@@ -86,7 +87,7 @@ fn run() -> Result<ExitCode, String> {
         config.language.clone(),
         chunker,
         config.embed_model.clone(),
-        corpus,
+        corpus.clone(),
     );
 
     // Exactly one pipeline: the service composes `IngestPipeline`.
@@ -95,6 +96,31 @@ fn run() -> Result<ExitCode, String> {
     let outcome = service
         .ingest_source(&path, &source, &content_hash)
         .map_err(|err| format!("ingest failed: {err}"))?;
+
+    if matches!(
+        outcome,
+        IngestOutcome::Replaced { .. } | IngestOutcome::Unchanged { .. }
+    ) {
+        let mut client = postgres::Client::connect(&config.database_url, postgres::NoTls)
+            .map_err(|err| format!("failed to record the operator import: {err}"))?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.clone());
+        let title = filename.clone();
+        record_operator_import(
+            &mut client,
+            &storage,
+            "cli-operator",
+            corpus.as_str(),
+            &source,
+            &title,
+            &filename,
+            &bytes,
+        )
+        .map_err(|err| format!("failed to record the operator import: {err}"))?;
+    }
 
     Ok(report(&source, &outcome))
 }
