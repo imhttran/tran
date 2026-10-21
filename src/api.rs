@@ -680,7 +680,7 @@ async fn update_profile_draft(
         Ok(identity) => identity,
         Err(response) => return response,
     };
-    let visibility = match parse_visibility(request.visibility.as_deref()) {
+    let visibility = match parse_optional_visibility(request.visibility.as_deref()) {
         Ok(visibility) => visibility,
         Err(response) => return response,
     };
@@ -812,25 +812,33 @@ fn approved_json(value: &ApprovedProfileValue) -> serde_json::Value {
 fn owner_profile_json(profile: &OwnerProfile) -> serde_json::Value {
     let approved: Vec<serde_json::Value> = profile.approved.iter().map(approved_json).collect();
     let pending: Vec<serde_json::Value> = profile.pending.iter().map(revision_json).collect();
+    let history: Vec<serde_json::Value> = profile.history.iter().map(revision_json).collect();
     serde_json::json!({
         "person_key": profile.person_key,
         "display_name": profile.display_name,
         "approved": approved,
         "pending": pending,
+        "history": history,
     })
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_visibility(value: Option<&str>) -> Result<ProfileVisibility, Response> {
-    match value.unwrap_or("owner_private") {
-        "owner_private" => Ok(ProfileVisibility::OwnerPrivate),
-        "family" => Ok(ProfileVisibility::Family),
-        _ => Err(error(
+fn parse_optional_visibility(value: Option<&str>) -> Result<Option<ProfileVisibility>, Response> {
+    match value {
+        None => Ok(None),
+        Some("owner_private") => Ok(Some(ProfileVisibility::OwnerPrivate)),
+        Some("family") => Ok(Some(ProfileVisibility::Family)),
+        Some(_) => Err(error(
             StatusCode::BAD_REQUEST,
             "invalid_visibility",
             "visibility must be owner_private or family",
         )),
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_visibility(value: Option<&str>) -> Result<ProfileVisibility, Response> {
+    Ok(parse_optional_visibility(value)?.unwrap_or(ProfileVisibility::OwnerPrivate))
 }
 
 #[allow(clippy::result_large_err)]

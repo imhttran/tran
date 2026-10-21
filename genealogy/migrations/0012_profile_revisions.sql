@@ -159,11 +159,22 @@ $$;
 CREATE UNIQUE INDEX IF NOT EXISTS onboarding_profile_revision_version_key
     ON onboarding_profile_revision (person_id, field_key, revision_number);
 
--- At most one open draft or pending revision per field. Terminal revisions stay
--- in history and do not block a later correction.
-CREATE UNIQUE INDEX IF NOT EXISTS onboarding_profile_revision_open_key
-    ON onboarding_profile_revision (person_id, field_key)
- WHERE status IN ('draft', 'pending_review');
+-- At most one open draft or pending revision per field for the pre-0013
+-- lifecycle. Migration 0013 replaces this with an actor-scoped index; re-running
+-- 0012 after 0013 must not recreate the stricter index.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+         WHERE relname = 'onboarding_profile_revision_open_actor_key'
+           AND relkind = 'i'
+    ) THEN
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS onboarding_profile_revision_open_key
+                   ON onboarding_profile_revision (person_id, field_key)
+                WHERE status IN (''draft'', ''pending_review'')';
+    END IF;
+END;
+$$;
 
 CREATE INDEX IF NOT EXISTS onboarding_profile_revision_status_idx
     ON onboarding_profile_revision (status, person_id, changed_at);
@@ -210,28 +221,30 @@ BEGIN
         END IF;
     END IF;
 
-    IF NEW.approved_revision_id IS NOT NULL THEN
-        SELECT person_id, field_key, revision_number, new_value_text, visibility, status
-          INTO approved_revision
-          FROM onboarding_profile_revision
-         WHERE revision_id = NEW.approved_revision_id;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'approved revision does not exist';
-        END IF;
-        IF approved_revision.status <> 'approved' THEN
-            RAISE EXCEPTION 'only an approved revision may update the approved value';
-        END IF;
-        IF approved_revision.person_id <> NEW.person_id
-           OR approved_revision.field_key <> NEW.field_key THEN
-            RAISE EXCEPTION 'approved revision belongs to another person or field';
-        END IF;
-        IF approved_revision.revision_number <> NEW.approved_revision_number THEN
-            RAISE EXCEPTION 'approved revision number does not match the value row';
-        END IF;
-        IF approved_revision.new_value_text <> NEW.value_text
-           OR approved_revision.visibility <> NEW.visibility THEN
-            RAISE EXCEPTION 'approved value does not match the approved revision';
-        END IF;
+    IF NEW.approved_revision_id IS NULL THEN
+        RAISE EXCEPTION 'a new approved value requires an approved revision';
+    END IF;
+
+    SELECT person_id, field_key, revision_number, new_value_text, visibility, status
+      INTO approved_revision
+      FROM onboarding_profile_revision
+     WHERE revision_id = NEW.approved_revision_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'approved revision does not exist';
+    END IF;
+    IF approved_revision.status <> 'approved' THEN
+        RAISE EXCEPTION 'only an approved revision may update the approved value';
+    END IF;
+    IF approved_revision.person_id <> NEW.person_id
+       OR approved_revision.field_key <> NEW.field_key THEN
+        RAISE EXCEPTION 'approved revision belongs to another person or field';
+    END IF;
+    IF approved_revision.revision_number <> NEW.approved_revision_number THEN
+        RAISE EXCEPTION 'approved revision number does not match the value row';
+    END IF;
+    IF approved_revision.new_value_text <> NEW.value_text
+       OR approved_revision.visibility <> NEW.visibility THEN
+        RAISE EXCEPTION 'approved value does not match the approved revision';
     END IF;
 
     RETURN NEW;
@@ -326,6 +339,27 @@ CREATE TRIGGER onboarding_profile_revision_guard
     BEFORE UPDATE ON onboarding_profile_revision
     FOR EACH ROW EXECUTE FUNCTION onboarding_profile_revision_guard();
 
+-- Direct deletion removes immutable history, but deleting the owning person must
+-- still cascade. A direct child delete sees its person row; a parent cascade
+-- runs after the person row is gone.
+CREATE OR REPLACE FUNCTION onboarding_profile_revision_no_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM person WHERE person_id = OLD.person_id) THEN
+        RAISE EXCEPTION 'profile revision history cannot be deleted directly';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS onboarding_profile_revision_no_delete
+    ON onboarding_profile_revision;
+CREATE TRIGGER onboarding_profile_revision_no_delete
+    BEFORE DELETE ON onboarding_profile_revision
+    FOR EACH ROW EXECUTE FUNCTION onboarding_profile_revision_no_delete();
+
 -- New revisions begin as owner drafts. A direct INSERT cannot mint an already
 -- approved or already reviewed row.
 CREATE OR REPLACE FUNCTION onboarding_profile_revision_insert_guard()
@@ -368,3 +402,25 @@ DROP TRIGGER IF EXISTS onboarding_profile_review_event_no_update
 CREATE TRIGGER onboarding_profile_review_event_no_update
     BEFORE UPDATE ON onboarding_profile_review_event
     FOR EACH ROW EXECUTE FUNCTION onboarding_profile_review_event_no_update();
+
+-- Direct event deletion is forbidden; deleting the owning revision or person
+-- must still cascade.
+CREATE OR REPLACE FUNCTION onboarding_profile_review_event_no_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM onboarding_profile_revision WHERE revision_id = OLD.revision_id
+    ) THEN
+        RAISE EXCEPTION 'profile review events cannot be deleted directly';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS onboarding_profile_review_event_no_delete
+    ON onboarding_profile_review_event;
+CREATE TRIGGER onboarding_profile_review_event_no_delete
+    BEFORE DELETE ON onboarding_profile_review_event
+    FOR EACH ROW EXECUTE FUNCTION onboarding_profile_review_event_no_delete();

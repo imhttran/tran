@@ -26,7 +26,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 12] = [
+const GENEALOGY_MIGRATIONS: [&str; 13] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -39,6 +39,7 @@ const GENEALOGY_MIGRATIONS: [&str; 12] = [
     "genealogy/migrations/0010_onboarding_foreign_keys.sql",
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
     "genealogy/migrations/0012_profile_revisions.sql",
+    "genealogy/migrations/0013_profile_revision_actor_scope.sql",
 ];
 
 const ISSUER: &str = "https://synthetic-issuer.example";
@@ -163,12 +164,49 @@ impl TestDb {
         value: &str,
         visibility: ProfileVisibility,
     ) {
+        let revision_id: i64 = self
+            .genealogy
+            .query_one(
+                "INSERT INTO onboarding_profile_revision \
+                     (person_id, field_key, prior_value_text, \
+                      prior_approved_revision_number, new_value_text, changed_by, \
+                      revision_number, status, visibility) \
+                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-seed', 1, 'draft', $4) \
+                 RETURNING revision_id",
+                &[&person_id, &field_key, &value, &visibility.as_str()],
+            )
+            .expect("insert seed revision")
+            .get(0);
+        self.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'pending_review', submitted_at = now() \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("submit seed revision");
+        self.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'approved', reviewed_at = now(), \
+                        reviewed_by = 'synthetic-seed-reviewer', review_note = 'seed' \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("approve seed revision");
         self.genealogy
             .execute(
                 "INSERT INTO onboarding_profile_value \
-                     (person_id, field_key, value_text, visibility, updated_by) \
-                 VALUES ($1, $2, $3, $4, 'synthetic-owner')",
-                &[&person_id, &field_key, &value, &visibility.as_str()],
+                     (person_id, field_key, value_text, visibility, updated_by, \
+                      approved_revision_number, approved_revision_id) \
+                 VALUES ($1, $2, $3, $4, 'synthetic-owner', 1, $5)",
+                &[
+                    &person_id,
+                    &field_key,
+                    &value,
+                    &visibility.as_str(),
+                    &revision_id,
+                ],
             )
             .expect("seed approved value");
     }
@@ -272,7 +310,7 @@ fn linked_owner_drafts_and_submissions_keep_approved_values_separate() {
         &owner,
         draft.revision_id,
         "Edited Name",
-        ProfileVisibility::OwnerPrivate,
+        Some(ProfileVisibility::OwnerPrivate),
     )
     .expect("edit owner draft");
     assert_eq!(edited.new_value_text, "Edited Name");
@@ -337,7 +375,7 @@ fn unlinked_and_cross_account_accounts_cannot_write() {
             &owner_b,
             draft.revision_id,
             "Cross-account edit",
-            ProfileVisibility::OwnerPrivate
+            Some(ProfileVisibility::OwnerPrivate)
         ),
         Err(RevisionError::NotOwner)
     );
@@ -421,6 +459,159 @@ fn reviewer_linked_to_the_person_cannot_approve_a_prior_owner_submission() {
 }
 
 #[test]
+fn replacement_owner_does_not_see_or_inherit_former_drafts() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner_a = db.account("replacement-a");
+    let person = db.person("replacement");
+    db.link(&owner_a, person);
+    let former = create_owned_draft(
+        &mut db.genealogy,
+        &owner_a,
+        "biography",
+        "Former owner draft",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("former owner draft");
+
+    let owner_link = link_for_account(
+        &mut db.genealogy,
+        owner_a.account_id,
+        &owner_a.identity_fingerprint,
+    )
+    .expect("find owner link")
+    .expect("owner link exists");
+    revoke_link(&mut db.genealogy, owner_link.link_id, "synthetic-reviewer")
+        .expect("revoke former owner link");
+
+    let owner_b = db.account("replacement-b");
+    db.link(&owner_b, person);
+    let profile_b = db.read(&owner_b).expect("replacement owner profile");
+    assert!(
+        profile_b.pending.is_empty(),
+        "the replacement owner must not see the former owner's draft"
+    );
+    assert!(
+        profile_b.history.is_empty(),
+        "the replacement owner must not inherit the former owner's history"
+    );
+
+    let replacement = create_owned_draft(
+        &mut db.genealogy,
+        &owner_b,
+        "biography",
+        "Replacement owner draft",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("replacement owner can draft the same field");
+    assert_eq!(replacement.changed_by, owner_b.identity_fingerprint);
+    assert_ne!(replacement.revision_id, former.revision_id);
+
+    assert!(
+        db.read(&owner_a).is_none(),
+        "the former owner is unlinked and receives no profile"
+    );
+}
+
+#[test]
+fn updating_without_visibility_preserves_the_draft_visibility() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("visibility");
+    let person = db.person("visibility");
+    db.link(&owner, person);
+    let draft = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Family draft",
+        ProfileVisibility::Family,
+    )
+    .expect("family draft");
+
+    let edited = update_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        draft.revision_id,
+        "Edited family draft",
+        None,
+    )
+    .expect("edit without visibility");
+    assert_eq!(edited.visibility, ProfileVisibility::Family);
+}
+
+#[test]
+fn concurrent_link_creation_is_serialized_with_review() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("review-link-owner");
+    let person = db.person("review-link");
+    db.link(&owner, person);
+    let draft = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "Review link biography",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("owner draft");
+    submit_owned_revision(&mut db.genealogy, &owner, draft.revision_id).expect("submit");
+
+    let owner_link = link_for_account(
+        &mut db.genealogy,
+        owner.account_id,
+        &owner.identity_fingerprint,
+    )
+    .expect("find owner link")
+    .expect("owner link exists");
+    revoke_link(&mut db.genealogy, owner_link.link_id, "synthetic-reviewer")
+        .expect("revoke owner link");
+
+    let reviewer = db.account("concurrent-reviewer");
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let dsn = db.genealogy_dsn.clone();
+    let reviewer_account_id = reviewer.account_id;
+    let reviewer_fingerprint = reviewer.identity_fingerprint.clone();
+    let linker = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("linker connection");
+        let mut tx = client.transaction().expect("begin link transaction");
+        tx.query_one(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+            &[&person],
+        )
+        .expect("lock person");
+        tx.execute(
+            "INSERT INTO onboarding_person_account_link \
+                 (person_id, account_id, identity_fingerprint, linked_by) \
+             VALUES ($1, $2, $3, 'synthetic-reviewer')",
+            &[&person, &reviewer_account_id, &reviewer_fingerprint],
+        )
+        .expect("insert reviewer link");
+        ready_tx.send(()).expect("signal link");
+        thread::sleep(Duration::from_millis(200));
+        tx.commit().expect("commit reviewer link");
+    });
+    ready_rx.recv().expect("linker started");
+
+    let result = review_revision(
+        &mut db.genealogy,
+        draft.revision_id,
+        &reviewer.identity_fingerprint,
+        ReviewDecision::Approve,
+        Some("concurrent reviewer approval"),
+    );
+    linker.join().expect("join linker");
+    assert_eq!(
+        result,
+        Err(RevisionError::SelfReview),
+        "review must observe the linked reviewer after serialization"
+    );
+}
+
+#[test]
 fn revoked_link_blocks_further_owner_writes() {
     let Some(mut db) = TestDb::new() else {
         return;
@@ -452,7 +643,7 @@ fn revoked_link_blocks_further_owner_writes() {
             &owner,
             draft.revision_id,
             "After revoke",
-            ProfileVisibility::OwnerPrivate
+            Some(ProfileVisibility::OwnerPrivate)
         ),
         Err(RevisionError::Unlinked)
     );
@@ -568,6 +759,16 @@ fn pending_content_never_reaches_family_or_rag() {
     assert!(
         owner_profile.pending.is_empty(),
         "a terminal needs_changes revision is not an open pending revision"
+    );
+    assert_eq!(owner_profile.history.len(), 1);
+    assert_eq!(
+        owner_profile.history[0].status,
+        RevisionStatus::NeedsChanges
+    );
+    assert_eq!(
+        owner_profile.history[0].review_note.as_deref(),
+        Some("needs a source"),
+        "the submitting owner must receive the terminal review decision"
     );
 
     let family = read_approved_values(&mut db.genealogy, person, ProfileAudience::Family)

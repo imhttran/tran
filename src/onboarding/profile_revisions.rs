@@ -166,6 +166,7 @@ pub struct OwnerProfile {
     pub display_name: String,
     pub approved: Vec<ApprovedProfileValue>,
     pub pending: Vec<ProfileRevision>,
+    pub history: Vec<ProfileRevision>,
 }
 
 /// Errors raised by profile revision operations.
@@ -426,9 +427,10 @@ fn create_draft_in_tx(
             "SELECT EXISTS (\
                 SELECT 1 FROM onboarding_profile_revision \
                  WHERE person_id = $1 AND field_key = $2 \
+                   AND changed_by = $3 \
                    AND status IN ('draft', 'pending_review')\
              )",
-            &[&person_id, &field_key],
+            &[&person_id, &field_key, &actor],
         )?
         .get(0);
     if open {
@@ -521,7 +523,7 @@ fn update_draft_in_tx(
     revision_id: i64,
     actor: &str,
     value_text: &str,
-    visibility: ProfileVisibility,
+    visibility: Option<ProfileVisibility>,
     required_person: Option<i64>,
 ) -> Result<ProfileRevision, RevisionError> {
     let actor = clean_actor(actor)?;
@@ -538,6 +540,7 @@ fn update_draft_in_tx(
         return Err(RevisionError::InvalidTransition);
     }
     let value_text = clean_value(&revision.field_key, value_text)?;
+    let visibility = visibility.unwrap_or(revision.visibility);
     lock_field(tx, revision.person_id, &revision.field_key)?;
 
     let sql = format!(
@@ -568,7 +571,7 @@ pub fn update_draft(
     revision_id: i64,
     actor: &str,
     value_text: &str,
-    visibility: ProfileVisibility,
+    visibility: Option<ProfileVisibility>,
 ) -> Result<ProfileRevision, RevisionError> {
     let mut tx = client.transaction()?;
     let revision = update_draft_in_tx(&mut tx, revision_id, actor, value_text, visibility, None)?;
@@ -582,7 +585,7 @@ pub fn update_owned_draft(
     account: &IdentityAccount,
     revision_id: i64,
     value_text: &str,
-    visibility: ProfileVisibility,
+    visibility: Option<ProfileVisibility>,
 ) -> Result<ProfileRevision, RevisionError> {
     let mut tx = client.transaction()?;
     let person_id = owner_person_in_tx(&mut tx, account)?;
@@ -691,6 +694,11 @@ pub fn review_revision(
     if revision.changed_by == reviewer {
         return Err(RevisionError::SelfReview);
     }
+    // Serialize the reviewer ownership check with link creation/revocation.
+    tx.query_one(
+        "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+        &[&revision.person_id],
+    )?;
     let reviewer_owns_person: bool = tx
         .query_one(
             "SELECT EXISTS (\
@@ -775,6 +783,39 @@ fn open_revisions_in_tx(
           ORDER BY field_key, revision_number"
     );
     let rows = tx.query(&sql, &[&person_id])?;
+    rows.into_iter()
+        .map(row_to_revision)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn open_revisions_for_actor_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    person_id: i64,
+    actor: &str,
+) -> Result<Vec<ProfileRevision>, RevisionError> {
+    let sql = format!(
+        "SELECT {REVISION_COLUMNS} FROM onboarding_profile_revision \
+          WHERE person_id = $1 AND changed_by = $2 \
+            AND status IN ('draft', 'pending_review') \
+          ORDER BY field_key, revision_number"
+    );
+    let rows = tx.query(&sql, &[&person_id, &actor])?;
+    rows.into_iter()
+        .map(row_to_revision)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn actor_history_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    person_id: i64,
+    actor: &str,
+) -> Result<Vec<ProfileRevision>, RevisionError> {
+    let sql = format!(
+        "SELECT {REVISION_COLUMNS} FROM onboarding_profile_revision \
+          WHERE person_id = $1 AND changed_by = $2 \
+          ORDER BY changed_at DESC, revision_id DESC"
+    );
+    let rows = tx.query(&sql, &[&person_id, &actor])?;
     rows.into_iter()
         .map(row_to_revision)
         .collect::<Result<Vec<_>, _>>()
@@ -882,13 +923,16 @@ pub fn read_owner_profile(
         return Ok(None);
     };
     let approved = approved_values_in_tx(&mut tx, person_id, ProfileAudience::Owner)?;
-    let pending = open_revisions_in_tx(&mut tx, person_id)?;
+    let pending =
+        open_revisions_for_actor_in_tx(&mut tx, person_id, &account.identity_fingerprint)?;
+    let history = actor_history_in_tx(&mut tx, person_id, &account.identity_fingerprint)?;
     tx.commit()?;
     Ok(Some(OwnerProfile {
         person_key: person.get(0),
         display_name: person.get(1),
         approved,
         pending,
+        history,
     }))
 }
 
