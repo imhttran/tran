@@ -122,6 +122,10 @@ pub enum Operation {
     Account,
     /// Reading the caller's own private member profile.
     ProfileRead,
+    /// Creating, editing, or submitting the caller's own profile revisions.
+    ProfileWrite,
+    /// Deciding another member's pending profile revision.
+    ProfileReview,
     /// Changing a role assignment (transactional and audited).
     RoleChange,
     /// Reading authorized genealogy records and evidence.
@@ -154,8 +158,9 @@ impl Operation {
             | Operation::HeadOfFamilyApproval
             | Operation::OnboardingPreview
             | Operation::OnboardingInvite
-            | Operation::OnboardingLink => Some(Role::Admin),
-            Operation::ProfileRead => None,
+            | Operation::OnboardingLink
+            | Operation::ProfileReview => Some(Role::Admin),
+            Operation::ProfileRead | Operation::ProfileWrite => None,
         }
     }
 
@@ -182,6 +187,8 @@ impl Operation {
             Operation::DocumentStatus => "document_status",
             Operation::Account => "account",
             Operation::ProfileRead => "profile_read",
+            Operation::ProfileWrite => "profile_write",
+            Operation::ProfileReview => "profile_review",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
             Operation::OnboardingPreview => "onboarding_preview",
             Operation::OnboardingInvite => "onboarding_invite",
@@ -208,7 +215,10 @@ pub fn decide(identity: Option<&VerifiedIdentity>, operation: Operation) -> Deci
     // Every authenticated account may read its own account and its own private
     // profile. This is deliberately not a role check: a newly provisioned or
     // linked member may not hold a role yet.
-    if matches!(operation, Operation::Account | Operation::ProfileRead) {
+    if matches!(
+        operation,
+        Operation::Account | Operation::ProfileRead | Operation::ProfileWrite
+    ) {
         return Decision::Allow;
     }
     match operation.required_role() {
@@ -234,6 +244,8 @@ mod tests {
             Operation::DocumentStatus,
             Operation::Account,
             Operation::ProfileRead,
+            Operation::ProfileWrite,
+            Operation::ProfileReview,
             Operation::RoleChange,
             Operation::HeadOfFamilyApproval,
             Operation::OnboardingPreview,
@@ -260,6 +272,14 @@ mod tests {
         assert_eq!(
             decide(Some(&viewer), Operation::ProfileRead),
             Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::ProfileWrite),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::ProfileReview),
+            Decision::Forbidden
         );
         assert_eq!(
             decide(Some(&viewer), Operation::GenealogyRead),
@@ -289,6 +309,14 @@ mod tests {
             Decision::Allow
         );
         assert_eq!(
+            decide(Some(&editor), Operation::ProfileWrite),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&editor), Operation::ProfileReview),
+            Decision::Forbidden
+        );
+        assert_eq!(
             decide(Some(&editor), Operation::GenealogyNominate),
             Decision::Allow
         );
@@ -305,6 +333,14 @@ mod tests {
         assert_eq!(decide(Some(&admin), Operation::Account), Decision::Allow);
         assert_eq!(
             decide(Some(&admin), Operation::ProfileRead),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&admin), Operation::ProfileWrite),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&admin), Operation::ProfileReview),
             Decision::Allow
         );
         assert_eq!(
@@ -333,6 +369,10 @@ mod tests {
         assert_eq!(decide(Some(&account), Operation::Account), Decision::Allow);
         assert_eq!(
             decide(Some(&account), Operation::ProfileRead),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(Some(&account), Operation::ProfileWrite),
             Decision::Allow
         );
         assert_eq!(

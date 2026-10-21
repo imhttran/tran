@@ -33,9 +33,10 @@ pub use link::{
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
 pub use profile_revisions::{
-    create_draft, is_allowed_profile_field, is_terminal, list_open_revisions,
-    list_revision_history, read_approved_values, review_revision, revision_by_id, submit_revision,
-    update_draft, ApprovedProfileValue, ProfileAudience, ProfileRevision, ProfileVisibility,
+    create_draft, create_owned_draft, is_allowed_profile_field, is_terminal, list_open_revisions,
+    list_revision_history, read_approved_values, read_owner_profile, review_revision,
+    revision_by_id, submit_owned_revision, submit_revision, update_draft, update_owned_draft,
+    ApprovedProfileValue, OwnerProfile, ProfileAudience, ProfileRevision, ProfileVisibility,
     ReviewDecision, RevisionError, RevisionStatus, ALLOWED_PROFILE_FIELDS, BIOGRAPHY_MAX_CHARS,
     NAME_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
 };
