@@ -31,6 +31,7 @@ use crate::admin_members::{
 };
 use crate::config::Config;
 use crate::corpus::Corpus;
+use crate::document_lifecycle::{self, DocumentStorage};
 use crate::embedding::OllamaEmbedder;
 use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::genealogy::{
@@ -2016,6 +2017,39 @@ enum IngestTaskError {
     Pipeline(PipelineError),
 }
 
+/// Records one explicit publication of directly ingested chunks.
+///
+/// The chunks an ingest writes are visible to retrieval only through the
+/// approved-only view, so the direct ingest path must record the version that
+/// approves them. This is the explicit publication decision for this stage, and
+/// `record_operator_import` writes it to the append-only audit ledger.
+fn record_api_import(
+    database_url: &str,
+    document_root: &FsPath,
+    corpus: &str,
+    source: &str,
+    bytes: &[u8],
+) -> Result<(), IngestTaskError> {
+    let mut client = postgres::Client::connect(database_url, postgres::NoTls).map_err(|err| {
+        IngestTaskError::Storage(format!("could not record the document version: {err}"))
+    })?;
+    let storage = DocumentStorage::new(document_root);
+    document_lifecycle::record_operator_import(
+        &mut client,
+        &storage,
+        "api-direct-ingest",
+        corpus,
+        source,
+        source,
+        source,
+        bytes,
+    )
+    .map(|_| ())
+    .map_err(|err| {
+        IngestTaskError::Storage(format!("could not record the document version: {err}"))
+    })
+}
+
 async fn ingest(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2122,6 +2156,7 @@ async fn ingest(
     let store = state.store.clone();
     let corpus = state.corpus.clone();
     let source_for_run = source.clone();
+    let corpus_for_version = corpus.clone();
 
     // Staging, hashing, and cleanup are blocking filesystem work; keep them off
     // the async executor.
@@ -2164,7 +2199,26 @@ async fn ingest(
         })();
 
         let _ = std::fs::remove_dir_all(&temp_dir);
-        result.map_err(IngestTaskError::Pipeline)
+        let outcome = result.map_err(IngestTaskError::Pipeline)?;
+        // In this stage the authenticated direct ingest is still the trusted
+        // publication path; FAM-003 turns it into a reviewable submission. The
+        // chunks it wrote are only retrievable through the approved-only view,
+        // so record the explicit, audited operator import that binds them to an
+        // approved, ready, family-scoped version. Nothing here is implicit: the
+        // call is the publication decision, and it is recorded in the ledger.
+        if matches!(
+            outcome,
+            IngestOutcome::Replaced { .. } | IngestOutcome::Unchanged { .. }
+        ) {
+            record_api_import(
+                &config.database_url,
+                &config.document_root,
+                &corpus_for_version,
+                &source_for_run,
+                &bytes,
+            )?;
+        }
+        Ok(outcome)
     })
     .await;
 
