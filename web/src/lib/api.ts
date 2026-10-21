@@ -1,6 +1,8 @@
 // Same-origin API client. The browser only calls the Next.js server, whose
 // rewrite proxies `/api/*` to the Rust Axum API. `API_URL` stays server-side.
 
+import type { Role } from "./experience-contract";
+
 export type HealthResponse = {
   status: "ok" | "degraded";
   service: string;
@@ -499,4 +501,98 @@ export function decideProfileRevision(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ decision, note }),
   });
+}
+
+// --- Admin > Family Members: accounts -----------------------------------------
+
+export type MemberStatus = "active" | "deactivated";
+
+export type FamilyMember = {
+  user_id: number;
+  issuer: string;
+  subject: string;
+  email: string | null;
+  display_name: string | null;
+  roles: Role[];
+  status: MemberStatus;
+  created_at: string;
+  linked_person: { link_id: number; person_key: string; username: string | null } | null;
+};
+
+export type FamilyMembersPage = {
+  ok: true;
+  members: FamilyMember[];
+  next_after: number | null;
+  linkage: "available" | "unavailable";
+};
+
+export type MemberFilter = {
+  q: string;
+  status: MemberStatus | "";
+  role: Role | "";
+};
+
+type AccountRef = Pick<FamilyMember, "issuer" | "subject">;
+
+export function listFamilyMembers(
+  filter: MemberFilter,
+  after: number | null,
+): Promise<FamilyMembersPage> {
+  const params = new URLSearchParams();
+  if (filter.q.trim()) params.set("q", filter.q.trim());
+  if (filter.status) params.set("status", filter.status);
+  if (filter.role) params.set("role", filter.role);
+  if (after) params.set("after", String(after));
+  const query = params.toString();
+  return request<FamilyMembersPage>(`/api/admin/family-members${query ? `?${query}` : ""}`, {
+    cache: "no-store",
+  });
+}
+
+function postJson<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function changeMemberRole(
+  member: AccountRef,
+  role: Role,
+  revoke: boolean,
+): Promise<{ ok: true }> {
+  return postJson("/api/admin/roles", { issuer: member.issuer, subject: member.subject, role, revoke });
+}
+
+export function deactivateMember(member: AccountRef): Promise<{ ok: true }> {
+  return postJson(
+    `/api/admin/users/${encodeURIComponent(member.issuer)}/${encodeURIComponent(member.subject)}/deactivate`,
+    {},
+  );
+}
+
+export function requestPasswordReset(
+  member: AccountRef,
+): Promise<{ ok: true; state: "requested" }> {
+  return postJson("/api/admin/family-members/password-reset", {
+    issuer: member.issuer,
+    subject: member.subject,
+  });
+}
+
+export function linkMember(
+  member: AccountRef,
+  personKey: string,
+): Promise<{ ok: true; linked: boolean }> {
+  return postJson("/api/admin/family-members/links", {
+    person_key: personKey,
+    issuer: member.issuer,
+    subject: member.subject,
+    decision: "approve",
+  });
+}
+
+export function revokeMemberLink(linkId: number): Promise<{ ok: true }> {
+  return postJson(`/api/admin/family-members/links/${linkId}/revoke`, {});
 }
