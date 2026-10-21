@@ -10,20 +10,32 @@ import { test, expect } from "@playwright/test";
 // E2E_ADMIN_TOKEN when the harness seeds the identity store. Without a token all
 // protected operations must answer 401.
 
-const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
-const WEB_URL = (process.env.WEB_URL || "http://127.0.0.1:3000").replace(/\/+$/, "");
+const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(
+  /\/+$/,
+  "",
+);
+const WEB_URL = (process.env.WEB_URL || "http://127.0.0.1:3000").replace(
+  /\/+$/,
+  "",
+);
 
 const VIEWER_TOKEN = process.env.E2E_VIEWER_TOKEN;
 const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN;
 
 const PROTECTED = [
   { method: "POST", path: "/api/query", role: "viewer" },
-  { method: "GET", path: "/api/documents/loan-policy.md/status", role: "viewer" },
+  {
+    method: "GET",
+    path: "/api/documents/loan-policy.md/status",
+    role: "viewer",
+  },
   { method: "GET", path: "/api/account", role: "admin" },
 ] as const;
 
 test.describe("health is public", () => {
-  test("GET /api/health through the proxy needs no session", async ({ request }) => {
+  test("GET /api/health through the proxy needs no session", async ({
+    request,
+  }) => {
     const response = await request.get(`${WEB_URL}/api/health`);
     expect(response.status()).toBe(200);
     const body = await response.json();
@@ -42,7 +54,10 @@ test.describe("proxy rejects unauthenticated requests", () => {
       const response = await request.fetch(`${WEB_URL}${route.path}`, {
         method: route.method,
         headers: { "x-csrf-token": "csrf", "content-type": "application/json" },
-        data: route.method === "POST" ? JSON.stringify({ question: "hi" }) : undefined,
+        data:
+          route.method === "POST"
+            ? JSON.stringify({ question: "hi" })
+            : undefined,
       });
       expect(response.status()).toBe(401);
     });
@@ -66,7 +81,9 @@ test.describe("CSRF protection", () => {
 });
 
 test.describe("client identity headers cannot elevate", () => {
-  test("X-User/X-Role are stripped and do not grant access", async ({ request }) => {
+  test("X-User/X-Role are stripped and do not grant access", async ({
+    request,
+  }) => {
     const response = await request.get(`${WEB_URL}/api/account`, {
       headers: { "x-user": "admin", "x-role": "admin" },
     });
@@ -82,7 +99,9 @@ test.describe("client identity headers cannot elevate", () => {
 });
 
 test.describe("role enforcement through both paths", () => {
-  test("viewer token can query and is forbidden from admin", async ({ request }) => {
+  test("viewer token can query and is forbidden from admin", async ({
+    request,
+  }) => {
     test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
     const query = await request.post(`${WEB_URL}/api/query`, {
       headers: {
@@ -91,7 +110,9 @@ test.describe("role enforcement through both paths", () => {
         cookie: "rag_csrf=e2e-csrf-token",
         "x-csrf-token": "e2e-csrf-token",
       },
-      data: JSON.stringify({ question: "What happens if someone misses a payment?" }),
+      data: JSON.stringify({
+        question: "What happens if someone misses a payment?",
+      }),
     });
     // 200 or a backend 5xx is fine; RBAC must not reject a viewer on query.
     expect([200, 503]).toContain(query.status());
@@ -105,7 +126,10 @@ test.describe("role enforcement through both paths", () => {
       headers: { authorization: `Bearer ${VIEWER_TOKEN}` },
       data: {
         subject: "e2e-viewer",
-        issuer: process.env.AUTH_ISSUER ?? "http://127.0.0.1:9099",
+        issuer:
+          process.env.E2E_ISSUER ||
+          process.env.AUTH_ISSUER ||
+          "http://127.0.0.1:9099",
         role: "admin",
         revoke: false,
       },
@@ -113,7 +137,9 @@ test.describe("role enforcement through both paths", () => {
     expect(roleChange.status()).toBe(403);
   });
 
-  test("admin token reaches the admin account endpoint", async ({ request }) => {
+  test("admin token reaches the admin account endpoint", async ({
+    request,
+  }) => {
     test.skip(!ADMIN_TOKEN, "E2E_ADMIN_TOKEN not provided by the harness");
     const response = await request.get(`${WEB_URL}/api/account`, {
       headers: { authorization: `Bearer ${ADMIN_TOKEN}` },

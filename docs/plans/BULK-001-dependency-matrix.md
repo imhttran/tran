@@ -49,9 +49,9 @@ Identity/RAG migrations are unchanged. The genealogy inventory now reaches:
 - `0012_profile_revisions.sql`
 - `0013_profile_revision_actor_scope.sql`
 - `0014_profile_revision_draft_withdrawal.sql`
-- `0015_onboarding_batch.sql`
+- `0018_onboarding_batch.sql`
 
-`0015` is additive: it creates the batch, batch-item, batch-audit, and verified
+`0018` is additive: it creates the batch, batch-item, batch-audit, and verified
 recipient-contact tables, and adds a partial unique index for one prepared item
 per person. It reuses the existing invitation, reservation, and link tables.
 

@@ -145,6 +145,11 @@ cmd_run() { # $1 = npm script (typecheck|build|e2e)
 		rm -rf "$WEB_DIR/$NEXT_DIST_DIR"
 	fi
 	echo "web: npm run $1"
+	if [ "$1" = "e2e" ] && [ -n "${PLAYWRIGHT_ARGS:-}" ]; then
+		# Optional focused run, for example PLAYWRIGHT_ARGS="e2e/profile.spec.ts".
+		# shellcheck disable=SC2086
+		exec "$NPM" run "$1" -- $PLAYWRIGHT_ARGS
+	fi
 	exec "$NPM" run "$1"
 }
 

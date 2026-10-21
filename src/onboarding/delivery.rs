@@ -23,7 +23,7 @@ use postgres::Client;
 use thiserror::Error;
 
 use crate::onboarding::candidate::{reclassify_person, CandidateError, Classification, Reason};
-use crate::onboarding::invitation::{create, revoke, InvitationError};
+use crate::onboarding::invitation::{create, expire_due, revoke, InvitationError};
 
 /// The persisted delivery state of one prepared person.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +311,29 @@ fn activation_link(base: &str, token: &str) -> String {
     format!("{base}{separator}token={token}")
 }
 
+/// Issues an invitation whose plaintext token can be delivered.
+///
+/// [`create`] is idempotent and returns `token: None` when a pending row already
+/// exists but its plaintext is no longer available. That row is revoked and a
+/// replacement is issued; the returned identifier and token always belong to the
+/// same invitation, so later persistence cannot reference the revoked row.
+pub fn issue_deliverable_invitation(
+    client: &mut Client,
+    person_id: i64,
+    ttl: Duration,
+    actor: &str,
+) -> Result<Option<(i64, String)>, DeliveryError> {
+    let issued = create(client, person_id, ttl, actor)?;
+    if let Some(token) = issued.token {
+        return Ok(Some((issued.invitation_id, token)));
+    }
+    // The pending invitation cannot produce a link. Revoke it and issue the
+    // replacement that this approved send will actually deliver.
+    let _ = revoke(client, issued.invitation_id);
+    let reissued = create(client, person_id, ttl, actor)?;
+    Ok(reissued.token.map(|token| (reissued.invitation_id, token)))
+}
+
 /// Sends invitations for the prepared items of one approved batch.
 ///
 /// `person_ids` limits the send to a selected subset; `None` sends every
@@ -334,6 +357,10 @@ pub fn send_batch(
     if !adapter.is_configured() {
         return Err(DeliveryError::NotConfigured);
     }
+
+    // Expired pending invitations must leave `pending` before revalidation, or
+    // the person remains classified as invited and a safe retry is impossible.
+    expire_due(client).map_err(|err| DeliveryError::Database(err.to_string()))?;
 
     let rows = client
         .query(
@@ -456,28 +483,16 @@ pub fn send_batch(
         if let Some(invitation_id) = existing_invitation {
             let _ = revoke(client, invitation_id);
         }
-        let issued = create(client, person_id, ttl, actor)?;
-        let token = match issued.token {
-            Some(token) => token,
-            None => {
-                // A pending invitation exists but its plaintext was already
-                // consumed by a previous attempt. Reissue so the approved send
-                // can deliver a link instead of silently claiming success.
-                let _ = revoke(client, issued.invitation_id);
-                let reissued = create(client, person_id, ttl, actor)?;
-                match reissued.token {
-                    Some(token) => token,
-                    None => {
-                        outcomes.push(SendOutcome {
-                            person_id,
-                            status: DeliveryStatus::Failed,
-                            provider: None,
-                            reason: Some("invitation_reissue_failed"),
-                        });
-                        continue;
-                    }
-                }
-            }
+        let Some((invitation_id, token)) =
+            issue_deliverable_invitation(client, person_id, ttl, actor)?
+        else {
+            outcomes.push(SendOutcome {
+                person_id,
+                status: DeliveryStatus::Failed,
+                provider: None,
+                reason: Some("invitation_reissue_failed"),
+            });
+            continue;
         };
 
         let link = activation_link(activation_base, &token);
@@ -497,13 +512,13 @@ pub fn send_batch(
                 };
                 let _ = client.execute(
                     "UPDATE onboarding_invitation SET invited_email = $2 WHERE invitation_id = $1",
-                    &[&issued.invitation_id, &email],
+                    &[&invitation_id, &email],
                 );
                 record_delivery(
                     client,
                     batch_id,
                     person_id,
-                    Some(issued.invitation_id),
+                    Some(invitation_id),
                     status,
                     &receipt.provider,
                     Some(actor),
@@ -525,7 +540,7 @@ pub fn send_batch(
                     client,
                     batch_id,
                     person_id,
-                    Some(issued.invitation_id),
+                    Some(invitation_id),
                     DeliveryStatus::Failed,
                     reason,
                     Some(actor),
@@ -606,6 +621,9 @@ fn record_delivery(
 /// The invitation row owns acceptance and expiry. This function only reflects
 /// that state; it never invents a delivery result.
 pub fn sync_invitation_status(client: &mut Client, batch_id: i64) -> Result<(), DeliveryError> {
+    // The expiry clock is authoritative: transition due pending rows first so
+    // this sync reflects an expired invitation and its retry path.
+    expire_due(client).map_err(|err| DeliveryError::Database(err.to_string()))?;
     client
         .execute(
             "UPDATE onboarding_batch_item AS item

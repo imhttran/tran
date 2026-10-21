@@ -13,14 +13,36 @@ DECLARE
     v_assertion_id BIGINT;
     item RECORD;
 BEGIN
-    DELETE FROM onboarding_batch_audit;
-    DELETE FROM onboarding_batch_item;
-    DELETE FROM onboarding_batch;
-    DELETE FROM onboarding_recipient_contact;
-    DELETE FROM onboarding_link_audit;
-    DELETE FROM onboarding_person_account_link;
-    DELETE FROM onboarding_invitation;
-    DELETE FROM onboarding_username_reservation;
+    DELETE FROM onboarding_batch_item
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
+    -- Remove only batch headers left empty by the synthetic item cleanup; a
+    -- mixed batch with non-synthetic items is preserved.
+    DELETE FROM onboarding_batch AS batch
+     WHERE NOT EXISTS (
+         SELECT 1 FROM onboarding_batch_item AS bi WHERE bi.batch_id = batch.batch_id
+     );
+    DELETE FROM onboarding_recipient_contact
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
+    DELETE FROM onboarding_link_audit
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
+    DELETE FROM onboarding_person_account_link
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
+    DELETE FROM onboarding_invitation
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
+    DELETE FROM onboarding_username_reservation
+     WHERE person_id IN (
+         SELECT person_id FROM person WHERE person_key LIKE 'synthetic-bulk-%'
+     );
     DELETE FROM person WHERE person_key LIKE 'synthetic-bulk-%';
     DELETE FROM source_document WHERE relative_path LIKE 'synthetic/bulk-%';
 

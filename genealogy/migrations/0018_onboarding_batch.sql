@@ -1,4 +1,4 @@
--- BULK-003/004 genealogy migration 0015: bulk onboarding persistence (additive only).
+-- BULK-003/004 genealogy migration 0018: bulk onboarding persistence (additive only).
 --
 -- Minimal additive storage for durable, resumable, idempotent preparation of a
 -- reviewed batch of living candidates, plus the separately approved invitation

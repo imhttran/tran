@@ -54,7 +54,7 @@ export function AccountMenu({ session, signingOut, onSignIn, onSignOut }: Props)
         {view.display_name}
       </span>
       <span className="badge" data-testid="account-role">
-        {view.role}
+        {view.role ?? "member"}
       </span>
       <button
         type="button"

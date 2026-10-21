@@ -22,7 +22,7 @@ export type Outcome<T> =
 // email, account id, token, OIDC credential, or database URL.
 export type SessionView =
   | { state: "anonymous" }
-  | { state: "signed_in"; role: Role; display_name: string };
+  | { state: "signed_in"; role: Role | null; display_name: string };
 
 export type SessionResult = Outcome<SessionView>;
 
@@ -166,10 +166,16 @@ export function outcomeFromStatus<T>(
     return { kind: "expired", signInUrl: "/signin" };
   }
   if (status === 403) {
-    return { kind: "denied", reason: "Your role does not permit this request." };
+    return {
+      kind: "denied",
+      reason: "Your role does not permit this request.",
+    };
   }
   if (status === 404) {
-    return { kind: "no_access", reason: "No record is available to your role." };
+    return {
+      kind: "no_access",
+      reason: "No record is available to your role.",
+    };
   }
   if (status >= 200 && status < 300 && payload !== null) {
     return { kind: "allowed", data: redact(payload) };
@@ -184,7 +190,8 @@ export const OIDC_SUPPORTED = false;
 export function unsupportedSignIn(): SessionResult {
   return {
     kind: "no_access",
-    reason: "Sign-in is not configured. An operator must supply an OIDC identity provider.",
+    reason:
+      "Sign-in is not configured. An operator must supply an OIDC identity provider.",
   };
 }
 

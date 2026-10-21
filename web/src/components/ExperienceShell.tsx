@@ -15,11 +15,12 @@ import type { Role, SessionResult } from "@/lib/experience-contract";
 // menu around the page. The role is passed to the page so it can hide controls,
 // but it is never an authorization decision: Rust enforces every request.
 type Props = {
-  children: (role: Role | null) => ReactNode;
+  children: (role: Role | null, session: SessionResult | null) => ReactNode;
 };
 
 // Only implemented routes. "Add documents" is the existing direct-upload page.
 const NAV_ITEMS = [
+  { href: "/profile", label: "My profile", icon: "☺" },
   { href: "/genealogy", label: "Family tree", icon: "♧" },
   { href: "/ask", label: "Ask the archive", icon: "?" },
   { href: "/head-of-family", label: "Head of Family", icon: "◈" },
@@ -36,23 +37,32 @@ async function readSession(): Promise<SessionResult> {
       return { kind: "expired", signInUrl: "/signin" };
     }
     if (response.status === 403) {
-      return { kind: "denied", reason: "Your role does not permit this request." };
+      return {
+        kind: "denied",
+        reason: "Your role does not permit this request.",
+      };
     }
     if (!response.ok) {
-      return { kind: "denied", reason: `The session service returned HTTP ${response.status}.` };
+      return {
+        kind: "denied",
+        reason: `The session service returned HTTP ${response.status}.`,
+      };
     }
     const body = (await response.json()) as {
       state?: string;
       role?: Role;
       display_name?: string;
     };
-    if (body.state === "signed_in" && body.role) {
+    if (body.state === "signed_in") {
+      const role = body.role ?? null;
       return {
         kind: "allowed",
         data: {
           state: "signed_in",
-          role: body.role,
-          display_name: body.display_name ?? `Signed-in ${body.role}`,
+          role,
+          display_name:
+            body.display_name ??
+            (role ? `Signed-in ${role}` : "Signed-in member"),
         },
       };
     }
@@ -115,18 +125,29 @@ export function ExperienceShell({ children }: Props) {
           <Link href="/genealogy" className="brand">
             TRẦN FAMILY<small>Family archive</small>
           </Link>
-          <button type="button" className="site-nav-toggle"
-            aria-expanded={menuOpen} aria-controls="site-nav-links"
-            onClick={() => setMenuOpen((open) => !open)} data-testid="nav-toggle">
+          <button
+            type="button"
+            className="site-nav-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="site-nav-links"
+            onClick={() => setMenuOpen((open) => !open)}
+            data-testid="nav-toggle"
+          >
             {menuOpen ? "Close" : "Menu"}
           </button>
         </div>
-        <nav id="site-nav-links" aria-label="Main navigation"
-          className={menuOpen ? "open" : undefined}>
+        <nav
+          id="site-nav-links"
+          aria-label="Main navigation"
+          className={menuOpen ? "open" : undefined}
+        >
           {items.map((item) => (
-            <Link key={item.href} href={item.href}
+            <Link
+              key={item.href}
+              href={item.href}
               aria-current={pathname === item.href ? "page" : undefined}
-              onClick={() => setMenuOpen(false)}>
+              onClick={() => setMenuOpen(false)}
+            >
               <span aria-hidden="true">{item.icon}</span> {item.label}
             </Link>
           ))}
@@ -141,7 +162,7 @@ export function ExperienceShell({ children }: Props) {
             onSignOut={signOut}
           />
         ) : null}
-        {children(role)}
+        {children(role, session)}
       </main>
     </div>
   );

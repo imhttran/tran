@@ -16,7 +16,9 @@ use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -39,8 +41,8 @@ use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
 use crate::onboarding::{
     self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
-    OwnerProfile, PreviewSummary, ProfileRevision, ProfileVisibility, ReviewDecision,
-    RevisionError,
+    MediaAsset, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary, ProfileRevision,
+    ProfileVisibility, ReviewDecision, RevisionError,
 };
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
@@ -190,6 +192,21 @@ impl AppState {
             .route(
                 "/api/profile/revisions/{id}/review",
                 post(review_profile_revision),
+            )
+            .route(
+                "/api/profile/media/photo",
+                post(upload_profile_photo)
+                    .layer(DefaultBodyLimit::max(MediaKind::Photo.max_body_bytes())),
+            )
+            .route(
+                "/api/profile/media/personal-document",
+                post(upload_profile_document).layer(DefaultBodyLimit::max(
+                    MediaKind::PersonalDocument.max_body_bytes(),
+                )),
+            )
+            .route(
+                "/api/profile/media/{id}",
+                get(profile_media).delete(withdraw_profile_media),
             )
             .route("/api/admin/roles", post(change_role))
             .route("/api/genealogy/records", get(genealogy_records))
@@ -605,18 +622,26 @@ async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let result = tokio::task::spawn_blocking(move || {
         let account = resolve_profile_account(&config, &issuer, &subject)?;
         let mut genealogy = open_genealogy_response(&config)?;
-        onboarding::read_owner_profile(&mut genealogy, &account).map_err(revision_error)
+        let profile =
+            onboarding::read_owner_profile(&mut genealogy, &account).map_err(revision_error)?;
+        let media = if profile.is_some() {
+            onboarding::read_owner_media(&mut genealogy, &account).map_err(media_error)?
+        } else {
+            Vec::new()
+        };
+        Ok((profile, media))
     })
     .await;
 
     match result {
-        Ok(Ok(Some(view))) => Json(serde_json::json!({
+        Ok(Ok((Some(view), media))) => Json(serde_json::json!({
             "ok": true,
             "linked": true,
             "profile": owner_profile_json(&view),
+            "media": media.iter().map(media_json).collect::<Vec<_>>(),
         }))
         .into_response(),
-        Ok(Ok(None)) => Json(serde_json::json!({
+        Ok(Ok((None, _))) => Json(serde_json::json!({
             "ok": true,
             "linked": false,
         }))
@@ -861,6 +886,370 @@ fn owner_profile_json(profile: &OwnerProfile) -> serde_json::Value {
 }
 
 #[allow(clippy::result_large_err)]
+fn safe_download_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ' ') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.chars().take(120).collect()
+    }
+}
+
+fn media_json(asset: &MediaAsset) -> serde_json::Value {
+    serde_json::json!({
+        "media_id": asset.media_id,
+        "revision_id": asset.revision_id,
+        "kind": asset.kind.as_str(),
+        "mime_type": asset.mime_type,
+        "byte_size": asset.byte_size,
+        "file_name": asset.file_name,
+        "visibility": asset.visibility.as_str(),
+        "width": asset.width,
+        "height": asset.height,
+        "status": asset.status.as_str(),
+        "created_at": asset.created_at,
+    })
+}
+
+fn media_error(err: MediaError) -> Response {
+    eprintln!("api: profile media failed: {err}");
+    match err {
+        MediaError::NotFound | MediaError::MissingFile => {
+            error(StatusCode::NOT_FOUND, "media_not_found", "no such media")
+        }
+        MediaError::Unlinked => error(
+            StatusCode::FORBIDDEN,
+            "profile_forbidden",
+            "the authenticated account may not access this media",
+        ),
+        MediaError::TooLarge => error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "media_too_large",
+            "the uploaded file is too large",
+        ),
+        MediaError::UnsupportedType | MediaError::InvalidImage | MediaError::InvalidDocument => {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_media",
+                "the uploaded file is not a valid supported media file",
+            )
+        }
+        MediaError::OpenRevisionExists => error(
+            StatusCode::CONFLICT,
+            "media_revision_conflict",
+            "an open revision already exists for this media slot",
+        ),
+        MediaError::InvalidTransition => error(
+            StatusCode::CONFLICT,
+            "media_revision_conflict",
+            "only a pending media submission can be withdrawn",
+        ),
+        MediaError::Io(_) | MediaError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "media_unavailable",
+            "the media store is unavailable",
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn upload_profile_photo(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    upload_media(state, headers, multipart, MediaKind::Photo).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn upload_profile_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    upload_media(state, headers, multipart, MediaKind::PersonalDocument).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn upload_media(
+    state: AppState,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+    kind: MediaKind,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if let Some(length) = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        if length > kind.max_body_bytes() {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "media_too_large",
+                "the uploaded file is too large",
+            );
+        }
+    }
+    let mut file: Option<(Option<String>, Vec<u8>)> = None;
+    let mut visibility_value: Option<String> = None;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_multipart",
+                    "the upload could not be parsed",
+                )
+            }
+        };
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "file" => {
+                if file.is_some() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "duplicate_file",
+                        "only one file may be uploaded",
+                    );
+                }
+                let file_name = field.file_name().map(str::to_string);
+                let bytes = match field.bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_multipart",
+                            "the uploaded file could not be read",
+                        )
+                    }
+                };
+                file = Some((file_name, bytes.to_vec()));
+            }
+            "visibility" => {
+                let text = match field.text().await {
+                    Ok(text) => text,
+                    Err(_) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_multipart",
+                            "the visibility field could not be read",
+                        )
+                    }
+                };
+                visibility_value = Some(text);
+            }
+            _ => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "unknown_multipart_field",
+                    "only file and visibility fields are accepted",
+                )
+            }
+        }
+    }
+    let Some((file_name, bytes)) = file else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_file",
+            "a file field is required",
+        );
+    };
+    if bytes.len() > kind.max_bytes() {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "media_too_large",
+            "the uploaded file is too large",
+        );
+    }
+    let visibility = match parse_visibility(visibility_value.as_deref()) {
+        Ok(visibility) => visibility,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let storage = MediaStorage::new(config.media_root.clone());
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::store_submission(
+            &mut genealogy,
+            &storage,
+            &account,
+            kind,
+            file_name.as_deref(),
+            &bytes,
+            visibility,
+        )
+        .map_err(media_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(asset)) => Json(serde_json::json!({
+            "ok": true,
+            "media": media_json(&asset),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: media upload task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "media_upload_failed",
+                "the media upload failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn profile_media(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(media_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let storage = MediaStorage::new(config.media_root.clone());
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_authorized_media(&mut genealogy, &storage, &account, media_id)
+            .map_err(media_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(download)) => {
+            let disposition = if download.asset.kind == MediaKind::Photo {
+                "inline"
+            } else {
+                "attachment"
+            };
+            let content_disposition = format!(
+                "{disposition}; filename=\"{}\"",
+                safe_download_name(&download.asset.file_name)
+            );
+            let Ok(content_type) = axum::http::HeaderValue::from_str(&download.asset.mime_type)
+            else {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "media_response_failed",
+                    "the media response could not be built",
+                );
+            };
+            let Ok(content_disposition) = axum::http::HeaderValue::from_str(&content_disposition)
+            else {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "media_response_failed",
+                    "the media response could not be built",
+                );
+            };
+            let content_length = download.bytes.len();
+            let content_length =
+                match axum::http::HeaderValue::from_str(&content_length.to_string()) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "media_response_failed",
+                            "the media response could not be built",
+                        )
+                    }
+                };
+            let mut response = Response::new(Body::from(download.bytes));
+            *response.status_mut() = StatusCode::OK;
+            let headers = response.headers_mut();
+            headers.insert(CONTENT_TYPE, content_type);
+            headers.insert(CONTENT_DISPOSITION, content_disposition);
+            headers.insert(
+                CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("private, no-store"),
+            );
+            headers.insert(
+                axum::http::HeaderName::from_static("x-content-type-options"),
+                axum::http::HeaderValue::from_static("nosniff"),
+            );
+            headers.insert(
+                axum::http::HeaderName::from_static("content-security-policy"),
+                axum::http::HeaderValue::from_static("default-src 'none'; sandbox"),
+            );
+            headers.insert(CONTENT_LENGTH, content_length);
+            response
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: media download task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "media_download_failed",
+                "the media download failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn withdraw_profile_media(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(media_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let storage = MediaStorage::new(config.media_root.clone());
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::withdraw_owned_media(&mut genealogy, &storage, &account, media_id)
+            .map_err(media_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({
+            "ok": true,
+            "withdrawn": true,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: media withdrawal task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "media_withdrawal_failed",
+                "the media withdrawal failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
 fn parse_optional_visibility(value: Option<&str>) -> Result<Option<ProfileVisibility>, Response> {
     match value {
         None => Ok(None),
@@ -908,7 +1297,8 @@ fn revision_error(err: RevisionError) -> Response {
         ),
         RevisionError::OpenRevisionExists
         | RevisionError::InvalidTransition
-        | RevisionError::VersionConflict => error(
+        | RevisionError::VersionConflict
+        | RevisionError::MediaRevisionMissing => error(
             StatusCode::CONFLICT,
             "profile_revision_conflict",
             "the profile revision conflicts with the current state",
@@ -3355,6 +3745,16 @@ mod tests {
         );
         assert_eq!(sanitize_file_name("../"), None);
         assert_eq!(sanitize_file_name(""), None);
+    }
+
+    #[test]
+    fn download_file_names_are_header_safe() {
+        assert_eq!(safe_download_name("family.md"), "family.md");
+        assert_eq!(
+            safe_download_name("bad\"name\r\nX-Injected: yes"),
+            "bad_name__X-Injected_ yes"
+        );
+        assert_eq!(safe_download_name(".."), "download");
     }
 
     #[test]

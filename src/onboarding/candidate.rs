@@ -269,8 +269,20 @@ pub fn name_parts(
     }
 }
 
-/// Returns `true` when the display name cannot be segmented safely.
-pub fn segmentation_is_ambiguous(display_name: &str) -> bool {
+/// Returns `true` when the name cannot be segmented safely.
+///
+/// Explicit structured components win: a record with both a family and a given
+/// name is unambiguous even when its display label is a single token.
+pub fn segmentation_is_ambiguous(
+    display_name: &str,
+    family_name: Option<&str>,
+    given_name: Option<&str>,
+) -> bool {
+    let has_family = family_name.is_some_and(|value| !value.trim().is_empty());
+    let has_given = given_name.is_some_and(|value| !value.trim().is_empty());
+    if has_family && has_given {
+        return false;
+    }
     display_name.split_whitespace().count() < 2
 }
 
@@ -364,7 +376,8 @@ fn load_person_evidence(
     let invited: i64 = client
         .query_one(
             "SELECT count(*) FROM onboarding_invitation
-              WHERE person_id = $1 AND status = 'pending'",
+              WHERE person_id = $1 AND status = 'pending'
+                AND (expires_at IS NULL OR expires_at > now())",
             &[&person_id],
         )
         .map_err(|err| CandidateError::Database(err.to_string()))?
@@ -393,9 +406,11 @@ fn load_person_evidence(
         .query_opt(
             "SELECT family_name, given_name, display_name, birth_year,
                     (birth_year IS NULL OR btrim(birth_year) = '') AS missing_dob,
-                    CASE WHEN birth_year ~ '^[0-9]{4}$'
+                    CASE WHEN birth_year IS NULL OR btrim(birth_year) = ''
+                         THEN false
+                         WHEN birth_year ~ '^[0-9]{4}$'
                          THEN (EXTRACT(YEAR FROM now())::int - birth_year::int) < 18
-                         ELSE false END AS minor
+                         ELSE true END AS minor
                FROM person WHERE person_id = $1",
             &[&person_id],
         )
@@ -404,7 +419,11 @@ fn load_person_evidence(
     let display_name: String = person.get(2);
     let missing_dob: bool = person.get(4);
     let minor_guardian_review: bool = person.get(5);
-    let ambiguous_segmentation = segmentation_is_ambiguous(&display_name);
+    let ambiguous_segmentation = segmentation_is_ambiguous(
+        &display_name,
+        person.get::<_, Option<String>>(0).as_deref(),
+        person.get::<_, Option<String>>(1).as_deref(),
+    );
 
     let parts = name_parts(person.get(0), person.get(1), &display_name);
     let username_collision = crate::onboarding::username::candidate_username(&parts)
@@ -650,6 +669,18 @@ mod tests {
         assert!(is_living_value("Living"));
         assert!(!is_living_value("deceased"));
         assert!(!is_living_value(""));
+    }
+
+    #[test]
+    fn structured_name_parts_resolve_a_single_token_display_name() {
+        assert!(!segmentation_is_ambiguous(
+            "Madonna",
+            Some("Tran"),
+            Some("Madonna")
+        ));
+        assert!(segmentation_is_ambiguous("Madonna", None, None));
+        assert!(segmentation_is_ambiguous("Madonna", Some("Tran"), None));
+        assert!(segmentation_is_ambiguous("Madonna", None, Some("Madonna")));
     }
 
     #[test]

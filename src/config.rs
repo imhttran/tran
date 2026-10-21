@@ -7,6 +7,7 @@
 //! with a message naming the variable instead of quietly using the default.
 
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -25,6 +26,7 @@ pub const DEFAULT_GEN_PROVIDER: &str = provider::DEFAULT;
 pub const DEFAULT_CHUNK_SIZE: i64 = 50;
 pub const DEFAULT_CHUNK_OVERLAP: i64 = 20;
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.6;
+pub const DEFAULT_MEDIA_ROOT: &str = "./data/media";
 pub const DEFAULT_QUERY_REWRITE: bool = true;
 pub const DEFAULT_RAG_ANSWERABILITY_GATE: bool = true;
 pub const DEFAULT_RAG_CITATION_VALIDATION: bool = false;
@@ -105,6 +107,8 @@ pub struct Config {
     pub onboarding_activation_url: String,
     /// Delay between bulk sends, in milliseconds.
     pub onboarding_send_interval_ms: i64,
+    /// Private filesystem root for owner media. Never served as a static tree.
+    pub media_root: PathBuf,
 }
 
 impl Config {
@@ -150,6 +154,12 @@ impl Config {
         let hof_third_branch_key = get(HOF_THIRD_BRANCH_KEY_VAR)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let media_root = get("MEDIA_ROOT").unwrap_or_else(|| DEFAULT_MEDIA_ROOT.to_string());
+        if media_root.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "MEDIA_ROOT must not be blank".to_string(),
+            ));
+        }
 
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
@@ -213,6 +223,7 @@ impl Config {
                 "ONBOARDING_SEND_INTERVAL_MS",
                 DEFAULT_ONBOARDING_SEND_INTERVAL_MS,
             )?,
+            media_root: PathBuf::from(media_root),
         })
     }
 

@@ -101,6 +101,18 @@ pub fn create(
         return Err(InvitationError::UnknownPerson);
     }
 
+    // An expired pending row must not keep the person in an invited state.
+    // Transition it inside the same transaction before looking for a live row.
+    tx.execute(
+        "UPDATE onboarding_invitation
+            SET status = 'expired'
+          WHERE person_id = $1
+            AND status = 'pending'
+            AND expires_at IS NOT NULL
+            AND expires_at <= now()",
+        &[&person_id],
+    )?;
+
     let existing = tx.query_opt(
         "SELECT invitation_id, person_id, expires_at::text
            FROM onboarding_invitation

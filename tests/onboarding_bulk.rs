@@ -18,12 +18,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    confirm_batch, preview_candidates, preview_dry_run, reclassify_person, send_batch,
-    sync_invitation_status, verify_recipient, Classification, DeliveryError, DeliveryStatus,
-    DryRunFilters, FakeAdapter, ItemStatus, Page, Selector, UnconfiguredAdapter,
+    confirm_batch, create, issue_deliverable_invitation, preview_candidates, preview_dry_run,
+    reclassify_person, send_batch, sync_invitation_status, verify_recipient, Classification,
+    DeliveryError, DeliveryStatus, DryRunFilters, FakeAdapter, ItemStatus, Page, Selector,
+    UnconfiguredAdapter,
 };
 
-const MIGRATIONS: [&str; 15] = [
+const MIGRATIONS: [&str; 18] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -38,7 +39,10 @@ const MIGRATIONS: [&str; 15] = [
     "genealogy/migrations/0012_profile_revisions.sql",
     "genealogy/migrations/0013_profile_revision_actor_scope.sql",
     "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
-    "genealogy/migrations/0015_onboarding_batch.sql",
+    "genealogy/migrations/0015_profile_media.sql",
+    "genealogy/migrations/0016_profile_media_withdrawal.sql",
+    "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
+    "genealogy/migrations/0018_onboarding_batch.sql",
 ];
 
 fn genealogy_dsn() -> Option<String> {
@@ -492,6 +496,141 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         reasons.contains(&rag_foundation::onboarding::Reason::Disputed)
             || reasons.contains(&rag_foundation::onboarding::Reason::NoLivingEvidence)
     );
+
+    // 14. A non-parseable birth year is age-uncertain, never assumed adult.
+    let uncertain_age = insert_person(client, prefix, "Uncertain Age", Some(2015))?;
+    client
+        .execute(
+            "UPDATE person SET birth_year = 'circa 2015' WHERE person_id = $1",
+            &[&uncertain_age],
+        )
+        .map_err(|err| db_error(&err))?;
+    mark_living(client, prefix, uncertain_age, true, false)?;
+    let uncertain_key = key_for(client, uncertain_age).expect("uncertain person exists");
+    let (classification, reasons) =
+        reclassify_person(client, uncertain_age, &uncertain_key).map_err(|err| db_error(&err))?;
+    assert_eq!(classification, Classification::NeedsReview);
+    assert!(reasons.contains(&rag_foundation::onboarding::Reason::MinorGuardianReview));
+
+    // 15. Explicit structured name parts make a one-token display safe.
+    let structured = insert_person(client, prefix, "Madonna", Some(1970))?;
+    client
+        .execute(
+            "UPDATE person SET family_name = 'Tran', given_name = 'Madonna'
+              WHERE person_id = $1",
+            &[&structured],
+        )
+        .map_err(|err| db_error(&err))?;
+    mark_living(client, prefix, structured, true, false)?;
+    let structured_key = key_for(client, structured).expect("structured person exists");
+    let (classification, reasons) =
+        reclassify_person(client, structured, &structured_key).map_err(|err| db_error(&err))?;
+    assert_eq!(classification, Classification::EligibleForInvite);
+    assert!(!reasons.contains(&rag_foundation::onboarding::Reason::AmbiguousSegmentation));
+
+    // 16. An expired pending invitation leaves `pending` and allows a safe retry.
+    let expiring = insert_person(client, prefix, "Expiring Person", Some(1985))?;
+    mark_living(client, prefix, expiring, true, false)?;
+    let expiry_batch = confirm_batch(client, &format!("expiry-admin-{prefix}"), 1, &[expiring])
+        .map_err(|err| db_error(&err))?;
+    verify_recipient(client, expiring, "expiry@example.test", "synthetic-admin")
+        .map_err(|err| db_error(&err))?;
+    let expiry_adapter = FakeAdapter::accepting();
+    let first_send = send_batch(
+        client,
+        expiry_batch.batch_id,
+        None,
+        &expiry_adapter,
+        "/activate",
+        Duration::from_secs(3600),
+        "synthetic-admin",
+        Duration::ZERO,
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(first_send[0].status, DeliveryStatus::Sent);
+    let old_invitation: i64 = client
+        .query_one(
+            "SELECT invitation_id FROM onboarding_batch_item
+              WHERE batch_id = $1 AND person_id = $2",
+            &[&expiry_batch.batch_id, &expiring],
+        )
+        .map_err(|err| db_error(&err))?
+        .get(0);
+    client
+        .execute(
+            "UPDATE onboarding_invitation
+                SET expires_at = now() - interval '1 hour'
+              WHERE invitation_id = $1",
+            &[&old_invitation],
+        )
+        .map_err(|err| db_error(&err))?;
+    sync_invitation_status(client, expiry_batch.batch_id).map_err(|err| db_error(&err))?;
+    let expired_status: String = client
+        .query_one(
+            "SELECT delivery_status FROM onboarding_batch_item
+              WHERE batch_id = $1 AND person_id = $2",
+            &[&expiry_batch.batch_id, &expiring],
+        )
+        .map_err(|err| db_error(&err))?
+        .get(0);
+    assert_eq!(expired_status, "expired");
+    let expiry_key = key_for(client, expiring).expect("expiring person exists");
+    let (classification, _) =
+        reclassify_person(client, expiring, &expiry_key).map_err(|err| db_error(&err))?;
+    assert!(matches!(
+        classification,
+        Classification::EligibleForInvite | Classification::AlreadyPrepared
+    ));
+    let retry = send_batch(
+        client,
+        expiry_batch.batch_id,
+        None,
+        &expiry_adapter,
+        "/activate",
+        Duration::from_secs(3600),
+        "synthetic-admin",
+        Duration::ZERO,
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(retry[0].status, DeliveryStatus::Sent);
+    let new_invitation: i64 = client
+        .query_one(
+            "SELECT invitation_id FROM onboarding_batch_item
+              WHERE batch_id = $1 AND person_id = $2",
+            &[&expiry_batch.batch_id, &expiring],
+        )
+        .map_err(|err| db_error(&err))?
+        .get(0);
+    assert_ne!(new_invitation, old_invitation);
+
+    // 17. A consumed pending invitation reissues under the replacement id.
+    let reissue_person = insert_person(client, prefix, "Reissue Person", Some(1985))?;
+    mark_living(client, prefix, reissue_person, true, false)?;
+    let first_issue = create(
+        client,
+        reissue_person,
+        Duration::from_secs(3600),
+        "synthetic-admin",
+    )
+    .map_err(|err| db_error(&err))?;
+    let (replacement_id, token) = issue_deliverable_invitation(
+        client,
+        reissue_person,
+        Duration::from_secs(3600),
+        "synthetic-admin",
+    )
+    .map_err(|err| db_error(&err))?
+    .expect("replacement invitation carries a token");
+    assert_ne!(replacement_id, first_issue.invitation_id);
+    assert!(!token.is_empty());
+    let old_status: String = client
+        .query_one(
+            "SELECT status FROM onboarding_invitation WHERE invitation_id = $1",
+            &[&first_issue.invitation_id],
+        )
+        .map_err(|err| db_error(&err))?
+        .get(0);
+    assert_eq!(old_status, "revoked");
 
     Ok(())
 }

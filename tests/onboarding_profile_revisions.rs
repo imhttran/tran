@@ -17,7 +17,7 @@ use rag_foundation::onboarding::{
     RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
-const MIGRATIONS: [&str; 14] = [
+const MIGRATIONS: [&str; 18] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -32,6 +32,10 @@ const MIGRATIONS: [&str; 14] = [
     "genealogy/migrations/0012_profile_revisions.sql",
     "genealogy/migrations/0013_profile_revision_actor_scope.sql",
     "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
+    "genealogy/migrations/0015_profile_media.sql",
+    "genealogy/migrations/0016_profile_media_withdrawal.sql",
+    "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
+    "genealogy/migrations/0018_onboarding_batch.sql",
 ];
 
 const PERSON_CHILD_TABLES: [&str; 8] = [
@@ -527,6 +531,41 @@ fn one_open_revision_per_field_is_enforced() {
     )
     .expect("new draft after terminal decision");
     assert_eq!(second.revision_number, 2);
+}
+
+#[test]
+fn long_narrative_fields_are_supported_and_reviewed() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("narrative");
+    let story = "A synthetic family story. ".repeat(600);
+    assert!(story.len() > 5_000);
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-a",
+        "my_story",
+        &story,
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("long story draft");
+    submit_revision(&mut db.genealogy, draft.revision_id, "owner-a").expect("submit story");
+    review_revision(
+        &mut db.genealogy,
+        draft.revision_id,
+        "reviewer-a",
+        ReviewDecision::Approve,
+        Some("narrative approved"),
+    )
+    .expect("approve story");
+    let approved = read_approved_values(&mut db.genealogy, person, ProfileAudience::Owner)
+        .expect("read approved");
+    let story_value = approved
+        .iter()
+        .find(|value| value.field_key == "my_story")
+        .expect("approved story");
+    assert_eq!(story_value.value_text, story.trim());
 }
 
 #[test]
