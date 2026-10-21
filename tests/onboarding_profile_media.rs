@@ -441,6 +441,66 @@ fn cross_account_and_revoked_link_cannot_access_media() {
 }
 
 #[test]
+fn replacement_owner_sees_only_current_approved_or_own_media() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let former = db.account("media-replacement-former");
+    let person = db.person("media-replacement");
+    db.link(&former, person);
+    let pending = db
+        .upload(
+            &former,
+            MediaKind::Photo,
+            "pending.png",
+            &png_bytes(),
+            ProfileVisibility::OwnerPrivate,
+        )
+        .expect("pending photo");
+
+    let former_link = rag_foundation::onboarding::link_for_account(
+        &mut db.genealogy,
+        former.account_id,
+        &former.identity_fingerprint,
+    )
+    .expect("find former link")
+    .expect("former link");
+    revoke_link(&mut db.genealogy, former_link.link_id, "synthetic-reviewer")
+        .expect("revoke former link");
+    let replacement = db.account("media-replacement-new");
+    db.link(&replacement, person);
+
+    assert_eq!(
+        db.download(&replacement, pending.media_id),
+        Err(MediaError::NotFound),
+        "a replacement owner must not read the former owner's pending media"
+    );
+
+    db.approve(pending.revision_id);
+    assert!(
+        db.download(&replacement, pending.media_id).is_ok(),
+        "the current approved media is person-level and readable by the owner"
+    );
+
+    let replacement_pending = db
+        .upload(
+            &replacement,
+            MediaKind::Photo,
+            "replacement-pending.png",
+            &png_bytes(),
+            ProfileVisibility::OwnerPrivate,
+        )
+        .expect("replacement pending photo");
+    assert_eq!(
+        db.download(&replacement, replacement_pending.media_id)
+            .expect("own pending media")
+            .asset
+            .media_id,
+        replacement_pending.media_id
+    );
+}
+
+#[test]
 fn malformed_and_oversized_media_are_rejected() {
     let Some(mut db) = TestDb::new() else {
         return;

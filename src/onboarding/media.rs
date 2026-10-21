@@ -11,7 +11,7 @@
 //! retrieval requires an approved revision with `family` visibility.
 
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -173,23 +173,33 @@ impl MediaStorage {
         bytes: &[u8],
     ) -> Result<PathBuf, MediaError> {
         let dir = self.person_dir(person_id);
-        fs::create_dir_all(&self.root).map_err(|err| MediaError::Io(err.to_string()))?;
-        fs::create_dir_all(&dir).map_err(|err| MediaError::Io(err.to_string()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-        }
+        create_private_dir(&self.root)?;
+        create_private_dir(&dir)?;
         let path = dir.join(format!(".{storage_key}.tmp"));
         if !safe_component(storage_key) {
             return Err(MediaError::Io("unsafe media storage key".to_string()));
         }
-        fs::write(&path, bytes).map_err(|err| MediaError::Io(err.to_string()))?;
+
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        let options = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true).mode(0o600);
+            options
+        };
+        #[cfg(not(unix))]
+        let options = {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            options
+        };
+
+        let mut file = options
+            .open(&path)
+            .map_err(|err| MediaError::Io(err.to_string()))?;
+        if let Err(err) = file.write_all(bytes) {
+            let _ = fs::remove_file(&path);
+            return Err(MediaError::Io(err.to_string()));
         }
         Ok(path)
     }
@@ -228,6 +238,23 @@ fn safe_component(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+fn create_private_dir(path: &Path) -> Result<(), MediaError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(path)
+            .map_err(|err| MediaError::Io(err.to_string()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path).map_err(|err| MediaError::Io(err.to_string()))?;
+    }
+    Ok(())
 }
 
 struct PreparedMedia {
@@ -593,27 +620,22 @@ pub fn read_authorized_media(
     requester: &IdentityAccount,
     media_id: i64,
 ) -> Result<MediaDownload, MediaError> {
+    let mut tx = client.transaction()?;
     let sql = format!(
-        "SELECT {MEDIA_COLUMNS} \
+        "SELECT {MEDIA_COLUMNS}, r.changed_by \
            FROM onboarding_media_metadata m \
            JOIN onboarding_profile_revision r \
              ON r.revision_id = m.revision_id AND r.visibility = m.visibility \
           WHERE m.media_id = $1"
     );
-    let row = client
+    let row = tx
         .query_opt(&sql, &[&media_id])?
         .ok_or(MediaError::NotFound)?;
+    let changed_by: String = row.get(14);
     let asset = row_to_asset(row)?;
-    let requester_person: i64 = client
-        .query_opt(
-            "SELECT person_id FROM onboarding_person_account_link \
-              WHERE account_id = $1 AND identity_fingerprint = $2",
-            &[&requester.account_id, &requester.identity_fingerprint],
-        )?
-        .map(|row| row.get(0))
-        .ok_or(MediaError::Unlinked)?;
+    let requester_person = owner_person_in_tx(&mut tx, requester)?;
     let owner = requester_person == asset.person_id;
-    let current_approved: bool = client
+    let current_approved: bool = tx
         .query_one(
             "SELECT EXISTS (\
                 SELECT 1 FROM onboarding_profile_revision r2 \
@@ -639,14 +661,17 @@ pub fn read_authorized_media(
             ],
         )?
         .get(0);
+    let actor_owns = changed_by == requester.identity_fingerprint;
+    let owner_allowed = owner && (actor_owns || current_approved);
     let family_visible = !owner
         && asset.status == RevisionStatus::Approved
         && asset.visibility == ProfileVisibility::Family
         && current_approved;
-    if !owner && !family_visible {
+    if !owner_allowed && !family_visible {
         return Err(MediaError::NotFound);
     }
     let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
+    tx.commit()?;
     Ok(MediaDownload { asset, bytes })
 }
 
@@ -704,14 +729,8 @@ pub fn read_owner_media(
     client: &mut postgres::Client,
     account: &IdentityAccount,
 ) -> Result<Vec<MediaAsset>, MediaError> {
-    let person_id: i64 = client
-        .query_opt(
-            "SELECT person_id FROM onboarding_person_account_link \
-              WHERE account_id = $1 AND identity_fingerprint = $2",
-            &[&account.account_id, &account.identity_fingerprint],
-        )?
-        .map(|row| row.get(0))
-        .ok_or(MediaError::Unlinked)?;
+    let mut tx = client.transaction()?;
+    let person_id = owner_person_in_tx(&mut tx, account)?;
     let sql = format!(
         "SELECT {MEDIA_COLUMNS} \
            FROM onboarding_media_metadata m \
@@ -726,6 +745,11 @@ pub fn read_owner_media(
             )) \
           ORDER BY m.created_at DESC, m.media_id DESC"
     );
-    let rows = client.query(&sql, &[&person_id, &account.identity_fingerprint])?;
-    rows.into_iter().map(row_to_asset).collect()
+    let rows = tx.query(&sql, &[&person_id, &account.identity_fingerprint])?;
+    let assets = rows
+        .into_iter()
+        .map(row_to_asset)
+        .collect::<Result<Vec<_>, _>>()?;
+    tx.commit()?;
+    Ok(assets)
 }
