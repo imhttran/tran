@@ -17,6 +17,20 @@ async function signIn(page: Page) {
   await expect(page.getByTestId("account-role")).toHaveText("admin");
 }
 
+// The actions panel is a <details> element that re-renders with the row after
+// every mutation, which resets it to closed. Open it deterministically instead
+// of assuming a previous click left it open.
+async function openActions(row: ReturnType<Page["locator"]>) {
+  const details = row.getByTestId("fm-actions");
+  const open = await details.evaluate(
+    (element) => (element as HTMLDetailsElement).open,
+  );
+  if (!open) {
+    await details.locator("summary").click();
+  }
+  await expect(details).toHaveJSProperty("open", true);
+}
+
 async function openMember(page: Page) {
   await page.goto("/admin/family-members");
   await page.getByTestId("fm-search").fill("e2e-member");
@@ -58,7 +72,7 @@ test.describe.serial("admin accounts", () => {
     await signIn(page);
     const row = await openMember(page);
     await expect(row.getByTestId("fm-member-status")).toHaveText("active");
-    await row.getByText("Actions").click();
+    await openActions(row);
     await row.getByTestId("fm-reset").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(page.getByRole("status")).toContainText("not configured");
@@ -69,13 +83,13 @@ test.describe.serial("admin accounts", () => {
     await signIn(page);
     const row = await openMember(page);
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
-    await row.getByText("Actions").click();
+    await openActions(row);
     await row.getByTestId("fm-link-person").fill("synthetic-e2e-person");
     await row.getByTestId("fm-link").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toContainText("Linked to synthetic-e2e-person");
 
-    await row.getByText("Actions").click();
+    await openActions(row);
     await row.getByTestId("fm-unlink").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
@@ -84,14 +98,14 @@ test.describe.serial("admin accounts", () => {
   test("admin grants a role, cancels, then deactivates", async ({ page }) => {
     await signIn(page);
     const row = await openMember(page);
-    await row.getByText("Actions").click();
+    await openActions(row);
     await row.getByTestId("fm-role-select").selectOption("editor");
     await row.getByTestId("fm-grant-role").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(page.getByRole("status")).toContainText("Granted editor");
     await expect(row.getByTestId("fm-member-role")).toContainText(["editor"]);
 
-    await row.getByText("Actions").click();
+    await openActions(row);
     await row.getByTestId("fm-deactivate").click();
     await page.getByTestId("fm-confirm-cancel").click();
     await expect(row.getByTestId("fm-member-status")).toHaveText("active");
