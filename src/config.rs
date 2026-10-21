@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::admin_members::ResetProvider;
 use crate::provider;
 
 // Default values, matching the Go baseline exactly.
@@ -40,6 +41,7 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_JWKS_CACHE_TTL_SECS: i64 = 300;
 pub const DEFAULT_AUTH_CLOCK_SKEW_SECS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
+pub const DEFAULT_PASSWORD_RESET_COOLDOWN_SECS: i64 = 300;
 
 /// Bulk invitation delivery adapter: `unconfigured` (default) or `fake`.
 pub const DEFAULT_ONBOARDING_MAIL_ADAPTER: &str = "unconfigured";
@@ -109,6 +111,11 @@ pub struct Config {
     pub onboarding_send_interval_ms: i64,
     /// Private filesystem root for owner media. Never served as a static tree.
     pub media_root: PathBuf,
+    /// Provider endpoint that sends password-reset email. `None` when
+    /// `PASSWORD_RESET_URL` is unset: reset requests then fail closed.
+    pub password_reset: Option<ResetProvider>,
+    /// Minimum time between accepted reset requests for one account.
+    pub password_reset_cooldown: Duration,
 }
 
 impl Config {
@@ -160,6 +167,28 @@ impl Config {
                 "MEDIA_ROOT must not be blank".to_string(),
             ));
         }
+
+        let password_reset = match get("PASSWORD_RESET_URL") {
+            None => None,
+            Some(url) => {
+                let url = url.trim().to_string();
+                let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+                    .iter()
+                    .any(|prefix| {
+                        url.strip_prefix(prefix)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+                    });
+                if !local && !url.starts_with("https://") {
+                    return Err(ConfigError::Invalid(
+                        "PASSWORD_RESET_URL must use https:// (or http:// on loopback)".into(),
+                    ));
+                }
+                Some(ResetProvider {
+                    url,
+                    bearer: get("PASSWORD_RESET_TOKEN"),
+                })
+            }
+        };
 
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
@@ -224,6 +253,12 @@ impl Config {
                 DEFAULT_ONBOARDING_SEND_INTERVAL_MS,
             )?,
             media_root: PathBuf::from(media_root),
+            password_reset,
+            password_reset_cooldown: Duration::from_secs(non_negative_int(
+                &get,
+                "PASSWORD_RESET_COOLDOWN_SECS",
+                DEFAULT_PASSWORD_RESET_COOLDOWN_SECS,
+            )? as u64),
         })
     }
 
@@ -718,5 +753,32 @@ mod tests {
         assert_ne!(cfg.database_url, genealogy);
         let err = cfg.genealogy_database_url().unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(ref m) if m.contains("GENEALOGY_DATABASE_URL")));
+    }
+
+    #[test]
+    fn password_reset_is_off_by_default_and_rejects_plain_remote_http() {
+        let cfg = load(&[]).unwrap();
+        assert_eq!(cfg.password_reset, None);
+        assert_eq!(cfg.password_reset_cooldown, Duration::from_secs(300));
+
+        for url in [
+            "http://reset.example/hook",
+            "http://localhost.evil.example/x",
+            "ftp://x",
+        ] {
+            assert!(load(&[("PASSWORD_RESET_URL", url)]).is_err(), "{url}");
+        }
+        for url in [
+            "https://reset.example/hook",
+            "http://127.0.0.1:9100/reset",
+            "http://localhost/r",
+        ] {
+            let cfg = load(&[("PASSWORD_RESET_URL", url), ("PASSWORD_RESET_TOKEN", "t")]).unwrap();
+            let provider = cfg.password_reset.unwrap();
+            assert_eq!(
+                (provider.url.as_str(), provider.bearer.as_deref()),
+                (url, Some("t"))
+            );
+        }
     }
 }

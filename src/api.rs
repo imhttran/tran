@@ -26,6 +26,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::admin_members::{
+    self, MemberFilter, MemberStatus, ResetError, ResetRequest, ResetState,
+};
 use crate::config::Config;
 use crate::corpus::Corpus;
 use crate::embedding::OllamaEmbedder;
@@ -109,6 +112,9 @@ pub struct AppState {
     /// One shared client for the health probe, so polling does not rebuild a
     /// connection pool each time.
     health_client: Arc<Mutex<Option<reqwest::blocking::Client>>>,
+    /// One shared client for password-reset provider calls; redirects are
+    /// never followed.
+    reset_client: Arc<Mutex<Option<reqwest::blocking::Client>>>,
 }
 
 /// The JWKS fetcher type held by the cached verifier.
@@ -154,6 +160,7 @@ impl AppState {
             read_limiter,
             query_service: Arc::new(Mutex::new(None)),
             health_client: Arc::new(Mutex::new(None)),
+            reset_client: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -272,6 +279,11 @@ impl AppState {
             .route(
                 "/api/admin/family-members/links/{id}/revoke",
                 post(revoke_link),
+            )
+            .route("/api/admin/family-members", get(family_members))
+            .route(
+                "/api/admin/family-members/password-reset",
+                post(family_member_password_reset),
             )
             .route("/api/admin/users", post(provision_user))
             .route(
@@ -3085,6 +3097,252 @@ async fn family_member_candidates(State(state): State<AppState>, headers: Header
     }
 }
 
+// --- admin family members ---------------------------------------------------
+
+#[derive(Deserialize)]
+struct FamilyMembersQuery {
+    q: Option<String>,
+    status: Option<String>,
+    role: Option<String>,
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// One directory row: the account plus its linked person, if any.
+#[derive(Serialize)]
+struct FamilyMemberBody {
+    #[serde(flatten)]
+    member: admin_members::Member,
+    linked_person: Option<admin_members::LinkedPerson>,
+}
+
+/// Validates the directory query. Unknown status or role names are rejected,
+/// never ignored.
+#[allow(clippy::result_large_err)]
+fn member_filter(query: FamilyMembersQuery) -> Result<MemberFilter, Response> {
+    let status = match query.status.as_deref().filter(|value| !value.is_empty()) {
+        None => None,
+        Some(value) => Some(MemberStatus::parse(value).ok_or_else(|| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_status",
+                "status must be active or deactivated",
+            )
+        })?),
+    };
+    let role = match query.role.as_deref().filter(|value| !value.is_empty()) {
+        None => None,
+        Some(value) => Some(Role::parse(value).ok_or_else(|| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_role",
+                "role must be viewer, editor, or admin",
+            )
+        })?),
+    };
+    Ok(MemberFilter {
+        query: query.q,
+        status,
+        role,
+        after_id: query.after,
+        limit: query.limit,
+    })
+}
+
+/// The admin account directory. Authorization runs before any database read.
+/// Linked-person status comes from the genealogy database when it is reachable;
+/// otherwise every row reports no link and `linkage` says it is unavailable,
+/// so a missing store is never shown as "not linked".
+async fn family_members(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<FamilyMembersQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::MemberDirectory) {
+        return response;
+    }
+    let filter = match member_filter(query) {
+        Ok(filter) => filter,
+        Err(response) => return response,
+    };
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = store.pooled_connection().map_err(|err| err.to_string())?;
+        let (members, next) = admin_members::list_members(&mut client, &filter)?;
+        let ids: Vec<i64> = members.iter().map(|member| member.user_id).collect();
+        let links = open_genealogy(&config)
+            .and_then(|mut genealogy| admin_members::linked_people(&mut genealogy, &ids));
+        Ok::<_, String>((members, next, links))
+    })
+    .await;
+    match result {
+        Ok(Ok((members, next, links))) => {
+            let (mut links, linkage) = match links {
+                Ok(links) => (links, "available"),
+                Err(message) => {
+                    eprintln!("api: member linkage unavailable: {message}");
+                    (Default::default(), "unavailable")
+                }
+            };
+            let members: Vec<FamilyMemberBody> = members
+                .into_iter()
+                .map(|member| FamilyMemberBody {
+                    linked_person: links.remove(&member.user_id),
+                    member,
+                })
+                .collect();
+            Json(serde_json::json!({
+                "ok": true,
+                "members": members,
+                "next_after": next,
+                "linkage": linkage,
+            }))
+            .into_response()
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: member directory unavailable: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_store_unavailable",
+                "the identity store is unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: member directory task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "directory_failed",
+                "the member directory failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PasswordResetBody {
+    issuer: String,
+    subject: String,
+}
+
+/// Maps a reset outcome to the wire. Only an accepted provider request is a
+/// success; every other state says no email was sent.
+fn reset_response(outcome: Result<ResetState, ResetError>) -> Response {
+    match outcome {
+        Ok(ResetState::Requested) => {
+            Json(serde_json::json!({ "ok": true, "state": "requested" })).into_response()
+        }
+        Ok(ResetState::NotConfigured) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "reset_not_configured",
+            "password reset is not configured for this identity provider; no email was sent",
+        ),
+        Ok(ResetState::Failed) => error(
+            StatusCode::BAD_GATEWAY,
+            "reset_failed",
+            "the identity provider did not accept the reset request; no email was sent",
+        ),
+        Ok(ResetState::Throttled) => error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "reset_throttled",
+            "a reset was requested for this account recently",
+        ),
+        Err(ResetError::UnknownUser) => {
+            error(StatusCode::NOT_FOUND, "unknown_user", "no such account")
+        }
+        Err(ResetError::Deactivated) => error(
+            StatusCode::CONFLICT,
+            "account_deactivated",
+            "the account is deactivated",
+        ),
+        Err(ResetError::NoEmail) => error(
+            StatusCode::CONFLICT,
+            "no_verified_email",
+            "the account has no verified email address",
+        ),
+        Err(ResetError::Database(message)) => {
+            eprintln!("api: password reset unavailable: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_store_unavailable",
+                "the identity store is unavailable",
+            )
+        }
+    }
+}
+
+/// Asks the configured identity provider to email a reset link to one active
+/// account. Success is reported only when the provider accepted the request;
+/// the admin never sees a password, link, or token.
+async fn family_member_password_reset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PasswordResetBody>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::PasswordReset) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let issuer = body.issuer.trim().to_string();
+    let subject = body.subject.trim().to_string();
+    if issuer.is_empty() || subject.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_identity",
+            "issuer and subject are required",
+        );
+    }
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let actor_issuer = identity.issuer().to_string();
+    let actor_subject = identity.subject().to_string();
+    let reset_client = state.reset_client.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = store
+            .pooled_connection()
+            .map_err(|err| ResetError::Database(err.to_string()))?;
+        let http = {
+            let mut guard = reset_client
+                .lock()
+                .map_err(|_| ResetError::Database("reset client lock poisoned".into()))?;
+            if guard.is_none() {
+                *guard = Some(
+                    reqwest::blocking::Client::builder()
+                        .timeout(Duration::from_secs(10))
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .map_err(|err| ResetError::Database(err.to_string()))?,
+                );
+            }
+            guard.clone().expect("reset client was just built")
+        };
+        admin_members::request_password_reset(
+            &mut client,
+            config.password_reset.as_ref(),
+            &http,
+            &ResetRequest {
+                actor_issuer: &actor_issuer,
+                actor_subject: &actor_subject,
+                issuer: &issuer,
+                subject: &subject,
+            },
+            config.password_reset_cooldown,
+        )
+    })
+    .await;
+    match result {
+        Ok(outcome) => reset_response(outcome),
+        Err(err) => {
+            eprintln!("api: password reset task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "reset_failed",
+                "the reset request failed",
+            )
+        }
+    }
+}
+
 /// Maps a preview to the wire body. The summary is derived from the preview.
 fn preview_response(preview: &CandidatePreview) -> Response {
     let summary = PreviewSummary::from_preview(preview);
@@ -4284,6 +4542,43 @@ mod tests {
             identity::decide(Some(&admin), Operation::OnboardingPreview),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn only_an_accepted_reset_request_is_reported_as_success() {
+        assert_eq!(
+            reset_response(Ok(ResetState::Requested)).status(),
+            StatusCode::OK
+        );
+        for (outcome, status) in [
+            (
+                Ok(ResetState::NotConfigured),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (Ok(ResetState::Failed), StatusCode::BAD_GATEWAY),
+            (Ok(ResetState::Throttled), StatusCode::TOO_MANY_REQUESTS),
+            (Err(ResetError::UnknownUser), StatusCode::NOT_FOUND),
+            (Err(ResetError::Deactivated), StatusCode::CONFLICT),
+            (Err(ResetError::NoEmail), StatusCode::CONFLICT),
+        ] {
+            assert_eq!(reset_response(outcome).status(), status);
+        }
+    }
+
+    #[test]
+    fn unknown_directory_filters_are_rejected() {
+        let query = |status: &str, role: &str| FamilyMembersQuery {
+            q: None,
+            status: Some(status.into()),
+            role: Some(role.into()),
+            after: None,
+            limit: None,
+        };
+        assert!(member_filter(query("invited", "")).is_err());
+        assert!(member_filter(query("", "root")).is_err());
+        let filter = member_filter(query("active", "admin")).ok().unwrap();
+        assert_eq!(filter.status, Some(MemberStatus::Active));
+        assert_eq!(filter.role, Some(Role::Admin));
     }
 
     #[test]

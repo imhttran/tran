@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { AccountsAdmin } from "@/components/AccountsAdmin";
 import { DenialView } from "@/components/DenialView";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -405,6 +406,8 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
           ) : null}
         </section>
       ) : null}
+
+      <AccountsAdmin />
     </>
   );
 }

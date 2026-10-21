@@ -148,6 +148,10 @@ pub enum Operation {
     OnboardingBulkPrepare,
     /// Sending explicitly approved bulk invitations.
     OnboardingBulkSend,
+    /// Reading the admin family-member account directory.
+    MemberDirectory,
+    /// Requesting a provider-managed password reset email for an account.
+    PasswordReset,
 }
 
 impl Operation {
@@ -171,7 +175,9 @@ impl Operation {
             | Operation::OnboardingBulkPrepare
             | Operation::OnboardingBulkSend
             | Operation::ProfileReview
-            | Operation::BranchReviewerAdmin => Some(Role::Admin),
+            | Operation::BranchReviewerAdmin
+            | Operation::MemberDirectory
+            | Operation::PasswordReset => Some(Role::Admin),
             Operation::ProfileRead | Operation::ProfileWrite => None,
         }
     }
@@ -186,6 +192,7 @@ impl Operation {
                 | Operation::Account
                 | Operation::ProfileRead
                 | Operation::OnboardingDryRun
+                | Operation::MemberDirectory
         )
     }
 
@@ -210,6 +217,8 @@ impl Operation {
             Operation::OnboardingDryRun => "onboarding_dry_run",
             Operation::OnboardingBulkPrepare => "onboarding_bulk_prepare",
             Operation::OnboardingBulkSend => "onboarding_bulk_send",
+            Operation::MemberDirectory => "member_directory",
+            Operation::PasswordReset => "password_reset",
         }
     }
 }
@@ -412,6 +421,25 @@ mod tests {
             decide(Some(&account), Operation::GenealogyRead),
             Decision::Forbidden
         );
+    }
+
+    #[test]
+    fn family_member_administration_is_admin_only() {
+        for operation in [Operation::MemberDirectory, Operation::PasswordReset] {
+            assert_eq!(decide(None, operation), Decision::Unauthenticated);
+            for role in [Role::Viewer, Role::Editor] {
+                assert_eq!(
+                    decide(Some(&identity(&[role])), operation),
+                    Decision::Forbidden
+                );
+            }
+            assert_eq!(
+                decide(Some(&identity(&[Role::Admin])), operation),
+                Decision::Allow
+            );
+        }
+        assert!(Operation::MemberDirectory.is_read());
+        assert!(!Operation::PasswordReset.is_read());
     }
 
     #[test]

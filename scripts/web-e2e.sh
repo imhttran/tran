@@ -90,16 +90,23 @@ export E2E_DEACTIVATED_TOKEN
 echo "web-e2e: seeding test identities"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/007_user_lifecycle.sql >/dev/null
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subject.sql >/dev/null
+# No password-reset provider in E2E: the reset action must fail closed.
+unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER')" >/dev/null
+# A disposable account the admin accounts test changes and deactivates.
+# The address uses the reserved .test domain; nothing is ever sent to it.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO users (subject, issuer, email, display_name) VALUES ('e2e-member', '$E2E_ISSUER', 'e2e-member@example.test', 'Synthetic E2E Member')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject = 'e2e-viewer'" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver')" >/dev/null
+	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member')" >/dev/null
 
 if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
 	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
@@ -193,9 +200,9 @@ cleanup() {
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member')" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null 2>&1 || true
 	rm -f "$api_log"
