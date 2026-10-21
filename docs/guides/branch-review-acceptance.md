@@ -79,6 +79,11 @@ issuer, seeds the disposable genealogy database, and deletes only its own rows.
 | `sop review` | see the pull request |
 | `sop security scan` | NOT_APPLICABLE (the add-on is disabled for this project) |
 
+The table above records one full local run against freshly created disposable
+databases; run the commands at the top of this page to reproduce it. Counts move
+when tests are added, so treat the commands and the assertions as the contract,
+not the numbers.
+
 `make web-e2e` also covers `/documents`: an administrator submits a document,
 sees it in the review list, and a family viewer is refused both the page and
 the listing. The historical `admin-accounts` failure (a `<details>` panel that

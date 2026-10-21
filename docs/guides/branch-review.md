@@ -169,4 +169,6 @@ queue that implies data exists elsewhere.
 
 Browser coverage lives in `web/e2e/branch-review-ui.spec.ts` and runs through
 `scripts/web-e2e.sh` against synthetic identities, branches, and sources. The
-complete negative-security matrix is USR-005D.
+sixteen-scenario security and end-to-end matrix, with the evidence for each
+scenario and the remaining policy gaps, is in
+[branch-review-acceptance.md](branch-review-acceptance.md).
