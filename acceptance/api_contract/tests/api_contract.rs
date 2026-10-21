@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use api_contract_acceptance::{
     dsn, repo_root, seed_api_contract_admin, unique_tag, ApiProcess, CorpusCleanup, FakeOllama,
-    TestAuth,
+    OperatorIngest, TestAuth,
 };
 use rag_foundation::api::{DEFAULT_HOST, DEFAULT_PORT, MAX_UPLOAD_BYTES};
 use reqwest::blocking::{Client, Response};
@@ -158,11 +158,16 @@ fn api_contract_upload_status_query_health_and_refusal() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "empty_file");
 
-    // A whitespace-only source reaches the loader and is rejected as no
-    // sections, still before any write.
+    // A whitespace-only source is accepted as a pending submission: extraction,
+    // the "no sections" rejection, and chunking all happen after review, so
+    // submission itself writes nothing and approves nothing.
     let (status, body) = upload(&client, &base, &fixture("empty.txt"));
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body["error"], "no_sections");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["review_status"], "pending_review");
+    assert_eq!(body["processing_status"], "unprocessed");
+    assert_eq!(body["chunks"], 0);
+    assert!(body["version_id"].as_i64().is_some());
     assert_eq!(db_count(&dsn, &corpus, "empty.txt"), 0);
 
     // Upload validation: size limit.
@@ -171,34 +176,74 @@ fn api_contract_upload_status_query_health_and_refusal() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"], "file_too_large");
 
-    // Incomplete PDF: rejected before embedding or writes.
+    // An incomplete PDF is also accepted for review: it writes no chunks, so it
+    // cannot enter retrieval, and the extraction failure is a processing
+    // concern rather than a submission concern.
     let (status, body) = upload(&client, &base, &fixture("mixed-text-scan.pdf"));
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body["error"], "incomplete_pdf");
-    assert_eq!(body["incomplete_pages"], serde_json::json!([2]));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["review_status"], "pending_review");
+    assert_eq!(body["chunks"], 0);
     assert_eq!(db_count(&dsn, &corpus, "mixed-text-scan.pdf"), 0);
-    let (status, _) = get_json(
-        &client,
-        &format!("{base}/api/documents/mixed-text-scan.pdf/status"),
-    );
-    assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Markdown ingestion and status.
+    // A valid markdown submission is pending, private, and unchunked.
     let markdown = repo_root().join("examples/loan-policy.md");
     let (status, body) = upload(&client, &base, &markdown);
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
-    assert_eq!(body["source"], "loan-policy.md");
-    let chunks = body["chunks"].as_i64().expect("chunk count");
-    assert!(chunks > 0);
-    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), chunks);
+    assert_eq!(body["review_status"], "pending_review");
+    assert_eq!(body["chunks"], 0);
+    let first_version = body["version_id"].as_i64().expect("submission version id");
+    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), 0);
+
+    // A pending submission is not a stored source yet.
+    let (status, _) = get_json(
+        &client,
+        &format!("{base}/api/documents/loan-policy.md/status"),
+    );
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A repeated submission creates a new private version and still writes no
+    // chunks or embedding.
+    let (status, duplicate) = upload(&client, &base, &markdown);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(duplicate["review_status"], "pending_review");
+    assert_eq!(duplicate["chunks"], 0);
+    assert_ne!(
+        duplicate["version_id"].as_i64().expect("second version id"),
+        first_version,
+        "a repeated submission is a new version, not an implicit edit"
+    );
+    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), 0);
+
+    // Nothing pending is retrievable: the approved-only path stays empty.
+    let (status, pending) = post_json(
+        &client,
+        &format!("{base}/api/query"),
+        &serde_json::json!({
+            "question": "What happens if someone misses a payment?",
+            "top_k": 4
+        }),
+    );
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        pending["insufficient"], true,
+        "a pending submission must never answer a query"
+    );
+    assert_eq!(pending["sources"], serde_json::json!([]));
+
+    // The trusted local operator boundary publishes explicitly: it writes the
+    // chunks and records an approved, ready, family-scoped version.
+    let operator = OperatorIngest::new();
+    operator.publish(&dsn, &corpus, ollama.url(), &markdown);
 
     let (status, stored) = get_json(
         &client,
         &format!("{base}/api/documents/loan-policy.md/status"),
     );
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(stored["chunks"], chunks);
+    let chunks = stored["chunks"].as_i64().expect("chunk count");
+    assert!(chunks > 0);
+    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), chunks);
     assert_eq!(stored["corpus"], corpus.as_str());
     assert!(!stored["content_hash"]
         .as_str()
@@ -209,17 +254,8 @@ fn api_contract_upload_status_query_health_and_refusal() {
     assert_eq!(sections[0]["section"], "Payments");
     assert!(sections.iter().all(|section| section["page"].is_null()));
 
-    // Duplicate ingestion is a no-op.
-    let (status, duplicate) = upload(&client, &base, &markdown);
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(duplicate["unchanged"], true);
-    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), chunks);
-
-    // PDF ingestion preserves page provenance.
-    let pdf = fixture("text-layer.pdf");
-    let (status, body) = upload(&client, &base, &pdf);
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["chunks"], 2);
+    // PDF publication preserves page provenance.
+    operator.publish(&dsn, &corpus, ollama.url(), &fixture("text-layer.pdf"));
     let (status, stored) = get_json(
         &client,
         &format!("{base}/api/documents/text-layer.pdf/status"),
@@ -233,11 +269,9 @@ fn api_contract_upload_status_query_health_and_refusal() {
         .collect();
     assert_eq!(pages, vec![1, 2]);
 
-    // Plain text ingestion.
+    // Plain text publication.
     let note = temp_file("api-contract-note.txt", b"The support code is ZX-431.");
-    let (status, body) = upload(&client, &base, &note);
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["chunks"], 1);
+    operator.publish(&dsn, &corpus, ollama.url(), &note);
     let (status, stored) = get_json(
         &client,
         &format!("{base}/api/documents/api-contract-note.txt/status"),
