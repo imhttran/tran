@@ -697,21 +697,33 @@ pub fn read_review_media(
     media_id: i64,
 ) -> Result<MediaDownload, MediaError> {
     let mut tx = client.transaction()?;
-    let sql = format!(
-        "SELECT {MEDIA_COLUMNS}, r.changed_by \
-           FROM onboarding_media_metadata m \
-           JOIN onboarding_profile_revision r \
-             ON r.revision_id = m.revision_id AND r.visibility = m.visibility \
-          WHERE m.media_id = $1"
-    );
+    // Lock order matches review_revision: revision first, then person. The
+    // revision lock conflicts with the decision and withdrawal writes, and the
+    // person lock serializes the linked-owner check with link creation/revocation.
+    // Both locks are held through the file read and commit, so a committed
+    // approval, rejection, or withdrawal is visible before any bytes are served.
     let row = tx
-        .query_opt(&sql, &[&media_id])?
+        .query_opt(
+            &format!(
+                "SELECT {MEDIA_COLUMNS}, r.changed_by \
+                   FROM onboarding_media_metadata m \
+                   JOIN onboarding_profile_revision r \
+                     ON r.revision_id = m.revision_id AND r.visibility = m.visibility \
+                  WHERE m.media_id = $1 \
+                  FOR UPDATE OF r"
+            ),
+            &[&media_id],
+        )?
         .ok_or(MediaError::NotFound)?;
     let changed_by: String = row.get(14);
     let asset = row_to_asset(row)?;
     if asset.status != RevisionStatus::PendingReview || changed_by == reviewer_fingerprint {
         return Err(MediaError::NotFound);
     }
+    tx.query_one(
+        "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+        &[&asset.person_id],
+    )?;
     let reviewer_owns_person: bool = tx
         .query_one(
             "SELECT EXISTS (\
