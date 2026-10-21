@@ -38,7 +38,6 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Password reset is not configured for this identity provider. No email was sent. The member can use the provider's own \"Forgot password?\" link.",
   reset_failed: "The identity provider did not accept the reset request. No email was sent. Try again later.",
   reset_throttled: "A reset was already requested for this account recently. Wait before trying again.",
-  no_verified_email: "This account has no verified email address, so no reset can be requested.",
   account_deactivated: "This account is deactivated.",
   last_admin: "Refusing to remove the last active administrator.",
   csrf_failed: "Your session's security token is missing or stale. Reload the page and try again.",
@@ -102,7 +101,10 @@ async function run(action: Pending): Promise<string> {
 }
 
 export function AccountsAdmin() {
-  const [filter, setFilter] = useState<MemberFilter>(EMPTY_FILTER);
+  // `draft` is what the controls show; `applied` is the query the loaded rows
+  // and `nextAfter` cursor belong to, so "Load more" never mixes queries.
+  const [draft, setDraft] = useState<MemberFilter>(EMPTY_FILTER);
+  const [applied, setApplied] = useState<MemberFilter>(EMPTY_FILTER);
   const [members, setMembers] = useState<FamilyMember[]>([]);
   const [nextAfter, setNextAfter] = useState<number | null>(null);
   const [linkage, setLinkage] = useState<Linkage>("available");
@@ -117,6 +119,7 @@ export function AccountsAdmin() {
     setLoadError(null);
     try {
       const page = await listFamilyMembers(active, after);
+      setApplied(active);
       setMembers((current) => (after ? [...current, ...page.members] : page.members));
       setNextAfter(page.next_after);
       setLinkage(page.linkage);
@@ -137,7 +140,7 @@ export function AccountsAdmin() {
     const action = pending;
     try {
       setStatus({ kind: "ok", text: await run(action) });
-      if (action.kind !== "reset") await load(filter, null);
+      if (action.kind !== "reset") await load(applied, null);
     } catch (error) {
       setStatus({ kind: "error", text: messageFor(error, "The request failed. Nothing was changed.") });
     } finally {
@@ -160,7 +163,7 @@ export function AccountsAdmin() {
         data-testid="fm-filters"
         onSubmit={(event) => {
           event.preventDefault();
-          void load(filter, null);
+          void load(draft, null);
         }}
       >
         <label>
@@ -168,16 +171,16 @@ export function AccountsAdmin() {
           <input
             type="search"
             placeholder="Name, email, or subject"
-            value={filter.q}
-            onChange={(event) => setFilter({ ...filter, q: event.target.value })}
+            value={draft.q}
+            onChange={(event) => setDraft({ ...draft, q: event.target.value })}
             data-testid="fm-search"
           />
         </label>
         <label>
           Status
           <select
-            value={filter.status}
-            onChange={(event) => setFilter({ ...filter, status: event.target.value as MemberFilter["status"] })}
+            value={draft.status}
+            onChange={(event) => setDraft({ ...draft, status: event.target.value as MemberFilter["status"] })}
             data-testid="fm-status-filter"
           >
             <option value="">Any</option>
@@ -188,8 +191,8 @@ export function AccountsAdmin() {
         <label>
           Role
           <select
-            value={filter.role}
-            onChange={(event) => setFilter({ ...filter, role: event.target.value as MemberFilter["role"] })}
+            value={draft.role}
+            onChange={(event) => setDraft({ ...draft, role: event.target.value as MemberFilter["role"] })}
             data-testid="fm-role-filter"
           >
             <option value="">Any</option>
@@ -221,7 +224,7 @@ export function AccountsAdmin() {
       ) : null}
       {loading ? <p className="hint">Loading accounts…</p> : null}
       {nextAfter && !loading ? (
-        <button type="button" onClick={() => void load(filter, nextAfter)} data-testid="fm-more">
+        <button type="button" onClick={() => void load(applied, nextAfter)} data-testid="fm-more">
           Load more
         </button>
       ) : null}
@@ -275,7 +278,7 @@ function MemberRow({
         <summary>Actions</summary>
         <button
           type="button"
-          disabled={!active || !member.email}
+          disabled={!active}
           onClick={() => onAction({ kind: "reset", member })}
           data-testid="fm-reset"
         >

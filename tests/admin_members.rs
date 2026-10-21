@@ -307,7 +307,7 @@ fn reset_fails_closed_throttles_and_never_claims_unconfirmed_success() {
         subject,
     };
 
-    // Unknown, other-issuer, deactivated, and address-less accounts are refused.
+    // Unknown, other-issuer, and deactivated accounts are refused, and audited.
     let other_issuer = ResetRequest {
         issuer: ISSUER_B,
         ..request("synthetic-member")
@@ -316,11 +316,25 @@ fn reset_fails_closed_throttles_and_never_claims_unconfirmed_success() {
         (request("synthetic-nobody"), ResetError::UnknownUser),
         (other_issuer, ResetError::UnknownUser),
         (request("synthetic-gone"), ResetError::Deactivated),
-        (request("synthetic-no-email"), ResetError::NoEmail),
     ] {
         let err = request_password_reset(&mut client, None, &http, &req, cooldown).unwrap_err();
         assert_eq!(err, expected);
     }
+    assert_eq!(
+        audit_states(&mut client, "synthetic-gone"),
+        vec!["rejected_deactivated"]
+    );
+
+    // No local address is required: the provider resolves its own recipient.
+    let state = request_password_reset(
+        &mut client,
+        None,
+        &http,
+        &request("synthetic-no-email"),
+        cooldown,
+    )
+    .expect("an account without a stored address is not refused locally");
+    assert_eq!(state, ResetState::NotConfigured);
 
     // No provider: fail closed and audit it.
     let state = request_password_reset(
@@ -387,7 +401,13 @@ fn reset_fails_closed_throttles_and_never_claims_unconfirmed_success() {
 
     assert_eq!(
         audit_states(&mut client, "synthetic-member"),
-        vec!["not_configured", "failed", "requested", "throttled"]
+        vec![
+            "rejected_unknown_account",
+            "not_configured",
+            "failed",
+            "requested",
+            "throttled"
+        ]
     );
 }
 

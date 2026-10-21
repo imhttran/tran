@@ -228,8 +228,6 @@ pub enum ResetError {
     UnknownUser,
     #[error("account is deactivated")]
     Deactivated,
-    #[error("account has no email address")]
-    NoEmail,
     #[error("database: {0}")]
     Database(String),
 }
@@ -275,24 +273,22 @@ pub fn request_password_reset(
     cooldown: Duration,
 ) -> Result<ResetState, ResetError> {
     let mut tx = identity.transaction().map_err(db)?;
-    let row = tx
+    // The provider resolves its own verified recipient from (issuer, subject),
+    // so no local address is required or read here.
+    let deactivated: Option<bool> = tx
         .query_opt(
-            "SELECT deactivated_at IS NOT NULL, NULLIF(btrim(COALESCE(email, '')), '') IS NOT NULL
-               FROM users WHERE issuer = $1 AND subject = $2 FOR UPDATE",
+            "SELECT deactivated_at IS NOT NULL FROM users
+              WHERE issuer = $1 AND subject = $2 FOR UPDATE",
             &[&request.issuer, &request.subject],
         )
         .map_err(db)?
-        .ok_or(ResetError::UnknownUser)?;
-    if row.get::<_, bool>(0) {
-        return Err(ResetError::Deactivated);
-    }
-    if !row.get::<_, bool>(1) {
-        return Err(ResetError::NoEmail);
-    }
+        .map(|row| row.get(0));
 
-    let state = match provider {
-        None => ResetState::NotConfigured,
-        Some(provider) => {
+    let outcome = match (deactivated, provider) {
+        (None, _) => Err(ResetError::UnknownUser),
+        (Some(true), _) => Err(ResetError::Deactivated),
+        (Some(false), None) => Ok(ResetState::NotConfigured),
+        (Some(false), Some(provider)) => {
             let cooldown_secs = cooldown.as_secs_f64();
             let recent: bool = tx
                 .query_one(
@@ -310,18 +306,24 @@ pub fn request_password_reset(
                 )
                 .map_err(db)?
                 .get(0);
-            if recent {
+            Ok(if recent {
                 ResetState::Throttled
             } else {
                 send_reset(http, provider, request.issuer, request.subject)
-            }
+            })
         }
     };
 
+    // Rejected attempts are audited too; only `requested` starts the cooldown.
+    let state = match &outcome {
+        Ok(state) => state.as_str(),
+        Err(ResetError::UnknownUser) => "rejected_unknown_account",
+        Err(_) => "rejected_deactivated",
+    };
     let detail = serde_json::json!({
         "issuer": request.issuer,
         "actor_issuer": request.actor_issuer,
-        "state": state.as_str(),
+        "state": state,
     });
     tx.execute(
         "INSERT INTO audit_events (actor, action, subject, detail) VALUES ($1, $2, $3, $4::text::jsonb)",
@@ -334,7 +336,7 @@ pub fn request_password_reset(
     )
     .map_err(db)?;
     tx.commit().map_err(db)?;
-    Ok(state)
+    outcome
 }
 
 /// Posts the identity to the provider. Only a 2xx response counts as accepted.
