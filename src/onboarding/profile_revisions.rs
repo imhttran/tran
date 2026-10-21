@@ -64,7 +64,7 @@ impl RevisionStatus {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "draft" => Some(RevisionStatus::Draft),
             "pending_review" => Some(RevisionStatus::PendingReview),
@@ -98,7 +98,7 @@ impl ProfileVisibility {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "owner_private" => Some(ProfileVisibility::OwnerPrivate),
             "family" => Some(ProfileVisibility::Family),
@@ -227,12 +227,12 @@ impl From<postgres::Error> for RevisionError {
     }
 }
 
-const REVISION_COLUMNS: &str = "revision_id, person_id, field_key, revision_number, \
+pub(crate) const REVISION_COLUMNS: &str = "revision_id, person_id, field_key, revision_number, \
      prior_value_text, prior_approved_revision_number, new_value_text, visibility, status, \
      changed_by, changed_at::text, submitted_at::text, reviewed_at::text, reviewed_by, \
      review_note";
 
-fn row_to_revision(row: postgres::Row) -> Result<ProfileRevision, RevisionError> {
+pub(crate) fn row_to_revision(row: postgres::Row) -> Result<ProfileRevision, RevisionError> {
     let visibility = ProfileVisibility::parse(&row.get::<_, String>(7))
         .ok_or_else(|| RevisionError::Database("unknown profile visibility".into()))?;
     let status = RevisionStatus::parse(&row.get::<_, String>(8))

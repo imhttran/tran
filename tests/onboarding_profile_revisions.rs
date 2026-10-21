@@ -1,20 +1,20 @@
 //! USR-004B phase 1 service tests for owner drafts and independent review.
 //!
 //! Synthetic PostgreSQL only. The test uses `GENEALOGY_DATABASE_URL`, applies
-//! migrations 0001-0012, and cleans its own rows by prefix.
+//! migrations 0001-0018, and cleans its own rows by prefix.
 
 use std::fs;
 use std::str::FromStr;
 use std::sync::mpsc;
-use std::sync::{Barrier, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    create_draft, list_open_revisions, read_approved_values, review_revision, submit_revision,
-    update_draft, ProfileAudience, ProfileVisibility, ReviewDecision, RevisionError,
-    RevisionStatus, REVIEW_NOTE_MAX_CHARS,
+    create_draft, list_open_revisions, read_approved_values, read_review_detail, read_review_queue,
+    review_revision, submit_revision, update_draft, ProfileAudience, ProfileVisibility,
+    ReviewDecision, RevisionError, RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
 const MIGRATIONS: [&str; 18] = [
@@ -211,6 +211,317 @@ fn apply_migrations(client: &mut Client, paths: &[&str]) {
             .batch_execute(&sql)
             .unwrap_or_else(|err| panic!("apply {path}: {err}"));
     }
+}
+
+#[test]
+fn review_queue_excludes_drafts_filters_and_paginates() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("queue");
+    db.approved(person, "display_name", "Approved Queue Name");
+
+    let first = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-queue",
+        "preferred_name",
+        "Queue Proposal One",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("first draft");
+    submit_revision(&mut db.genealogy, first.revision_id, "owner-queue").expect("submit first");
+    let second = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-queue",
+        "biography",
+        "Queue Proposal Two",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("second draft");
+    submit_revision(&mut db.genealogy, second.revision_id, "owner-queue").expect("submit second");
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-queue",
+        "my_story",
+        "Unsubmitted private draft",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("unsubmitted draft");
+
+    let page = read_review_queue(
+        &mut db.genealogy,
+        "reviewer-queue",
+        &[RevisionStatus::PendingReview],
+        None,
+        1,
+    )
+    .expect("first queue page");
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].revision.revision_id, second.revision_id);
+    assert!(page.entries[0].can_decide);
+    assert_eq!(page.next_cursor, Some(second.revision_id));
+    assert!(page
+        .entries
+        .iter()
+        .all(|entry| entry.revision.revision_id != draft.revision_id));
+
+    let page = read_review_queue(
+        &mut db.genealogy,
+        "reviewer-queue",
+        &[RevisionStatus::PendingReview],
+        page.next_cursor,
+        1,
+    )
+    .expect("second queue page");
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].revision.revision_id, first.revision_id);
+    assert_eq!(page.next_cursor, None);
+
+    let approved = read_review_queue(
+        &mut db.genealogy,
+        "reviewer-queue",
+        &[RevisionStatus::Approved],
+        None,
+        25,
+    )
+    .expect("approved filter");
+    assert_eq!(approved.entries.len(), 1);
+    assert_eq!(
+        approved.entries[0]
+            .current_approved
+            .as_ref()
+            .map(|value| value.value_text.as_str()),
+        Some("Approved Queue Name")
+    );
+}
+
+#[test]
+fn review_detail_compares_current_value_and_blocks_conflicted_reviewers() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("detail");
+    db.approved(person, "display_name", "Approved Detail Name");
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-detail",
+        "display_name",
+        "Proposed Detail Name",
+        ProfileVisibility::Family,
+    )
+    .expect("draft");
+    submit_revision(&mut db.genealogy, draft.revision_id, "owner-detail").expect("submit");
+
+    let detail = read_review_detail(&mut db.genealogy, "reviewer-detail", draft.revision_id)
+        .expect("review detail");
+    assert_eq!(
+        detail.entry.display_name,
+        "Synthetic Revision Person detail"
+    );
+    assert_eq!(
+        detail
+            .entry
+            .current_approved
+            .as_ref()
+            .map(|value| value.value_text.as_str()),
+        Some("Approved Detail Name")
+    );
+    assert_eq!(detail.entry.revision.new_value_text, "Proposed Detail Name");
+    assert_eq!(detail.entry.revision.visibility, ProfileVisibility::Family);
+    assert!(detail.entry.can_decide);
+    assert!(detail
+        .events
+        .iter()
+        .any(|event| event.event == "pending_review"));
+    assert!(!detail.history.is_empty());
+
+    let self_review = read_review_detail(&mut db.genealogy, "owner-detail", draft.revision_id)
+        .expect("owner view");
+    assert!(!self_review.entry.can_decide);
+    assert_eq!(
+        self_review.entry.decision_block.as_deref(),
+        Some("self_submitted")
+    );
+
+    db.genealogy
+        .execute(
+            "INSERT INTO onboarding_person_account_link
+                 (person_id, account_id, linked_by, identity_fingerprint)
+             VALUES ($1, 9901, 'synthetic-reviewer', 'reviewer-owner-fingerprint')",
+            &[&person],
+        )
+        .expect("link owner reviewer");
+    let owner_review = read_review_detail(
+        &mut db.genealogy,
+        "reviewer-owner-fingerprint",
+        draft.revision_id,
+    )
+    .expect("owner-linked detail");
+    assert!(!owner_review.entry.can_decide);
+    assert_eq!(
+        owner_review.entry.decision_block.as_deref(),
+        Some("reviewer_owns_person")
+    );
+}
+
+#[test]
+fn concurrent_independent_decisions_have_exactly_one_winner() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("concurrent-review");
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-concurrent",
+        "display_name",
+        "Concurrent Approved",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("draft");
+    submit_revision(&mut db.genealogy, draft.revision_id, "owner-concurrent").expect("submit");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let dsn_one = db.dsn.clone();
+    let dsn_two = db.dsn.clone();
+    let revision_id = draft.revision_id;
+    let one = {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            let mut client = Client::connect(&dsn_one, NoTls).expect("reviewer one db");
+            barrier.wait();
+            review_revision(
+                &mut client,
+                revision_id,
+                "reviewer-concurrent-one",
+                ReviewDecision::Approve,
+                Some("first"),
+            )
+        })
+    };
+    let two = {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            let mut client = Client::connect(&dsn_two, NoTls).expect("reviewer two db");
+            barrier.wait();
+            review_revision(
+                &mut client,
+                revision_id,
+                "reviewer-concurrent-two",
+                ReviewDecision::Approve,
+                Some("second"),
+            )
+        })
+    };
+    let outcomes = [
+        one.join().expect("one joined"),
+        two.join().expect("two joined"),
+    ];
+    assert_eq!(
+        outcomes.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one concurrent decision may commit"
+    );
+    assert!(outcomes
+        .iter()
+        .any(|result| matches!(result, Err(RevisionError::InvalidTransition))));
+    assert_eq!(
+        db.approved_value(person, "display_name").as_deref(),
+        Some("Concurrent Approved")
+    );
+    assert_eq!(
+        read_review_queue(
+            &mut db.genealogy,
+            "reviewer-concurrent-one",
+            &[RevisionStatus::PendingReview],
+            None,
+            25,
+        )
+        .expect("pending queue")
+        .entries
+        .len(),
+        0
+    );
+}
+
+#[test]
+fn owner_private_and_unapproved_values_stay_out_of_family_audience() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let person = db.person("audience");
+    let draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-audience",
+        "my_story",
+        "A private family story",
+        ProfileVisibility::OwnerPrivate,
+    )
+    .expect("draft");
+    submit_revision(&mut db.genealogy, draft.revision_id, "owner-audience").expect("submit");
+
+    let family = read_approved_values(&mut db.genealogy, person, ProfileAudience::Family)
+        .expect("family values");
+    assert!(family.iter().all(|value| value.field_key != "my_story"));
+
+    let approved = review_revision(
+        &mut db.genealogy,
+        draft.revision_id,
+        "reviewer-audience",
+        ReviewDecision::Approve,
+        Some("approved privately"),
+    )
+    .expect("private approval");
+    assert_eq!(approved.status, RevisionStatus::Approved);
+
+    let family = read_approved_values(&mut db.genealogy, person, ProfileAudience::Family)
+        .expect("family values after approval");
+    assert!(
+        family.iter().all(|value| value.field_key != "my_story"),
+        "owner-private approved content must never become family-visible"
+    );
+    let owner = read_approved_values(&mut db.genealogy, person, ProfileAudience::Owner)
+        .expect("owner values");
+    assert!(
+        owner
+            .iter()
+            .any(|value| value.field_key == "my_story"
+                && value.value_text == "A private family story")
+    );
+
+    let rejected_draft = create_draft(
+        &mut db.genealogy,
+        person,
+        "owner-audience",
+        "family_memories",
+        "A rejected family memory",
+        ProfileVisibility::Family,
+    )
+    .expect("rejected draft");
+    submit_revision(
+        &mut db.genealogy,
+        rejected_draft.revision_id,
+        "owner-audience",
+    )
+    .expect("submit rejected");
+    review_revision(
+        &mut db.genealogy,
+        rejected_draft.revision_id,
+        "reviewer-audience",
+        ReviewDecision::Reject,
+        Some("not suitable"),
+    )
+    .expect("reject");
+    let family = read_approved_values(&mut db.genealogy, person, ProfileAudience::Family)
+        .expect("family values after rejection");
+    assert!(family
+        .iter()
+        .all(|value| value.field_key != "family_memories"));
 }
 
 #[test]

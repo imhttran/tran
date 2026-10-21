@@ -12,9 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use image::{DynamicImage, ImageFormat};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    link_reviewed, read_authorized_media, resolve_account, review_revision, revoke_link,
-    store_submission, withdraw_owned_media, IdentityAccount, LinkDecision, MediaError, MediaKind,
-    MediaStorage, ProfileVisibility, ReviewDecision, DOCUMENT_MAX_BYTES, PHOTO_MAX_BYTES,
+    link_reviewed, read_authorized_media, read_review_media, resolve_account, review_revision,
+    revoke_link, store_submission, withdraw_owned_media, IdentityAccount, LinkDecision, MediaError,
+    MediaKind, MediaStorage, ProfileVisibility, ReviewDecision, RevisionStatus, DOCUMENT_MAX_BYTES,
+    PHOTO_MAX_BYTES,
 };
 use tempfile::TempDir;
 
@@ -776,6 +777,9 @@ fn media_routes_are_registered() {
         "/api/profile/media/photo",
         "/api/profile/media/personal-document",
         "/api/profile/media/{id}",
+        "/api/admin/reviews",
+        "/api/admin/reviews/media/{id}",
+        "/api/admin/reviews/{id}",
     ] {
         assert!(source.contains(route), "missing route {route}");
     }
@@ -783,4 +787,71 @@ fn media_routes_are_registered() {
     assert!(source.contains("read_authorized_media"));
     assert!(source.contains("withdraw_owned_media"));
     assert!(source.contains("MediaStorage"));
+}
+
+#[test]
+fn review_media_is_pending_only_and_requires_an_independent_reviewer() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("review-media-owner");
+    let person = db.person("review-media");
+    db.link(&owner, person);
+    let photo = db
+        .upload(
+            &owner,
+            MediaKind::Photo,
+            "review-media.png",
+            &png_bytes(),
+            ProfileVisibility::Family,
+        )
+        .expect("upload pending photo");
+
+    let reviewer = "reviewer-media-fingerprint";
+    let download = read_review_media(&mut db.genealogy, &db.storage, reviewer, photo.media_id)
+        .expect("independent reviewer reads pending media");
+    assert_eq!(download.asset.status, RevisionStatus::PendingReview);
+    assert!(!download.bytes.is_empty());
+
+    assert_eq!(
+        read_review_media(
+            &mut db.genealogy,
+            &db.storage,
+            &owner.identity_fingerprint,
+            photo.media_id,
+        ),
+        Err(MediaError::NotFound),
+        "the submitter cannot use the review media path"
+    );
+
+    // Replace the account holder while the submission stays pending. The new
+    // owner must still be denied because they own the linked person.
+    let replacement_owner = db.account("review-media-replacement");
+    let link_id: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT link_id FROM onboarding_person_account_link WHERE person_id = $1",
+            &[&person],
+        )
+        .expect("read link")
+        .get(0);
+    revoke_link(&mut db.genealogy, link_id, "synthetic-reviewer").expect("revoke link");
+    db.link(&replacement_owner, person);
+    assert_eq!(
+        read_review_media(
+            &mut db.genealogy,
+            &db.storage,
+            &replacement_owner.identity_fingerprint,
+            photo.media_id,
+        ),
+        Err(MediaError::NotFound),
+        "the linked owner cannot review their own media submission"
+    );
+
+    db.approve(photo.revision_id);
+    assert_eq!(
+        read_review_media(&mut db.genealogy, &db.storage, reviewer, photo.media_id),
+        Err(MediaError::NotFound),
+        "the review media path is limited to pending submissions"
+    );
 }

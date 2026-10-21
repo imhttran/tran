@@ -41,8 +41,8 @@ use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
 use crate::onboarding::{
     self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
-    MediaAsset, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary, ProfileRevision,
-    ProfileVisibility, ReviewDecision, RevisionError,
+    MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary,
+    ProfileRevision, ProfileVisibility, ReviewDecision, RevisionError, RevisionStatus,
 };
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
@@ -209,6 +209,9 @@ impl AppState {
                 get(profile_media).delete(withdraw_profile_media),
             )
             .route("/api/admin/roles", post(change_role))
+            .route("/api/admin/reviews", get(review_queue))
+            .route("/api/admin/reviews/media/{id}", get(review_profile_media))
+            .route("/api/admin/reviews/{id}", get(review_detail))
             .route("/api/genealogy/records", get(genealogy_records))
             .route("/api/genealogy/tree", get(genealogy_tree))
             .route(
@@ -819,6 +822,212 @@ async fn review_profile_revision(
     revision_response(result)
 }
 
+#[derive(Deserialize)]
+struct ReviewQueueQuery {
+    status: Option<String>,
+    cursor: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// Lists submitted profile revisions for an authorized administrator review.
+///
+/// Drafts are never returned. The query is bounded and ordered by descending
+/// revision id, with the last id used as a stable cursor.
+#[allow(clippy::result_large_err)]
+async fn review_queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ReviewQueueQuery>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let (statuses, status_label) = match parse_review_statuses(query.status.as_deref()) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let limit = query.limit.unwrap_or(25);
+    if !(1..=100).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_review_limit",
+            "limit must be between 1 and 100",
+        );
+    }
+    if query.cursor.is_some_and(|cursor| cursor <= 0) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_review_cursor",
+            "cursor must be a positive revision id",
+        );
+    }
+    let config = state.config.clone();
+    let reviewer = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let cursor = query.cursor;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_review_queue(&mut genealogy, &reviewer, &statuses, cursor, limit)
+            .map_err(revision_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(queue)) => Json(serde_json::json!({
+            "ok": true,
+            "status": status_label,
+            "limit": queue.limit,
+            "next_cursor": queue.next_cursor,
+            "entries": queue.entries.iter().map(review_entry_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: review queue task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "review_queue_failed",
+                "the review queue could not be loaded",
+            )
+        }
+    }
+}
+
+/// Reads one submitted revision, its events, and its same-field history.
+#[allow(clippy::result_large_err)]
+async fn review_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let reviewer = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_review_detail(&mut genealogy, &reviewer, revision_id)
+            .map_err(revision_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(detail)) => Json(serde_json::json!({
+            "ok": true,
+            "entry": review_entry_json(&detail.entry),
+            "events": detail.events.iter().map(review_event_json).collect::<Vec<_>>(),
+            "history": detail.history.iter().map(revision_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: review detail task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "review_detail_failed",
+                "the review detail could not be loaded",
+            )
+        }
+    }
+}
+
+/// Serves the pending media attached to a review decision. Approved
+/// owner-private media, rejected media, and media owned by the reviewer are
+/// intentionally not reachable here.
+#[allow(clippy::result_large_err)]
+async fn review_profile_media(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(media_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let reviewer = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = MediaStorage::new(config.media_root.clone());
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_review_media(&mut genealogy, &storage, &reviewer, media_id)
+            .map_err(media_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(download)) => media_download_response(download),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: review media task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "review_media_failed",
+                "the review media could not be loaded",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_review_statuses(value: Option<&str>) -> Result<(Vec<RevisionStatus>, String), Response> {
+    let raw = value
+        .unwrap_or("pending_review")
+        .trim()
+        .to_ascii_lowercase();
+    let statuses = match raw.as_str() {
+        "" | "pending" | "pending_review" => vec![RevisionStatus::PendingReview],
+        "approved" => vec![RevisionStatus::Approved],
+        "rejected" => vec![RevisionStatus::Rejected],
+        "needs_changes" | "needs-changes" => vec![RevisionStatus::NeedsChanges],
+        "all" => vec![
+            RevisionStatus::PendingReview,
+            RevisionStatus::Approved,
+            RevisionStatus::Rejected,
+            RevisionStatus::NeedsChanges,
+        ],
+        _ => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_review_status",
+                "status must be pending_review, approved, rejected, needs_changes, or all",
+            ))
+        }
+    };
+    Ok((statuses, raw))
+}
+
+fn review_entry_json(entry: &onboarding::ReviewEntry) -> serde_json::Value {
+    serde_json::json!({
+        "display_name": entry.display_name,
+        "revision": revision_json(&entry.revision),
+        "current_approved": entry.current_approved.as_ref().map(approved_json),
+        "current_media": entry.current_media.as_ref().map(review_media_json),
+        "media": entry.media.as_ref().map(review_media_json),
+        "can_decide": entry.can_decide,
+        "decision_block": entry.decision_block,
+    })
+}
+
+fn review_media_json(media: &onboarding::ReviewMedia) -> serde_json::Value {
+    serde_json::json!({
+        "media_id": media.media_id,
+        "kind": media.kind,
+        "mime_type": media.mime_type,
+        "file_name": media.file_name,
+        "byte_size": media.byte_size,
+        "width": media.width,
+        "height": media.height,
+    })
+}
+
+fn review_event_json(event: &onboarding::ReviewEvent) -> serde_json::Value {
+    serde_json::json!({
+        "event": event.event,
+        "actor": event.actor,
+        "note": event.note,
+        "created_at": event.created_at,
+    })
+}
+
 #[allow(clippy::result_large_err)]
 fn revision_response(
     result: Result<Result<ProfileRevision, Response>, tokio::task::JoinError>,
@@ -1119,6 +1328,63 @@ async fn upload_media(
 }
 
 #[allow(clippy::result_large_err)]
+fn media_download_response(download: MediaDownload) -> Response {
+    let disposition = if download.asset.kind == MediaKind::Photo {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let content_disposition = format!(
+        "{disposition}; filename=\"{}\"",
+        safe_download_name(&download.asset.file_name)
+    );
+    let Ok(content_type) = axum::http::HeaderValue::from_str(&download.asset.mime_type) else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "media_response_failed",
+            "the media response could not be built",
+        );
+    };
+    let Ok(content_disposition) = axum::http::HeaderValue::from_str(&content_disposition) else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "media_response_failed",
+            "the media response could not be built",
+        );
+    };
+    let content_length = download.bytes.len();
+    let content_length = match axum::http::HeaderValue::from_str(&content_length.to_string()) {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "media_response_failed",
+                "the media response could not be built",
+            )
+        }
+    };
+    let mut response = Response::new(Body::from(download.bytes));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, content_type);
+    headers.insert(CONTENT_DISPOSITION, content_disposition);
+    headers.insert(
+        CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("x-content-type-options"),
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("content-security-policy"),
+        axum::http::HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    headers.insert(CONTENT_LENGTH, content_length);
+    response
+}
+
+#[allow(clippy::result_large_err)]
 async fn profile_media(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1140,64 +1406,7 @@ async fn profile_media(
     })
     .await;
     match result {
-        Ok(Ok(download)) => {
-            let disposition = if download.asset.kind == MediaKind::Photo {
-                "inline"
-            } else {
-                "attachment"
-            };
-            let content_disposition = format!(
-                "{disposition}; filename=\"{}\"",
-                safe_download_name(&download.asset.file_name)
-            );
-            let Ok(content_type) = axum::http::HeaderValue::from_str(&download.asset.mime_type)
-            else {
-                return error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "media_response_failed",
-                    "the media response could not be built",
-                );
-            };
-            let Ok(content_disposition) = axum::http::HeaderValue::from_str(&content_disposition)
-            else {
-                return error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "media_response_failed",
-                    "the media response could not be built",
-                );
-            };
-            let content_length = download.bytes.len();
-            let content_length =
-                match axum::http::HeaderValue::from_str(&content_length.to_string()) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "media_response_failed",
-                            "the media response could not be built",
-                        )
-                    }
-                };
-            let mut response = Response::new(Body::from(download.bytes));
-            *response.status_mut() = StatusCode::OK;
-            let headers = response.headers_mut();
-            headers.insert(CONTENT_TYPE, content_type);
-            headers.insert(CONTENT_DISPOSITION, content_disposition);
-            headers.insert(
-                CACHE_CONTROL,
-                axum::http::HeaderValue::from_static("private, no-store"),
-            );
-            headers.insert(
-                axum::http::HeaderName::from_static("x-content-type-options"),
-                axum::http::HeaderValue::from_static("nosniff"),
-            );
-            headers.insert(
-                axum::http::HeaderName::from_static("content-security-policy"),
-                axum::http::HeaderValue::from_static("default-src 'none'; sandbox"),
-            );
-            headers.insert(CONTENT_LENGTH, content_length);
-            response
-        }
+        Ok(Ok(download)) => media_download_response(download),
         Ok(Err(response)) => response,
         Err(err) => {
             eprintln!("api: media download task failed: {err}");
