@@ -51,6 +51,11 @@ authority.
 - Review media responses use `private, no-store`, `nosniff`, a sandbox CSP, and
   a safe content disposition. Storage keys, hashes, and raw bytes never appear
   in JSON or logs.
+- Review-media authorization takes the revision row lock first and the person
+  row lock second, matching the decision and link-change lock order. Both locks
+  are held through file authorization and byte retrieval. A committed approval,
+  rejection, withdrawal, or account/link replacement is therefore observed
+  before any bytes are served.
 
 ## Family presentation and USR-006
 

@@ -6,7 +6,9 @@
 use std::fs;
 use std::io::Cursor;
 use std::str::FromStr;
+use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::{DynamicImage, ImageFormat};
@@ -101,6 +103,7 @@ struct TestDb {
     storage: MediaStorage,
     rag_dsn: Option<String>,
     prefix: String,
+    genealogy_dsn: String,
     _temp: TempDir,
     _guard: MutexGuard<'static, ()>,
 }
@@ -128,6 +131,7 @@ impl TestDb {
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             prefix: format!("synthetic-media-{}-{nanos}", std::process::id()),
+            genealogy_dsn,
             _temp: temp,
             _guard: guard,
         })
@@ -853,5 +857,191 @@ fn review_media_is_pending_only_and_requires_an_independent_reviewer() {
         read_review_media(&mut db.genealogy, &db.storage, reviewer, photo.media_id),
         Err(MediaError::NotFound),
         "the review media path is limited to pending submissions"
+    );
+}
+
+fn wait_until_blocked(control: &mut Client, pid: i32) {
+    for _ in 0..50_000 {
+        let blocked: bool = control
+            .query_one("SELECT cardinality(pg_blocking_pids($1)) > 0", &[&pid])
+            .expect("read blocking pids")
+            .get(0);
+        if blocked {
+            return;
+        }
+        std::thread::yield_now();
+    }
+    panic!("backend {pid} never blocked on the expected row lock");
+}
+
+#[test]
+fn review_media_waits_for_decision_lock_then_denies_terminal_revision() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("race-decision-owner");
+    let person = db.person("race-decision");
+    db.link(&owner, person);
+    let photo = db
+        .upload(
+            &owner,
+            MediaKind::Photo,
+            "race-decision.png",
+            &png_bytes(),
+            ProfileVisibility::Family,
+        )
+        .expect("upload pending photo");
+    let reviewer = "reviewer-race-decision";
+
+    let mut locker = Client::connect(&db.genealogy_dsn, NoTls).expect("decision lock connection");
+    let mut tx = locker.transaction().expect("decision transaction");
+    tx.query_one(
+        "SELECT 1 FROM onboarding_profile_revision WHERE revision_id = $1 FOR UPDATE",
+        &[&photo.revision_id],
+    )
+    .expect("lock revision like a decision");
+
+    let storage = db.storage.clone();
+    let dsn = db.genealogy_dsn.clone();
+    let media_id = photo.media_id;
+    let (pid_tx, pid_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("media reader connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("reader pid")
+            .get(0);
+        pid_tx.send(pid).expect("send reader pid");
+        read_review_media(&mut client, &storage, reviewer, media_id)
+    });
+    let reader_pid = pid_rx.recv().expect("reader pid received");
+    wait_until_blocked(&mut db.genealogy, reader_pid);
+
+    tx.execute(
+        "UPDATE onboarding_profile_revision
+            SET status = 'rejected', reviewed_at = now(),
+                reviewed_by = 'reviewer-race-decision', review_note = 'race rejection'
+          WHERE revision_id = $1",
+        &[&photo.revision_id],
+    )
+    .expect("terminal decision update");
+    tx.commit().expect("commit terminal decision");
+
+    assert_eq!(
+        reader.join().expect("reader joined"),
+        Err(MediaError::NotFound),
+        "a read that waited on the decision lock must observe the terminal state"
+    );
+}
+
+#[test]
+fn review_media_waits_for_account_replacement_lock_then_denies_new_owner() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("race-link-owner");
+    let person = db.person("race-link");
+    db.link(&owner, person);
+    let photo = db
+        .upload(
+            &owner,
+            MediaKind::Photo,
+            "race-link.png",
+            &png_bytes(),
+            ProfileVisibility::Family,
+        )
+        .expect("upload pending photo");
+    let reviewer = "reviewer-race-owner";
+
+    let mut locker = Client::connect(&db.genealogy_dsn, NoTls).expect("link lock connection");
+    let mut tx = locker.transaction().expect("link transaction");
+    tx.query_one(
+        "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+        &[&person],
+    )
+    .expect("lock person like a link change");
+    tx.execute(
+        "DELETE FROM onboarding_person_account_link WHERE person_id = $1",
+        &[&person],
+    )
+    .expect("remove previous account link");
+    tx.execute(
+        "INSERT INTO onboarding_person_account_link
+             (person_id, account_id, linked_by, identity_fingerprint)
+         VALUES ($1, 9911, 'synthetic-reviewer', $2)",
+        &[&person, &reviewer],
+    )
+    .expect("replace with reviewer link");
+
+    let storage = db.storage.clone();
+    let dsn = db.genealogy_dsn.clone();
+    let media_id = photo.media_id;
+    let (pid_tx, pid_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("media reader connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("reader pid")
+            .get(0);
+        pid_tx.send(pid).expect("send reader pid");
+        read_review_media(&mut client, &storage, reviewer, media_id)
+    });
+    let reader_pid = pid_rx.recv().expect("reader pid received");
+    wait_until_blocked(&mut db.genealogy, reader_pid);
+    tx.commit().expect("commit link replacement");
+
+    assert_eq!(
+        reader.join().expect("reader joined"),
+        Err(MediaError::NotFound),
+        "a read that waited on a link change must observe the new owner"
+    );
+}
+
+#[test]
+fn review_media_is_closed_after_rejection_and_withdrawal() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let owner = db.account("race-closure-owner");
+    let person = db.person("race-closure");
+    db.link(&owner, person);
+    let reviewer = "reviewer-race-closure";
+
+    let rejected = db
+        .upload(
+            &owner,
+            MediaKind::PersonalDocument,
+            "rejected.txt",
+            b"synthetic rejected document",
+            ProfileVisibility::Family,
+        )
+        .expect("upload rejected document");
+    review_revision(
+        &mut db.genealogy,
+        rejected.revision_id,
+        reviewer,
+        ReviewDecision::Reject,
+        Some("synthetic rejection"),
+    )
+    .expect("reject document");
+    assert_eq!(
+        read_review_media(&mut db.genealogy, &db.storage, reviewer, rejected.media_id,),
+        Err(MediaError::NotFound)
+    );
+
+    let withdrawn = db
+        .upload(
+            &owner,
+            MediaKind::Photo,
+            "withdrawn.png",
+            &png_bytes(),
+            ProfileVisibility::Family,
+        )
+        .expect("upload withdrawn photo");
+    withdraw_owned_media(&mut db.genealogy, &db.storage, &owner, withdrawn.media_id)
+        .expect("withdraw pending photo");
+    assert_eq!(
+        read_review_media(&mut db.genealogy, &db.storage, reviewer, withdrawn.media_id,),
+        Err(MediaError::NotFound)
     );
 }
