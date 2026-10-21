@@ -27,9 +27,37 @@ impl Drop for Cleanup {
         if let Ok(mut client) = postgres::Client::connect(&self.dsn, postgres::NoTls) {
             for corpus in &self.corpora {
                 let _ = client.execute("DELETE FROM documents WHERE corpus = $1", &[corpus]);
+                let _ = client.execute("DELETE FROM document_version WHERE corpus = $1", &[corpus]);
             }
         }
     }
+}
+
+fn publish(dsn: &str, corpus: &str, source: &str) {
+    let mut client = postgres::Client::connect(dsn, postgres::NoTls).expect("connect to publish");
+    let version_id: i64 = client
+        .query_one(
+            "INSERT INTO document_version
+                 (document_key, version_number, corpus, source, title, category, origin,
+                  access_scope, content_sha256, byte_size, mime_type, original_filename,
+                  storage_key, review_status, processing_status, reviewed_by, reviewed_at,
+                  approved_sha256, approved_scope, approved_version_number, created_by)
+             VALUES ($1, 1, $2, $3, $3, 'other', 'operator_import', 'family',
+                     repeat('a', 64), 0, 'text/plain', 'synthetic.txt', 'synthetic',
+                     'approved', 'ready', 'test', now(), repeat('a', 64), 'family', 1, 'test')
+             ON CONFLICT (corpus, document_key, version_number) DO UPDATE
+                SET review_status = 'approved', processing_status = 'ready'
+             RETURNING version_id",
+            &[&format!("{corpus}-{source}"), &corpus, &source],
+        )
+        .expect("insert approved version")
+        .get(0);
+    client
+        .execute(
+            "UPDATE documents SET document_version_id = $1 WHERE corpus = $2 AND source = $3",
+            &[&version_id, &corpus, &source],
+        )
+        .expect("link chunks to approved version");
 }
 
 fn chunk(corpus: &str, source: &str, section: &str, index: i32) -> StoredChunk {
@@ -90,6 +118,9 @@ fn section_chunks_caps_per_section_orders_and_scopes_to_the_corpus() {
     store
         .write_chunk(&chunk(&foreign, &source, "Alpha", 0))
         .unwrap();
+
+    publish(&dsn, &corpus, &source);
+    publish(&dsn, &foreign, &source);
 
     let keys = vec![
         SectionKey {

@@ -296,7 +296,7 @@ impl PgStore {
                 "SELECT id, content, source, section, chunk_index, language, page, corpus, \
                  content_hash, embed_model, embedding_dim, chunker_config, \
                  ingested_at::text, embedding::text \
-                 FROM documents WHERE corpus = $1 ORDER BY id",
+                 FROM approved_documents WHERE corpus = $1 ORDER BY id",
                 &[&corpus],
             )
             .map_err(PgStoreError::Query)?;
@@ -314,7 +314,7 @@ impl PgStore {
         let rows = conn
             .query(
                 "SELECT content, source, section, chunk_index, language, page \
-                 FROM documents WHERE corpus = $1 ORDER BY id",
+                 FROM approved_documents WHERE corpus = $1 ORDER BY id",
                 &[&corpus],
             )
             .map_err(PgStoreError::Query)?;
@@ -362,7 +362,7 @@ impl PgStore {
                  content_hash, embed_model, embedding_dim, chunker_config, \
                  ingested_at::text, embedding::text, \
                  (1 - (embedding <=> $1::text::vector))::float8 AS similarity \
-                 FROM documents WHERE corpus = $2 \
+                 FROM approved_documents WHERE corpus = $2 \
                  ORDER BY embedding <=> $1::text::vector LIMIT $3",
                 &[&literal, &corpus, &(top_k as i64)],
             )
@@ -399,7 +399,7 @@ impl PgStore {
                      to_tsvector($3::text::regconfig, COALESCE(section, '') || ' ' || content),\
                      websearch_to_tsquery($3::text::regconfig, $1)\
                  )::float8 AS rank \
-                 FROM documents \
+                 FROM approved_documents \
                  WHERE corpus = $4 AND to_tsvector(\
                      $3::text::regconfig, COALESCE(section, '') || ' ' || content\
                  ) @@ websearch_to_tsquery($3::text::regconfig, $1) \
@@ -471,7 +471,7 @@ impl PgStore {
                  SELECT *, ROW_NUMBER() OVER ( \
                      PARTITION BY source, section ORDER BY chunk_index \
                  ) AS section_rank \
-                 FROM documents \
+                 FROM approved_documents \
                  WHERE (source, section) IN ({}) AND corpus = ${corpus_index} \
              ) AS ranked \
              WHERE section_rank <= ${} \
