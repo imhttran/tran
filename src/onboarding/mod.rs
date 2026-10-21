@@ -14,6 +14,7 @@
 
 pub mod account_map;
 pub mod batch;
+pub mod branch_review;
 pub mod candidate;
 pub mod delivery;
 pub mod dry_run;
@@ -29,6 +30,11 @@ pub mod username;
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
 pub use batch::{
     confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport, ItemStatus, CHUNK_SIZE,
+};
+pub use branch_review::{
+    active_branch_grants, grant_branches, has_active_branch_grant, list_branches,
+    list_grant_events, list_grants, revoke_grant, BranchGrantError, BranchGrantEvent,
+    BranchReviewerGrant, BranchSummary, GRANT_REASON_MAX_CHARS,
 };
 pub use candidate::{
     classify, load_name_parts, name_parts, preview_candidates, reclassify_person,

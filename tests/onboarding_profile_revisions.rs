@@ -17,7 +17,7 @@ use rag_foundation::onboarding::{
     ReviewDecision, RevisionError, RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
-const MIGRATIONS: [&str; 18] = [
+const MIGRATIONS: [&str; 19] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -36,6 +36,7 @@ const MIGRATIONS: [&str; 18] = [
     "genealogy/migrations/0016_profile_media_withdrawal.sql",
     "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
     "genealogy/migrations/0018_onboarding_batch.sql",
+    "genealogy/migrations/0019_branch_reviewer_grants.sql",
 ];
 
 const PERSON_CHILD_TABLES: [&str; 8] = [

@@ -128,6 +128,8 @@ pub enum Operation {
     ProfileReview,
     /// Changing a role assignment (transactional and audited).
     RoleChange,
+    /// Granting or revoking explicit branch reviewer authority.
+    BranchReviewerAdmin,
     /// Reading authorized genealogy records and evidence.
     GenealogyRead,
     /// Drafting a Head of Family nomination with citations.
@@ -168,7 +170,8 @@ impl Operation {
             | Operation::OnboardingDryRun
             | Operation::OnboardingBulkPrepare
             | Operation::OnboardingBulkSend
-            | Operation::ProfileReview => Some(Role::Admin),
+            | Operation::ProfileReview
+            | Operation::BranchReviewerAdmin => Some(Role::Admin),
             Operation::ProfileRead | Operation::ProfileWrite => None,
         }
     }
@@ -199,6 +202,7 @@ impl Operation {
             Operation::ProfileRead => "profile_read",
             Operation::ProfileWrite => "profile_write",
             Operation::ProfileReview => "profile_review",
+            Operation::BranchReviewerAdmin => "branch_reviewer_admin",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
             Operation::OnboardingPreview => "onboarding_preview",
             Operation::OnboardingInvite => "onboarding_invite",
@@ -260,6 +264,7 @@ mod tests {
             Operation::ProfileWrite,
             Operation::ProfileReview,
             Operation::RoleChange,
+            Operation::BranchReviewerAdmin,
             Operation::HeadOfFamilyApproval,
             Operation::OnboardingPreview,
             Operation::OnboardingInvite,

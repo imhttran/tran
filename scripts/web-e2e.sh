@@ -131,13 +131,15 @@ for migration in \
 	0015_profile_media \
 	0016_profile_media_withdrawal \
 	0017_profile_media_withdrawal_audit \
-	0018_onboarding_batch; do
+	0018_onboarding_batch \
+	0019_branch_reviewer_grants; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f scripts/seed-genealogy-e2e.sql >/dev/null
-
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO family_branch (branch_key, branch_label, branch_number) VALUES ('branch-1', 'First Branch', 1), ('branch-2', 'Second Branch', 2), ('branch-3', 'Third Branch', 3) ON CONFLICT (branch_key) DO NOTHING" >/dev/null
 # Bulk onboarding synthetic fixtures. This reseeds only synthetic-bulk people,
 # batch rows, invitations, and links; run it before the profile link seed below.
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
