@@ -200,7 +200,7 @@ fn replace_source_is_isolated_by_corpus() {
     );
 
     let second_rows = store
-        .rows_for_corpus(second.as_str())
+        .find_by_content_hash(&second, &second_hash, Some(&source))
         .expect("read the second corpus rows")
         .into_iter()
         .filter(|row| row.chunk.source.as_deref() == Some(source.as_str()))

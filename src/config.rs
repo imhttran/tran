@@ -28,6 +28,8 @@ pub const DEFAULT_CHUNK_SIZE: i64 = 50;
 pub const DEFAULT_CHUNK_OVERLAP: i64 = 20;
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.6;
 pub const DEFAULT_MEDIA_ROOT: &str = "./data/media";
+/// Private root for family document originals. Never statically served.
+pub const DEFAULT_DOCUMENT_ROOT: &str = "./data/documents";
 pub const DEFAULT_QUERY_REWRITE: bool = true;
 pub const DEFAULT_RAG_ANSWERABILITY_GATE: bool = true;
 pub const DEFAULT_RAG_CITATION_VALIDATION: bool = false;
@@ -111,6 +113,9 @@ pub struct Config {
     pub onboarding_send_interval_ms: i64,
     /// Private filesystem root for owner media. Never served as a static tree.
     pub media_root: PathBuf,
+    /// Private filesystem root for family document originals. Never served as a
+    /// static tree; originals are returned only by authorized handlers.
+    pub document_root: PathBuf,
     /// Provider endpoint that sends password-reset email. `None` when
     /// `PASSWORD_RESET_URL` is unset: reset requests then fail closed.
     pub password_reset: Option<ResetProvider>,
@@ -162,6 +167,13 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let media_root = get("MEDIA_ROOT").unwrap_or_else(|| DEFAULT_MEDIA_ROOT.to_string());
+        let document_root =
+            get("DOCUMENT_ROOT").unwrap_or_else(|| DEFAULT_DOCUMENT_ROOT.to_string());
+        if document_root.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "DOCUMENT_ROOT must not be blank".to_string(),
+            ));
+        }
         if media_root.trim().is_empty() {
             return Err(ConfigError::Invalid(
                 "MEDIA_ROOT must not be blank".to_string(),
@@ -253,6 +265,7 @@ impl Config {
                 DEFAULT_ONBOARDING_SEND_INTERVAL_MS,
             )?,
             media_root: PathBuf::from(media_root),
+            document_root: PathBuf::from(document_root),
             password_reset,
             password_reset_cooldown: Duration::from_secs(non_negative_int(
                 &get,

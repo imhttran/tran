@@ -282,6 +282,8 @@ pub fn seed_api_contract_admin(dsn: &str, issuer: &str, subject: &str, corpus: &
 pub struct ApiProcess {
     child: Child,
     base_url: String,
+    /// Disposable private document root owned by this run only.
+    document_root: PathBuf,
 }
 
 impl ApiProcess {
@@ -289,8 +291,14 @@ impl ApiProcess {
     pub fn start(dsn: &str, corpus: &str, ollama_url: &str, auth: &TestAuth) -> Self {
         let binary = build_api();
         let port = free_port();
+        // Originals are stored privately. Point the run at its own temp root so
+        // the test never writes into the checkout and never touches operator
+        // documents.
+        let document_root = std::env::temp_dir().join(unique_tag("api-contract-documents"));
+        fs::create_dir_all(&document_root).expect("create the run document root");
         let child = Command::new(&binary)
             .env("DATABASE_URL", dsn)
+            .env("DOCUMENT_ROOT", &document_root)
             .env("RAG_CORPUS", corpus)
             .env("API_HOST", "127.0.0.1")
             .env("API_PORT", port.to_string())
@@ -315,7 +323,11 @@ impl ApiProcess {
             .spawn()
             .expect("spawn the production api binary");
         let base_url = format!("http://127.0.0.1:{port}");
-        let mut process = Self { child, base_url };
+        let mut process = Self {
+            child,
+            base_url,
+            document_root,
+        };
         process.wait_for_health();
         process
     }
@@ -356,6 +368,7 @@ impl Drop for ApiProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = fs::remove_dir_all(&self.document_root);
     }
 }
 

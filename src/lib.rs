@@ -24,6 +24,7 @@ pub mod chunker;
 pub mod config;
 pub mod corpus;
 pub mod document;
+pub mod document_lifecycle;
 pub mod embedding;
 pub mod evaluation;
 pub mod fingerprint;
