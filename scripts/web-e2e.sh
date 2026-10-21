@@ -92,6 +92,13 @@ E2E_REVIEWER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --
 export E2E_REVIEWER_TOKEN
 
 echo "web-e2e: seeding test identities"
+# Base RAG schema and the FAM-002 document lifecycle metadata. These are
+# idempotent; the document views must exist before the API starts.
+for migration in 001_init 002_ingestion_metadata 003_add_language 004_page \
+	005_add_corpus 009_document_lifecycle; do
+	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-f "migrations/$migration.sql" >/dev/null
+done
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_identity.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/007_user_lifecycle.sql >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subject.sql >/dev/null

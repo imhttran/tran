@@ -596,3 +596,154 @@ export function linkMember(
 export function revokeMemberLink(linkId: number): Promise<{ ok: true }> {
   return postJson(`/api/admin/family-members/links/${linkId}/revoke`, {});
 }
+
+// Family document lifecycle (FAM-003). Uploads are submissions: they create a
+// pending version and write no chunks until an admin approves and processes it.
+export type DocumentSubmission = {
+  version_id: number;
+  document_key: string;
+  version_number: number;
+  corpus: string;
+  source: string;
+  title: string;
+  description: string | null;
+  category: string;
+  origin: string;
+  access_scope: string | null;
+  review_status: string;
+  processing_status: string;
+  content_sha256: string;
+  byte_size: number;
+  mime_type: string;
+  original_filename: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  removed_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DocumentSubmissionResult = {
+  ok: true;
+  version_id: number;
+  review_status: string;
+  processing_status: string;
+  chunks: number;
+};
+
+export type DocumentSubmissionList = {
+  ok: true;
+  submissions: DocumentSubmission[];
+};
+
+export function submitDocument(form: FormData): Promise<DocumentSubmissionResult> {
+  return request<DocumentSubmissionResult>("/api/documents/submissions", {
+    method: "POST",
+    body: form,
+  });
+}
+
+export function listDocumentSubmissions(): Promise<DocumentSubmissionList> {
+  return request<DocumentSubmissionList>("/api/documents/submissions");
+}
+
+export function reviewDocument(
+  versionId: number,
+  body: { approve: boolean; note?: string; scope?: string },
+): Promise<{ ok: true; submission: DocumentSubmission }> {
+  return request<{ ok: true; submission: DocumentSubmission }>(
+    `/api/documents/submissions/${versionId}/review`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function changeDocumentScope(
+  versionId: number,
+  scope: "family" | "admin_only",
+): Promise<{ ok: true; submission: DocumentSubmission }> {
+  return request<{ ok: true; submission: DocumentSubmission }>(
+    `/api/documents/submissions/${versionId}/scope`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope }),
+    },
+  );
+}
+
+export function removeDocument(
+  versionId: number,
+): Promise<{ ok: true; submission: DocumentSubmission }> {
+  return request<{ ok: true; submission: DocumentSubmission }>(
+    `/api/documents/submissions/${versionId}/remove`,
+    { method: "POST" },
+  );
+}
+
+export function processDocument(
+  versionId: number,
+): Promise<{ ok: true; job_id?: number; processing_status?: string; promoted?: boolean }> {
+  return request(`/api/documents/submissions/${versionId}/process`, {
+    method: "POST",
+  });
+}
+
+export type LegacyDocumentInventoryRow = {
+  corpus: string;
+  source: string;
+  version_id: number;
+  chunks: number;
+  review_status: string;
+  processing_status: string;
+  fingerprint: string;
+};
+
+export function legacyDocumentInventory(): Promise<{
+  ok: true;
+  inventory: LegacyDocumentInventoryRow[];
+}> {
+  return request("/api/documents/legacy");
+}
+
+export function promoteLegacyDocument(
+  versionId: number,
+): Promise<{ ok: true; submission: DocumentSubmission }> {
+  return request<{ ok: true; submission: DocumentSubmission }>(
+    `/api/documents/legacy/${versionId}/promote`,
+    { method: "POST" },
+  );
+}
+
+export type DocumentJob = {
+  job_id: number;
+  version_id: number;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export function runDocumentJobs(): Promise<{
+  ok: true;
+  processed: Array<{ job_id: number; version_id: number; status: string; error: string | null }>;
+}> {
+  return request("/api/documents/jobs/run", { method: "POST" });
+}
+
+export function listDocumentJobs(): Promise<{ ok: true; jobs: DocumentJob[] }> {
+  return request("/api/documents/jobs");
+}
+
+export function retryDocumentJob(
+  jobId: number,
+): Promise<{ ok: true; job_id: number; version_id: number; status: string }> {
+  return request(`/api/documents/jobs/${jobId}/retry`, { method: "POST" });
+}
