@@ -525,7 +525,9 @@ export type BranchProposalStatus =
   | "rejected"
   | "needs_changes";
 
-export type BranchQueueFilter = BranchProposalStatus | "pending" | "all";
+// The console sends canonical statuses only; the API still accepts the
+// `pending` alias for other callers.
+export type BranchQueueFilter = BranchProposalStatus | "all";
 
 export type BranchEvidenceRef = {
   source_evidence_id: number;

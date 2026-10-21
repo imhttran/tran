@@ -202,13 +202,21 @@ export function BranchReviewConsole() {
       if (err instanceof ApiRequestError && err.status === 409) {
         setMessage({
           kind: "error",
-          text: "This proposal was decided by someone else, or the family fact changed. The current state has been reloaded.",
+          text: "This proposal was decided by someone else, or the family fact changed. Reloading the current state…",
         });
         try {
           setDetail(await getBranchProposal(detail.proposal.proposal_id));
           await load(null, false);
+          setMessage({
+            kind: "error",
+            text: "This proposal was decided by someone else, or the family fact changed. The current state has been reloaded.",
+          });
         } catch {
-          // A refresh failure leaves the original error visible.
+          // Be explicit: the stale detail on screen is no longer authoritative.
+          setMessage({
+            kind: "error",
+            text: "This proposal was decided by someone else, or the family fact changed, and the current state could not be reloaded. Refresh the page before deciding.",
+          });
         }
       } else {
         setMessage({ kind: "error", text: messageOf(err) });
