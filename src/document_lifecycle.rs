@@ -468,12 +468,25 @@ pub fn create_submission(
             &[&input.corpus, &document_key],
         )?
         .get(0);
-    // Version-specific chunk source avoids replacing an older version's chunks
-    // before the new version is approved and ready.
+    // The chunk source keeps the original filename for citations while the
+    // short document-key suffix keeps two same-named uploads distinct. A
+    // version-specific suffix prevents a new version from replacing an older
+    // version's chunks before it is approved and ready.
+    let short_key: String = document_key
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     let source = if version_number <= 1 {
-        document_key.clone()
+        format!("{} ({short_key})", input.original_filename)
     } else {
-        format!("{document_key}#v{version_number}")
+        format!(
+            "{} ({short_key}) (v{version_number})",
+            input.original_filename
+        )
     };
     let version_id: i64 = tx
         .query_one(
@@ -540,6 +553,27 @@ pub fn record_operator_import(
     let storage_key = storage.put(&sha256, extension, bytes)?;
     let document_key = slug(source);
     let mut tx = client.transaction()?;
+    // Re-running the same trusted import with unchanged content is a no-op.
+    let existing: Option<i64> = tx
+        .query_opt(
+            "SELECT version_id FROM document_version
+              WHERE corpus = $1 AND source = $2 AND content_sha256 = $3
+                AND origin = 'operator_import' AND review_status = 'approved'
+                AND processing_status = 'ready'
+              ORDER BY version_id DESC LIMIT 1",
+            &[&corpus, &source, &sha256],
+        )?
+        .map(|row| row.get(0));
+    if let Some(version_id) = existing {
+        tx.execute(
+            "UPDATE documents SET document_version_id = $1
+              WHERE corpus = $2 AND source = $3",
+            &[&version_id, &corpus, &source],
+        )?;
+        let version = fetch_version(&mut tx, version_id)?;
+        tx.commit()?;
+        return Ok(version);
+    }
     let version_number: i32 = tx
         .query_one(
             "SELECT coalesce(max(version_number), 0) + 1

@@ -320,6 +320,7 @@ test.describe("navigation", () => {
       /Ask the archive/,
       /Head of Family/,
       /Branch review/,
+      /Documents/,
     ]);
     await expect(nav.getByRole("link", { name: /Head of Family/ })).toHaveAttribute("aria-current", "page");
     await nav.getByRole("link", { name: /Ask the archive/ }).click();

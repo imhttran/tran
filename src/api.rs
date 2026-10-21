@@ -14,7 +14,7 @@
 
 use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
@@ -31,27 +31,26 @@ use crate::admin_members::{
 };
 use crate::config::Config;
 use crate::corpus::Corpus;
-use crate::document_lifecycle::{self, DocumentStorage};
+use crate::document_lifecycle::{
+    self, AccessScope, Category, DocumentStorage, DocumentVersion, NewSubmission,
+};
+use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
-use crate::fingerprint::{fingerprint, ChunkerConfig};
 use crate::genealogy::{
     appointments, branch_review, query as genealogy_query, resolve_genealogy_dsn,
     tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
-use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
-use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
+use crate::ollama::{HttpTransport, OllamaClient};
 use crate::onboarding::{
     self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
     MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary,
     ProfileRevision, ProfileVisibility, ReviewDecision, RevisionError, RevisionStatus,
 };
-use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
-use crate::service::IngestService;
 use crate::storage_pg::{PgStore, PgStoreError};
 
 /// Default loopback host. The API never binds a public interface by default.
@@ -182,7 +181,43 @@ impl AppState {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/health", get(health))
-            .route("/api/documents/ingest", post(ingest))
+            .route("/api/documents/ingest", post(submit_document))
+            .route(
+                "/api/documents/submissions",
+                post(submit_document).get(list_document_submissions),
+            )
+            .route(
+                "/api/documents/submissions/{id}",
+                get(get_document_submission),
+            )
+            .route(
+                "/api/documents/submissions/{id}/content",
+                get(get_document_content),
+            )
+            .route(
+                "/api/documents/submissions/{id}/review",
+                post(review_document_submission),
+            )
+            .route(
+                "/api/documents/submissions/{id}/scope",
+                post(change_document_submission_scope),
+            )
+            .route(
+                "/api/documents/submissions/{id}/remove",
+                post(remove_document_submission),
+            )
+            .route(
+                "/api/documents/submissions/{id}/process",
+                post(process_document_submission),
+            )
+            .route("/api/documents/legacy", get(legacy_document_inventory))
+            .route(
+                "/api/documents/legacy/{id}/promote",
+                post(promote_legacy_document),
+            )
+            .route("/api/documents/jobs", get(list_document_jobs))
+            .route("/api/documents/jobs/run", post(run_document_jobs))
+            .route("/api/documents/jobs/{id}/retry", post(retry_document_job))
             .route("/api/documents/{source}/status", get(status))
             .route("/api/query", post(query))
             .route("/api/account", get(account))
@@ -2395,326 +2430,6 @@ fn extension(name: &str) -> Option<String> {
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
 }
-
-fn is_dependency_error(error: &PipelineError) -> bool {
-    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(err) = source {
-        if let Some(ollama) = err.downcast_ref::<OllamaError>() {
-            return matches!(
-                ollama,
-                OllamaError::Transport { .. }
-                    | OllamaError::Timeout { .. }
-                    | OllamaError::Status { .. }
-                    | OllamaError::Cancelled { .. }
-            );
-        }
-        if let Some(store) = err.downcast_ref::<PgStoreError>() {
-            return matches!(
-                store,
-                PgStoreError::Config(_)
-                    | PgStoreError::Pool(_)
-                    | PgStoreError::Connection(_)
-                    | PgStoreError::Query(_)
-                    | PgStoreError::Embedding(_)
-                    | PgStoreError::Decode(_)
-            );
-        }
-        source = err.source();
-    }
-    false
-}
-
-/// Why an ingest blocking task failed.
-enum IngestTaskError {
-    /// The upload could not be staged to disk.
-    Storage(String),
-    /// The pipeline ran and failed.
-    Pipeline(PipelineError),
-}
-
-/// Records one explicit publication of directly ingested chunks.
-///
-/// The chunks an ingest writes are visible to retrieval only through the
-/// approved-only view, so the direct ingest path must record the version that
-/// approves them. This is the explicit publication decision for this stage, and
-/// `record_operator_import` writes it to the append-only audit ledger.
-fn record_api_import(
-    database_url: &str,
-    document_root: &FsPath,
-    corpus: &str,
-    source: &str,
-    bytes: &[u8],
-) -> Result<(), IngestTaskError> {
-    let mut client = postgres::Client::connect(database_url, postgres::NoTls).map_err(|err| {
-        IngestTaskError::Storage(format!("could not record the document version: {err}"))
-    })?;
-    let storage = DocumentStorage::new(document_root);
-    document_lifecycle::record_operator_import(
-        &mut client,
-        &storage,
-        "api-direct-ingest",
-        corpus,
-        source,
-        source,
-        source,
-        bytes,
-    )
-    .map(|_| ())
-    .map_err(|err| {
-        IngestTaskError::Storage(format!("could not record the document version: {err}"))
-    })
-}
-
-async fn ingest(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> Response {
-    // Authorization runs before any field is read, staged, or embedded.
-    if let Err(response) = authorize(&state, &headers, Operation::Ingest) {
-        return response;
-    }
-
-    let mut file: Option<(String, Vec<u8>)> = None;
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_multipart",
-                    err.to_string(),
-                )
-            }
-        };
-        if field.name() != Some("file") {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "unexpected_field",
-                format!("unexpected form field {:?}; expected `file`", field.name()),
-            );
-        }
-        if file.is_some() {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "multiple_files",
-                "exactly one file is accepted per request",
-            );
-        }
-        let Some(name) = field.file_name().and_then(sanitize_file_name) else {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "missing_filename",
-                "the uploaded file must have a name",
-            );
-        };
-        let Some(ext) = extension(&name) else {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "unsupported_type",
-                "supported types: .md, .markdown, .txt, .pdf",
-            );
-        };
-        if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "unsupported_type",
-                format!("unsupported file type .{ext}; supported: .md, .markdown, .txt, .pdf"),
-            );
-        }
-        let bytes = match field.bytes().await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_multipart",
-                    err.to_string(),
-                )
-            }
-        };
-        if bytes.len() > MAX_UPLOAD_BYTES {
-            return error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "file_too_large",
-                format!("the upload exceeds the {} byte limit", MAX_UPLOAD_BYTES),
-            );
-        }
-        let max_input = state.config.max_input_bytes;
-        if max_input > 0 && bytes.len() > usize::try_from(max_input).unwrap_or(usize::MAX) {
-            return error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "file_too_large",
-                format!("the upload exceeds the {max_input} byte input limit"),
-            );
-        }
-        if bytes.is_empty() {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "empty_file",
-                "the uploaded file is empty",
-            );
-        }
-        file = Some((name, bytes.to_vec()));
-    }
-
-    let Some((source, bytes)) = file else {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "missing_file",
-            "no file field was supplied",
-        );
-    };
-
-    let temp_extension = extension(&source).unwrap_or_else(|| "bin".to_string());
-    let config = state.config.clone();
-    let store = state.store.clone();
-    let corpus = state.corpus.clone();
-    let source_for_run = source.clone();
-    let corpus_for_version = corpus.clone();
-
-    // Staging, hashing, and cleanup are blocking filesystem work; keep them off
-    // the async executor.
-    let outcome = tokio::task::spawn_blocking(move || {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "rag-api-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&temp_dir).map_err(|err| {
-            IngestTaskError::Storage(format!("could not stage the upload: {err}"))
-        })?;
-        let staged = temp_dir.join(format!("source.{temp_extension}"));
-        if let Err(err) = std::fs::write(&staged, &bytes) {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(IngestTaskError::Storage(format!(
-                "could not stage the upload: {err}"
-            )));
-        }
-
-        let chunker = ChunkerConfig::new(config.chunk_size as usize, config.chunk_overlap as usize);
-        let content_hash = fingerprint(&bytes, &chunker);
-        let result = (|| -> Result<IngestOutcome, PipelineError> {
-            let transport = Arc::new(HttpTransport::new(config.request_timeout)?);
-            let client =
-                OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
-            let embedder = OllamaEmbedder::new(client, config.embed_model.clone())
-                .with_embed_dim(config.embed_dim as usize);
-            let pipeline_config = PipelineConfig::new(
-                config.language.clone(),
-                chunker,
-                config.embed_model.clone(),
-                corpus,
-            );
-            let service = IngestService::new(&embedder, &*store, &*store, pipeline_config);
-            service.ingest_source(&staged, &source_for_run, &content_hash)
-        })();
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        let outcome = result.map_err(IngestTaskError::Pipeline)?;
-        // In this stage the authenticated direct ingest is still the trusted
-        // publication path; FAM-003 turns it into a reviewable submission. The
-        // chunks it wrote are only retrievable through the approved-only view,
-        // so record the explicit, audited operator import that binds them to an
-        // approved, ready, family-scoped version. Nothing here is implicit: the
-        // call is the publication decision, and it is recorded in the ledger.
-        if matches!(
-            outcome,
-            IngestOutcome::Replaced { .. } | IngestOutcome::Unchanged { .. }
-        ) {
-            record_api_import(
-                &config.database_url,
-                &config.document_root,
-                &corpus_for_version,
-                &source_for_run,
-                &bytes,
-            )?;
-        }
-        Ok(outcome)
-    })
-    .await;
-
-    match outcome {
-        Ok(Ok(IngestOutcome::Replaced { chunks, .. })) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "ok": true,
-                "source": source,
-                "chunks": chunks,
-                "incomplete_pages": [],
-                "unchanged": false,
-            })),
-        )
-            .into_response(),
-        Ok(Ok(IngestOutcome::Unchanged { rows, .. })) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "ok": true,
-                "source": source,
-                "chunks": rows,
-                "incomplete_pages": [],
-                "unchanged": true,
-            })),
-        )
-            .into_response(),
-        Ok(Ok(IngestOutcome::Rejected(IngestRejection::Incomplete { pages }))) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": "incomplete_pdf",
-                "message": format!(
-                    "page(s) {} have no text layer; OCR is required and no data was written",
-                    pages.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
-                ),
-                "incomplete_pages": pages,
-            })),
-        )
-            .into_response(),
-        Ok(Ok(IngestOutcome::Rejected(IngestRejection::NoChunks { .. }))) => error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "no_sections",
-            "the source produced no sections; no data was written",
-        ),
-        Ok(Ok(IngestOutcome::Rejected(IngestRejection::Loader(message)))) => error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "extraction_failed",
-            format!("{message}; no data was written"),
-        ),
-        Ok(Err(IngestTaskError::Pipeline(err))) => {
-            eprintln!("api: ingest failed for {source}: {err}");
-            if is_dependency_error(&err) {
-                error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "dependency_unavailable",
-                    "a database or model dependency is unavailable",
-                )
-            } else {
-                error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "ingestion_failed",
-                    "ingestion failed; no data was written",
-                )
-            }
-        }
-        Ok(Err(IngestTaskError::Storage(message))) => {
-            eprintln!("api: ingest staging failed for {source}: {message}");
-            error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", message)
-        }
-        Err(err) => {
-            eprintln!("api: ingest task failed for {source}: {err}");
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "ingestion_failed",
-                "ingestion task failed",
-            )
-        }
-    }
-}
-
-// --- ingestion status ------------------------------------------------------
 
 async fn status(
     State(state): State<AppState>,
@@ -4936,6 +4651,904 @@ async fn bulk_batch_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "status_failed",
                 "the batch status failed",
+            )
+        }
+    }
+}
+
+// --- family document lifecycle ---------------------------------------------
+
+/// Opens the RAG database for a document lifecycle operation.
+#[allow(clippy::result_large_err)]
+fn open_rag(config: &Config) -> Result<postgres::Client, Response> {
+    postgres::Client::connect(&config.database_url, postgres::NoTls).map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "document_store_unavailable",
+            "the document store is unavailable",
+        )
+    })
+}
+
+fn lifecycle_error(err: document_lifecycle::LifecycleError) -> Response {
+    eprintln!("api: document lifecycle failed: {err}");
+    match err {
+        document_lifecycle::LifecycleError::Invalid(_, _) => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "the document request is invalid",
+        ),
+        document_lifecycle::LifecycleError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "unknown_document",
+            "no such document submission",
+        ),
+        document_lifecycle::LifecycleError::NotApproved
+        | document_lifecycle::LifecycleError::InvalidTransition => error(
+            StatusCode::CONFLICT,
+            "invalid_document_state",
+            "the document is not in a state that permits this action",
+        ),
+        document_lifecycle::LifecycleError::MissingFile => error(
+            StatusCode::NOT_FOUND,
+            "document_original_missing",
+            "the document original is unavailable",
+        ),
+        document_lifecycle::LifecycleError::Storage
+        | document_lifecycle::LifecycleError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "document_store_unavailable",
+            "the document store is unavailable",
+        ),
+    }
+}
+
+fn can_access_document(identity: &VerifiedIdentity, version: &DocumentVersion) -> bool {
+    identity.has_role(Role::Admin) || version.created_by == identity.subject()
+}
+
+struct DocumentSubmissionForm {
+    original_filename: String,
+    bytes: Vec<u8>,
+    title: String,
+    description: Option<String>,
+    category: Category,
+    scope: AccessScope,
+    document_key: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+async fn parse_document_submission(
+    mut multipart: Multipart,
+    max_input_bytes: i64,
+) -> Result<DocumentSubmissionForm, Response> {
+    let mut filename: Option<String> = None;
+    let mut bytes: Option<Vec<u8>> = None;
+    let mut title: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut category: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut document_key: Option<String> = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|err| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_multipart",
+            err.to_string(),
+        )
+    })? {
+        match field.name().unwrap_or("") {
+            "file" => {
+                if bytes.is_some() {
+                    return Err(error(
+                        StatusCode::BAD_REQUEST,
+                        "multiple_files",
+                        "exactly one file is accepted per request",
+                    ));
+                }
+                let name = field
+                    .file_name()
+                    .and_then(sanitize_file_name)
+                    .ok_or_else(|| {
+                        error(
+                            StatusCode::BAD_REQUEST,
+                            "missing_filename",
+                            "the uploaded file must have a name",
+                        )
+                    })?;
+                let ext = extension(&name).ok_or_else(|| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "unsupported_type",
+                        "supported types: .md, .markdown, .txt, .pdf",
+                    )
+                })?;
+                if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
+                    return Err(error(
+                        StatusCode::BAD_REQUEST,
+                        "unsupported_type",
+                        format!("unsupported file type .{ext}"),
+                    ));
+                }
+                let payload = field.bytes().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?;
+                if payload.is_empty() {
+                    return Err(error(
+                        StatusCode::BAD_REQUEST,
+                        "empty_file",
+                        "the uploaded file is empty",
+                    ));
+                }
+                if payload.len() > MAX_UPLOAD_BYTES {
+                    return Err(error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "file_too_large",
+                        format!("the upload exceeds the {} byte limit", MAX_UPLOAD_BYTES),
+                    ));
+                }
+                if max_input_bytes > 0
+                    && payload.len() > usize::try_from(max_input_bytes).unwrap_or(usize::MAX)
+                {
+                    return Err(error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "file_too_large",
+                        format!("the upload exceeds the {max_input_bytes} byte input limit"),
+                    ));
+                }
+                filename = Some(name);
+                bytes = Some(payload.to_vec());
+            }
+            "title" => {
+                title = Some(field.text().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?);
+            }
+            "description" => {
+                description = Some(field.text().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?);
+            }
+            "category" => {
+                category = Some(field.text().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?);
+            }
+            "scope" => {
+                scope = Some(field.text().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?);
+            }
+            "document_key" => {
+                document_key = Some(field.text().await.map_err(|err| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        err.to_string(),
+                    )
+                })?);
+            }
+            other => {
+                return Err(error(
+                    StatusCode::BAD_REQUEST,
+                    "unexpected_field",
+                    format!("unexpected form field {other:?}"),
+                ));
+            }
+        }
+    }
+
+    let original_filename = filename.ok_or_else(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "missing_file",
+            "no file field was supplied",
+        )
+    })?;
+    let bytes = bytes.unwrap_or_default();
+    let default_title = original_filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem.to_string())
+        .unwrap_or_else(|| original_filename.clone());
+    let title = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default_title);
+    if title.chars().count() > 200 {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_title",
+            "the title must be 200 characters or fewer",
+        ));
+    }
+    let description = description
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if description
+        .as_deref()
+        .map(|value| value.chars().count() > 2000)
+        .unwrap_or(false)
+    {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_description",
+            "the description must be 2000 characters or fewer",
+        ));
+    }
+    let category = category
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<Category>())
+        .transpose()
+        .map_err(|_| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_category",
+                "the document category is not recognized",
+            )
+        })?
+        .unwrap_or(Category::Other);
+    let scope = scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<AccessScope>())
+        .transpose()
+        .map_err(|_| {
+            error(
+                StatusCode::BAD_REQUEST,
+                "invalid_scope",
+                "the document scope is not recognized",
+            )
+        })?
+        .unwrap_or(AccessScope::Family);
+    let document_key = document_key
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Ok(DocumentSubmissionForm {
+        original_filename,
+        bytes,
+        title,
+        description,
+        category,
+        scope,
+        document_key,
+    })
+}
+
+#[allow(clippy::result_large_err)]
+async fn submit_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentSubmit) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let form = match parse_document_submission(multipart, state.config.max_input_bytes).await {
+        Ok(form) => form,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        document_lifecycle::create_submission(
+            &mut client,
+            &storage,
+            NewSubmission {
+                actor: &actor,
+                corpus: &corpus,
+                title: &form.title,
+                description: form.description.as_deref(),
+                category: form.category,
+                access_scope: form.scope,
+                owner_subject: Some(&actor),
+                original_filename: &form.original_filename,
+                bytes: &form.bytes,
+                document_key: form.document_key.as_deref(),
+            },
+        )
+        .map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) => Json(serde_json::json!({
+            "ok": true,
+            "version_id": version.version_id,
+            "review_status": version.review_status,
+            "processing_status": version.processing_status,
+            "chunks": 0,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document submission task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "submission_failed",
+                "the document submission failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn list_document_submissions(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let is_admin = identity.has_role(Role::Admin);
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::list_submissions(&mut client, &actor, is_admin).map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(submissions)) => Json(serde_json::json!({
+            "ok": true,
+            "submissions": submissions,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document list task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "document_list_failed",
+                "the document submissions could not be listed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn get_document_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) if can_access_document(&identity, &version) => Json(serde_json::json!({
+            "ok": true,
+            "submission": version,
+        }))
+        .into_response(),
+        Ok(Ok(_)) => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "the authenticated account may not access this document",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document read task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "document_read_failed",
+                "the document submission could not be read",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn get_document_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        document_lifecycle::read_original(&mut client, &storage, version_id)
+            .map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok((version, bytes))) if can_access_document(&identity, &version) => {
+            let filename = sanitize_file_name(&version.original_filename)
+                .unwrap_or_else(|| "document".to_string());
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, version.mime_type)
+                .header(
+                    CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename}\""),
+                )
+                .header(CACHE_CONTROL, "no-store")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| {
+                    error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "document_read_failed",
+                        "the document original could not be read",
+                    )
+                })
+        }
+        Ok(Ok(_)) => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "the authenticated account may not access this document",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document content task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "document_read_failed",
+                "the document original could not be read",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct DocumentReviewRequest {
+    approve: bool,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+async fn review_document_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+    Json(request): Json<DocumentReviewRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let note = request.note.unwrap_or_default();
+    if !request.approve && note.trim().is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "review_reason_required",
+            "a rejection requires a reason",
+        );
+    }
+    let scope = match request.scope.as_deref() {
+        Some(value) => match value.trim().parse::<AccessScope>() {
+            Ok(scope) => Some(scope),
+            Err(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_scope",
+                    "the document scope is not recognized",
+                )
+            }
+        },
+        None => None,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::review(
+            &mut client,
+            version_id,
+            &actor,
+            request.approve,
+            Some(note.as_str()),
+            scope,
+        )
+        .map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) => Json(serde_json::json!({
+            "ok": true,
+            "submission": version,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document review task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "review_failed",
+                "the document review failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct DocumentScopeRequest {
+    scope: String,
+}
+
+#[allow(clippy::result_large_err)]
+async fn change_document_submission_scope(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+    Json(request): Json<DocumentScopeRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let scope = match request.scope.trim().parse::<AccessScope>() {
+        Ok(scope) => scope,
+        Err(_) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_scope",
+                "the document scope is not recognized",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::change_scope(&mut client, version_id, &actor, scope)
+            .map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) => Json(serde_json::json!({
+            "ok": true,
+            "submission": version,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document scope task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "scope_failed",
+                "the document scope change failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn remove_document_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentSubmit) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let is_admin = identity.has_role(Role::Admin);
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let version =
+            document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)?;
+        if !is_admin && version.created_by != actor {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "the authenticated account may not remove this document",
+            ));
+        }
+        document_lifecycle::remove(&mut client, version_id, &actor).map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) => Json(serde_json::json!({
+            "ok": true,
+            "submission": version,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document removal task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "remove_failed",
+                "the document removal failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn process_document_submission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentProcess) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let version =
+            document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)?;
+        if version.origin == "legacy_import" {
+            let promoted = document_lifecycle::promote_legacy(&mut client, version_id, &actor)
+                .map_err(lifecycle_error)?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "promoted": true,
+                "submission": promoted,
+            }));
+        }
+        let job_id = document_lifecycle::queue_processing(&mut client, version_id, &actor)
+            .map_err(lifecycle_error)?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "job_id": job_id,
+            "processing_status": "queued",
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document process task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "process_failed",
+                "the document processing request failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn legacy_document_inventory(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::legacy_inventory(&mut client).map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(rows)) => Json(serde_json::json!({ "ok": true, "inventory": rows })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: legacy inventory task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "inventory_failed",
+                "the legacy document inventory failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn promote_legacy_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentProcess) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_lifecycle::promote_legacy(&mut client, version_id, &actor).map_err(lifecycle_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(version)) => Json(serde_json::json!({
+            "ok": true,
+            "submission": version,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: legacy promotion task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "promotion_failed",
+                "the legacy document promotion failed",
+            )
+        }
+    }
+}
+
+fn processing_error(err: document_processing::ProcessingError) -> Response {
+    eprintln!("api: document processing failed: {err}");
+    match err {
+        document_processing::ProcessingError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "unknown_job",
+            "no such processing job",
+        ),
+        document_processing::ProcessingError::StaleApproval => error(
+            StatusCode::CONFLICT,
+            "stale_approval",
+            "the document approval is no longer valid",
+        ),
+        document_processing::ProcessingError::MissingOriginal => error(
+            StatusCode::CONFLICT,
+            "document_original_missing",
+            "the document original is unavailable",
+        ),
+        document_processing::ProcessingError::Ingest(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "processing_failed",
+            "the document could not be processed",
+        ),
+        document_processing::ProcessingError::Storage
+        | document_processing::ProcessingError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "processing_unavailable",
+            "the document processor is unavailable",
+        ),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn list_document_jobs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentProcess) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_processing::list_jobs(&mut client).map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(jobs)) => Json(serde_json::json!({ "ok": true, "jobs": jobs })).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document jobs task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document jobs could not be listed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn run_document_jobs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentProcess) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        let store = PgStore::connect(&config.database_url).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "processing_unavailable",
+                "the document processor is unavailable",
+            )
+        })?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        let transport = Arc::new(HttpTransport::new(config.request_timeout).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "processing_unavailable",
+                "the model transport is unavailable",
+            )
+        })?);
+        let model = OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
+        let embedder = OllamaEmbedder::new(model, config.embed_model.clone())
+            .with_embed_dim(config.embed_dim as usize);
+        document_processing::run_due_jobs(
+            &mut client,
+            &store,
+            &embedder,
+            &storage,
+            &config,
+            "api-worker",
+            10,
+        )
+        .map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcomes)) => Json(serde_json::json!({
+            "ok": true,
+            "processed": outcomes,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document run task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document jobs could not be run",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn retry_document_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentProcess) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_rag(&config)?;
+        document_processing::retry_job(&mut client, job_id, &actor).map_err(processing_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(job)) => Json(serde_json::json!({
+            "ok": true,
+            "job_id": job.job_id,
+            "version_id": job.version_id,
+            "status": "queued",
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: document retry task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "jobs_failed",
+                "the document job could not be retried",
             )
         }
     }

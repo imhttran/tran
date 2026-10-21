@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { href: "/ask", label: "Ask the archive", icon: "?" },
   { href: "/head-of-family", label: "Head of Family", icon: "◈" },
   { href: "/branch-review", label: "Branch review", icon: "⚖" },
+  { href: "/documents", label: "Documents", icon: "▤" },
 ];
 const UPLOAD_ITEM = { href: "/", label: "Add documents", icon: "＋" };
 const ADMIN_ITEMS = [

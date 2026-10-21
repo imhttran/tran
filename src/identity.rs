@@ -118,6 +118,14 @@ pub enum Operation {
     Query,
     /// Reading document ingestion status.
     DocumentStatus,
+    /// Submitting or owning a family document submission.
+    DocumentSubmit,
+    /// Reading a family document submission or its private original.
+    DocumentRead,
+    /// Reviewing, scoping, or removing a family document submission.
+    DocumentReview,
+    /// Queueing or retrying family document processing.
+    DocumentProcess,
     /// Reading the caller's account.
     Account,
     /// Reading the caller's own private member profile.
@@ -168,7 +176,10 @@ impl Operation {
             Operation::Query | Operation::DocumentStatus | Operation::GenealogyRead => {
                 Some(Role::Viewer)
             }
-            Operation::Ingest | Operation::GenealogyNominate => Some(Role::Editor),
+            Operation::Ingest
+            | Operation::GenealogyNominate
+            | Operation::DocumentSubmit
+            | Operation::DocumentRead => Some(Role::Editor),
             Operation::Account
             | Operation::RoleChange
             | Operation::HeadOfFamilyApproval
@@ -181,7 +192,9 @@ impl Operation {
             | Operation::ProfileReview
             | Operation::BranchReviewerAdmin
             | Operation::MemberDirectory
-            | Operation::PasswordReset => Some(Role::Admin),
+            | Operation::PasswordReset
+            | Operation::DocumentReview
+            | Operation::DocumentProcess => Some(Role::Admin),
             Operation::ProfileRead
             | Operation::ProfileWrite
             | Operation::BranchReviewRead
@@ -200,6 +213,7 @@ impl Operation {
                 | Operation::ProfileRead
                 | Operation::OnboardingDryRun
                 | Operation::MemberDirectory
+                | Operation::DocumentRead
                 | Operation::BranchReviewRead
         )
     }
@@ -213,6 +227,10 @@ impl Operation {
             Operation::GenealogyRead => "genealogy_read",
             Operation::GenealogyNominate => "genealogy_nominate",
             Operation::DocumentStatus => "document_status",
+            Operation::DocumentSubmit => "document_submit",
+            Operation::DocumentRead => "document_read",
+            Operation::DocumentReview => "document_review",
+            Operation::DocumentProcess => "document_process",
             Operation::Account => "account",
             Operation::ProfileRead => "profile_read",
             Operation::ProfileWrite => "profile_write",
