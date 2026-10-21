@@ -484,7 +484,7 @@ pub fn create_submission(
         format!("{} ({short_key})", input.original_filename)
     } else {
         format!(
-            "{} [{short_key}] (v{version_number})",
+            "{} ({short_key}) (v{version_number})",
             input.original_filename
         )
     };

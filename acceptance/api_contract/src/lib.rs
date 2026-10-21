@@ -88,6 +88,10 @@ impl Drop for CorpusCleanup {
     fn drop(&mut self) {
         if let Ok(mut client) = postgres::Client::connect(&self.dsn, postgres::NoTls) {
             let _ = client.execute("DELETE FROM documents WHERE corpus = $1", &[&self.corpus]);
+            let _ = client.execute(
+                "DELETE FROM document_version WHERE corpus = $1",
+                &[&self.corpus],
+            );
         }
     }
 }
@@ -282,6 +286,7 @@ pub fn seed_api_contract_admin(dsn: &str, issuer: &str, subject: &str, corpus: &
 pub struct ApiProcess {
     child: Child,
     base_url: String,
+    document_root: PathBuf,
 }
 
 impl ApiProcess {
@@ -289,6 +294,8 @@ impl ApiProcess {
     pub fn start(dsn: &str, corpus: &str, ollama_url: &str, auth: &TestAuth) -> Self {
         let binary = build_api();
         let port = free_port();
+        let document_root = std::env::temp_dir().join(unique_tag("api-contract-documents"));
+        fs::create_dir_all(&document_root).expect("create the document root");
         let child = Command::new(&binary)
             .env("DATABASE_URL", dsn)
             .env("RAG_CORPUS", corpus)
@@ -310,12 +317,17 @@ impl ApiProcess {
             .env("AUTH_RATE_LIMIT", "10000")
             .env("AUTH_CLOCK_SKEW_SECS", "60")
             .env("JWKS_CACHE_TTL_SECS", "60")
+            .env("DOCUMENT_ROOT", &document_root)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn the production api binary");
         let base_url = format!("http://127.0.0.1:{port}");
-        let mut process = Self { child, base_url };
+        let mut process = Self {
+            child,
+            base_url,
+            document_root,
+        };
         process.wait_for_health();
         process
     }
@@ -356,6 +368,7 @@ impl Drop for ApiProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = fs::remove_dir_all(&self.document_root);
     }
 }
 
