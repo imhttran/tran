@@ -159,6 +159,15 @@ test.beforeEach(() => {
   test.skip(!READY, "run this suite through scripts/web-e2e.sh");
 });
 
+// Normalise the shared approver grants even when a test fails part-way through,
+// so a later spec never inherits the branch-2 fixture this suite creates.
+test.afterAll(async ({ request }) => {
+  if (!READY) return;
+  await replaceGrants(request, APPROVER_ACCOUNT_ID, "e2e-approver", [
+    "branch-1",
+  ]);
+});
+
 test.describe.serial("branch review security acceptance", () => {
   // Scenario 9.
   test("deactivating a reviewer immediately removes review capability", async ({
@@ -388,10 +397,6 @@ test.describe.serial("branch review security acceptance", () => {
     expect(JSON.stringify(detail.body)).not.toContain(PRIVATE_MARKER);
     expect(JSON.stringify(detail.body)).not.toContain("owner_private");
 
-    // Restore the approver to branch-1 for the following specs.
-    await replaceGrants(request, APPROVER_ACCOUNT_ID, "e2e-approver", [
-      "branch-1",
-    ]);
   });
 
   // Scenario 16, document surface: an unapproved submission is review-only.

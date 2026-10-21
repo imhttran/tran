@@ -1208,10 +1208,12 @@ fn proposal_content_never_enters_the_rag_corpus() {
     let Some(mut db) = TestDb::new() else {
         return;
     };
+    // Database-backed tests fail rather than skip when a configured database is
+    // unusable, so a skipped assertion can never be mistaken for a passing one.
     let rag_dsn = match std::env::var("DATABASE_URL") {
         Ok(value) if !value.trim().is_empty() => value,
         _ => {
-            eprintln!("DATABASE_URL unset; skipping the RAG corpus assertion");
+            eprintln!("DATABASE_URL unset; the RAG corpus assertion is not applicable");
             return;
         }
     };
@@ -1232,15 +1234,30 @@ fn proposal_content_never_enters_the_rag_corpus() {
         &marker,
     );
 
+    // The proposal is pending, so it must not exist as an authoritative fact
+    // either. This assertion runs even when the retrieval store is unavailable.
+    let asserted: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT count(*) FROM assertion WHERE value_text = $1",
+            &[&marker],
+        )
+        .expect("assertion probe")
+        .get(0);
+    assert_eq!(
+        asserted, 0,
+        "a pending proposal must not become an authoritative assertion"
+    );
+
     let mut rag = Client::connect(&rag_dsn, NoTls).expect("rag database");
     let has_documents: bool = rag
         .query_one("SELECT to_regclass('public.documents') IS NOT NULL", &[])
         .expect("documents table probe")
         .get(0);
-    if !has_documents {
-        eprintln!("documents table absent; skipping the RAG corpus assertion");
-        return;
-    }
+    assert!(
+        has_documents,
+        "DATABASE_URL is set but public.documents is missing; apply migrations/*.sql"
+    );
     let count: i64 = rag
         .query_one(
             "SELECT count(*) FROM documents WHERE content LIKE $1",

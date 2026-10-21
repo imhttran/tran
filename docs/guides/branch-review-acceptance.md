@@ -77,7 +77,7 @@ Status legend:
   pending document submission writes no chunks and is invisible to family
   viewers.
 
-## Verification record
+## Verification record (one recorded run)
 
 | Gate | Result |
 | --- | --- |
