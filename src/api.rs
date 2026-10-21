@@ -6530,11 +6530,6 @@ fn reset_response(outcome: Result<ResetState, ResetError>) -> Response {
             "account_deactivated",
             "the account is deactivated",
         ),
-        Err(ResetError::NoEmail) => error(
-            StatusCode::CONFLICT,
-            "no_verified_email",
-            "the account has no verified email address",
-        ),
         Err(ResetError::Database(message)) => {
             eprintln!("api: password reset unavailable: {message}");
             error(
@@ -8867,7 +8862,6 @@ mod tests {
             (Ok(ResetState::Throttled), StatusCode::TOO_MANY_REQUESTS),
             (Err(ResetError::UnknownUser), StatusCode::NOT_FOUND),
             (Err(ResetError::Deactivated), StatusCode::CONFLICT),
-            (Err(ResetError::NoEmail), StatusCode::CONFLICT),
         ] {
             assert_eq!(reset_response(outcome).status(), status);
         }
