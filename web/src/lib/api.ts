@@ -719,3 +719,31 @@ export function promoteLegacyDocument(
     { method: "POST" },
   );
 }
+
+export type DocumentJob = {
+  job_id: number;
+  version_id: number;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export function runDocumentJobs(): Promise<{
+  ok: true;
+  processed: Array<{ job_id: number; version_id: number; status: string; error: string | null }>;
+}> {
+  return request("/api/documents/jobs/run", { method: "POST" });
+}
+
+export function listDocumentJobs(): Promise<{ ok: true; jobs: DocumentJob[] }> {
+  return request("/api/documents/jobs");
+}
+
+export function retryDocumentJob(
+  jobId: number,
+): Promise<{ ok: true; job_id: number; version_id: number; status: string }> {
+  return request(`/api/documents/jobs/${jobId}/retry`, { method: "POST" });
+}

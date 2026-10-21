@@ -1,8 +1,8 @@
 //! RUST-008A deterministic API contract.
 //!
 //! Starts the real Axum API with a deterministic Ollama server and a dedicated
-//! PostgreSQL/pgvector database, then exercises upload validation, incomplete
-//! PDF rejection, ingestion status, query citations, health, loopback defaults,
+//! PostgreSQL/pgvector database, then exercises upload validation, pending
+//! review, processing, publication, query citations, health, loopback defaults,
 //! and the missing-context refusal. No endpoint is mocked.
 
 use std::fs;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use api_contract_acceptance::{
     dsn, repo_root, seed_api_contract_admin, unique_tag, ApiProcess, CorpusCleanup, FakeOllama,
-    OperatorIngest, TestAuth,
+    TestAuth,
 };
 use rag_foundation::api::{DEFAULT_HOST, DEFAULT_PORT, MAX_UPLOAD_BYTES};
 use reqwest::blocking::{Client, Response};
@@ -40,7 +40,7 @@ fn upload(client: &Client, base: &str, path: &Path) -> (StatusCode, Value) {
         .file("file", path)
         .expect("build the multipart form");
     let response: Response = client
-        .post(format!("{base}/api/documents/ingest"))
+        .post(format!("{base}/api/documents/submissions"))
         .multipart(form)
         .send()
         .expect("POST /api/documents/ingest");
@@ -60,18 +60,6 @@ fn get_json(client: &Client, url: &str) -> (StatusCode, Value) {
 
 fn post_json(client: &Client, url: &str, body: &Value) -> (StatusCode, Value) {
     json(client.post(url).json(body).send().expect("POST request"))
-}
-
-fn db_count(dsn: &str, corpus: &str, source: &str) -> i64 {
-    let mut client =
-        postgres::Client::connect(dsn, postgres::NoTls).expect("connect to the database");
-    client
-        .query_one(
-            "SELECT count(*) FROM documents WHERE corpus = $1 AND source = $2",
-            &[&corpus, &source],
-        )
-        .expect("count rows")
-        .get(0)
 }
 
 fn citation_exists(
@@ -104,6 +92,98 @@ fn citation_exists(
             .get(0),
     };
     count > 0
+}
+
+fn db_count_by_version(dsn: &str, version_id: i64) -> i64 {
+    let mut client =
+        postgres::Client::connect(dsn, postgres::NoTls).expect("connect for version count");
+    client
+        .query_one(
+            "SELECT count(*) FROM documents WHERE document_version_id = $1",
+            &[&version_id],
+        )
+        .expect("count version rows")
+        .get(0)
+}
+
+fn db_sections_by_version(dsn: &str, version_id: i64) -> Vec<(String, Option<i64>)> {
+    let mut client = postgres::Client::connect(dsn, postgres::NoTls).expect("connect for sections");
+    client
+        .query(
+            "SELECT coalesce(section, ''), page::bigint FROM documents
+              WHERE document_version_id = $1 ORDER BY chunk_index, id",
+            &[&version_id],
+        )
+        .expect("read version sections")
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect()
+}
+
+fn submit_and_publish(client: &Client, base: &str, path: &Path) -> i64 {
+    let (status, body) = upload(client, base, path);
+    assert_eq!(status, StatusCode::OK, "submission failed: {body}");
+    let version_id = body["version_id"].as_i64().expect("version id");
+    assert_eq!(body["review_status"], "pending_review");
+    assert_eq!(body["chunks"], 0);
+    let (status, _) = post_json(
+        client,
+        &format!("{base}/api/documents/submissions/{version_id}/review"),
+        &serde_json::json!({ "approve": true, "scope": "family" }),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post_json(
+        client,
+        &format!("{base}/api/documents/submissions/{version_id}/process"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, run) = post_json(
+        client,
+        &format!("{base}/api/documents/jobs/run"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let processed = run["processed"].as_array().expect("processed outcomes");
+    assert!(
+        processed.iter().any(|row| {
+            row["version_id"].as_i64() == Some(version_id) && row["status"] == "ready"
+        }),
+        "version {version_id} did not become ready: {run}"
+    );
+    version_id
+}
+
+fn submit_and_fail(client: &Client, base: &str, path: &Path) -> i64 {
+    let (status, body) = upload(client, base, path);
+    assert_eq!(status, StatusCode::OK, "submission failed: {body}");
+    let version_id = body["version_id"].as_i64().expect("version id");
+    let (status, _) = post_json(
+        client,
+        &format!("{base}/api/documents/submissions/{version_id}/review"),
+        &serde_json::json!({ "approve": true, "scope": "family" }),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post_json(
+        client,
+        &format!("{base}/api/documents/submissions/{version_id}/process"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, run) = post_json(
+        client,
+        &format!("{base}/api/documents/jobs/run"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let processed = run["processed"].as_array().expect("processed outcomes");
+    assert!(
+        processed.iter().any(|row| {
+            row["version_id"].as_i64() == Some(version_id) && row["status"] == "failed"
+        }),
+        "version {version_id} was not rejected: {run}"
+    );
+    version_id
 }
 
 fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
@@ -158,128 +238,109 @@ fn api_contract_upload_status_query_health_and_refusal() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "empty_file");
 
-    // A whitespace-only source is accepted as a pending submission: extraction,
-    // the "no sections" rejection, and chunking all happen after review, so
-    // submission itself writes nothing and approves nothing.
-    let (status, body) = upload(&client, &base, &fixture("empty.txt"));
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], true);
-    assert_eq!(body["review_status"], "pending_review");
-    assert_eq!(body["processing_status"], "unprocessed");
-    assert_eq!(body["chunks"], 0);
-    assert!(body["version_id"].as_i64().is_some());
-    assert_eq!(db_count(&dsn, &corpus, "empty.txt"), 0);
-
     // Upload validation: size limit.
     let oversize = temp_file("oversize.md", &vec![b'a'; MAX_UPLOAD_BYTES + 1]);
     let (status, body) = upload(&client, &base, &oversize);
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"], "file_too_large");
 
-    // An incomplete PDF is also accepted for review: it writes no chunks, so it
-    // cannot enter retrieval, and the extraction failure is a processing
-    // concern rather than a submission concern.
-    let (status, body) = upload(&client, &base, &fixture("mixed-text-scan.pdf"));
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["review_status"], "pending_review");
-    assert_eq!(body["chunks"], 0);
-    assert_eq!(db_count(&dsn, &corpus, "mixed-text-scan.pdf"), 0);
+    // A whitespace-only Markdown file is accepted as a pending submission but
+    // processing rejects it and publishes nothing.
+    let whitespace = fixture("empty.txt");
+    let empty_version = submit_and_fail(&client, &base, &whitespace);
+    assert_eq!(db_count_by_version(&dsn, empty_version), 0);
 
-    // A valid markdown submission is pending, private, and unchunked.
-    let markdown = repo_root().join("examples/loan-policy.md");
-    let (status, body) = upload(&client, &base, &markdown);
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], true);
-    assert_eq!(body["review_status"], "pending_review");
-    assert_eq!(body["chunks"], 0);
-    let first_version = body["version_id"].as_i64().expect("submission version id");
-    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), 0);
-
-    // A pending submission is not a stored source yet.
+    // Incomplete PDF: accepted for review, rejected by processing, never
+    // published.
+    let pdf_incomplete = fixture("mixed-text-scan.pdf");
+    let incomplete_version = submit_and_fail(&client, &base, &pdf_incomplete);
+    assert_eq!(db_count_by_version(&dsn, incomplete_version), 0);
     let (status, _) = get_json(
         &client,
-        &format!("{base}/api/documents/loan-policy.md/status"),
+        &format!("{base}/api/documents/mixed-text-scan.pdf/status"),
     );
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // A repeated submission creates a new private version and still writes no
-    // chunks or embedding.
+    // Markdown: pending first, then explicit approval and processing.
+    let markdown = repo_root().join("examples/loan-policy.md");
+    let (status, pending) = upload(&client, &base, &markdown);
+    assert_eq!(status, StatusCode::OK);
+    let markdown_version = pending["version_id"].as_i64().expect("version id");
+    assert_eq!(pending["review_status"], "pending_review");
+    assert_eq!(pending["chunks"], 0);
+    assert_eq!(db_count_by_version(&dsn, markdown_version), 0);
+    let (status, _) = post_json(
+        &client,
+        &format!("{base}/api/documents/submissions/{markdown_version}/review"),
+        &serde_json::json!({ "approve": true, "scope": "family" }),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post_json(
+        &client,
+        &format!("{base}/api/documents/submissions/{markdown_version}/process"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    let (status, run) = post_json(
+        &client,
+        &format!("{base}/api/documents/jobs/run"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, StatusCode::OK);
+    assert!(run["processed"]
+        .as_array()
+        .expect("processed")
+        .iter()
+        .any(
+            |row| row["version_id"].as_i64() == Some(markdown_version) && row["status"] == "ready"
+        ));
+    let chunks = db_count_by_version(&dsn, markdown_version);
+    assert!(chunks > 0);
+    let sections = db_sections_by_version(&dsn, markdown_version);
+    assert_eq!(sections.len() as i64, chunks);
+    assert!(sections.iter().all(|(_, page)| page.is_none()));
+
+    // A second submission of the same file is a new version, not a silent
+    // replacement of the published one.
     let (status, duplicate) = upload(&client, &base, &markdown);
     assert_eq!(status, StatusCode::OK);
+    let duplicate_version = duplicate["version_id"].as_i64().expect("duplicate id");
+    assert_ne!(duplicate_version, markdown_version);
     assert_eq!(duplicate["review_status"], "pending_review");
-    assert_eq!(duplicate["chunks"], 0);
-    assert_ne!(
-        duplicate["version_id"].as_i64().expect("second version id"),
-        first_version,
-        "a repeated submission is a new version, not an implicit edit"
-    );
-    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), 0);
-
-    // Nothing pending is retrievable: the approved-only path stays empty.
-    let (status, pending) = post_json(
+    let (status, _) = post_json(
         &client,
-        &format!("{base}/api/query"),
-        &serde_json::json!({
-            "question": "What happens if someone misses a payment?",
-            "top_k": 4
-        }),
+        &format!("{base}/api/documents/submissions/{duplicate_version}/review"),
+        &serde_json::json!({ "approve": true, "scope": "family" }),
     );
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        pending["insufficient"], true,
-        "a pending submission must never answer a query"
-    );
-    assert_eq!(pending["sources"], serde_json::json!([]));
-
-    // The trusted local operator boundary publishes explicitly: it writes the
-    // chunks and records an approved, ready, family-scoped version.
-    let operator = OperatorIngest::new();
-    operator.publish(&dsn, &corpus, ollama.url(), &markdown);
-
-    let (status, stored) = get_json(
+    let (status, _) = post_json(
         &client,
-        &format!("{base}/api/documents/loan-policy.md/status"),
+        &format!("{base}/api/documents/submissions/{duplicate_version}/process"),
+        &serde_json::json!({}),
     );
     assert_eq!(status, StatusCode::OK);
-    let chunks = stored["chunks"].as_i64().expect("chunk count");
-    assert!(chunks > 0);
-    assert_eq!(db_count(&dsn, &corpus, "loan-policy.md"), chunks);
-    assert_eq!(stored["corpus"], corpus.as_str());
-    assert!(!stored["content_hash"]
-        .as_str()
-        .unwrap_or_default()
-        .is_empty());
-    let sections = stored["sections"].as_array().expect("sections");
-    assert_eq!(sections.len() as i64, chunks);
-    assert_eq!(sections[0]["section"], "Payments");
-    assert!(sections.iter().all(|section| section["page"].is_null()));
-
-    // PDF publication preserves page provenance.
-    operator.publish(&dsn, &corpus, ollama.url(), &fixture("text-layer.pdf"));
-    let (status, stored) = get_json(
+    let (status, _) = post_json(
         &client,
-        &format!("{base}/api/documents/text-layer.pdf/status"),
+        &format!("{base}/api/documents/jobs/run"),
+        &serde_json::json!({}),
     );
     assert_eq!(status, StatusCode::OK);
-    let pages: Vec<i64> = stored["sections"]
-        .as_array()
-        .expect("pdf sections")
-        .iter()
-        .map(|section| section["page"].as_i64().expect("page"))
+
+    // PDF ingestion preserves page provenance after publication.
+    let pdf = fixture("text-layer.pdf");
+    let pdf_version = submit_and_publish(&client, &base, &pdf);
+    let pages: Vec<i64> = db_sections_by_version(&dsn, pdf_version)
+        .into_iter()
+        .map(|(_, page)| page.expect("paged PDF section"))
         .collect();
     assert_eq!(pages, vec![1, 2]);
 
     // Plain text publication.
     let note = temp_file("api-contract-note.txt", b"The support code is ZX-431.");
-    operator.publish(&dsn, &corpus, ollama.url(), &note);
-    let (status, stored) = get_json(
-        &client,
-        &format!("{base}/api/documents/api-contract-note.txt/status"),
-    );
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(stored["sections"][0]["page"], Value::Null);
+    let note_version = submit_and_publish(&client, &base, &note);
+    assert!(db_count_by_version(&dsn, note_version) > 0);
 
-    // Query: cited answer whose sources resolve to stored rows.
+    // Query: cited answer whose sources resolve to published rows only.
     let (status, answer) = post_json(
         &client,
         &format!("{base}/api/query"),
@@ -300,7 +361,7 @@ fn api_contract_upload_status_query_health_and_refusal() {
         let page = source["page"].as_i64();
         assert!(
             citation_exists(&dsn, &corpus, source_name, section, page),
-            "citation {source_name}/{section}/{page:?} does not resolve to a stored row"
+            "citation {source_name}/{section}/{page:?} does not resolve to a published row"
         );
         assert!(
             !source["text"].as_str().unwrap_or_default().is_empty(),

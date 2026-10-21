@@ -45,6 +45,66 @@ test.beforeEach(async ({ context }) => {
 // response itself instead of a fixed UI timeout, so a slow answer is never
 // mistaken for a wrong one and a retry never clicks a still-disabled button.
 const ANSWER_TIMEOUT = 5 * 60_000;
+const WEB_URL = (process.env.E2E_BASE_URL || "http://127.0.0.1:3000").replace(/\/+$/, "");
+const ADMIN_TOKEN = process.env.E2E_SESSION_TOKEN || process.env.E2E_ADMIN_TOKEN || "";
+const CSRF = process.env.E2E_CSRF_TOKEN || "e2e-csrf-token";
+
+function adminHeaders() {
+  return {
+    authorization: `Bearer ${ADMIN_TOKEN}`,
+    "content-type": "application/json",
+    "x-csrf-token": CSRF,
+    cookie: `rag_csrf=${CSRF}`,
+  };
+}
+
+async function uploadForReview(page: Page, file: string): Promise<number> {
+  await page.goto("/");
+  await page
+    .getByTestId("file-input")
+    .setInputFiles(path.join(repo, file));
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/api/documents/submissions") &&
+        r.request().method() === "POST",
+    ),
+    page.getByTestId("ingest-button").click(),
+  ]);
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    version_id: number;
+    review_status: string;
+  };
+  expect(body.review_status).toBe("pending_review");
+  await expect(page.getByTestId("ingest-status")).toContainText("pending_review");
+  return body.version_id;
+}
+
+async function publishForRetrieval(page: Page, versionId: number) {
+  const review = await page.request.post(
+    `${WEB_URL}/api/documents/submissions/${versionId}/review`,
+    {
+      headers: adminHeaders(),
+      data: JSON.stringify({ approve: true, scope: "family" }),
+    },
+  );
+  expect(review.status()).toBe(200);
+  const process = await page.request.post(
+    `${WEB_URL}/api/documents/submissions/${versionId}/process`,
+    { headers: adminHeaders(), data: JSON.stringify({}) },
+  );
+  expect(process.status()).toBe(200);
+  const run = await page.request.post(`${WEB_URL}/api/documents/jobs/run`, {
+    headers: adminHeaders(),
+    data: JSON.stringify({}),
+  });
+  expect(run.status()).toBe(200);
+  const body = (await run.json()) as {
+    processed: Array<{ version_id: number; status: string; error: string | null }>;
+  };
+  return body.processed.find((entry) => entry.version_id === versionId);
+}
 
 async function ask(page: Page) {
   const [response] = await Promise.all([
@@ -82,17 +142,13 @@ test.describe.serial("RUST-008A browser integration", () => {
     await expect(page.getByTestId("empty-state")).toHaveCount(0);
     await expect(page.getByLabel("System status")).toContainText("up");
 
-    // PDF upload -> page provenance. Ingest the PDF first so the page question
-    // is answered from a corpus that contains only the PDF.
-    await page
-      .getByTestId("file-input")
-      .setInputFiles(
-        path.join(repo, "fixtures/parity/inputs/text-layer.pdf"),
-      );
-    await page.getByTestId("ingest-button").click();
-    await expect(page.getByTestId("ingest-status")).toContainText(
-      "text-layer.pdf",
+    // PDF submission -> explicit approval -> durable processing -> retrieval.
+    const pdfVersion = await uploadForReview(
+      page,
+      "fixtures/parity/inputs/text-layer.pdf",
     );
+    const pdfOutcome = await publishForRetrieval(page, pdfVersion);
+    expect(pdfOutcome?.status).toBe("ready");
 
     // Questions are asked on the family-facing /ask page.
     await page.goto("/ask");
@@ -105,16 +161,10 @@ test.describe.serial("RUST-008A browser integration", () => {
       fullPage: true,
     });
 
-    // Markdown upload -> ingestion status and a cited answer.
-    await page.goto("/");
-    await page
-      .getByTestId("file-input")
-      .setInputFiles(path.join(repo, "examples/loan-policy.md"));
-    await page.getByTestId("ingest-button").click();
-    await expect(page.getByTestId("ingest-status")).toContainText(
-      "loan-policy.md",
-    );
-    await expect(page.getByTestId("ingest-status")).toContainText("chunk");
+    // Markdown submission -> approval -> processing -> cited answer.
+    const markdownVersion = await uploadForReview(page, "examples/loan-policy.md");
+    const markdownOutcome = await publishForRetrieval(page, markdownVersion);
+    expect(markdownOutcome?.status).toBe("ready");
 
     await page.goto("/ask");
     await page
@@ -164,19 +214,22 @@ test.describe.serial("RUST-008A browser integration", () => {
     });
   });
 
-  test("incomplete PDF extraction error is visible", async ({ page }) => {
-    await page.goto("/");
-    await page
-      .getByTestId("file-input")
-      .setInputFiles(
-        path.join(repo, "fixtures/parity/inputs/mixed-text-scan.pdf"),
-      );
-    await page.getByTestId("ingest-button").click();
-    await expect(page.getByTestId("incomplete-pdf")).toContainText("2");
-    await page.screenshot({
-      path: path.join(screenshots, "extraction-error.png"),
-      fullPage: true,
-    });
+  test("incomplete PDF fails processing without publishing", async ({ page }) => {
+    const version = await uploadForReview(
+      page,
+      "fixtures/parity/inputs/mixed-text-scan.pdf",
+    );
+    const outcome = await publishForRetrieval(page, version);
+    expect(outcome?.status).toBe("failed");
+    const submission = await page.request.get(
+      `${WEB_URL}/api/documents/submissions/${version}`,
+      { headers: adminHeaders() },
+    );
+    expect(submission.status()).toBe(200);
+    const body = (await submission.json()) as {
+      submission: { processing_status: string };
+    };
+    expect(body.submission.processing_status).toBe("failed");
   });
 
   test("no-context / insufficient-evidence UI state", async ({ page }) => {

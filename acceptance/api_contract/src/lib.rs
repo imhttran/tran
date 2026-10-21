@@ -88,6 +88,10 @@ impl Drop for CorpusCleanup {
     fn drop(&mut self) {
         if let Ok(mut client) = postgres::Client::connect(&self.dsn, postgres::NoTls) {
             let _ = client.execute("DELETE FROM documents WHERE corpus = $1", &[&self.corpus]);
+            let _ = client.execute(
+                "DELETE FROM document_version WHERE corpus = $1",
+                &[&self.corpus],
+            );
         }
     }
 }
@@ -354,7 +358,6 @@ pub fn seed_api_contract_admin(dsn: &str, issuer: &str, subject: &str, corpus: &
 pub struct ApiProcess {
     child: Child,
     base_url: String,
-    /// Disposable private document root owned by this run only.
     document_root: PathBuf,
 }
 
@@ -363,14 +366,10 @@ impl ApiProcess {
     pub fn start(dsn: &str, corpus: &str, ollama_url: &str, auth: &TestAuth) -> Self {
         let binary = build_api();
         let port = free_port();
-        // Originals are stored privately. Point the run at its own temp root so
-        // the test never writes into the checkout and never touches operator
-        // documents.
         let document_root = std::env::temp_dir().join(unique_tag("api-contract-documents"));
-        fs::create_dir_all(&document_root).expect("create the run document root");
+        fs::create_dir_all(&document_root).expect("create the document root");
         let child = Command::new(&binary)
             .env("DATABASE_URL", dsn)
-            .env("DOCUMENT_ROOT", &document_root)
             .env("RAG_CORPUS", corpus)
             .env("API_HOST", "127.0.0.1")
             .env("API_PORT", port.to_string())
@@ -390,6 +389,7 @@ impl ApiProcess {
             .env("AUTH_RATE_LIMIT", "10000")
             .env("AUTH_CLOCK_SKEW_SECS", "60")
             .env("JWKS_CACHE_TTL_SECS", "60")
+            .env("DOCUMENT_ROOT", &document_root)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
