@@ -18,6 +18,11 @@ BEGIN;
 -- Remove only this fixture's synthetic rows. Proposals are deleted before the
 -- people so a reference from an approved proposal can never reach a deleted
 -- assertion. Proposal events are append-only and intentionally survive.
+--
+-- Deleting a person also cascades that person's profile revisions and values
+-- (the revision no-delete guard permits a parent cascade), so the profile
+-- fixture below starts from a clean slate on every run and cannot duplicate a
+-- revision or collide with the value's (person, field) key.
 DELETE FROM genealogy_fact_proposal
  WHERE person_id IN (
      SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%'
