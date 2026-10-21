@@ -220,6 +220,19 @@ impl TestDb {
 impl Drop for TestDb {
     fn drop(&mut self) {
         let pattern = format!("{}%", self.prefix);
+        // Delete dependent rows first: a shared, long-lived test database may
+        // currently lack the migration 0020 foreign keys (an earlier schema
+        // reset can drop them), so cleanup must not depend on ON DELETE CASCADE.
+        // Proposal events are append-only by design and are never deleted; they
+        // hold no file content and no foreign key.
+        for statement in [
+            "DELETE FROM onboarding_person_account_link \
+              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
+            "DELETE FROM genealogy_fact_proposal \
+              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
+        ] {
+            let _ = self.genealogy.execute(statement, &[&pattern]);
+        }
         let _ = self
             .genealogy
             .execute("DELETE FROM person WHERE person_key LIKE $1", &[&pattern]);
