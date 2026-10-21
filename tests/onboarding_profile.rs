@@ -26,7 +26,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 12] = [
+const GENEALOGY_MIGRATIONS: [&str; 14] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -39,6 +39,8 @@ const GENEALOGY_MIGRATIONS: [&str; 12] = [
     "genealogy/migrations/0010_onboarding_foreign_keys.sql",
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
     "genealogy/migrations/0012_profile_revisions.sql",
+    "genealogy/migrations/0013_profile_revision_actor_scope.sql",
+    "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
 ];
 
 const ISSUER: &str = "https://synthetic-issuer.example";
@@ -172,14 +174,43 @@ impl TestDb {
     }
 
     fn field(&mut self, person_id: i64, key: &str, value: &str) {
+        let revision_id: i64 = self
+            .genealogy
+            .query_one(
+                "INSERT INTO onboarding_profile_revision \
+                     (person_id, field_key, prior_value_text, \
+                      prior_approved_revision_number, new_value_text, changed_by, \
+                      revision_number, status, visibility) \
+                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-member', 1, 'draft', 'owner_private') \
+                 RETURNING revision_id",
+                &[&person_id, &key, &value],
+            )
+            .expect("insert synthetic profile revision")
+            .get(0);
+        self.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'pending_review', submitted_at = now() \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("submit synthetic profile revision");
+        self.genealogy
+            .execute(
+                "UPDATE onboarding_profile_revision \
+                    SET status = 'approved', reviewed_at = now(), \
+                        reviewed_by = 'synthetic-reviewer', review_note = 'seed' \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("approve synthetic profile revision");
         self.genealogy
             .execute(
                 "INSERT INTO onboarding_profile_value \
-                     (person_id, field_key, value_text, updated_by) \
-                 VALUES ($1, $2, $3, 'synthetic-member') \
-                 ON CONFLICT (person_id, field_key) \
-                 DO UPDATE SET value_text = EXCLUDED.value_text, updated_by = EXCLUDED.updated_by",
-                &[&person_id, &key, &value],
+                     (person_id, field_key, value_text, updated_by, \
+                      approved_revision_number, approved_revision_id) \
+                 VALUES ($1, $2, $3, 'synthetic-member', 1, $4)",
+                &[&person_id, &key, &value, &revision_id],
             )
             .expect("write synthetic profile field");
     }
@@ -628,5 +659,5 @@ fn profile_route_and_operation_are_registered() {
     let source = include_str!("../src/api.rs");
     assert!(source.contains("/api/profile"));
     assert!(source.contains("Operation::ProfileRead"));
-    assert!(source.contains("read_own_profile"));
+    assert!(source.contains("read_owner_profile"));
 }

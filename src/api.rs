@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -38,8 +38,9 @@ use crate::ingest::IngestRejection;
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient, OllamaError};
 use crate::onboarding::{
-    self, link, AccountMapError, CandidatePreview, LinkDecision, LinkError, PreviewSummary,
-    ProfileError,
+    self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
+    OwnerProfile, PreviewSummary, ProfileRevision, ProfileVisibility, ReviewDecision,
+    RevisionError,
 };
 use crate::pipeline::{IngestOutcome, PipelineConfig, PipelineError};
 use crate::query_service::QueryService;
@@ -176,6 +177,20 @@ impl AppState {
             .route("/api/query", post(query))
             .route("/api/account", get(account))
             .route("/api/profile", get(profile))
+            .route("/api/profile/drafts", post(create_profile_draft))
+            .route("/api/profile/drafts/{id}", patch(update_profile_draft))
+            .route(
+                "/api/profile/drafts/{id}/submit",
+                post(submit_profile_draft),
+            )
+            .route(
+                "/api/profile/drafts/{id}/cancel",
+                post(cancel_profile_draft),
+            )
+            .route(
+                "/api/profile/revisions/{id}/review",
+                post(review_profile_revision),
+            )
             .route("/api/admin/roles", post(change_role))
             .route("/api/genealogy/records", get(genealogy_records))
             .route("/api/genealogy/tree", get(genealogy_tree))
@@ -564,8 +579,8 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response 
 /// Reads the authenticated member's own private profile.
 ///
 /// Ownership is derived only from the verified `(issuer, subject)` pair and the
-/// reviewed link it resolved elsewhere. The handler accepts no person key,
-/// account id, or reviewer from the client. An unlinked account receives
+/// reviewed link it resolved elsewhere. Approved values and owner-private
+/// pending revisions are returned separately. An unlinked account receives
 /// `linked: false` and no private field.
 #[allow(clippy::result_large_err)]
 async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -577,51 +592,19 @@ async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let mut identity_client = postgres::Client::connect(&config.database_url, postgres::NoTls)
-            .map_err(|_| {
-                error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "identity_unavailable",
-                    "the identity store is unavailable",
-                )
-            })?;
-        let account = onboarding::resolve_account(&mut identity_client, &issuer, &subject)
-            .map_err(account_map_error)?;
-        let mut genealogy = open_genealogy(&config).map_err(|_| {
-            error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "genealogy_unavailable",
-                "the genealogy store is unavailable",
-            )
-        })?;
-        onboarding::read_own_profile(&mut genealogy, &account).map_err(profile_error)
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_owner_profile(&mut genealogy, &account).map_err(revision_error)
     })
     .await;
 
     match result {
-        Ok(Ok(Some(view))) => {
-            let fields: Vec<serde_json::Value> = view
-                .fields
-                .iter()
-                .map(|field| {
-                    serde_json::json!({
-                        "field_key": field.field_key,
-                        "value": field.value,
-                        "updated_at": field.updated_at,
-                    })
-                })
-                .collect();
-            Json(serde_json::json!({
-                "ok": true,
-                "linked": true,
-                "profile": {
-                    "person_key": view.person_key,
-                    "display_name": view.display_name,
-                    "fields": fields,
-                },
-            }))
-            .into_response()
-        }
+        Ok(Ok(Some(view))) => Json(serde_json::json!({
+            "ok": true,
+            "linked": true,
+            "profile": owner_profile_json(&view),
+        }))
+        .into_response(),
         Ok(Ok(None)) => Json(serde_json::json!({
             "ok": true,
             "linked": false,
@@ -639,15 +622,328 @@ async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
 }
 
-fn profile_error(err: ProfileError) -> Response {
-    eprintln!("api: profile read failed: {err}");
+#[derive(Deserialize)]
+struct CreateProfileDraftRequest {
+    field_key: String,
+    value: String,
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateProfileDraftRequest {
+    value: String,
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviewProfileRevisionRequest {
+    decision: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+async fn create_profile_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateProfileDraftRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let visibility = match parse_visibility(request.visibility.as_deref()) {
+        Ok(visibility) => visibility,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let field_key = request.field_key;
+    let value = request.value;
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::create_owned_draft(&mut genealogy, &account, &field_key, &value, visibility)
+            .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+async fn update_profile_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+    Json(request): Json<UpdateProfileDraftRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let visibility = match parse_optional_visibility(request.visibility.as_deref()) {
+        Ok(visibility) => visibility,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let value = request.value;
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::update_owned_draft(&mut genealogy, &account, revision_id, &value, visibility)
+            .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+async fn submit_profile_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::submit_owned_revision(&mut genealogy, &account, revision_id)
+            .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+async fn cancel_profile_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::cancel_owned_draft(&mut genealogy, &account, revision_id)
+            .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+async fn review_profile_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision_id): Path<i64>,
+    Json(request): Json<ReviewProfileRevisionRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let decision = match parse_review_decision(&request.decision) {
+        Ok(decision) => decision,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let reviewer = onboarding::identity_fingerprint(&issuer, &subject);
+    let note = request.note;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::review_revision(
+            &mut genealogy,
+            revision_id,
+            &reviewer,
+            decision,
+            note.as_deref(),
+        )
+        .map_err(revision_error)
+    })
+    .await;
+    revision_response(result)
+}
+
+#[allow(clippy::result_large_err)]
+fn revision_response(
+    result: Result<Result<ProfileRevision, Response>, tokio::task::JoinError>,
+) -> Response {
+    match result {
+        Ok(Ok(revision)) => Json(serde_json::json!({
+            "ok": true,
+            "revision": revision_json(&revision),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: profile revision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "profile_revision_failed",
+                "the profile revision operation failed",
+            )
+        }
+    }
+}
+
+fn revision_json(revision: &ProfileRevision) -> serde_json::Value {
+    serde_json::json!({
+        "revision_id": revision.revision_id,
+        "field_key": revision.field_key,
+        "revision_number": revision.revision_number,
+        "prior_value_text": revision.prior_value_text,
+        "prior_approved_revision_number": revision.prior_approved_revision_number,
+        "value": revision.new_value_text,
+        "visibility": revision.visibility.as_str(),
+        "status": revision.status.as_str(),
+        "changed_by": revision.changed_by,
+        "changed_at": revision.changed_at,
+        "submitted_at": revision.submitted_at,
+        "reviewed_at": revision.reviewed_at,
+        "reviewed_by": revision.reviewed_by,
+        "review_note": revision.review_note,
+    })
+}
+
+fn approved_json(value: &ApprovedProfileValue) -> serde_json::Value {
+    serde_json::json!({
+        "field_key": value.field_key,
+        "value": value.value_text,
+        "visibility": value.visibility.as_str(),
+        "updated_by": value.updated_by,
+        "updated_at": value.updated_at,
+        "approved_revision_number": value.approved_revision_number,
+        "approved_revision_id": value.approved_revision_id,
+    })
+}
+
+fn owner_profile_json(profile: &OwnerProfile) -> serde_json::Value {
+    let approved: Vec<serde_json::Value> = profile.approved.iter().map(approved_json).collect();
+    let pending: Vec<serde_json::Value> = profile.pending.iter().map(revision_json).collect();
+    let history: Vec<serde_json::Value> = profile.history.iter().map(revision_json).collect();
+    serde_json::json!({
+        "person_key": profile.person_key,
+        "display_name": profile.display_name,
+        "approved": approved,
+        "pending": pending,
+        "history": history,
+    })
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_optional_visibility(value: Option<&str>) -> Result<Option<ProfileVisibility>, Response> {
+    match value {
+        None => Ok(None),
+        Some("owner_private") => Ok(Some(ProfileVisibility::OwnerPrivate)),
+        Some("family") => Ok(Some(ProfileVisibility::Family)),
+        Some(_) => Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_visibility",
+            "visibility must be owner_private or family",
+        )),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_visibility(value: Option<&str>) -> Result<ProfileVisibility, Response> {
+    Ok(parse_optional_visibility(value)?.unwrap_or(ProfileVisibility::OwnerPrivate))
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_review_decision(value: &str) -> Result<ReviewDecision, Response> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "approve" | "approved" => Ok(ReviewDecision::Approve),
+        "reject" | "rejected" => Ok(ReviewDecision::Reject),
+        "needs_changes" => Ok(ReviewDecision::NeedsChanges),
+        _ => Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_decision",
+            "decision must be approve, reject, or needs_changes",
+        )),
+    }
+}
+
+fn revision_error(err: RevisionError) -> Response {
+    eprintln!("api: profile revision failed: {err}");
     match err {
-        ProfileError::Database(_) => error(
+        RevisionError::UnknownPerson | RevisionError::UnknownRevision => error(
+            StatusCode::NOT_FOUND,
+            "profile_revision_not_found",
+            "no such profile or revision",
+        ),
+        RevisionError::Unlinked | RevisionError::NotOwner | RevisionError::SelfReview => error(
+            StatusCode::FORBIDDEN,
+            "profile_forbidden",
+            "the authenticated account may not modify this revision",
+        ),
+        RevisionError::OpenRevisionExists
+        | RevisionError::InvalidTransition
+        | RevisionError::VersionConflict => error(
+            StatusCode::CONFLICT,
+            "profile_revision_conflict",
+            "the profile revision conflicts with the current state",
+        ),
+        RevisionError::InvalidField
+        | RevisionError::InvalidValue
+        | RevisionError::InvalidVisibility
+        | RevisionError::ReviewNoteRequired => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_profile_revision",
+            "the profile revision request is invalid",
+        ),
+        RevisionError::Database(_) => error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "profile_unavailable",
-            "the profile store is unavailable",
+            "profile_revision_unavailable",
+            "the profile revision store is unavailable",
         ),
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn resolve_profile_account(
+    config: &Config,
+    issuer: &str,
+    subject: &str,
+) -> Result<onboarding::IdentityAccount, Response> {
+    let mut client =
+        postgres::Client::connect(&config.database_url, postgres::NoTls).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_unavailable",
+                "the identity store is unavailable",
+            )
+        })?;
+    onboarding::resolve_account(&mut client, issuer, subject).map_err(account_map_error)
+}
+
+#[allow(clippy::result_large_err)]
+fn open_genealogy_response(config: &Config) -> Result<postgres::Client, Response> {
+    open_genealogy(config).map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "genealogy_unavailable",
+            "the genealogy store is unavailable",
+        )
+    })
 }
 
 #[derive(Deserialize)]

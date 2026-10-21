@@ -152,6 +152,14 @@ fn legacy_profile_revisions_are_preserved_and_numbered() {
             &[&person_id],
         )
         .expect("insert legacy revision");
+    client
+        .execute(
+            "INSERT INTO onboarding_profile_value \
+                 (person_id, field_key, value_text, updated_by) \
+             VALUES ($1, 'display_name', 'Legacy Name', 'legacy-owner')",
+            &[&person_id],
+        )
+        .expect("insert legacy approved value");
 
     apply(
         &mut client,
@@ -190,14 +198,6 @@ fn legacy_profile_revisions_are_preserved_and_numbered() {
 
     // Existing approved values gain the owner-private default without changing
     // their text.
-    client
-        .execute(
-            "INSERT INTO onboarding_profile_value \
-                 (person_id, field_key, value_text, updated_by) \
-             VALUES ($1, 'display_name', 'Legacy Name', 'legacy-owner')",
-            &[&person_id],
-        )
-        .expect("insert legacy approved value");
     let value = client
         .query_one(
             "SELECT value_text, visibility FROM onboarding_profile_value WHERE person_id = $1",
@@ -415,6 +415,60 @@ fn revision_constraints_and_guards_are_enforced() {
         &[&event_id],
     );
     assert!(event_update.is_err(), "review events are append-only");
+    let revision_delete = client.execute(
+        "DELETE FROM onboarding_profile_revision WHERE revision_id = $1",
+        &[&submitted_id],
+    );
+    assert!(
+        revision_delete.is_err(),
+        "terminal revision history cannot be deleted directly"
+    );
+    let event_delete = client.execute(
+        "DELETE FROM onboarding_profile_review_event WHERE event_id = $1",
+        &[&event_id],
+    );
+    assert!(
+        event_delete.is_err(),
+        "review events cannot be deleted directly"
+    );
+
+    // Deleting the owning person must still cascade through revision and event
+    // history; the delete guards only reject direct child deletes.
+    let cascade_person = seed_person(&mut client, "migration-0012-cascade");
+    let cascade_revision: i64 = client
+        .query_one(
+            "INSERT INTO onboarding_profile_revision \
+                 (person_id, field_key, new_value_text, changed_by, revision_number, \
+                  status, visibility) \
+             VALUES ($1, 'biography', 'cascade biography', 'owner-d', 1, \
+                     'draft', 'owner_private') \
+             RETURNING revision_id",
+            &[&cascade_person],
+        )
+        .expect("insert cascade revision")
+        .get(0);
+    client
+        .execute(
+            "INSERT INTO onboarding_profile_review_event \
+                 (revision_id, person_id, event, actor) \
+             VALUES ($1, $2, 'draft', 'owner-d')",
+            &[&cascade_revision, &cascade_person],
+        )
+        .expect("insert cascade event");
+    client
+        .execute(
+            "DELETE FROM person WHERE person_id = $1",
+            &[&cascade_person],
+        )
+        .expect("person deletion must cascade revision history");
+    let remaining: i64 = client
+        .query_one(
+            "SELECT count(*) FROM onboarding_profile_revision WHERE person_id = $1",
+            &[&cascade_person],
+        )
+        .expect("count cascade revisions")
+        .get(0);
+    assert_eq!(remaining, 0);
 
     // Re-applying the migration must not rewrite a current lifecycle row. The
     // legacy backfill is scoped to status IS NULL, and the version backfill is
