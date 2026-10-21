@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{claim, release, reserve, NameParts, ReservationStatus};
 
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 11] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -27,6 +27,7 @@ const MIGRATIONS: [&str; 10] = [
     "genealogy/migrations/0008_onboarding_identity.sql",
     "genealogy/migrations/0010_onboarding_foreign_keys.sql",
     "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
+    "genealogy/migrations/0012_profile_revisions.sql",
 ];
 
 fn genealogy_dsn() -> Option<String> {
