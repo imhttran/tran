@@ -210,8 +210,12 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
 # The privacy assertion is only meaningful if the private value really exists.
-seeded_private=$(psql "$GENEALOGY_DATABASE_URL" -tAc \
-	"SELECT count(*) FROM onboarding_profile_value WHERE value_text = '$E2E_PRIVATE_PROFILE_MARKER'")
+# psql does not interpolate variables in `-c`, so the query comes from stdin.
+seeded_private=$(psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-v marker="$E2E_PRIVATE_PROFILE_MARKER" -tA <<'SQL'
+SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'marker';
+SQL
+)
 if [ "$seeded_private" != "1" ]; then
 	echo "web-e2e: the private profile fixture was not seeded (found ${seeded_private:-none})" >&2
 	exit 1

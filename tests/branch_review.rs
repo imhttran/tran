@@ -1190,6 +1190,10 @@ fn branch_review_reads_never_return_private_profile_values() {
         list_proposals(&mut db.genealogy, &reviewer, Some(&branch), None, None, 25).expect("queue");
     let detail = read_proposal(&mut db.genealogy, &reviewer, proposal_id).expect("detail");
 
+    // Debug rendering is the strictest structural check available here: the
+    // response types have no private fields to select at all. The HTTP-level
+    // form of the same guarantee, against real JSON, is asserted in
+    // web/e2e/branch-review-security.spec.ts with a seeded private value.
     for rendered in [format!("{queue:?}"), format!("{detail:?}")] {
         assert!(
             !rendered.contains(&marker),
