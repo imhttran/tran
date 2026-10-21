@@ -23,6 +23,7 @@ pub mod media;
 pub mod profile;
 pub mod profile_revisions;
 pub mod reservation;
+pub mod review_queue;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
@@ -49,9 +50,9 @@ pub use link::{
     LinkRecord,
 };
 pub use media::{
-    read_authorized_media, read_owner_media, store_submission, withdraw_owned_media, MediaAsset,
-    MediaDownload, MediaError, MediaKind, MediaStorage, DOCUMENT_FIELD, DOCUMENT_MAX_BYTES,
-    PHOTO_FIELD, PHOTO_MAX_BYTES,
+    read_authorized_media, read_owner_media, read_review_media, store_submission,
+    withdraw_owned_media, MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage,
+    DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
 pub use profile_revisions::{
@@ -64,4 +65,8 @@ pub use profile_revisions::{
     MEDIA_PROFILE_FIELDS, NAME_MAX_CHARS, NARRATIVE_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
 };
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
+pub use review_queue::{
+    read_review_detail, read_review_queue, ReviewDetail, ReviewEntry, ReviewEvent, ReviewMedia,
+    ReviewQueue,
+};
 pub use username::NameParts;

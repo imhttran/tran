@@ -120,7 +120,7 @@ async function proxy(
   { params }: { params: Promise<{ path: string[] }> },
 ): Promise<NextResponse> {
   const { path } = await params;
-  const target = `${API_URL}/api/${path.map(encodeURIComponent).join("/")}`;
+  const target = `${API_URL}/api/${path.map(encodeURIComponent).join("/")}${request.nextUrl.search}`;
 
   	const bearer = resolveBearer(request);
 

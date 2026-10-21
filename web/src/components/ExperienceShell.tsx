@@ -27,6 +27,7 @@ const NAV_ITEMS = [
 ];
 const UPLOAD_ITEM = { href: "/", label: "Add documents", icon: "＋" };
 const ADMIN_ITEMS = [
+  { href: "/admin/reviews", label: "Reviews", icon: "✓" },
   { href: "/admin/family-members", label: "Bulk onboard", icon: "✦" },
 ];
 

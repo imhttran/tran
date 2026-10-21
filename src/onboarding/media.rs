@@ -684,6 +684,51 @@ pub fn read_authorized_media(
     Ok(MediaDownload { asset, bytes })
 }
 
+/// Reads the pending media submission attached to an independent review decision.
+///
+/// This is deliberately narrower than [`read_authorized_media`]: only a
+/// `pending_review` asset is readable, and the reviewer must neither own the
+/// linked person nor be the submitter. Approved owner-private media stays
+/// private, and rejected media is not served through this path.
+pub fn read_review_media(
+    client: &mut postgres::Client,
+    storage: &MediaStorage,
+    reviewer_fingerprint: &str,
+    media_id: i64,
+) -> Result<MediaDownload, MediaError> {
+    let mut tx = client.transaction()?;
+    let sql = format!(
+        "SELECT {MEDIA_COLUMNS}, r.changed_by \
+           FROM onboarding_media_metadata m \
+           JOIN onboarding_profile_revision r \
+             ON r.revision_id = m.revision_id AND r.visibility = m.visibility \
+          WHERE m.media_id = $1"
+    );
+    let row = tx
+        .query_opt(&sql, &[&media_id])?
+        .ok_or(MediaError::NotFound)?;
+    let changed_by: String = row.get(14);
+    let asset = row_to_asset(row)?;
+    if asset.status != RevisionStatus::PendingReview || changed_by == reviewer_fingerprint {
+        return Err(MediaError::NotFound);
+    }
+    let reviewer_owns_person: bool = tx
+        .query_one(
+            "SELECT EXISTS (\
+                SELECT 1 FROM onboarding_person_account_link \
+                 WHERE person_id = $1 AND identity_fingerprint = $2\
+             )",
+            &[&asset.person_id, &reviewer_fingerprint],
+        )?
+        .get(0);
+    if reviewer_owns_person {
+        return Err(MediaError::NotFound);
+    }
+    let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
+    tx.commit()?;
+    Ok(MediaDownload { asset, bytes })
+}
+
 /// Withdraws an owner's pending media submission. The metadata row, pending
 /// revision, and private file are removed; approved/rejected history cannot be
 /// withdrawn this way.

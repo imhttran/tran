@@ -417,3 +417,86 @@ export function withdrawProfileMedia(
 export function profileMediaUrl(mediaId: number): string {
   return `/api/profile/media/${mediaId}`;
 }
+
+// --- administrator review console -----------------------------------------
+
+export type ReviewQueueStatus =
+  "pending_review" | "approved" | "rejected" | "needs_changes" | "all";
+
+export type ReviewMedia = {
+  media_id: number;
+  kind: string;
+  mime_type: string | null;
+  file_name: string | null;
+  byte_size: number | null;
+  width: number | null;
+  height: number | null;
+};
+
+export type ReviewDecision = "approve" | "reject" | "needs_changes";
+
+export type ReviewEntry = {
+  display_name: string;
+  revision: ProfileRevision;
+  current_approved: ApprovedProfileValue | null;
+  current_media: ReviewMedia | null;
+  media: ReviewMedia | null;
+  can_decide: boolean;
+  decision_block:
+    "self_submitted" | "reviewer_owns_person" | "not_pending" | null;
+};
+
+export type ReviewQueueResponse = {
+  ok: true;
+  status: string;
+  limit: number;
+  next_cursor: number | null;
+  entries: ReviewEntry[];
+};
+
+export type ReviewEvent = {
+  event: string;
+  actor: string;
+  note: string | null;
+  created_at: string;
+};
+
+export type ReviewDetailResponse = {
+  ok: true;
+  entry: ReviewEntry;
+  events: ReviewEvent[];
+  history: ProfileRevision[];
+};
+
+export function getReviewQueue(params: {
+  status: ReviewQueueStatus;
+  cursor?: number | null;
+  limit?: number;
+}): Promise<ReviewQueueResponse> {
+  const search = new URLSearchParams({ status: params.status });
+  if (params.cursor) search.set("cursor", String(params.cursor));
+  if (params.limit) search.set("limit", String(params.limit));
+  return request<ReviewQueueResponse>(`/api/admin/reviews?${search}`);
+}
+
+export function getReviewDetail(
+  revisionId: number,
+): Promise<ReviewDetailResponse> {
+  return request<ReviewDetailResponse>(`/api/admin/reviews/${revisionId}`);
+}
+
+export function reviewMediaUrl(mediaId: number): string {
+  return `/api/admin/reviews/media/${mediaId}`;
+}
+
+export function decideProfileRevision(
+  revisionId: number,
+  decision: ReviewDecision,
+  note: string,
+): Promise<{ ok: true; revision: ProfileRevision }> {
+  return request(`/api/profile/revisions/${revisionId}/review`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision, note }),
+  });
+}
