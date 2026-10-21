@@ -222,6 +222,8 @@ cleanup() {
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer') OR person_key LIKE 'e2e-branch-%'" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM source_evidence WHERE source_document_id IN (SELECT source_document_id FROM source_document WHERE relative_path = 'synthetic/e2e-branch-review-source.md')" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM source_document WHERE relative_path = 'synthetic/e2e-branch-review-source.md'" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }

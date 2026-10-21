@@ -130,6 +130,11 @@ requires the exact reviewed account-person link.
 - Approval applies the proposal through the existing assertion evidence,
   provenance, validation, review-event, and baseline workflow. Pending proposals
   never replace a verified fact.
+- Approval updates the single authoritative assertion in place, exactly as the
+  existing assertion review does. The superseded value is never lost: it stays
+  immutable on the approved proposal row (`prior_value_text`,
+  `prior_review_status`), and the proposal event ledger remains the change
+  history for that fact.
 - Queue and detail filters never expose an off-branch person or proposal. No
   member-private profile fields, drafts, contact details, personal documents, or
   owner-private media are read by this module.
