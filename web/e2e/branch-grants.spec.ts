@@ -104,6 +104,32 @@ test.describe.serial("branch reviewer grants", () => {
     );
     expect(duplicate.status).toBe(409);
 
+    const blank = await api(
+      request,
+      ADMIN,
+      "POST",
+      "/api/admin/branch-reviewers",
+      {
+        issuer: ISSUER,
+        subject: "e2e-approver",
+        branch_keys: ["branch-2", "   "],
+        reason: "mixed blank selection",
+      },
+    );
+    expect(blank.status).toBe(400);
+
+    const paged = await api(
+      request,
+      ADMIN,
+      "GET",
+      `/api/admin/branch-reviewers?account_id=${accountId}&limit=1`,
+    );
+    expect(paged.status).toBe(200);
+    expect((paged.body.grants as Grant[]).length).toBe(1);
+    expect((paged.body.events as { event: string }[]).length).toBe(1);
+    expect(typeof paged.body.grants_next_cursor).toBe("number");
+    expect(typeof paged.body.events_next_cursor).toBe("number");
+
     const first = grants.find((grant) => grant.branch_key === "branch-1")!;
     const revoked = await api(
       request,

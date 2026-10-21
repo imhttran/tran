@@ -9,7 +9,7 @@
 //! makes the old grant unusable; a new account never inherits it. Every grant
 //! and revocation appends an immutable event.
 
-use postgres::{Client, Transaction};
+use postgres::{Client, IsolationLevel, Transaction};
 use thiserror::Error;
 
 use crate::onboarding::account_map::IdentityAccount;
@@ -64,6 +64,8 @@ pub struct BranchGrantEvent {
 pub enum BranchGrantError {
     #[error("at least one branch is required")]
     EmptySelection,
+    #[error("branch keys must not be blank")]
+    BlankBranch,
     #[error("unknown family branch: {0}")]
     UnknownBranch(String),
     #[error("the account has no reviewed person link")]
@@ -112,38 +114,66 @@ pub fn list_branches(client: &mut Client) -> Result<Vec<BranchSummary>, BranchGr
         .collect())
 }
 
-/// Lists current and historical grants, optionally for one account.
-pub fn list_grants(
+/// One bounded, repeatable-read snapshot of grants and their audit events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantSnapshot {
+    pub grants: Vec<BranchReviewerGrant>,
+    pub events: Vec<BranchGrantEvent>,
+    pub grants_next_cursor: Option<i64>,
+    pub events_next_cursor: Option<i64>,
+    pub limit: i64,
+}
+
+/// Reads bounded grant and event pages from one database snapshot.
+///
+/// Both lists use descending id cursors and a hard limit of 100. The
+/// repeatable-read transaction prevents a concurrent grant or revocation from
+/// making the grants and events in one response contradict each other.
+pub fn read_grant_snapshot(
     client: &mut Client,
     account_id: Option<i64>,
-) -> Result<Vec<BranchReviewerGrant>, BranchGrantError> {
-    let sql = format!(
+    grant_cursor: Option<i64>,
+    event_cursor: Option<i64>,
+    limit: i64,
+) -> Result<GrantSnapshot, BranchGrantError> {
+    let limit = limit.clamp(1, 100);
+    let mut tx = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .start()?;
+    let grant_sql = format!(
         "SELECT {GRANT_COLUMNS} \
            FROM onboarding_branch_reviewer_grant g \
            JOIN family_branch b ON b.family_branch_id = g.family_branch_id \
           WHERE ($1::bigint IS NULL OR g.account_id = $1) \
-          ORDER BY b.branch_key, g.created_at DESC, g.grant_id DESC"
+            AND ($2::bigint IS NULL OR g.grant_id < $2) \
+          ORDER BY g.grant_id DESC \
+          LIMIT $3"
     );
-    let rows = client.query(&sql, &[&account_id])?;
-    rows.into_iter().map(row_to_grant).collect()
-}
-
-/// Lists the append-only grant/revocation events, optionally for one account.
-pub fn list_grant_events(
-    client: &mut Client,
-    account_id: Option<i64>,
-) -> Result<Vec<BranchGrantEvent>, BranchGrantError> {
-    let rows = client.query(
+    let rows = tx.query(&grant_sql, &[&account_id, &grant_cursor, &(limit + 1)])?;
+    let mut grants = rows
+        .into_iter()
+        .map(row_to_grant)
+        .collect::<Result<Vec<_>, _>>()?;
+    let grants_next_cursor = if grants.len() as i64 > limit {
+        grants.truncate(limit as usize);
+        grants.last().map(|grant| grant.grant_id)
+    } else {
+        None
+    };
+    let event_rows = tx.query(
         "SELECT e.event_id, e.grant_id, e.account_id, e.family_branch_id, \
                 COALESCE(e.branch_key, b.branch_key, 'deleted-branch'), \
                 e.event, e.actor, e.reason, e.created_at::text \
            FROM onboarding_branch_reviewer_grant_event e \
            LEFT JOIN family_branch b ON b.family_branch_id = e.family_branch_id \
           WHERE ($1::bigint IS NULL OR e.account_id = $1) \
-          ORDER BY e.event_id",
-        &[&account_id],
+            AND ($2::bigint IS NULL OR e.event_id < $2) \
+          ORDER BY e.event_id DESC \
+          LIMIT $3",
+        &[&account_id, &event_cursor, &(limit + 1)],
     )?;
-    Ok(rows
+    let mut events = event_rows
         .into_iter()
         .map(|row| BranchGrantEvent {
             event_id: row.get(0),
@@ -156,7 +186,21 @@ pub fn list_grant_events(
             reason: row.get(7),
             created_at: row.get(8),
         })
-        .collect())
+        .collect::<Vec<_>>();
+    let events_next_cursor = if events.len() as i64 > limit {
+        events.truncate(limit as usize);
+        events.last().map(|event| event.event_id)
+    } else {
+        None
+    };
+    tx.commit()?;
+    Ok(GrantSnapshot {
+        grants,
+        events,
+        grants_next_cursor,
+        events_next_cursor,
+        limit,
+    })
 }
 
 /// Grants one or more branches to a verified, active, reviewed-linked account.
@@ -174,11 +218,14 @@ pub fn grant_branches(
 ) -> Result<Vec<BranchReviewerGrant>, BranchGrantError> {
     let actor = clean_actor(actor)?;
     let reason = clean_reason(reason)?;
-    let mut keys: Vec<String> = branch_keys
-        .iter()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-        .collect();
+    let mut keys: Vec<String> = Vec::with_capacity(branch_keys.len());
+    for key in branch_keys {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(BranchGrantError::BlankBranch);
+        }
+        keys.push(key.to_string());
+    }
     keys.sort();
     keys.dedup();
     if keys.is_empty() {

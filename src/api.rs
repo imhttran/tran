@@ -862,6 +862,9 @@ struct BranchReviewerRevokeRequest {
 #[derive(Deserialize)]
 struct BranchReviewerListQuery {
     account_id: Option<i64>,
+    grant_cursor: Option<i64>,
+    event_cursor: Option<i64>,
+    limit: Option<i64>,
 }
 
 /// Lists grantable family branches.
@@ -900,22 +903,47 @@ async fn list_branch_reviewers(
     if let Err(response) = authorize(&state, &headers, Operation::BranchReviewerAdmin) {
         return response;
     }
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_limit",
+            "limit must be between 1 and 100",
+        );
+    }
+    if query.grant_cursor.is_some_and(|cursor| cursor <= 0)
+        || query.event_cursor.is_some_and(|cursor| cursor <= 0)
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursors must be positive ids",
+        );
+    }
     let config = state.config.clone();
     let account_id = query.account_id;
+    let grant_cursor = query.grant_cursor;
+    let event_cursor = query.event_cursor;
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
-        let grants =
-            onboarding::list_grants(&mut genealogy, account_id).map_err(branch_grant_error)?;
-        let events = onboarding::list_grant_events(&mut genealogy, account_id)
-            .map_err(branch_grant_error)?;
-        Ok((grants, events))
+        onboarding::read_grant_snapshot(
+            &mut genealogy,
+            account_id,
+            grant_cursor,
+            event_cursor,
+            limit,
+        )
+        .map_err(branch_grant_error)
     })
     .await;
     match result {
-        Ok(Ok((grants, events))) => Json(serde_json::json!({
+        Ok(Ok(snapshot)) => Json(serde_json::json!({
             "ok": true,
-            "grants": grants.iter().map(grant_json).collect::<Vec<_>>(),
-            "events": events.iter().map(grant_event_json).collect::<Vec<_>>(),
+            "limit": snapshot.limit,
+            "grants": snapshot.grants.iter().map(grant_json).collect::<Vec<_>>(),
+            "events": snapshot.events.iter().map(grant_event_json).collect::<Vec<_>>(),
+            "grants_next_cursor": snapshot.grants_next_cursor,
+            "events_next_cursor": snapshot.events_next_cursor,
         }))
         .into_response(),
         Ok(Err(response)) => response,
@@ -1037,6 +1065,7 @@ fn branch_grant_error(err: onboarding::BranchGrantError) -> Response {
     eprintln!("api: branch reviewer grant failed: {err}");
     match err {
         onboarding::BranchGrantError::EmptySelection
+        | onboarding::BranchGrantError::BlankBranch
         | onboarding::BranchGrantError::UnknownBranch(_)
         | onboarding::BranchGrantError::InvalidActor
         | onboarding::BranchGrantError::InvalidReason => error(

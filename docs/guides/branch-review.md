@@ -67,8 +67,10 @@ fingerprint, timestamps, reason, `active`, and `usable`.
 - A grant or revocation requires a non-empty reason; the actor is the verified
   administrator fingerprint.
 - Duplicate active grants are rejected (`409 branch_grant_exists`).
-- Granting multiple branches is atomic: every requested branch must be valid, or
-  none is written.
+- Grant and event listings use descending id cursors and a hard limit of 100;
+  grants and events in one response come from the same repeatable-read snapshot.
+- Granting multiple branches is atomic: every requested branch must be valid and
+  non-blank, or none is written.
 - A branch reviewer does not gain any administrator capability. Admin APIs still
   require the administrator role.
 
