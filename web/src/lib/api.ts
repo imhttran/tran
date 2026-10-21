@@ -144,6 +144,152 @@ export function askQuestion(question: string): Promise<QueryResponse> {
   });
 }
 
+// Bulk onboarding (admin only). Every operation goes through the authenticated
+// same-origin proxy; mutations carry the CSRF token added by request().
+export type BulkClassification =
+  | "eligible_for_invite"
+  | "needs_review"
+  | "already_linked"
+  | "already_prepared"
+  | "invited"
+  | "not_eligible";
+
+export type BulkPreviewRow = {
+  person_key: string;
+  classification: BulkClassification;
+  reasons: string[];
+  proposed_username: string | null;
+  preparable: boolean;
+  blocked_missing_recipient: boolean;
+  sendable: boolean;
+};
+
+export type BulkPreview = {
+  ok: true;
+  rows: BulkPreviewRow[];
+  summary: {
+    eligible_for_invite: number;
+    needs_review: number;
+    already_linked: number;
+    already_prepared: number;
+    invited: number;
+    not_eligible: number;
+    blocked_missing_recipient: number;
+  };
+  review_needed: string | null;
+};
+
+export type BulkPrepareItem = {
+  person_key: string;
+  status: string;
+  reason: string | null;
+  reservation_id: number | null;
+};
+
+export type BulkPrepare = {
+  ok: true;
+  batch_id: number;
+  batch_key: string;
+  created: boolean;
+  prepared: number;
+  skipped: number;
+  needs_review: number;
+  failed: number;
+  items: BulkPrepareItem[];
+};
+
+export type BulkBatchItem = {
+  person_key: string;
+  status: string;
+  reason: string | null;
+  delivery_status: string;
+  provider: string | null;
+  attempts: number;
+  username: string | null;
+  invitation_status: string | null;
+  has_verified_contact: boolean;
+};
+
+export type BulkBatchStatus = {
+  ok: true;
+  batch_id: number;
+  status: string;
+  confirmed_count: number;
+  created_by: string;
+  created_at: string;
+  completed_at: string | null;
+  items: BulkBatchItem[];
+};
+
+export type BulkSendResult = {
+  ok: true;
+  configured: true;
+  results: Array<{
+    person_key: string;
+    status: string;
+    provider: string | null;
+    reason: string | null;
+  }>;
+};
+
+export function bulkPreview(body: {
+  selector: "all" | "all_eligible" | "explicit";
+  person_keys?: string[];
+  limit?: number;
+  offset?: number;
+}): Promise<BulkPreview> {
+  return request<BulkPreview>("/api/admin/family-members/bulk/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function bulkPrepare(body: {
+  person_keys: string[];
+  confirmed_count: number;
+}): Promise<BulkPrepare> {
+  return request<BulkPrepare>("/api/admin/family-members/bulk/prepare", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function bulkVerifyRecipient(body: {
+  person_key: string;
+  email: string;
+  confirmed: true;
+}): Promise<{ ok: true; verified: true }> {
+  return request<{ ok: true; verified: true }>(
+    "/api/admin/family-members/bulk/recipients",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function bulkSend(body: {
+  batch_id: number;
+  person_keys?: string[];
+  approve: true;
+  ttl_secs?: number;
+}): Promise<BulkSendResult> {
+  return request<BulkSendResult>("/api/admin/family-members/bulk/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function bulkBatchStatus(batchId: number): Promise<BulkBatchStatus> {
+  return request<BulkBatchStatus>(
+    `/api/admin/family-members/bulk/batches/${batchId}`,
+  );
+}
+
 // --- profile and private media --------------------------------------------
 
 export type ProfileVisibility = "owner_private" | "family";

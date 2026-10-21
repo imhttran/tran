@@ -16,7 +16,7 @@ use postgres::{Client, NoTls};
 use rag_foundation::onboarding::invitation::hash_token;
 use rag_foundation::onboarding::{accept, create, expire_due, revoke, InvitationError};
 
-const MIGRATIONS: [&str; 16] = [
+const MIGRATIONS: [&str; 17] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -33,6 +33,7 @@ const MIGRATIONS: [&str; 16] = [
     "genealogy/migrations/0015_profile_media.sql",
     "genealogy/migrations/0016_profile_media_withdrawal.sql",
     "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
+    "genealogy/migrations/0018_onboarding_batch.sql",
 ];
 
 const ACTOR: &str = "synthetic-actor";

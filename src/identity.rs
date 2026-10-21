@@ -140,6 +140,12 @@ pub enum Operation {
     OnboardingInvite,
     /// Reviewing or revoking an account-to-person link.
     OnboardingLink,
+    /// Running the read-only onboarding dry-run and selection.
+    OnboardingDryRun,
+    /// Preparing a reviewed batch of living candidates.
+    OnboardingBulkPrepare,
+    /// Sending explicitly approved bulk invitations.
+    OnboardingBulkSend,
 }
 
 impl Operation {
@@ -159,6 +165,9 @@ impl Operation {
             | Operation::OnboardingPreview
             | Operation::OnboardingInvite
             | Operation::OnboardingLink
+            | Operation::OnboardingDryRun
+            | Operation::OnboardingBulkPrepare
+            | Operation::OnboardingBulkSend
             | Operation::ProfileReview => Some(Role::Admin),
             Operation::ProfileRead | Operation::ProfileWrite => None,
         }
@@ -173,6 +182,7 @@ impl Operation {
                 | Operation::GenealogyRead
                 | Operation::Account
                 | Operation::ProfileRead
+                | Operation::OnboardingDryRun
         )
     }
 
@@ -193,6 +203,9 @@ impl Operation {
             Operation::OnboardingPreview => "onboarding_preview",
             Operation::OnboardingInvite => "onboarding_invite",
             Operation::OnboardingLink => "onboarding_link",
+            Operation::OnboardingDryRun => "onboarding_dry_run",
+            Operation::OnboardingBulkPrepare => "onboarding_bulk_prepare",
+            Operation::OnboardingBulkSend => "onboarding_bulk_send",
         }
     }
 }
@@ -251,6 +264,9 @@ mod tests {
             Operation::OnboardingPreview,
             Operation::OnboardingInvite,
             Operation::OnboardingLink,
+            Operation::OnboardingDryRun,
+            Operation::OnboardingBulkPrepare,
+            Operation::OnboardingBulkSend,
         ] {
             assert_eq!(decide(None, operation), Decision::Unauthenticated);
         }
@@ -295,6 +311,18 @@ mod tests {
         );
         assert_eq!(
             decide(Some(&viewer), Operation::OnboardingLink),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::OnboardingDryRun),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::OnboardingBulkPrepare),
+            Decision::Forbidden
+        );
+        assert_eq!(
+            decide(Some(&viewer), Operation::OnboardingBulkSend),
             Decision::Forbidden
         );
     }

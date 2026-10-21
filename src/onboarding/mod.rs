@@ -13,7 +13,10 @@
 //! a one-way fingerprint.
 
 pub mod account_map;
+pub mod batch;
 pub mod candidate;
+pub mod delivery;
+pub mod dry_run;
 pub mod invitation;
 pub mod link;
 pub mod media;
@@ -23,9 +26,22 @@ pub mod reservation;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
+pub use batch::{
+    confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport, ItemStatus, CHUNK_SIZE,
+};
 pub use candidate::{
-    classify, preview_candidates, CandidateError, CandidatePreview, CandidateRow, Classification,
-    PreviewSummary, Reason,
+    classify, load_name_parts, name_parts, preview_candidates, reclassify_person,
+    segmentation_is_ambiguous, CandidateError, CandidatePreview, CandidateRow, Classification,
+    PersonEvidence, PreviewSummary, Reason,
+};
+pub use delivery::{
+    issue_deliverable_invitation, send_batch, sync_invitation_status, verify_recipient,
+    DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, MailAdapter, SendOutcome,
+    SentMessage, UnconfiguredAdapter,
+};
+pub use dry_run::{
+    name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
+    Page, Selector, REVIEW_NEEDED_EMPTY,
 };
 pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
 pub use link::{

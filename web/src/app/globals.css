@@ -130,6 +130,15 @@ a { color:var(--accent); }
   .family-catalog { columns:1; }
 }
 
+/* Bulk onboarding (admin). */
+.bulk-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0; }
+.bulk-actions button { margin:0; }
+.bulk-table { width:100%; border-collapse:collapse; margin-top:12px; }
+.bulk-table th, .bulk-table td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+.bulk-table th { color:var(--muted); font-weight:600; font-size:.85rem; }
+.bulk-email { display:flex; gap:6px; flex-wrap:wrap; }
+.bulk-email input { padding:6px 8px; min-width:180px; }
+.bulk-email button { margin:0; }
 /* USR-004D — My Profile. Responsive owner-scoped profile and review surface. */
 .app-shell:has(.profile-workspace) { max-width: 1120px; }
 .profile-workspace { display:grid; gap:18px; margin-top:18px; }

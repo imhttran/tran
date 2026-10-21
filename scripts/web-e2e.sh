@@ -50,6 +50,11 @@ export OIDC_TOKEN_ENDPOINT="${E2E_ISSUER}/token"
 export OIDC_END_SESSION_ENDPOINT="${E2E_ISSUER}/logout"
 export OIDC_COOKIE_SECURE="false"
 export HOF_THIRD_BRANCH_KEY="branch-3"
+# The fake adapter proves the send gate without real email. The Rust
+# integration suite separately proves the unconfigured adapter fails closed.
+export ONBOARDING_MAIL_ADAPTER="${ONBOARDING_MAIL_ADAPTER:-fake}"
+export ONBOARDING_ACTIVATION_URL="${ONBOARDING_ACTIVATION_URL:-http://127.0.0.1:3000/activate}"
+export ONBOARDING_SEND_INTERVAL_MS="${ONBOARDING_SEND_INTERVAL_MS:-0}"
 
 echo "web-e2e: starting the test OIDC issuer"
 python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --key-file "$E2E_KEY_FILE" >/tmp/tran-e2e-auth.log 2>&1 &
@@ -114,16 +119,29 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "DROP TABLE IF EXISTS head_of_family_audit_event, head_of_family_appointment, head_of_family_nomination CASCADE" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f genealogy/migrations/0006_head_of_family.sql >/dev/null
-for migration in 0007_onboarding 0008_onboarding_identity 0009_onboarding_link_audit \
-	0010_onboarding_foreign_keys 0011_onboarding_foreign_key_reconciliation \
-	0012_profile_revisions 0013_profile_revision_actor_scope \
-	0014_profile_revision_draft_withdrawal 0015_profile_media \
-	0016_profile_media_withdrawal 0017_profile_media_withdrawal_audit; do
+for migration in \
+	0007_onboarding \
+	0008_onboarding_identity \
+	0009_onboarding_link_audit \
+	0010_onboarding_foreign_keys \
+	0011_onboarding_foreign_key_reconciliation \
+	0012_profile_revisions \
+	0013_profile_revision_actor_scope \
+	0014_profile_revision_draft_withdrawal \
+	0015_profile_media \
+	0016_profile_media_withdrawal \
+	0017_profile_media_withdrawal_audit \
+	0018_onboarding_batch; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f scripts/seed-genealogy-e2e.sql >/dev/null
+
+# Bulk onboarding synthetic fixtures. This reseeds only synthetic-bulk people,
+# batch rows, invitations, and links; run it before the profile link seed below.
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-f scripts/seed-bulk-onboarding-e2e.sql >/dev/null
 
 # USR-004D: seed synthetic profile members. No real family data is used. The
 # links are inserted directly so the browser can exercise the real owner-scoped
@@ -147,6 +165,8 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_DEACTIVATED_ACCOUNT_ID, 'e2e-seed', '$E2E_DEACTIVATED_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-deactivated'" >/dev/null
 
+# Intentionally override any inherited MEDIA_ROOT: browser tests must only write
+# synthetic media into this run's disposable directory.
 E2E_MEDIA_ROOT=$(mktemp -d)
 export MEDIA_ROOT="$E2E_MEDIA_ROOT"
 export E2E_API_URL="http://127.0.0.1:${API_PORT}"

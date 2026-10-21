@@ -212,3 +212,7 @@ export function evidenceStatusLabel(status: EvidenceStatus): string {
   if (status === "needs_review") return "Needs review";
   return "Verified";
 }
+
+export function canAdmin(role: Role | null): boolean {
+  return role === "admin";
+}
