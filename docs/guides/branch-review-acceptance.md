@@ -95,6 +95,12 @@ databases; run the commands at the top of this page to reproduce it. Counts move
 when tests are added, so treat the commands and the assertions as the contract,
 not the numbers.
 
+GitHub CI re-runs the deterministic gates on every push (`cargo fmt --check`,
+`cargo build`, `cargo test`, `cargo clippy`, the API contract suite, and the web
+typecheck/build). The browser suite needs PostgreSQL, Ollama, and the synthetic
+issuer, so it is operator-run through `scripts/web-e2e.sh`; the numbers recorded
+here come from that command, not from CI.
+
 `make web-e2e` also covers `/documents`: an administrator submits a document,
 sees it in the review list, and a family viewer is refused both the page and
 the listing. The historical `admin-accounts` failure (a `<details>` panel that
