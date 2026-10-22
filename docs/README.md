@@ -63,8 +63,10 @@ their content here.
 | [reference/experiments.md](reference/experiments.md) | You want the decisions driven by the recorded experiment results. |
 | [guides/usage.md](guides/usage.md) | You want to set up, ingest a document, or ask a question. |
 | [guides/my-profile.md](guides/my-profile.md) | You are building or reviewing the member My Profile surface and its privacy boundary. |
-| [guides/review-console.md](guides/review-console.md) | You are building or reviewing the administrator review queue, decisions, media review, or USR-006 publication contract. |
+| [guides/review-console.md](guides/review-console.md) | You are building or reviewing the administrator review queue, decisions, or media review. |
 | [guides/branch-review.md](guides/branch-review.md) | You are granting or auditing branch reviewer authority. |
+| [architecture/FAMILY-PUBLICATION-CONTRACT.md](architecture/FAMILY-PUBLICATION-CONTRACT.md) | You are deciding what family content may be presented or indexed, and how revocation must behave. |
+| [guides/family-publication-acceptance.md](guides/family-publication-acceptance.md) | You need the negative-by-default test matrix and the open policy gates for family publication. |
 | [guides/evaluation.md](guides/evaluation.md) | You want to score retrieval or compare settings/models. |
 | [guides/agent-scripts.md](guides/agent-scripts.md) | You are working with the git hooks or the `.agents/scripts/` helpers. |
 | [operations/embedding-dimension.md](operations/embedding-dimension.md) | You are changing `EMBED_DIM` (the operator-run procedure). |
