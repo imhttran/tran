@@ -288,6 +288,22 @@ Obligations:
 - Future multi-family isolation maps one family to one corpus. Nothing in this
   contract requires global identifiers; nothing may join across corpora.
 
+## 9a. Implemented so far (USR-006-A)
+
+The presentation gate for profile values is implemented:
+
+- `GET /api/family/persons/{person_key}/profile` returns only approved,
+  `family`-visible, non-media values. Membership (an active reviewed
+  account-person link) is checked in the same transaction as the read.
+- Proven by `tests/family_profile_presentation.rs` and
+  `web/e2e/family-profile.spec.ts`.
+- The endpoint contract, response states, and error mapping are documented in
+  [guides/family-profile-presentation.md](../guides/family-profile-presentation.md).
+
+Nothing in §4's indexing gate is implemented: no candidate adapter, no
+publication record, and no retrieval write exist yet. Decisions **A** and **D**
+below are still open; the endpoint does not implement either recommendation.
+
 ## 10. Decisions required from the owner
 
 These are policy, not implementation detail. Until each is decided, the

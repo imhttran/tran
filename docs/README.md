@@ -67,6 +67,7 @@ their content here.
 | [guides/branch-review.md](guides/branch-review.md) | You are granting or auditing branch reviewer authority. |
 | [architecture/FAMILY-PUBLICATION-CONTRACT.md](architecture/FAMILY-PUBLICATION-CONTRACT.md) | You are deciding what family content may be presented or indexed, and how revocation must behave. |
 | [guides/family-publication-acceptance.md](guides/family-publication-acceptance.md) | You need the negative-by-default test matrix and the open policy gates for family publication. |
+| [guides/family-profile-presentation.md](guides/family-profile-presentation.md) | You are calling or reviewing the read-only family profile endpoint. |
 | [guides/evaluation.md](guides/evaluation.md) | You want to score retrieval or compare settings/models. |
 | [guides/agent-scripts.md](guides/agent-scripts.md) | You are working with the git hooks or the `.agents/scripts/` helpers. |
 | [operations/embedding-dimension.md](operations/embedding-dimension.md) | You are changing `EMBED_DIM` (the operator-run procedure). |
