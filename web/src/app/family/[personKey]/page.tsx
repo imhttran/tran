@@ -13,7 +13,9 @@ export default function FamilyProfilePage() {
   const personKey = Array.isArray(raw) ? raw[0] : raw ?? "";
   return (
     <ExperienceShell>
-      {() => <FamilyProfileView personKey={personKey} />}
+      {/* Keying by person remounts the view on a same-route switch, so the
+          previous person's profile can never survive into the new render. */}
+      {() => <FamilyProfileView key={personKey} personKey={personKey} />}
     </ExperienceShell>
   );
 }

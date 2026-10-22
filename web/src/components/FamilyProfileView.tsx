@@ -72,7 +72,10 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
 
   const load = useCallback(async () => {
     const current = ++sequence.current;
-    // Clear first: navigating between people must never show stale content.
+    // Clear first: a reused instance must never keep showing the previous
+    // person while the new request is in flight. The route also keys this
+    // component by person key, so a same-route change remounts with a fresh
+    // state instead of relying on this reset alone.
     setState({ kind: "loading" });
     if (!personKey) {
       setState({ kind: "not_found" });
@@ -284,16 +287,20 @@ function formatDate(value: string): string {
   });
 }
 
+/// Fixed, user-facing text for the failure states.
+///
+/// The message is never derived from the response: an unexpected status (for
+/// example a 500) may carry a server or proxy body, and that body must not be
+/// rendered on a family page. Authorization outcomes (401/403/404) are handled
+/// before this function is reached.
 function messageOf(error: unknown): string {
   if (error instanceof ApiRequestError) {
-    if (error.status === 503) {
-      return "The family profile service is temporarily unavailable.";
-    }
     if (error.status === 0) {
       return "The family profile could not be reached. Check your connection and try again.";
     }
+    if (error.status === 503) {
+      return "The family profile service is temporarily unavailable. Try again in a moment.";
+    }
   }
-  return error instanceof Error
-    ? error.message
-    : "The family profile could not be loaded.";
+  return "The family profile could not be loaded. Try again in a moment.";
 }
