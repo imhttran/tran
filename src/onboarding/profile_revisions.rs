@@ -890,6 +890,14 @@ pub fn review_revision(
         // publication until an independent reviewer approves a revision that was
         // created after the restriction. A stale pending submission from before
         // the restriction can never silently republish the field.
+        //
+        // `changed_at` is the revision's own timestamp: migration 0012 freezes it
+        // once the revision is submitted, so it records when this content took
+        // its current form. Comparing it (rather than the review time) against the
+        // restriction's `created_at` is the conservative test: a submission
+        // written before the owner restricted the field stays stale even if a
+        // reviewer only gets to it afterwards. A missing comparison row yields
+        // NULL and is treated as stale below, so the check fails closed.
         let restriction = tx.query_opt(
             "SELECT x.restriction_id, x.generation, \
                     (SELECT vr.changed_at <= x.created_at \

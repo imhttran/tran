@@ -131,10 +131,31 @@ impl TestDb {
             .expect("link");
     }
 
+    /// The disposable database is reused between runs, so a seeded version is
+    /// derived from the field's current history rather than assuming the field
+    /// starts empty.
+    fn next_revision_number(&mut self, person_id: i64, field_key: &str) -> i64 {
+        self.genealogy
+            .query_one(
+                "SELECT COALESCE(MAX(revision_number), 0) + 1 \
+                   FROM onboarding_profile_revision \
+                  WHERE person_id = $1 AND field_key = $2",
+                &[&person_id, &field_key],
+            )
+            .expect("next revision number")
+            .get(0)
+    }
+
+    /// Revisions are seeded by a per-run actor so a reused disposable database
+    /// cannot collide with another run's open revision for the same person id.
+    fn owner_actor(&self) -> String {
+        format!("{}-owner", self.prefix)
+    }
+
     /// Seeds an approved value through the real draft -> submitted -> approved
     /// path, which is what the value guard requires.
     fn approved(&mut self, person_id: i64, field_key: &str, value: &str, visibility: &str) {
-        let revision_id = self.revision(person_id, field_key, value, visibility, 1);
+        let revision_id = self.revision(person_id, field_key, value, visibility);
         self.genealogy
             .execute(
                 "UPDATE onboarding_profile_revision \
@@ -152,25 +173,35 @@ impl TestDb {
                 &[&revision_id],
             )
             .expect("approve seed revision");
+        let revision_number: i64 = self
+            .genealogy
+            .query_one(
+                "SELECT revision_number FROM onboarding_profile_revision WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("seeded revision number")
+            .get(0);
         self.genealogy
             .execute(
                 "INSERT INTO onboarding_profile_value \
                      (person_id, field_key, value_text, visibility, updated_by, \
                       approved_revision_number, approved_revision_id) \
-                 VALUES ($1, $2, $3, $4, 'synthetic-owner', 1, $5)",
-                &[&person_id, &field_key, &value, &visibility, &revision_id],
+                 VALUES ($1, $2, $3, $4, 'synthetic-owner', $5, $6)",
+                &[
+                    &person_id,
+                    &field_key,
+                    &value,
+                    &visibility,
+                    &revision_number,
+                    &revision_id,
+                ],
             )
             .expect("seed approved value");
     }
 
-    fn revision(
-        &mut self,
-        person_id: i64,
-        field_key: &str,
-        value: &str,
-        visibility: &str,
-        revision_number: i64,
-    ) -> i64 {
+    fn revision(&mut self, person_id: i64, field_key: &str, value: &str, visibility: &str) -> i64 {
+        let revision_number = self.next_revision_number(person_id, field_key);
+        let actor = self.owner_actor();
         // A draft captures the currently approved snapshot, exactly as the
         // product does; approval rejects a draft whose snapshot no longer
         // matches.
@@ -192,7 +223,7 @@ impl TestDb {
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
                       revision_number, status, visibility) \
-                 VALUES ($1, $2, $3, $4, $5, 'synthetic-owner', $6, 'draft', $7) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8) \
                  RETURNING revision_id",
                 &[
                     &person_id,
@@ -200,6 +231,7 @@ impl TestDb {
                     &prior_text,
                     &prior_number,
                     &value,
+                    &actor,
                     &revision_number,
                     &visibility,
                 ],
@@ -255,17 +287,53 @@ impl TestDb {
 impl Drop for TestDb {
     fn drop(&mut self) {
         let pattern = format!("{}%", self.prefix);
-        // Restrictions and their events are removed only through the person
-        // cascade. A lifted restriction is immutable, and events are append-only,
-        // so the suite must not delete them directly.
+        // Restrictions cascade with the person (migration 0021), and the
+        // append-only restriction events deliberately outlive that cascade.
+        // Profile values and revisions have no `person` cascade, and a
+        // restriction references its approved revision with RESTRICT, so the
+        // person ids are captured first: the person delete cascades the
+        // restrictions, and only then can the revisions be removed.
+        let _ = self
+            .genealogy
+            .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
+        let _ = self.genealogy.execute(
+            "CREATE TEMP TABLE cleanup_person (person_id BIGINT PRIMARY KEY)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "INSERT INTO cleanup_person SELECT person_id FROM person WHERE person_key LIKE $1",
+            &[&pattern],
+        );
         let _ = self.genealogy.execute(
             "DELETE FROM onboarding_person_account_link \
-              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
-            &[&pattern],
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "DELETE FROM person WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        // The guard trigger permits this only once the person row is gone, and
+        // the restriction's RESTRICT reference to the approved revision would
+        // otherwise block the revision delete below.
+        let _ = self.genealogy.execute(
+            "DELETE FROM onboarding_profile_field_restriction \
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "DELETE FROM onboarding_profile_value \
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "DELETE FROM onboarding_profile_revision \
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
         );
         let _ = self
             .genealogy
-            .execute("DELETE FROM person WHERE person_key LIKE $1", &[&pattern]);
+            .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
     }
 }
 
@@ -428,13 +496,7 @@ fn a_stale_pending_approval_cannot_republish_a_restricted_field() {
     let reviewer_id = reviewer.identity_fingerprint.clone();
 
     // A pending submission exists before the restriction.
-    let pending = db.revision(
-        person,
-        "biography",
-        &format!("{value}-updated"),
-        "family",
-        2,
-    );
+    let pending = db.revision(person, "biography", &format!("{value}-updated"), "family");
     db.submit(pending);
 
     restrict_own_field(&mut db.genealogy, &owner, "biography").expect("restrict");
@@ -481,7 +543,7 @@ fn a_post_restriction_family_approval_lifts_the_restriction() {
     restrict_own_field(&mut db.genealogy, &owner, "biography").expect("restrict");
 
     // An owner-private approval after the restriction must not lift it.
-    let private_revision = db.revision(person, "biography", "private rewrite", "owner_private", 2);
+    let private_revision = db.revision(person, "biography", "private rewrite", "owner_private");
     db.submit(private_revision);
     review_revision(
         &mut db.genealogy,
@@ -509,7 +571,6 @@ fn a_post_restriction_family_approval_lifts_the_restriction() {
         "biography",
         &format!("{}-expanded-family-biography", db.prefix),
         "family",
-        3,
     );
     db.submit(expanded);
     review_revision(
@@ -556,7 +617,7 @@ fn concurrent_restriction_and_approval_serialize() {
     db.link(&reviewer, reviewer_person);
 
     // A pending family revision created before the restriction.
-    let pending = db.revision(person, "biography", &format!("{value}-race"), "family", 2);
+    let pending = db.revision(person, "biography", &format!("{value}-race"), "family");
     db.submit(pending);
 
     let barrier = Arc::new(Barrier::new(2));

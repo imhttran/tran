@@ -126,9 +126,32 @@ impl TestDb {
             .expect("link");
     }
 
+    /// Drafts are seeded by a per-run actor so a reused disposable database
+    /// cannot collide with another run's open revision for the same person id.
+    fn owner_actor(&self) -> String {
+        format!("{}-owner", self.prefix)
+    }
+
+    /// The disposable database is reused between runs, so a seeded version is
+    /// derived from the field's current history rather than assuming the field
+    /// starts empty.
+    fn next_revision_number(&mut self, person_id: i64, field_key: &str) -> i64 {
+        self.genealogy
+            .query_one(
+                "SELECT COALESCE(MAX(revision_number), 0) + 1 \
+                   FROM onboarding_profile_revision \
+                  WHERE person_id = $1 AND field_key = $2",
+                &[&person_id, &field_key],
+            )
+            .expect("next revision number")
+            .get(0)
+    }
+
     /// Seeds an approved value through the real draft -> submitted -> approved
     /// path, which is what the value guard requires.
     fn approved(&mut self, person_id: i64, field_key: &str, value: &str, visibility: &str) {
+        let revision_number = self.next_revision_number(person_id, field_key);
+        let actor = self.owner_actor();
         let revision_id: i64 = self
             .genealogy
             .query_one(
@@ -136,9 +159,16 @@ impl TestDb {
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
                       revision_number, status, visibility) \
-                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-owner', 1, 'draft', $4) \
+                 VALUES ($1, $2, NULL, 0, $3, $4, $5, 'draft', $6) \
                  RETURNING revision_id",
-                &[&person_id, &field_key, &value, &visibility],
+                &[
+                    &person_id,
+                    &field_key,
+                    &value,
+                    &actor,
+                    &revision_number,
+                    &visibility,
+                ],
             )
             .expect("seed revision")
             .get(0);
@@ -164,37 +194,48 @@ impl TestDb {
                 "INSERT INTO onboarding_profile_value \
                      (person_id, field_key, value_text, visibility, updated_by, \
                       approved_revision_number, approved_revision_id) \
-                 VALUES ($1, $2, $3, $4, 'synthetic-owner', 1, $5)",
-                &[&person_id, &field_key, &value, &visibility, &revision_id],
+                 VALUES ($1, $2, $3, $4, 'synthetic-owner', $5, $6)",
+                &[
+                    &person_id,
+                    &field_key,
+                    &value,
+                    &visibility,
+                    &revision_number,
+                    &revision_id,
+                ],
             )
             .expect("seed approved value");
     }
 
     /// A draft that is never approved: it must not reach a family read.
     fn draft(&mut self, person_id: i64, field_key: &str, value: &str) {
+        let revision_number = self.next_revision_number(person_id, field_key);
+        let actor = self.owner_actor();
         self.genealogy
             .execute(
                 "INSERT INTO onboarding_profile_revision \
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
                       revision_number, status, visibility) \
-                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-owner', 2, 'draft', 'family')",
-                &[&person_id, &field_key, &value],
+                 VALUES ($1, $2, NULL, 0, $3, $4, $5, 'draft', 'family')",
+                &[&person_id, &field_key, &value, &actor, &revision_number],
             )
             .expect("seed draft");
     }
 
     /// Inserts a draft revision and returns its id.
     fn draft_revision_id(&mut self, person_id: i64, field_key: &str, value: &str) -> i64 {
+        let revision_number = self.next_revision_number(person_id, field_key);
+        let actor = self.owner_actor();
         self.genealogy
             .query_one(
                 "INSERT INTO onboarding_profile_revision \
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
                       revision_number, status, visibility) \
-                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-owner', 1, 'draft', 'family') \
+                 VALUES ($1, $2, NULL, 0, $3, $4, $5, 'draft', 'family') \
                  RETURNING revision_id",
-                &[&person_id, &field_key, &value],
+                &[&person_id, &field_key, &value, &actor, &revision_number],
             )
             .expect("draft revision")
             .get(0)
@@ -246,31 +287,63 @@ impl Drop for TestDb {
     fn drop(&mut self) {
         let pattern = format!("{}%", self.prefix);
         // Only rows this test created, always matched by its unique prefix.
+        //
+        // `onboarding_profile_revision` has no `person` cascade, and a
+        // restriction references its approved revision with RESTRICT, so the
+        // person ids are captured first: the person delete cascades the
+        // restrictions, and only then can the revisions be removed.
+        let _ = self
+            .genealogy
+            .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
+        let _ = self.genealogy.execute(
+            "CREATE TEMP TABLE cleanup_person (person_id BIGINT PRIMARY KEY)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "INSERT INTO cleanup_person SELECT person_id FROM person WHERE person_key LIKE $1",
+            &[&pattern],
+        );
         let _ = self.genealogy.execute(
             "DELETE FROM onboarding_profile_review_event \
               WHERE revision_id IN (SELECT revision_id FROM onboarding_profile_revision \
-                                     WHERE person_id IN (SELECT person_id FROM person \
-                                                          WHERE person_key LIKE $1))",
-            &[&pattern],
+                                     WHERE person_id IN (SELECT person_id FROM cleanup_person))",
+            &[],
         );
         let _ = self.genealogy.execute(
             "DELETE FROM onboarding_media_metadata \
-              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
-            &[&pattern],
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
         );
         let _ = self.genealogy.execute(
             "DELETE FROM onboarding_profile_value \
-              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
-            &[&pattern],
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
         );
         let _ = self.genealogy.execute(
             "DELETE FROM onboarding_person_account_link \
-              WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE $1)",
-            &[&pattern],
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "DELETE FROM person WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        // The guard trigger permits this only once the person row is gone, and
+        // the restriction's RESTRICT reference to the approved revision would
+        // otherwise block the revision delete below.
+        let _ = self.genealogy.execute(
+            "DELETE FROM onboarding_profile_field_restriction \
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
+        );
+        let _ = self.genealogy.execute(
+            "DELETE FROM onboarding_profile_revision \
+              WHERE person_id IN (SELECT person_id FROM cleanup_person)",
+            &[],
         );
         let _ = self
             .genealogy
-            .execute("DELETE FROM person WHERE person_key LIKE $1", &[&pattern]);
+            .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
     }
 }
 
