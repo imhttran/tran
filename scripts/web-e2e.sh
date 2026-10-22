@@ -110,6 +110,11 @@ export E2E_FAMILY_DRAFT_MARKER
 # A dedicated linked member the family profile suite revokes and deactivates.
 E2E_FAMILY_MEMBER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-family-member --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_FAMILY_MEMBER_TOKEN
+# Dedicated owner for the privacy-restriction scenario.
+E2E_RESTRICT_OWNER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-restrict-owner --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_RESTRICT_OWNER_TOKEN
+E2E_RESTRICTABLE_MARKER="ZX-RESTRICTABLE-BIOGRAPHY-5b38"
+export E2E_RESTRICTABLE_MARKER
 
 echo "web-e2e: seeding test identities"
 # Base RAG schema and the FAM-002 document lifecycle metadata. These are
@@ -125,9 +130,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subjec
 # No password-reset provider in E2E: the reset action must fail closed.
 unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER'), ('e2e-family-member', '$E2E_ISSUER')" >/dev/null
+	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER'), ('e2e-family-member', '$E2E_ISSUER'), ('e2e-restrict-owner', '$E2E_ISSUER')" >/dev/null
 # A disposable account the admin accounts test changes and deactivates.
 # The address uses the reserved .test domain; nothing is ever sent to it.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -135,9 +140,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'admin', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-approver')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject IN ('e2e-viewer', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null
+	-c "INSERT INTO role_assignments (user_id, role, granted_by) SELECT id, 'viewer', 'e2e' FROM users WHERE subject IN ('e2e-viewer', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null
+	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
 
 if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
 	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
@@ -171,7 +176,8 @@ for migration in \
 	0017_profile_media_withdrawal_audit \
 	0018_onboarding_batch \
 	0019_branch_reviewer_grants \
-	0020_branch_review_proposals; do
+	0020_branch_review_proposals \
+	0021_profile_field_restriction; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
@@ -199,12 +205,14 @@ E2E_DEACTIVATED_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHE
 E2E_REVIEWER_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-reviewer' AND issuer = '$E2E_ISSUER'")
 E2E_REVIEWER_OFF_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-reviewer-off' AND issuer = '$E2E_ISSUER'")
 E2E_FAMILY_MEMBER_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-family-member' AND issuer = '$E2E_ISSUER'")
+E2E_RESTRICT_ACCOUNT_ID=$(psql "$DATABASE_URL" -tAc "SELECT id FROM users WHERE subject = 'e2e-restrict-owner' AND issuer = '$E2E_ISSUER'")
 E2E_ADMIN_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-admin)
 E2E_APPROVER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-approver)
 E2E_DEACTIVATED_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-deactivated)
 E2E_REVIEWER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-reviewer)
 E2E_REVIEWER_OFF_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-reviewer-off)
 E2E_FAMILY_MEMBER_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-family-member)
+E2E_RESTRICT_FINGERPRINT=$(python3 -c "import hashlib,sys;print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$E2E_ISSUER" e2e-restrict-owner)
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_ADMIN_ACCOUNT_ID, 'e2e-seed', '$E2E_ADMIN_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-admin'" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -225,6 +233,9 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
 	-v family_marker="$E2E_FAMILY_PROFILE_MARKER" \
 	-v draft_marker="$E2E_FAMILY_DRAFT_MARKER" \
+	-v restrict_account_id="$E2E_RESTRICT_ACCOUNT_ID" \
+	-v restrict_fingerprint="$E2E_RESTRICT_FINGERPRINT" \
+	-v restrict_marker="$E2E_RESTRICTABLE_MARKER" \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
 # The privacy assertion is only meaningful if the private value really exists.
 # psql does not interpolate variables in `-c`, so the query comes from stdin.
@@ -233,14 +244,16 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 seeded_markers=$(psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
 	-v family_marker="$E2E_FAMILY_PROFILE_MARKER" \
-	-v draft_marker="$E2E_FAMILY_DRAFT_MARKER" -tA <<'SQL'
+	-v draft_marker="$E2E_FAMILY_DRAFT_MARKER" \
+	-v restrict_marker="$E2E_RESTRICTABLE_MARKER" -tA <<'SQL'
 SELECT (SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'marker')
      + (SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'family_marker')
-     + (SELECT count(*) FROM onboarding_profile_revision WHERE new_value_text = :'draft_marker');
+     + (SELECT count(*) FROM onboarding_profile_revision WHERE new_value_text = :'draft_marker')
+     + (SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'restrict_marker');
 SQL
 )
-if [ "$seeded_markers" != "3" ]; then
-	echo "web-e2e: the profile fixtures were not all seeded (found ${seeded_markers:-none}, expected 3). An approved revision is immutable, so changed markers need fresh disposable databases." >&2
+if [ "$seeded_markers" != "4" ]; then
+	echo "web-e2e: the profile fixtures were not all seeded (found ${seeded_markers:-none}, expected 4). An approved revision is immutable, so changed markers need fresh disposable databases." >&2
 	exit 1
 fi
 
@@ -254,6 +267,7 @@ export E2E_ADMIN_ACCOUNT_ID E2E_APPROVER_ACCOUNT_ID E2E_DEACTIVATED_ACCOUNT_ID
 export E2E_REVIEWER_ACCOUNT_ID
 export E2E_REVIEWER_OFF_ACCOUNT_ID
 export E2E_FAMILY_MEMBER_ACCOUNT_ID
+export E2E_RESTRICT_ACCOUNT_ID
 
 echo "web-e2e: building the API"
 cargo build --locked --bin api
@@ -273,9 +287,9 @@ cleanup() {
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null 2>&1 || true
 	# Profile members have no assertion review history, so they can be removed.
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null 2>&1 || true
