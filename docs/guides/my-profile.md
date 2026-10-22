@@ -101,3 +101,12 @@ path.
   network failure, mobile layout, and keyboard activation.
 - The browser harness migrates genealogy `0001`–`0017` and seeds only synthetic
   members and links. It never uses real family data.
+
+## Make private (owner restriction)
+
+On an approved **Authorized family** field, **Make private** immediately stops
+the value appearing on family profile pages. The approved revision and its
+history are not rewritten; the owner keeps the value privately and the profile
+shows that they restricted it. There is no toggle back: sharing it again is a
+new family-visible revision that an independent reviewer must approve. A
+submission created before the restriction cannot republish it.

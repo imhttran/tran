@@ -118,6 +118,10 @@ Always, without exception:
   own authorization rule and is not served here;
 - superseded values (only the value row bound to the current approved revision
   is read);
+- values with an active owner restriction (decision A2): the owner can make an
+  approved family value private immediately, and the family read excludes it
+  until a new independently approved family-visible revision lifts the
+  restriction;
 - values whose approved-revision binding is missing or inconsistent. The read
   joins the approving revision and requires matching person, field, revision
   number, approved status, visibility, and text, so a legacy row left without a
