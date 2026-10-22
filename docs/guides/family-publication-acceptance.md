@@ -31,6 +31,11 @@ make web-check
 Database-backed tests take `DATABASE_URL` and `GENEALOGY_DATABASE_URL` and use
 disposable databases only. No test in this matrix touches real family data.
 
+Browser checks in `web/e2e/*` skip when the harness variables are absent; they
+are executed through `scripts/web-e2e.sh`, which starts the synthetic OIDC
+issuer and seeds the disposable genealogy database. A skipped browser file is
+not evidence for a PASS row — only an executed `make web-e2e` run is.
+
 ## Matrix
 
 | # | Scenario | Status | Evidence or specification |
