@@ -142,6 +142,8 @@ pub enum Operation {
     BranchReviewRead,
     /// Submitting or deciding branch-scoped shared-genealogy proposals.
     BranchReviewWrite,
+    /// Reading another member's approved, family-visible profile.
+    FamilyProfileRead,
     /// Reading authorized genealogy records and evidence.
     GenealogyRead,
     /// Drafting a Head of Family nomination with citations.
@@ -168,9 +170,11 @@ pub enum Operation {
 
 impl Operation {
     /// The minimum role required for the operation, from the MVP permission
-    /// table. `None` means the operation has no role gate: only the
-    /// authenticated self-service operations (account and profile reads) use
-    /// it, and [`decide`] still requires a verified identity for those.
+    /// table. `None` means the operation has no role gate: the authenticated
+    /// self-service operations and family profile reads use it, and [`decide`]
+    /// still requires a verified identity. A no-role operation must enforce its
+    /// own authorization rule in the service (for example the reviewed
+    /// account-person link).
     pub fn required_role(&self) -> Option<Role> {
         match self {
             Operation::Query | Operation::DocumentStatus | Operation::GenealogyRead => {
@@ -197,6 +201,7 @@ impl Operation {
             | Operation::DocumentProcess => Some(Role::Admin),
             Operation::ProfileRead
             | Operation::ProfileWrite
+            | Operation::FamilyProfileRead
             | Operation::BranchReviewRead
             | Operation::BranchReviewWrite => None,
         }
@@ -211,6 +216,7 @@ impl Operation {
                 | Operation::GenealogyRead
                 | Operation::Account
                 | Operation::ProfileRead
+                | Operation::FamilyProfileRead
                 | Operation::OnboardingDryRun
                 | Operation::MemberDirectory
                 | Operation::DocumentRead
@@ -236,6 +242,7 @@ impl Operation {
             Operation::ProfileWrite => "profile_write",
             Operation::ProfileReview => "profile_review",
             Operation::BranchReviewerAdmin => "branch_reviewer_admin",
+            Operation::FamilyProfileRead => "family_profile_read",
             Operation::BranchReviewRead => "branch_review_read",
             Operation::BranchReviewWrite => "branch_review_write",
             Operation::HeadOfFamilyApproval => "head_of_family_approval",
@@ -299,6 +306,7 @@ mod tests {
             Operation::Account,
             Operation::ProfileRead,
             Operation::ProfileWrite,
+            Operation::FamilyProfileRead,
             Operation::ProfileReview,
             Operation::RoleChange,
             Operation::BranchReviewerAdmin,
