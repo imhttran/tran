@@ -238,6 +238,8 @@ test.describe.serial("family profile presentation", () => {
     );
     expect(deactivated.status, JSON.stringify(deactivated.body)).toBe(200);
     const afterDeactivate = await proxiedProfile(page, "e2e-branch-subject");
+    // 403 when the API sees the deactivated account; 401 if the proxy has
+    // already turned the session anonymous. Either way no content is returned.
     expect([401, 403]).toContain(afterDeactivate.status);
     expect(JSON.stringify(afterDeactivate.body)).not.toContain(FAMILY_MARKER);
   });

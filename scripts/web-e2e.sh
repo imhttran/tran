@@ -229,7 +229,7 @@ SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'marker';
 SQL
 )
 if [ "$seeded_private" != "1" ]; then
-	echo "web-e2e: the private profile fixture was not seeded (found ${seeded_private:-none})" >&2
+	echo "web-e2e: the private profile fixture was not seeded (found ${seeded_private:-none}). An approved revision is immutable, so a changed marker needs fresh disposable databases." >&2
 	exit 1
 fi
 
