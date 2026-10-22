@@ -334,7 +334,10 @@ review.
   active at approval time, and it records a `lifted` event. A pending submission
   created before the restriction carries no generation, and one created under an
   earlier generation cannot lift a later one; both are refused with a conflict.
-  Legacy or incomplete generation data fails closed.
+  Legacy or incomplete generation data fails closed. The column is written
+  once at creation and is guarded against any later change, including NULL to
+  value, so a draft cannot be rewritten into an authorized expansion before it
+  is submitted.
 - Ordering is never derived from timestamps. `now()` is fixed at transaction
   start, so a restriction that is still waiting for its lock and a submission
   created in that window have timestamps that do not reflect commit order; only

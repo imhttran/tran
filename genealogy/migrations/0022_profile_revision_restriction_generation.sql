@@ -17,6 +17,9 @@
 --   * legacy or incomplete generation data fails closed.
 --
 -- Additive and idempotent. No existing revision is re-interpreted or rewritten.
+-- The new column is immutable after insert (a BEFORE UPDATE guard is created
+-- below), so a draft's generation cannot be rewritten before submission and a
+-- legacy row cannot be given one after the fact.
 --
 -- No backfill is performed: a pending revision that predates this column keeps
 -- NULL and must be re-submitted after the restriction. Deriving a generation for
@@ -32,5 +35,35 @@ ALTER TABLE onboarding_profile_revision
 
 COMMENT ON COLUMN onboarding_profile_revision.restriction_generation IS
     'Active owner-restriction generation observed when this revision was created. Approval may lift only an active restriction with an exactly matching generation; NULL (no restriction, or legacy) fails closed.';
+
+-- The provenance column is written once, at creation, and is never rewritten.
+--
+-- Migration 0012's revision guard already freezes identity/provenance columns and
+-- refuses any update to a pending or terminal row, so the reachable gap is a
+-- draft: rewriting its generation before submission would let a stale draft
+-- become an apparently authorized expansion once it is approved. A separate
+-- trigger (rather than editing the released 0012 function) keeps that guarantee
+-- local to the column this migration adds.
+--
+-- `IS DISTINCT FROM` also rejects NULL-to-value and value-to-NULL changes, so a
+-- legacy row can never be given a generation after the fact.
+CREATE OR REPLACE FUNCTION onboarding_profile_revision_restriction_generation_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.restriction_generation IS DISTINCT FROM OLD.restriction_generation THEN
+        RAISE EXCEPTION
+            'profile revision restriction_generation is immutable after insert';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS onboarding_profile_revision_restriction_generation_guard
+    ON onboarding_profile_revision;
+CREATE TRIGGER onboarding_profile_revision_restriction_generation_guard
+    BEFORE UPDATE ON onboarding_profile_revision
+    FOR EACH ROW EXECUTE FUNCTION onboarding_profile_revision_restriction_generation_guard();
 
 COMMIT;

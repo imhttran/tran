@@ -115,6 +115,10 @@ product path during that wait, releases the lock, and asserts the approval is
 refused with `RestrictionConflict`, no `lifted` event is written, the restriction
 stays active, and the family read returns nothing.
 
+The recorded generation is immutable after insert: a `BEFORE UPDATE` guard in
+migration `0022` rejects any change, including NULL to value, while ordinary
+draft edits, submission, and reviewer transitions still succeed.
+
 Proven by `tests/profile_restriction.rs` and `web/e2e/profile-privacy.spec.ts`.
 
 ### F3 — Citations never resolve to a superseded version (slice: indexing adapter)

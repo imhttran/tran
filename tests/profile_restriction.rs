@@ -12,8 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
     create_owned_draft, read_approved_values, read_family_profile, read_owner_profile,
-    restrict_own_field, review_revision, submit_owned_revision, IdentityAccount, ProfileAudience,
-    ProfileVisibility, RestrictionError, ReviewDecision, RevisionError,
+    restrict_own_field, review_revision, submit_owned_revision, update_owned_draft,
+    IdentityAccount, ProfileAudience, ProfileVisibility, RestrictionError, ReviewDecision,
+    RevisionError,
 };
 
 const MIGRATIONS: [&str; 22] = [
@@ -205,6 +206,29 @@ impl TestDb {
     /// Approval rejects a draft whose snapshot no longer matches, and a draft
     /// created before a restriction carries no generation and can never lift it.
     fn revision(&mut self, person_id: i64, field_key: &str, value: &str, visibility: &str) -> i64 {
+        let observed: Option<i64> = self
+            .genealogy
+            .query_opt(
+                "SELECT generation FROM onboarding_profile_field_restriction \
+                  WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL",
+                &[&person_id, &field_key],
+            )
+            .expect("observed generation")
+            .map(|row| row.get(0));
+        self.revision_with_generation(person_id, field_key, value, visibility, observed)
+    }
+
+    /// Seeds a draft with an explicit restriction generation, including `None`
+    /// for a legacy row that predates the column. The column is immutable after
+    /// insert, so a legacy shape can only be produced here, never by an update.
+    fn revision_with_generation(
+        &mut self,
+        person_id: i64,
+        field_key: &str,
+        value: &str,
+        visibility: &str,
+        restriction_generation: Option<i64>,
+    ) -> i64 {
         let revision_number = self.next_revision_number(person_id, field_key);
         let actor = self.owner_actor();
         let prior = self
@@ -225,9 +249,7 @@ impl TestDb {
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
                       revision_number, status, visibility, restriction_generation) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, \
-                         (SELECT generation FROM onboarding_profile_field_restriction \
-                           WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL)) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9) \
                  RETURNING revision_id",
                 &[
                     &person_id,
@@ -238,9 +260,21 @@ impl TestDb {
                     &actor,
                     &revision_number,
                     &visibility,
+                    &restriction_generation,
                 ],
             )
             .expect("revision")
+            .get(0)
+    }
+
+    fn generation(&mut self, revision_id: i64) -> Option<i64> {
+        self.genealogy
+            .query_one(
+                "SELECT restriction_generation FROM onboarding_profile_revision \
+                  WHERE revision_id = $1",
+                &[&revision_id],
+            )
+            .expect("generation")
             .get(0)
     }
 
@@ -674,6 +708,15 @@ fn concurrent_restriction_and_approval_serialize() {
         .get(0);
     assert_eq!(active, 1);
 }
+/// Returns the server-side message of a database error. `postgres::Error`'s own
+/// `Display` is generic ("db error"), so a raised exception is read from its
+/// `DbError`.
+fn db_message(err: &postgres::Error) -> String {
+    err.as_db_error()
+        .map(|detail| detail.message().to_string())
+        .unwrap_or_else(|| err.to_string())
+}
+
 /// Observes that `pid` is really waiting for a lock. This polls PostgreSQL's
 /// own wait state (`pg_blocking_pids`) instead of assuming a sleep is long
 /// enough, so the regression does not depend on timing.
@@ -977,20 +1020,16 @@ fn legacy_revisions_without_generation_fail_closed_under_an_active_restriction()
     restrict_own_field(&mut db.genealogy, &owner, "biography").expect("restrict");
 
     // A row written before this column existed carries NULL. It must not be
-    // reinterpreted as a newly authorized expansion.
-    let revision = db.revision(
+    // reinterpreted as a newly authorized expansion. The column is immutable
+    // after insert, so the legacy shape is produced at creation.
+    let revision = db.revision_with_generation(
         person,
         "biography",
         &format!("{}-legacy-null", db.prefix),
         "family",
+        None,
     );
-    db.genealogy
-        .execute(
-            "UPDATE onboarding_profile_revision SET restriction_generation = NULL \
-              WHERE revision_id = $1",
-            &[&revision],
-        )
-        .expect("clear generation");
+    assert_eq!(db.generation(revision), None);
     db.submit(revision);
 
     assert_eq!(
@@ -1009,4 +1048,138 @@ fn legacy_revisions_without_generation_fail_closed_under_an_active_restriction()
     );
     let family = read_family_profile(&mut db.genealogy, &reader, &person_key).expect("family read");
     assert!(family.fields.is_empty());
+}
+#[test]
+fn restriction_generation_is_immutable_after_insert() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, _value) = family_biography(&mut db, "immutable");
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let reviewer = db.account("reviewer");
+    let (reviewer_person, _) = db.person("reviewer");
+    db.link(&reviewer, reviewer_person);
+    let reviewer_id = reviewer.identity_fingerprint.clone();
+
+    // A draft created before any restriction records no generation. Ordinary
+    // owner edits still work because the generation is unchanged.
+    let pre_restriction = create_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        "biography",
+        "immutable before restriction",
+        ProfileVisibility::Family,
+    )
+    .expect("draft before the restriction");
+    assert_eq!(db.generation(pre_restriction.revision_id), None);
+    update_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        pre_restriction.revision_id,
+        "immutable before restriction, revised",
+        None,
+    )
+    .expect("a draft edit still works");
+
+    // Generation 1 becomes active.
+    restrict_own_field(&mut db.genealogy, &owner, "biography").expect("restrict");
+
+    // A legacy NULL generation cannot be filled in after creation.
+    let err = db
+        .genealogy
+        .execute(
+            "UPDATE onboarding_profile_revision SET restriction_generation = 1 \
+              WHERE revision_id = $1",
+            &[&pre_restriction.revision_id],
+        )
+        .expect_err("a NULL generation cannot be filled in");
+    assert!(
+        db_message(&err).contains("restriction_generation is immutable"),
+        "{}",
+        db_message(&err)
+    );
+    assert_eq!(db.generation(pre_restriction.revision_id), None);
+
+    // Draft edits still work after the refused write.
+    update_owned_draft(
+        &mut db.genealogy,
+        &owner,
+        pre_restriction.revision_id,
+        "immutable before restriction, revised again",
+        None,
+    )
+    .expect("a draft edit still works after the refusal");
+
+    // A draft created under the restriction records generation 1, and it cannot
+    // be rewritten to another value or back to NULL.
+    let draft = db.revision(person, "biography", "immutable under restriction", "family");
+    assert_eq!(db.generation(draft), Some(1));
+    for statement in [
+        "UPDATE onboarding_profile_revision SET restriction_generation = 2 \
+          WHERE revision_id = $1",
+        "UPDATE onboarding_profile_revision SET restriction_generation = NULL \
+          WHERE revision_id = $1",
+    ] {
+        let err = db
+            .genealogy
+            .execute(statement, &[&draft])
+            .expect_err("a draft generation cannot be rewritten");
+        assert!(
+            db_message(&err).contains("restriction_generation is immutable"),
+            "{}",
+            db_message(&err)
+        );
+        assert_eq!(db.generation(draft), Some(1));
+    }
+
+    // A pending revision's generation is immutable too. Migration 0012's guard
+    // rejects the update first for a pending row, so only the outcome is
+    // asserted here: the write fails and the stored generation is unchanged.
+    db.submit(draft);
+    db.genealogy
+        .execute(
+            "UPDATE onboarding_profile_revision SET restriction_generation = 2 \
+              WHERE revision_id = $1",
+            &[&draft],
+        )
+        .expect_err("a pending generation cannot be rewritten");
+    assert_eq!(db.generation(draft), Some(1));
+
+    // The pre-restriction submission still cannot lift the restriction.
+    db.submit(pre_restriction.revision_id);
+    assert_eq!(
+        review_revision(
+            &mut db.genealogy,
+            pre_restriction.revision_id,
+            &reviewer_id,
+            ReviewDecision::Approve,
+            None
+        ),
+        Err(RevisionError::RestrictionConflict)
+    );
+
+    // Independent approval of the genuine post-restriction submission still
+    // works, and it lifts the restriction.
+    review_revision(
+        &mut db.genealogy,
+        draft,
+        &reviewer_id,
+        ReviewDecision::Approve,
+        None,
+    )
+    .expect("approve the post-restriction submission");
+    assert_eq!(
+        db.restriction_events(person, "biography"),
+        vec!["restricted".to_string(), "lifted".to_string()]
+    );
+    let family = read_family_profile(&mut db.genealogy, &reader, &person_key).expect("family read");
+    assert!(
+        family
+            .fields
+            .iter()
+            .any(|field| field.value.contains("immutable under restriction")),
+        "the approved expansion is family-visible"
+    );
 }
