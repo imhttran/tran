@@ -35,6 +35,7 @@ pub fn fuse(lists: &[Vec<Candidate>]) -> Vec<Candidate> {
                 id: base.id,
                 document: crate::document::RetrievedDocument::new(base.document.chunk, score),
                 score,
+                provenance: base.provenance,
             }
         })
         .collect();

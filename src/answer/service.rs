@@ -59,6 +59,31 @@ pub enum AnswerError {
     /// The generation dependency failed.
     #[error(transparent)]
     Generation(#[from] GenerationError),
+    /// The final publication revalidation could not be performed.
+    #[error("publication revalidation failed: {0}")]
+    Publication(#[from] PublicationError),
+}
+
+/// Failure to confirm that cited evidence is still published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationError(pub String);
+
+impl std::fmt::Display for PublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PublicationError {}
+
+/// Final, fail-closed publication check.
+///
+/// The implementation reads the authoritative database state; it must not trust
+/// a cached eligibility decision. Returning `Ok(false)` means at least one
+/// passage is no longer published, and the answer is refused.
+pub trait PublicationGuard {
+    /// Reports whether every passage is still published at this instant.
+    fn revalidate(&self, passages: &[ContextPassage]) -> Result<bool, PublicationError>;
 }
 
 /// The rendered answer returned by [`AnswerService::answer`].
@@ -82,6 +107,7 @@ pub struct AnswerService<'a, R, G> {
     budget: usize,
     citation_validation: bool,
     answerability_gate: bool,
+    publication_guard: Option<&'a dyn PublicationGuard>,
 }
 
 impl<'a, R, G> AnswerService<'a, R, G>
@@ -98,7 +124,19 @@ where
             budget,
             citation_validation: true,
             answerability_gate: true,
+            publication_guard: None,
         }
+    }
+
+    /// Installs the final publication revalidation guard.
+    ///
+    /// Without a guard the service keeps its previous behavior. With one, an
+    /// answer whose evidence is no longer published is replaced by the
+    /// insufficient-evidence refusal, so a revocation that commits during
+    /// generation is never returned.
+    pub fn with_publication_guard(mut self, guard: &'a dyn PublicationGuard) -> Self {
+        self.publication_guard = Some(guard);
+        self
     }
 
     /// Enables or disables Go-compatible citation validation.
@@ -163,6 +201,20 @@ where
         } else {
             raw
         };
+        // Final boundary: the model call can outlive a revocation. Revalidate
+        // the exact evidence the answer was built from before returning it.
+        // A response already written to the socket cannot be recalled; this is
+        // the last point at which the server can still fail closed.
+        if let Some(guard) = self.publication_guard {
+            if !guard.revalidate(&passages)? {
+                return Ok(Answer {
+                    text: answerability::refusal(),
+                    references: Vec::new(),
+                    citations: Vec::new(),
+                    refused: true,
+                });
+            }
+        }
         let references = self.references(&final_text, &passages);
         let citations = self.cited_passages(&final_text, &passages);
         Ok(Answer {
@@ -202,36 +254,48 @@ where
     fn references(&self, answer: &str, passages: &[ContextPassage]) -> Vec<String> {
         let mut out = Vec::new();
         for cited in citation::parse(answer) {
-            if let Some(passage) = passages
-                .iter()
-                .find(|passage| citation::matches(&cited, passage))
-            {
-                out.push(render::render_page(passage));
+            if let Some(index) = citation::resolve(&cited, passages) {
+                out.push(render::render_page(&passages[index]));
             }
         }
         out
     }
 
-    /// Returns the cited passages in answer order, deduplicated by identity so a
-    /// repeated citation does not produce a repeated source entry.
+    /// Returns the cited passages in answer order, deduplicated by provenance
+    /// identity so a repeated citation does not produce a repeated source entry
+    /// and two different documents are never collapsed into one.
     fn cited_passages(&self, answer: &str, passages: &[ContextPassage]) -> Vec<ContextPassage> {
         let mut out: Vec<ContextPassage> = Vec::new();
         for cited in citation::parse(answer) {
-            if let Some(passage) = passages
-                .iter()
-                .find(|passage| citation::matches(&cited, passage))
-            {
-                let duplicate = out.iter().any(|existing| {
-                    existing.source == passage.source
-                        && existing.section == passage.section
-                        && existing.page == passage.page
-                });
+            if let Some(index) = citation::resolve(&cited, passages) {
+                let passage = &passages[index];
+                let duplicate = out.iter().any(|existing| same_identity(existing, passage));
                 if !duplicate {
                     out.push(passage.clone());
                 }
             }
         }
         out
+    }
+}
+
+/// Reports whether two passages name the same published chunk.
+///
+/// The database identity is authoritative when both sides carry it. Test-level
+/// or non-database passages fall back to the display coordinates.
+fn same_identity(left: &ContextPassage, right: &ContextPassage) -> bool {
+    match (
+        left.identity.chunk_id,
+        right.identity.chunk_id,
+        left.identity.document_version_id,
+        right.identity.document_version_id,
+    ) {
+        (Some(left_chunk), Some(right_chunk), Some(left_version), Some(right_version)) => {
+            left_chunk == right_chunk && left_version == right_version
+        }
+        _ => {
+            left.source == right.source && left.section == right.section && left.page == right.page
+        }
     }
 }
 

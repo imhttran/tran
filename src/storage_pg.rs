@@ -153,6 +153,36 @@ pub struct StoredChunkRow {
     pub chunk: StoredChunk,
 }
 
+/// One row of the approved-only retrieval snapshot.
+///
+/// Every field comes from the `approved_documents` view, so a value can only
+/// exist here when the document version is approved, processed to `ready`, in
+/// `family` scope, not removed, and fingerprint-bound to its approval. The
+/// struct is the provenance source user-facing retrieval paths consume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationRow {
+    /// `documents.id` of the approved chunk.
+    pub chunk_id: i64,
+    /// Approved `document_version.version_id` the chunk belongs to.
+    pub document_version_id: i64,
+    /// Corpus the chunk was published in.
+    pub corpus: String,
+    /// Stored `source` identity.
+    pub source: String,
+    /// Stored `section` title.
+    pub section: String,
+    /// Corpus language used by full-text search.
+    pub language: String,
+    /// 1-based page, or `None` for a page-less source.
+    pub page: Option<i32>,
+    /// Document-global chunk index.
+    pub chunk_index: i32,
+    /// Fingerprint stored with the approved chunk.
+    pub content_hash: String,
+    /// Chunk text.
+    pub content: String,
+}
+
 /// A search hit from the SQL retrieval path.
 ///
 /// `similarity` is the pgvector cosine similarity and `keyword_score` is the
@@ -343,6 +373,106 @@ impl PgStore {
                 })
             })
             .collect()
+    }
+
+    /// Reads the approved-only retrieval snapshot for `corpus` with the chunk
+    /// and version provenance a citation must carry.
+    ///
+    /// Every column comes from `approved_documents`, the same predicate the
+    /// vector, keyword, and section reads use, so a row here is approved,
+    /// processed to `ready`, in `family` scope, not removed, and bound to its
+    /// approval fingerprint.
+    pub fn retrieval_snapshot(&self, corpus: &str) -> Result<Vec<PublicationRow>, PgStoreError> {
+        let mut conn = self.connection()?;
+        let rows = conn
+            .query(
+                "SELECT id, document_version_id, corpus, source, section, language, page, \
+                 chunk_index, content_hash, content \
+                 FROM approved_documents WHERE corpus = $1 ORDER BY id",
+                &[&corpus],
+            )
+            .map_err(PgStoreError::Query)?;
+        rows.iter()
+            .map(|row| {
+                Ok(PublicationRow {
+                    chunk_id: row.try_get("id").map_err(PgStoreError::Decode)?,
+                    document_version_id: row
+                        .try_get("document_version_id")
+                        .map_err(PgStoreError::Decode)?,
+                    corpus: row
+                        .try_get::<_, Option<String>>("corpus")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    source: row
+                        .try_get::<_, Option<String>>("source")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    section: row
+                        .try_get::<_, Option<String>>("section")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    language: row
+                        .try_get::<_, Option<String>>("language")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    page: row.try_get("page").map_err(PgStoreError::Decode)?,
+                    chunk_index: row
+                        .try_get::<_, Option<i32>>("chunk_index")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or(0),
+                    content_hash: row
+                        .try_get::<_, Option<String>>("content_hash")
+                        .map_err(PgStoreError::Decode)?
+                        .unwrap_or_default(),
+                    content: row.try_get("content").map_err(PgStoreError::Decode)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Revalidates that every identity is still published in `corpus`.
+    ///
+    /// One statement reads `approved_documents` for the requested chunk ids and
+    /// checks the version id too, so a chunk that survived while its version was
+    /// superseded, restricted, or removed is not accepted. An identity without a
+    /// chunk id cannot be confirmed and therefore fails closed.
+    pub fn revalidate_publication(
+        &self,
+        corpus: &str,
+        identities: &[&crate::answer::context_budget::PassageIdentity],
+    ) -> Result<bool, PgStoreError> {
+        if identities.is_empty() {
+            return Ok(true);
+        }
+        let mut expected = Vec::with_capacity(identities.len());
+        for identity in identities {
+            let (Some(chunk_id), Some(version_id)) =
+                (identity.chunk_id, identity.document_version_id)
+            else {
+                return Ok(false);
+            };
+            expected.push((chunk_id, version_id));
+        }
+        let ids: Vec<i64> = expected.iter().map(|(chunk_id, _)| *chunk_id).collect();
+        let mut conn = self.connection()?;
+        let rows = conn
+            .query(
+                "SELECT id, document_version_id FROM approved_documents \
+                 WHERE corpus = $1 AND id = ANY($2)",
+                &[&corpus, &ids],
+            )
+            .map_err(PgStoreError::Query)?;
+        let published: std::collections::HashSet<(i64, i64)> = rows
+            .iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<_, i64>("id").map_err(PgStoreError::Decode)?,
+                    row.try_get::<_, i64>("document_version_id")
+                        .map_err(PgStoreError::Decode)?,
+                ))
+            })
+            .collect::<Result<_, PgStoreError>>()?;
+        Ok(expected.iter().all(|identity| published.contains(identity)))
     }
 
     /// Searches `corpus` by vector similarity using pgvector, returning at most

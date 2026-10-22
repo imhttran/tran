@@ -123,6 +123,7 @@ mod tests {
             section: section.to_string(),
             page,
             content: content.to_string(),
+            identity: crate::answer::context_budget::PassageIdentity::default(),
         }
     }
 

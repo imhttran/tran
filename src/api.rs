@@ -2658,6 +2658,10 @@ async fn query(
                         "section": passage.section,
                         "page": passage.page,
                         "text": passage.content,
+                        "corpus": passage.identity.corpus,
+                        "document_version_id": passage.identity.document_version_id,
+                        "chunk_id": passage.identity.chunk_id,
+                        "content_hash": passage.identity.content_hash,
                     })
                 })
                 .collect();
