@@ -5637,6 +5637,11 @@ fn processing_error(err: document_processing::ProcessingError) -> Response {
             "processing_failed",
             "the document could not be processed",
         ),
+        document_processing::ProcessingError::InvalidLease(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid_lease",
+            "the processing lease configuration is invalid",
+        ),
         document_processing::ProcessingError::Storage
         | document_processing::ProcessingError::Database(_) => error(
             StatusCode::SERVICE_UNAVAILABLE,

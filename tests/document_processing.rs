@@ -8,6 +8,7 @@
 use std::fs;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use postgres::{Client, NoTls};
 use rag_foundation::config::Config;
@@ -15,7 +16,9 @@ use rag_foundation::document_lifecycle::{
     create_submission, queue_processing, review, AccessScope, Category, DocumentStorage,
     NewSubmission,
 };
-use rag_foundation::document_processing::{claim_next_job, process_job, retry_job, run_due_jobs};
+use rag_foundation::document_processing::{
+    claim_next_job, process_job, renew_lease, retry_job, run_due_jobs, ProcessingError,
+};
 use rag_foundation::embedding::{Embedder, EmbeddingError};
 use rag_foundation::storage::EMBEDDING_DIM;
 use rag_foundation::storage_pg::PgStore;
@@ -32,6 +35,15 @@ const MIGRATIONS: [&str; 10] = [
     "migrations/009_document_lifecycle.sql",
     "migrations/010_document_security_hardening.sql",
 ];
+
+static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn lock() -> MutexGuard<'static, ()> {
+    DB_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
 
 fn dsn() -> Option<String> {
     let dsn = std::env::var("DATABASE_URL").ok()?;
@@ -129,6 +141,7 @@ fn processing_is_durable_idempotent_and_approved_only() {
         eprintln!("DATABASE_URL is unset; skipping document processing integration test");
         return;
     };
+    let _guard = lock();
     let mut client = Client::connect(&dsn, NoTls).expect("connect to disposable RAG database");
     apply(&mut client);
     reset(&mut client);
@@ -388,6 +401,7 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &FakeEmbedder::accepting(),
         &storage,
         &config,
+        300,
         &old_job,
         "worker-old",
     )
@@ -404,6 +418,7 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &FakeEmbedder::accepting(),
         &storage,
         &config,
+        300,
         &new_job,
         "worker-new",
     )
@@ -452,6 +467,7 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &FakeEmbedder::accepting(),
         &storage,
         &config,
+        300,
         &null_lease_job,
         "worker-lease",
     )
@@ -495,9 +511,278 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &FakeEmbedder::accepting(),
         &storage,
         &config,
+        300,
         &long_job,
         "worker-long",
     )
     .expect("long run attempt");
     assert_eq!(long_outcome.status, "ready");
+}
+
+fn approval_ready(client: &mut Client, version: i64) {
+    review(
+        client,
+        version,
+        "family-docs",
+        "admin",
+        true,
+        Some("approved"),
+        Some(AccessScope::Family),
+    )
+    .expect("approve version");
+}
+
+fn job_row(client: &mut Client, job_id: i64) -> (String, i32, Option<String>) {
+    let row = client
+        .query_one(
+            "SELECT status, attempts, claimed_by FROM document_processing_job WHERE job_id = $1",
+            &[&job_id],
+        )
+        .expect("read job row");
+    (row.get(0), row.get(1), row.get(2))
+}
+
+fn version_row(client: &mut Client, version_id: i64) -> (String, Option<String>) {
+    let row = client
+        .query_one(
+            "SELECT processing_status, removed_at::text FROM document_version WHERE version_id = $1",
+            &[&version_id],
+        )
+        .expect("read version row");
+    (row.get(0), row.get(1))
+}
+
+#[test]
+fn attempt_fence_blocks_stale_and_unapproved_publication() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL is unset; skipping attempt fence integration test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect to disposable RAG database");
+    apply(&mut client);
+    reset(&mut client);
+    let store = PgStore::connect(&dsn).expect("retrieval store");
+    let root = tempfile::tempdir().expect("temp document root");
+    let storage = DocumentStorage::new(root.path());
+    let config = config(&dsn);
+
+    // Two attempts under the same worker name cannot impersonate each other.
+    let version = submission(
+        &mut client,
+        &storage,
+        "Fenced Processing",
+        "## Fenced\n\nA synthetic document for the attempt fence.\n",
+    );
+    approval_ready(&mut client, version);
+    queue_processing(&mut client, version, "family-docs", "admin").expect("queue fenced");
+    let first = claim_next_job(&mut client, "cli-worker", Some("family-docs"), 300)
+        .expect("first claim")
+        .expect("first claim available");
+    assert_eq!(first.claimed_by, "cli-worker");
+    // Simulate a reclaim by another process with the identical worker name.
+    let mut other = Client::connect(&dsn, NoTls).expect("second worker client");
+    other
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&first.job_id],
+        )
+        .expect("expire first lease");
+    let second = claim_next_job(&mut other, "cli-worker", Some("family-docs"), 300)
+        .expect("reclaim")
+        .expect("reclaimed job available");
+    assert_eq!(second.job_id, first.job_id);
+    assert_eq!(second.claimed_by, "cli-worker");
+    assert_eq!(second.attempts, first.attempts + 1);
+
+    // The earlier attempt cannot renew, publish, or fail after the reclaim.
+    assert!(matches!(
+        renew_lease(&mut client, &first, 300),
+        Err(ProcessingError::ClaimLost)
+    ));
+    let fenced = submission(
+        &mut client,
+        &storage,
+        "Fenced Publish",
+        "## Fenced publish\n\nA synthetic document for the publish fence.\n",
+    );
+    approval_ready(&mut client, fenced);
+    queue_processing(&mut client, fenced, "family-docs", "admin").expect("queue fenced publish");
+    let owner = claim_next_job(&mut client, "cli-worker", Some("family-docs"), 300)
+        .expect("claim fenced publish")
+        .expect("fenced publish claim available");
+    let mut attacker = Client::connect(&dsn, NoTls).expect("attacker client");
+    attacker
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&owner.job_id],
+        )
+        .expect("expire owner lease");
+    let reclaimer = claim_next_job(&mut attacker, "cli-worker", Some("family-docs"), 300)
+        .expect("reclaim fenced publish")
+        .expect("reclaimed fenced publish available");
+    assert_eq!(reclaimer.job_id, owner.job_id);
+    assert_eq!(reclaimer.attempts, owner.attempts + 1);
+    let (owner_status, owner_attempts, _) = job_row(&mut client, owner.job_id);
+    let (owner_version_status, owner_removed) = version_row(&mut client, fenced);
+    let stale_publish = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &owner,
+        "cli-worker",
+    )
+    .expect("stale publish attempt");
+    assert_eq!(stale_publish.status, "stale");
+    assert_eq!(
+        job_row(&mut client, owner.job_id),
+        (
+            owner_status,
+            owner_attempts,
+            Some(reclaimer.claimed_by.clone())
+        )
+    );
+    assert_eq!(
+        version_row(&mut client, fenced),
+        (owner_version_status, owner_removed)
+    );
+    assert!(store
+        .rows_for_corpus("family-docs")
+        .unwrap()
+        .iter()
+        .all(|row| !row
+            .chunk
+            .source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("fenced-publish")));
+
+    // The current attempt publishes exactly once; a repeat is stale.
+    let current = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &reclaimer,
+        "cli-worker",
+    )
+    .expect("current publish attempt");
+    assert_eq!(current.status, "ready");
+    let ready_jobs: i64 = client
+        .query_one(
+            "SELECT count(*) FROM document_processing_job
+              WHERE job_id = $1 AND status = 'ready'",
+            &[&reclaimer.job_id],
+        )
+        .expect("count ready jobs")
+        .get(0);
+    assert_eq!(ready_jobs, 1);
+    let repeat = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &reclaimer,
+        "cli-worker",
+    )
+    .expect("repeat publish attempt");
+    assert_eq!(repeat.status, "stale");
+
+    // The earlier attempt cannot fail the job either.
+    let (before_status, before_attempts, before_owner) = job_row(&mut client, first.job_id);
+    let stale_failure = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &first,
+        "cli-worker",
+    )
+    .expect("stale failure attempt");
+    assert_eq!(stale_failure.status, "stale");
+    assert_eq!(
+        job_row(&mut client, first.job_id),
+        (before_status, before_attempts, before_owner)
+    );
+
+    // Healthy lease renewal works for the current attempt only.
+    let renewed = submission(
+        &mut client,
+        &storage,
+        "Renewed Processing",
+        "## Renewed\n\nA synthetic document for the lease fence.\n",
+    );
+    approval_ready(&mut client, renewed);
+    queue_processing(&mut client, renewed, "family-docs", "admin").expect("queue renewed");
+    let held = claim_next_job(&mut client, "cli-worker", Some("family-docs"), 300)
+        .expect("claim renewed")
+        .expect("renewed claim available");
+    renew_lease(&mut client, &held, 900).expect("renew current claim");
+    let (_, held_attempts, _) = job_row(&mut client, held.job_id);
+    assert_eq!(held_attempts, held.attempts);
+
+    // Non-family readiness states cannot become ready.
+    for (label, tamper) in [
+        (
+            "cancelled",
+            "review_status = 'pending_review', approved_sha256 = NULL",
+        ),
+        (
+            "rejected",
+            "review_status = 'rejected', approved_sha256 = NULL",
+        ),
+        (
+            "admin_only",
+            "access_scope = 'admin_only', approved_scope = 'admin_only'",
+        ),
+        (
+            "superseded",
+            "removed_at = now(), removed_by = 'system:superseded'",
+        ),
+    ] {
+        let blocked = submission(
+            &mut client,
+            &storage,
+            &format!("Blocked {label}"),
+            &format!("## Blocked\n\nA synthetic {label} document.\n"),
+        );
+        approval_ready(&mut client, blocked);
+        queue_processing(&mut client, blocked, "family-docs", "admin").expect("queue blocked");
+        let claim = claim_next_job(&mut client, "cli-worker", Some("family-docs"), 300)
+            .expect("claim blocked")
+            .expect("blocked claim available");
+        client
+            .execute(
+                &format!("UPDATE document_version SET {tamper} WHERE version_id = $1"),
+                &[&blocked],
+            )
+            .expect("tamper blocked version");
+        let outcome = process_job(
+            &mut client,
+            &store,
+            &FakeEmbedder::accepting(),
+            &storage,
+            &config,
+            300,
+            &claim,
+            "cli-worker",
+        )
+        .expect("blocked publish attempt");
+        assert_eq!(outcome.status, "failed", "{label} must refuse readiness");
+        let (state, _) = version_row(&mut client, blocked);
+        assert_ne!(state, "ready", "{label} must stay not ready");
+    }
 }
