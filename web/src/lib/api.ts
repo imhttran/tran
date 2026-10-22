@@ -886,3 +886,34 @@ export function retryDocumentJob(
 ): Promise<{ ok: true; job_id: number; version_id: number; status: string }> {
   return request(`/api/documents/jobs/${jobId}/retry`, { method: "POST" });
 }
+
+// --- family profile presentation (USR-006-A/B) -----------------------------
+//
+// Read-only, authorized server-side. The response contains only values whose
+// effective visibility is `family`; the browser filters the presented fields
+// further (see FamilyProfileView) and never asks for private profile data.
+
+export type FamilyProfileFieldView = {
+  field_key: string;
+  value: string;
+  visibility: string;
+  approved_revision_number: number;
+  updated_at: string;
+};
+
+export type FamilyProfileResponse = {
+  ok: true;
+  state: "published" | "empty";
+  person: { person_key: string; display_name: string };
+  fields: FamilyProfileFieldView[];
+};
+
+export function getFamilyProfile(
+  personKey: string,
+): Promise<FamilyProfileResponse> {
+  // Private, authorization-sensitive read: never serve it from a cache.
+  return request<FamilyProfileResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/profile`,
+    { cache: "no-store" },
+  );
+}
