@@ -23,8 +23,11 @@ use crate::document_lifecycle::{self, DocumentStorage};
 use crate::embedding::Embedder;
 use crate::fingerprint::ChunkerConfig;
 use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineError;
 use crate::service::IngestService;
+use crate::storage::StoredChunk;
 use crate::storage_pg::PgStore;
+use crate::transaction::{ReplaceError, SourceReplacementFence, SourceReplacer};
 
 /// One claimed processing job.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +239,27 @@ impl LeaseHeartbeat {
 impl Drop for LeaseHeartbeat {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Verifies that this attempt still owns the job, without locking it.
+///
+/// This is the cheap precheck before storage and embedding. It is only an
+/// optimization: [`PgStore::replace_source_fenced`] performs the authoritative
+/// ownership check inside the replacement transaction.
+fn verify_claim(client: &mut Client, job: &ClaimedJob) -> Result<(), ProcessingError> {
+    let owned = client
+        .query_opt(
+            "SELECT 1 FROM document_processing_job
+              WHERE job_id = $1 AND status = 'processing'
+                AND claimed_by = $2 AND attempts = $3",
+            &[&job.job_id, &job.claimed_by, &job.attempts],
+        )?
+        .is_some();
+    if owned {
+        Ok(())
+    } else {
+        Err(ProcessingError::ClaimLost)
     }
 }
 
@@ -519,6 +543,28 @@ fn publish_ready<C: GenericClient>(
     )
 }
 
+/// Ingestion writer that replaces source chunks only while the attempt still
+/// owns the processing job.
+///
+/// The pipeline calls this after embedding, so the job-row lock is held only for
+/// the short delete/insert transaction, never across embedding.
+struct FencedSourceReplacer<'a> {
+    store: &'a PgStore,
+    fence: SourceReplacementFence<'a>,
+}
+
+impl SourceReplacer for FencedSourceReplacer<'_> {
+    fn replace_source(
+        &self,
+        corpus: &Corpus,
+        source: &str,
+        chunks: &[StoredChunk],
+    ) -> Result<(), ReplaceError> {
+        self.store
+            .replace_source_fenced(corpus, source, chunks, &self.fence)
+    }
+}
+
 /// Processes one claimed job. The ingestion service writes chunks under the
 /// version-specific source; publication is a separate final transaction.
 #[allow(clippy::too_many_arguments)]
@@ -543,6 +589,21 @@ pub fn process_job<E: Embedder>(
             return fail_job(client, job, reason);
         }
     };
+
+    match verify_claim(client, job) {
+        Ok(()) => {}
+        Err(ProcessingError::ClaimLost) => {
+            return Ok(JobOutcome {
+                job_id: job.job_id,
+                version_id: version.version_id,
+                status: "stale",
+                error: Some("claim lost".to_string()),
+            });
+        }
+        // A database failure is not a lost claim; report it instead of masking
+        // it as a stale attempt.
+        Err(err) => return Err(err),
+    }
 
     if version.origin == "legacy_import" {
         let mut tx = client.transaction()?;
@@ -626,7 +687,13 @@ pub fn process_job<E: Embedder>(
             config.embed_model.clone(),
             corpus,
         );
-        let service = IngestService::new(embedder, store, store, pipeline_config);
+        let fence = SourceReplacementFence {
+            job_id: job.job_id,
+            claimed_by: &job.claimed_by,
+            attempts: job.attempts,
+        };
+        let replacer = FencedSourceReplacer { store, fence };
+        let service = IngestService::new(embedder, store, &replacer, pipeline_config);
         let outcome = service.ingest_source(&path, &version.source, &version.content_sha256);
         let _ = std::fs::remove_file(&path);
         // Stop renewal before any terminal write. If renewal failed or another
@@ -639,6 +706,12 @@ pub fn process_job<E: Embedder>(
             return fail_job(client, job, "lease renewal lost");
         }
         match outcome {
+            Err(PipelineError::Replace(ReplaceError::ClaimLost)) => Ok(JobOutcome {
+                job_id: job.job_id,
+                version_id: version.version_id,
+                status: "stale",
+                error: Some("claim lost".to_string()),
+            }),
             Ok(crate::pipeline::IngestOutcome::Replaced { .. })
             | Ok(crate::pipeline::IngestOutcome::Unchanged { .. }) => {
                 let mut tx = client.transaction()?;

@@ -61,6 +61,10 @@ same worker name cannot both own the same job.
   `claimed_by`.
 - A shared `mark_job_ready` helper with the fence.
 - A shared approval revalidation helper used by both publication paths.
+- A worker-scoped `FencedSourceReplacer` calling
+  `PgStore::replace_source_fenced`, which checks and locks the job row in the
+  same transaction that deletes and reinserts the source chunks. Normal/manual
+  ingestion keeps using the unchanged `PgStore::replace_source`.
 - Integration coverage that two `cli-worker` claims cannot impersonate one
   another.
 
@@ -70,6 +74,7 @@ same worker name cannot both own the same job.
 - A healthy current attempt publishes exactly once.
 - Cancelled, removed, rejected, `admin_only`, and superseded versions cannot be
   marked ready.
+- A stale attempt cannot replace source chunks, before or during ingestion.
 
 ## Task 2 — `rag-202-lease-heartbeat`
 
@@ -130,6 +135,12 @@ claim ownership.
 8. Heartbeat shutdown on success and on error (`worker_reliability`).
 9. A failed and restarted attempt preserves chunks, history, citations, and
    audit evidence (`document_processing`).
+10. A stale attempt cannot replace chunks before ingestion
+    (`stale_attempt_cannot_replace_before_ingestion`).
+11. A claim lost during embedding cannot replace published chunks
+    (`claim_lost_during_embedding_cannot_replace_published_chunks`).
+12. Crash/retry replaces unfinished chunks without exposing them
+    (`crash_and_retry_preserves_published_content`).
 
 **Acceptance criteria:**
 - Every case passes against a disposable database.

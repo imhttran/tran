@@ -68,6 +68,45 @@ Lifecycle:
 Crash recovery is unchanged: a worker that dies stops renewing, its lease
 expires, and `claim_next_job` reclaims the job with a higher attempt number.
 
+## Ingestion-time replacement fence
+
+The final publication transaction was already fenced, but ingestion wrote chunk
+rows through `SourceReplacer::replace_source`, which commits independently of the
+job. A stale attempt could therefore delete and replace the current attempt's
+chunks before its eventual `ClaimLost`.
+
+That write is now fenced too:
+
+- The worker passes a `FencedSourceReplacer` into `IngestService` instead of the
+  plain `PgStore`. Normal/manual ingestion keeps using
+  `PgStore::replace_source` unchanged.
+- `PgStore::replace_source_fenced` opens one transaction and first runs
+
+  ```sql
+  SELECT 1 FROM document_processing_job
+   WHERE job_id = $1 AND status = 'processing'
+     AND claimed_by = $2 AND attempts = $3
+   FOR UPDATE
+  ```
+
+  Only while that row exists does it delete and reinsert the `(corpus, source)`
+  rows; otherwise it rolls back and returns `ReplaceError::ClaimLost` without
+  writing anything.
+- `process_job` also runs a cheap `verify_claim` precheck before reading the
+  original and embedding, so a claim already lost is rejected before the
+  expensive work. The precheck is an optimization; the replacement transaction
+  is authoritative.
+- A `ReplaceError::ClaimLost` from ingestion is reported as `stale`, never as a
+  failure of the newer attempt.
+
+The job row is locked only for the short delete/insert transaction, never across
+embedding. A newer claim cannot publish while an older attempt is replacing
+chunks. A claim that races an in-flight replacement skips the locked row
+(`FOR UPDATE ... SKIP LOCKED`) and can claim only after the replacement commits;
+if the newer claim already owns the job, the older replacement's fence matches no
+row and it writes nothing. Lease renewal runs on its own connection; a renewal
+arriving during the short replacement waits briefly for that lock.
+
 ## Legacy-import safety
 
 The `legacy_import` fast path previously marked the version and job ready with no
@@ -99,6 +138,8 @@ Both are validated. No migration is required; `attempts` and
 | Approval/scope/removal changes mid-job | `StaleApproval` at publication; job failed if still owned |
 | Worker crashes | Lease expires; job reclaimable with a new attempt |
 | Heartbeat start fails | Job failed with `lease heartbeat unavailable` |
+| Claim lost before replacement | `ReplaceError::ClaimLost`; no chunk written |
+| Claim lost before ingestion | `stale` from the `verify_claim` precheck |
 
 ## Tests
 
@@ -111,6 +152,9 @@ model):
 | Abandoned lease is reclaimable | `abandoned_lease_is_reclaimable` |
 | Heartbeat stops after failure; no lease outlives the job | `heartbeat_stops_after_failure` |
 | Legacy path respects approval and the attempt fence | `legacy_fast_path_respects_approval_and_fence` |
+| Stale attempt cannot replace chunks before ingestion | `stale_attempt_cannot_replace_before_ingestion` |
+| Claim lost during embedding cannot replace published chunks | `claim_lost_during_embedding_cannot_replace_published_chunks` |
+| Crash/retry replaces unfinished chunks and preserves retrieval | `crash_and_retry_preserves_published_content` |
 
 `tests/document_processing.rs::attempt_fence_blocks_stale_and_unapproved_publication`
 covers same-name reclaim, stale publish, stale failure, renewal, and

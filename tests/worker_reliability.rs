@@ -494,3 +494,325 @@ fn legacy_fast_path_respects_approval_and_fence() {
     assert_eq!(current.status, "ready");
     assert_eq!(version_status(&mut client, fenced), "ready");
 }
+
+fn source_of(client: &mut Client, version: i64) -> String {
+    client
+        .query_one(
+            "SELECT source FROM document_version WHERE version_id = $1",
+            &[&version],
+        )
+        .expect("read source")
+        .get(0)
+}
+
+/// Returns `(chunk_id, document_version_id, content)` for one source.
+fn documents_for_source(client: &mut Client, source: &str) -> Vec<(i64, Option<i64>, String)> {
+    client
+        .query(
+            "SELECT id, document_version_id, content FROM documents
+              WHERE corpus = $1 AND source = $2 ORDER BY id",
+            &[&CORPUS, &source],
+        )
+        .expect("read documents")
+        .iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect()
+}
+
+#[test]
+fn stale_attempt_cannot_replace_before_ingestion() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping pre-ingestion fence test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    apply(&mut client);
+    reset(&mut client);
+    let store = PgStore::connect(&dsn).expect("store");
+    let root = tempfile::tempdir().expect("temp document root");
+    let storage = DocumentStorage::new(root.path());
+    let config = config(&dsn);
+
+    let version = submission(
+        &mut client,
+        &storage,
+        "Pre Ingestion Fence",
+        "## Fence\n\nA synthetic document for the pre-ingestion fence.\n",
+    );
+    approve(&mut client, version);
+    queue_processing(&mut client, version, CORPUS, "admin").expect("queue");
+    let source = source_of(&mut client, version);
+
+    let first = claim_next_job(&mut client, "cli-worker", Some(CORPUS), 300)
+        .expect("claim")
+        .expect("claim available");
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&first.job_id],
+        )
+        .expect("expire lease");
+    let second = claim_next_job(&mut client, "cli-worker", Some(CORPUS), 300)
+        .expect("reclaim")
+        .expect("reclaim available");
+    assert_eq!(second.job_id, first.job_id);
+    assert_eq!(second.attempts, first.attempts + 1);
+
+    // The stale attempt must not reach ingestion at all.
+    let stale = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &first,
+        "cli-worker",
+    )
+    .expect("stale attempt");
+    assert_eq!(stale.status, "stale");
+    assert!(
+        documents_for_source(&mut client, &source).is_empty(),
+        "a stale attempt must not replace source chunks"
+    );
+    assert_ne!(version_status(&mut client, version), "ready");
+
+    // The current attempt completes normally.
+    let current = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &second,
+        "cli-worker",
+    )
+    .expect("current attempt");
+    assert_eq!(current.status, "ready");
+    assert_eq!(version_status(&mut client, version), "ready");
+    let published = documents_for_source(&mut client, &source);
+    assert!(
+        !published.is_empty(),
+        "the current attempt must publish chunks"
+    );
+    assert!(
+        published
+            .iter()
+            .all(|(_, linked, _)| *linked == Some(version)),
+        "published chunks must be linked to the approved version"
+    );
+    assert_eq!(
+        store.rows_for_corpus(CORPUS).expect("retrieval").len(),
+        published.len()
+    );
+}
+
+#[test]
+fn claim_lost_during_embedding_cannot_replace_published_chunks() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping replacement fence test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    apply(&mut client);
+    reset(&mut client);
+    let store = PgStore::connect(&dsn).expect("store");
+    let root = tempfile::tempdir().expect("temp document root");
+    let storage = DocumentStorage::new(root.path());
+    let service_config = config(&dsn);
+
+    let version = submission(
+        &mut client,
+        &storage,
+        "Embedding Fence",
+        "## Embedding fence\n\nA synthetic document for the replacement fence.\n",
+    );
+    approve(&mut client, version);
+    queue_processing(&mut client, version, CORPUS, "admin").expect("queue");
+    let source = source_of(&mut client, version);
+
+    // A claims with a long lease so its heartbeat cannot fire during the test.
+    let first = claim_next_job(&mut client, "cli-worker", Some(CORPUS), 300)
+        .expect("claim")
+        .expect("claim available");
+
+    let started = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let embedder = GatedEmbedder {
+        calls: AtomicUsize::new(0),
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    };
+    let worker_dsn = dsn.clone();
+    let worker_root = root.path().to_path_buf();
+    let worker_config = config(&dsn);
+    let worker_job = first.clone();
+    let handle = thread::spawn(move || {
+        let mut worker = Client::connect(&worker_dsn, NoTls).expect("worker connect");
+        let store = PgStore::connect(&worker_dsn).expect("worker store");
+        let storage = DocumentStorage::new(worker_root);
+        process_job(
+            &mut worker,
+            &store,
+            &embedder,
+            &storage,
+            &worker_config,
+            300,
+            &worker_job,
+            "cli-worker",
+        )
+    });
+
+    // A is now blocked after its precheck and before source replacement.
+    started.wait();
+
+    // Expire and reclaim as a second process with the same worker name.
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&first.job_id],
+        )
+        .expect("expire first lease");
+    let mut second_client = Client::connect(&dsn, NoTls).expect("second connect");
+    let second = claim_next_job(&mut second_client, "cli-worker", Some(CORPUS), 300)
+        .expect("reclaim")
+        .expect("reclaim available");
+    assert_eq!(second.job_id, first.job_id);
+    assert_eq!(second.attempts, first.attempts + 1);
+
+    // The current attempt finishes and publishes.
+    let current = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &service_config,
+        300,
+        &second,
+        "cli-worker",
+    )
+    .expect("current attempt");
+    assert_eq!(current.status, "ready");
+    assert_eq!(version_status(&mut client, version), "ready");
+    let published = documents_for_source(&mut client, &source);
+    assert!(!published.is_empty());
+    assert!(
+        published
+            .iter()
+            .all(|(_, linked, _)| *linked == Some(version)),
+        "the current attempt's chunks must be linked"
+    );
+
+    // Release the stale attempt. Its ingestion must not replace the published
+    // chunks, and it must not change the current attempt's ready state.
+    release.wait();
+    let stale = handle
+        .join()
+        .expect("worker thread")
+        .expect("stale attempt");
+    assert_eq!(stale.status, "stale");
+    let after = documents_for_source(&mut client, &source);
+    assert_eq!(
+        after, published,
+        "a stale attempt must not delete or replace published chunks"
+    );
+    let (state, attempts, owner, lease) = job_state(&mut client, second.job_id);
+    assert_eq!(state, "ready");
+    assert_eq!(attempts, second.attempts);
+    assert_eq!(owner, Some(second.claimed_by.clone()));
+    assert!(lease.is_none());
+    assert_eq!(
+        store.rows_for_corpus(CORPUS).expect("retrieval").len(),
+        published.len()
+    );
+}
+
+#[test]
+fn crash_and_retry_preserves_published_content() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping crash retry test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    apply(&mut client);
+    reset(&mut client);
+    let store = PgStore::connect(&dsn).expect("store");
+    let root = tempfile::tempdir().expect("temp document root");
+    let storage = DocumentStorage::new(root.path());
+    let config = config(&dsn);
+
+    let version = submission(
+        &mut client,
+        &storage,
+        "Crash Retry",
+        "## Crash retry\n\nA synthetic document for crash recovery.\n",
+    );
+    approve(&mut client, version);
+    queue_processing(&mut client, version, CORPUS, "admin").expect("queue");
+    let source = source_of(&mut client, version);
+
+    let first = claim_next_job(&mut client, "cli-worker", Some(CORPUS), 300)
+        .expect("claim")
+        .expect("claim available");
+    // Simulate an abandoned attempt that wrote unfinished, unlinked chunks.
+    client
+        .execute(
+            "INSERT INTO documents
+                 (content, source, section, chunk_index, embedding, content_hash, corpus,
+                  language, document_version_id)
+             VALUES ('unfinished chunk', $1, 'Partial', 0,
+                     (SELECT array_agg(0.02::float8) FROM generate_series(1, 768))::vector,
+                     'partial-hash', $2, 'english', NULL)",
+            &[&source, &CORPUS],
+        )
+        .expect("insert unfinished chunk");
+    assert!(
+        store.rows_for_corpus(CORPUS).expect("retrieval").is_empty(),
+        "unfinished chunks must not be retrievable"
+    );
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&first.job_id],
+        )
+        .expect("expire lease");
+
+    let retry = claim_next_job(&mut client, "cli-worker", Some(CORPUS), 300)
+        .expect("reclaim")
+        .expect("reclaim available");
+    let outcome = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        300,
+        &retry,
+        "cli-worker",
+    )
+    .expect("retry");
+    assert_eq!(outcome.status, "ready");
+    let published = documents_for_source(&mut client, &source);
+    assert!(!published.is_empty());
+    assert!(
+        published
+            .iter()
+            .all(|(_, linked, content)| *linked == Some(version) && content != "unfinished chunk"),
+        "the retry must replace unfinished chunks with linked, processed chunks"
+    );
+    assert_eq!(
+        store.rows_for_corpus(CORPUS).expect("retrieval").len(),
+        published.len(),
+        "retrieval must expose exactly the final chunk set"
+    );
+}

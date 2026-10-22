@@ -42,7 +42,9 @@ use crate::document::Chunk;
 use crate::storage::{
     validate_embedding_dim, DimensionMismatchError, DocumentStore, StoredChunk, EMBEDDING_DIM,
 };
-use crate::transaction::{validate_all_dims, validate_chunk_corpora, ReplaceError, SourceReplacer};
+use crate::transaction::{
+    validate_all_dims, validate_chunk_corpora, ReplaceError, SourceReplacementFence, SourceReplacer,
+};
 
 type PgPoolManager = PostgresConnectionManager<NoTls>;
 
@@ -760,72 +762,131 @@ impl SourceReplacer for PgStore {
             .transaction()
             .map_err(|err| ReplaceError::Store(Box::new(err)))?;
 
-        // The delete is keyed by the pair. A different corpus with the same
-        // source name is never touched.
-        tx.execute(
-            "DELETE FROM documents WHERE corpus = $1 AND source = $2",
-            &[&corpus.as_str(), &source],
-        )
-        .map_err(|err| ReplaceError::Store(Box::new(err)))?;
-
-        // One statement for the whole document. A per-chunk loop would hold the
-        // transaction open for N round trips and extend the WAL/lock window.
-        if !chunks.is_empty() {
-            let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-            let sources: Vec<Option<&str>> = chunks.iter().map(|c| c.source.as_deref()).collect();
-            let sections: Vec<Option<&str>> = chunks.iter().map(|c| c.section.as_deref()).collect();
-            let chunk_indices: Vec<i32> = chunks.iter().map(|c| c.chunk_index).collect();
-            let languages: Vec<Option<&str>> =
-                chunks.iter().map(|c| c.language.as_deref()).collect();
-            let pages: Vec<Option<i32>> = chunks.iter().map(|c| c.page).collect();
-            let corpora: Vec<Option<&str>> = chunks.iter().map(|c| c.corpus.as_deref()).collect();
-            let content_hashes: Vec<&str> =
-                chunks.iter().map(|c| c.content_hash.as_str()).collect();
-            let embed_models: Vec<&str> = chunks.iter().map(|c| c.embed_model.as_str()).collect();
-            let embedding_dims: Vec<i32> = chunks.iter().map(|c| c.embedding_dim).collect();
-            let chunker_configs: Vec<&str> =
-                chunks.iter().map(|c| c.chunker_config.as_str()).collect();
-            let ingested_ats: Vec<&str> = chunks.iter().map(|c| c.ingested_at.as_str()).collect();
-            let embeddings: Vec<String> =
-                chunks.iter().map(|c| format_vector(&c.embedding)).collect();
-
-            let sql = format!(
-                "INSERT INTO documents ({DOCUMENT_COLUMNS}) \
-                 SELECT content, source, section, chunk_index, language, page, corpus, \
-                        content_hash, embed_model, embedding_dim, chunker_config, \
-                        ingested_at::timestamptz, embedding::vector \
-                   FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], \
-                               $6::int[], $7::text[], $8::text[], $9::text[], $10::int[], \
-                               $11::text[], $12::text[], $13::text[]) \
-                        AS t(content, source, section, chunk_index, language, page, corpus, \
-                             content_hash, embed_model, embedding_dim, chunker_config, \
-                             ingested_at, embedding)"
-            );
-            tx.execute(
-                &sql,
-                &[
-                    &contents,
-                    &sources,
-                    &sections,
-                    &chunk_indices,
-                    &languages,
-                    &pages,
-                    &corpora,
-                    &content_hashes,
-                    &embed_models,
-                    &embedding_dims,
-                    &chunker_configs,
-                    &ingested_ats,
-                    &embeddings,
-                ],
-            )
+        replace_rows(&mut tx, corpus, source, chunks)
             .map_err(|err| ReplaceError::Store(Box::new(err)))?;
-        }
 
         tx.commit()
             .map_err(|err| ReplaceError::Store(Box::new(err)))?;
         Ok(())
     }
+}
+
+impl PgStore {
+    /// Replaces every stored row of `source` only while `fence` still owns the
+    /// processing job.
+    ///
+    /// This is the worker-specific replacement path. The ownership check and
+    /// the delete/insert run in the same transaction, and the job row is locked
+    /// for the duration of that transaction. An attempt whose job was reclaimed
+    /// returns [`ReplaceError::ClaimLost`] with no chunk written. The lock is
+    /// held only for the short replacement, never across embedding.
+    pub fn replace_source_fenced(
+        &self,
+        corpus: &Corpus,
+        source: &str,
+        chunks: &[StoredChunk],
+        fence: &SourceReplacementFence<'_>,
+    ) -> Result<(), ReplaceError> {
+        validate_all_dims(chunks)?;
+        validate_chunk_corpora(corpus, chunks)?;
+
+        let mut conn = self
+            .connection()
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
+        let mut tx = conn
+            .transaction()
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
+
+        let owned = tx
+            .query_opt(
+                "SELECT 1 FROM document_processing_job
+                  WHERE job_id = $1 AND status = 'processing'
+                    AND claimed_by = $2 AND attempts = $3
+                  FOR UPDATE",
+                &[&fence.job_id, &fence.claimed_by, &fence.attempts],
+            )
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?
+            .is_some();
+        if !owned {
+            tx.rollback()
+                .map_err(|err| ReplaceError::Store(Box::new(err)))?;
+            return Err(ReplaceError::ClaimLost);
+        }
+
+        replace_rows(&mut tx, corpus, source, chunks)
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
+
+        tx.commit()
+            .map_err(|err| ReplaceError::Store(Box::new(err)))?;
+        Ok(())
+    }
+}
+
+/// Deletes and reinserts the rows of one `(corpus, source)` pair inside
+/// `tx`. Used by both the normal and the worker-fenced replacement paths.
+fn replace_rows(
+    tx: &mut postgres::Transaction<'_>,
+    corpus: &Corpus,
+    source: &str,
+    chunks: &[StoredChunk],
+) -> Result<(), postgres::Error> {
+    // The delete is keyed by the pair. A different corpus with the same
+    // source name is never touched.
+    tx.execute(
+        "DELETE FROM documents WHERE corpus = $1 AND source = $2",
+        &[&corpus.as_str(), &source],
+    )?;
+
+    // One statement for the whole document. A per-chunk loop would hold the
+    // transaction open for N round trips and extend the WAL/lock window.
+    if !chunks.is_empty() {
+        let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+        let sources: Vec<Option<&str>> = chunks.iter().map(|c| c.source.as_deref()).collect();
+        let sections: Vec<Option<&str>> = chunks.iter().map(|c| c.section.as_deref()).collect();
+        let chunk_indices: Vec<i32> = chunks.iter().map(|c| c.chunk_index).collect();
+        let languages: Vec<Option<&str>> = chunks.iter().map(|c| c.language.as_deref()).collect();
+        let pages: Vec<Option<i32>> = chunks.iter().map(|c| c.page).collect();
+        let corpora: Vec<Option<&str>> = chunks.iter().map(|c| c.corpus.as_deref()).collect();
+        let content_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+        let embed_models: Vec<&str> = chunks.iter().map(|c| c.embed_model.as_str()).collect();
+        let embedding_dims: Vec<i32> = chunks.iter().map(|c| c.embedding_dim).collect();
+        let chunker_configs: Vec<&str> = chunks.iter().map(|c| c.chunker_config.as_str()).collect();
+        let ingested_ats: Vec<&str> = chunks.iter().map(|c| c.ingested_at.as_str()).collect();
+        let embeddings: Vec<String> = chunks.iter().map(|c| format_vector(&c.embedding)).collect();
+
+        let sql = format!(
+            "INSERT INTO documents ({DOCUMENT_COLUMNS}) \
+             SELECT content, source, section, chunk_index, language, page, corpus, \
+                    content_hash, embed_model, embedding_dim, chunker_config, \
+                    ingested_at::timestamptz, embedding::vector \
+               FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], \
+                           $6::int[], $7::text[], $8::text[], $9::text[], $10::int[], \
+                           $11::text[], $12::text[], $13::text[]) \
+                    AS t(content, source, section, chunk_index, language, page, corpus, \
+                         content_hash, embed_model, embedding_dim, chunker_config, \
+                         ingested_at, embedding)"
+        );
+        tx.execute(
+            &sql,
+            &[
+                &contents,
+                &sources,
+                &sections,
+                &chunk_indices,
+                &languages,
+                &pages,
+                &corpora,
+                &content_hashes,
+                &embed_models,
+                &embedding_dims,
+                &chunker_configs,
+                &ingested_ats,
+                &embeddings,
+            ],
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Maps a BCP-47 language tag to a PostgreSQL text-search configuration,
