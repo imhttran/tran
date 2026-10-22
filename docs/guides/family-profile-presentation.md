@@ -82,6 +82,10 @@ Always, without exception:
   own authorization rule and is not served here;
 - superseded values (only the value row bound to the current approved revision
   is read);
+- values whose approved-revision binding is missing or inconsistent. The read
+  joins the approving revision and requires matching person, field, revision
+  number, approved status, visibility, and text, so a legacy row left without a
+  backfilled revision is excluded rather than presented unprovenanced;
 - any content the caller is not authorized to see.
 
 ## What is not in this slice
