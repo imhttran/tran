@@ -198,7 +198,7 @@ test.describe.serial("family profile presentation", () => {
     expect(JSON.stringify(before.body)).toContain(FAMILY_MARKER);
 
     const { linkId, personKey } = await linkIdFor(request, "e2e-family-member");
-    expect(personKey).toBe("e2e-family-member");
+    expect(personKey).toBe("e2e-branch-family-member");
 
     // Revocation is immediate: the next read is refused.
     const revoked = await api(
@@ -219,7 +219,7 @@ test.describe.serial("family profile presentation", () => {
       "POST",
       "/api/admin/family-members/links",
       {
-        person_key: "e2e-family-member",
+        person_key: "e2e-branch-family-member",
         issuer: ISSUER,
         subject: "e2e-family-member",
         decision: "approve",
