@@ -52,10 +52,10 @@ not evidence for a PASS row — only an executed `make web-e2e` run is.
 | 10 | Visibility changes revoke publication | PARTIAL | Documents PASS: `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (scope change resets to pending review). Profile values: a change requires a new approved revision, so the previous value stays presentable until that commits — decision A in the contract; specified as test F2 below |
 | 11 | Account/person removal prevents unauthorized visibility | PASS | `tests/onboarding_profile_media.rs::cross_account_and_revoked_link_cannot_access_media`; `tests/onboarding_profile_submission.rs::revoked_link_blocks_further_owner_writes`; `tests/branch_review.rs::linked_owner_and_replaced_account_cannot_use_a_grant` |
 | 12 | Stale indexing cannot republish revoked content | PASS | `tests/document_processing.rs::processing_is_durable_idempotent_and_approved_only` — an approval withdrawn after queueing makes the job fail and writes no chunks |
-| 13 | Citations resolve to the actual approved version | PARTIAL | Retrieval reads only `approved_documents`, so citations necessarily come from approved chunks. No test asserts the negative case explicitly — specified as test F3 below |
+| 13 | Citations resolve to the actual approved version | PASS | `tests/rag_publication.rs::citations_carry_version_identity_and_never_mix_documents` (exact key resolves to one version; an ambiguous filename is rejected), `::superseded_cross_corpus_and_revalidation_are_exact` (superseded and removed versions do not resolve), `src/answer/citation.rs` unit tests (same filename, different keys) |
 | 14 | Cross-branch access cannot reveal restricted information | PARTIAL | Person-scope PASS: `tests/branch_review.rs::proposals_are_scoped_to_the_person_branch_not_the_reviewer`, `web/e2e/branch-review-security.spec.ts`. Cross-branch relationship escalation is decision B and is not implemented |
 | 15 | A user without family access cannot retrieve family content | PARTIAL | Profile presentation now requires an active reviewed account-person link: unlinked accounts get 403 and deactivated accounts are refused (`web/e2e/family-profile.spec.ts`). The shared family tree remains readable by any authenticated viewer, and there is still no per-family membership model — specified as test F4 below |
-| 16 | RAG responses cannot contain unpublished or revoked versions | PASS for existing content; NOT IMPLEMENTED for profiles/stories | Documents: `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (pending and legacy content absent from retrieval; approved present; removed absent) and `document_processing.rs` (stale job writes nothing). Profiles: `tests/onboarding_profile_submission.rs::pending_content_never_reaches_family_or_rag` (profile content creates no retrieval rows). There is no profile/story publication path to test yet — specified as test F5 below |
+| 16 | RAG responses cannot contain unpublished or revoked versions | PASS for existing content; NOT IMPLEMENTED for profiles/stories | Documents: `tests/rag_publication.rs` (pending, rejected, unprocessed, admin-only, removed, superseded, stale fingerprint/version excluded from snapshot, vector, keyword, and section reads; a revocation during generation returns the refusal), `tests/document_processing.rs` (stale job writes nothing). Profiles: `tests/onboarding_profile_submission.rs::pending_content_never_reaches_family_or_rag` (profile content creates no retrieval rows). There is no profile/story publication path to test yet — specified as test F5 below |
 
 ## Existing coverage summary
 
@@ -99,6 +99,10 @@ revision is approved, and the response states that a change is pending.
 *Given* document version 1 approved and indexed, *when* version 2 is approved
 and indexed, *then* every citation returned by `/api/query` resolves to the
 version-2 rows, and no citation resolves to a version-1 row.
+
+**Implemented for documents** by FAM-RAG-01: `tests/rag_publication.rs` asserts
+exact, version-bearing citation identity and that superseded and removed rows do
+not resolve. See [`document-publication-integrity.md`](document-publication-integrity.md).
 
 ### F4 — Audience model (slice: presentation API)
 

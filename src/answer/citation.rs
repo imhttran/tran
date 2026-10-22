@@ -148,24 +148,64 @@ pub fn parse(answer: &str) -> Vec<Citation> {
         .collect()
 }
 
-/// Reports whether `citation` resolves to `passage`: normalized source, exact
-/// section, and, when the citation claims a page, the same page.
-pub fn matches(citation: &Citation, passage: &ContextPassage) -> bool {
-    if normalize_source(&passage.source) != normalize_source(&citation.source) {
-        return false;
-    }
-    if normalize_section(&passage.section) != normalize_section(&citation.section) {
-        return false;
-    }
-    match citation.page {
+/// Resolves `citation` to the single passage it names.
+///
+/// Resolution is exact-source first. Only when no passage carries the exact
+/// stored source does it fall back to normalized filename matching, and only
+/// when exactly one passage matches. Zero matches, and more than one distinct
+/// match at either tier, resolve to `None`. This is what keeps two documents
+/// with the same filename from being confused, and what makes an ambiguous
+/// model citation fail closed instead of being attributed to the first
+/// passage.
+pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize> {
+    let section_matches = |passage: &ContextPassage| {
+        normalize_section(&passage.section) == normalize_section(&citation.section)
+    };
+    let page_matches = |passage: &ContextPassage| match citation.page {
         None => true,
         Some(page) => passage.page == Some(page),
+    };
+
+    let exact: Vec<usize> = passages
+        .iter()
+        .enumerate()
+        .filter(|(_, passage)| {
+            passage.source == citation.source && section_matches(passage) && page_matches(passage)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    match exact.len() {
+        1 => return Some(exact[0]),
+        0 => {}
+        // The exact source is itself ambiguous; do not fall back.
+        _ => return None,
+    }
+
+    let normalized: Vec<usize> = passages
+        .iter()
+        .enumerate()
+        .filter(|(_, passage)| {
+            normalize_source(&passage.source) == normalize_source(&citation.source)
+                && section_matches(passage)
+                && page_matches(passage)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if normalized.len() == 1 {
+        Some(normalized[0])
+    } else {
+        None
     }
 }
 
-/// Returns true when `citation` matches any retrieved passage.
+/// Reports whether `citation` resolves to exactly one passage.
+pub fn matches(citation: &Citation, passage: &ContextPassage) -> bool {
+    resolve(citation, std::slice::from_ref(passage)) == Some(0)
+}
+
+/// Returns true when `citation` resolves to any retrieved passage.
 pub fn is_valid(citation: &Citation, passages: &[ContextPassage]) -> bool {
-    passages.iter().any(|passage| matches(citation, passage))
+    resolve(citation, passages).is_some()
 }
 
 /// Counts the citations in `answer` and how many of them resolve to a
@@ -234,6 +274,7 @@ mod tests {
             section: section.to_string(),
             page,
             content: "body".to_string(),
+            identity: crate::answer::context_budget::PassageIdentity::default(),
         }
     }
 
@@ -305,5 +346,52 @@ mod tests {
         assert!(is_clean("[doc.md - Payments - p.2]", &passages));
         assert!(!is_clean("[doc.md - Other]", &passages));
         assert!(!is_clean("uncited prose", &passages));
+    }
+
+    #[test]
+    fn same_filename_documents_resolve_by_exact_source() {
+        let passages = vec![
+            passage("report.md (report-md-aaaa1111)", "Findings", None),
+            passage("report.md (report-md-bbbb2222)", "Findings", None),
+        ];
+        let cited = parse("[report.md (report-md-bbbb2222) - Findings]");
+        assert_eq!(resolve(&cited[0], &passages), Some(1));
+        let other = parse("[report.md (report-md-aaaa1111) - Findings]");
+        assert_eq!(resolve(&other[0], &passages), Some(0));
+    }
+
+    #[test]
+    fn ambiguous_normalized_citation_is_rejected() {
+        let passages = vec![
+            passage("report.md (report-md-aaaa1111)", "Findings", None),
+            passage("report.md (report-md-bbbb2222)", "Findings", None),
+        ];
+        // The human-readable filename alone names two different documents.
+        let cited = parse("[report.md - Findings]");
+        assert_eq!(resolve(&cited[0], &passages), None);
+        assert!(!is_valid(&cited[0], &passages));
+        assert_eq!(repair("[report.md - Findings]", &passages), "");
+    }
+
+    #[test]
+    fn unique_human_filename_still_resolves() {
+        let passages = vec![
+            passage("report.md (report-md-aaaa1111)", "Findings", None),
+            passage("notes.md (notes-md-cccc3333)", "Findings", None),
+        ];
+        let cited = parse("[report.md - Findings]");
+        assert!(is_valid(&cited[0], &passages));
+        assert_eq!(resolve(&cited[0], &passages), Some(0));
+    }
+
+    #[test]
+    fn exact_source_is_not_overridden_by_a_normalized_match() {
+        let passages = vec![
+            passage("report.md (report-md-aaaa1111)", "Findings", None),
+            passage("report.md (report-md-bbbb2222)", "Findings", None),
+        ];
+        let cited = parse("[report.md - Findings]");
+        // Ambiguity is not "pick the first": it is invalid.
+        assert!(!is_valid(&cited[0], &passages));
     }
 }

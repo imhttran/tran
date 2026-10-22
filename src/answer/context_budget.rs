@@ -6,6 +6,22 @@
 
 use crate::retrieval::Candidate;
 
+/// Authoritative identity of a budgeted passage.
+///
+/// It comes from the approved database row observed at retrieval time and is
+/// what citation resolution and final revalidation compare against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PassageIdentity {
+    /// `documents.id` of the approved chunk.
+    pub chunk_id: Option<i64>,
+    /// `document_version.version_id` of the approved version.
+    pub document_version_id: Option<i64>,
+    /// Corpus the passage was retrieved from.
+    pub corpus: String,
+    /// Content fingerprint bound to the approval.
+    pub content_hash: String,
+}
+
 /// A budgeted context passage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPassage {
@@ -17,6 +33,8 @@ pub struct ContextPassage {
     pub page: Option<u32>,
     /// Passage body.
     pub content: String,
+    /// Authoritative chunk and version identity.
+    pub identity: PassageIdentity,
 }
 
 /// Builds a budgeted context from ranked candidates.
@@ -39,6 +57,12 @@ pub fn budget(candidates: &[Candidate], budget: usize) -> Vec<ContextPassage> {
             section: chunk.section.clone(),
             page: chunk.page,
             content: chunk.content.clone(),
+            identity: PassageIdentity {
+                chunk_id: candidate.provenance.chunk_id,
+                document_version_id: candidate.provenance.document_version_id,
+                corpus: candidate.provenance.corpus.clone(),
+                content_hash: candidate.provenance.content_hash.clone(),
+            },
         });
     }
     passages

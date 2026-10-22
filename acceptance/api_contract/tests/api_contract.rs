@@ -62,6 +62,24 @@ fn post_json(client: &Client, url: &str, body: &Value) -> (StatusCode, Value) {
     json(client.post(url).json(body).send().expect("POST request"))
 }
 
+fn approved_identity(dsn: &str, corpus: &str, chunk_id: i64) -> Option<(i64, String)> {
+    let mut client =
+        postgres::Client::connect(dsn, postgres::NoTls).expect("connect for approved identity");
+    client
+        .query_opt(
+            "SELECT document_version_id, content_hash FROM approved_documents \
+             WHERE corpus = $1 AND id = $2",
+            &[&corpus, &chunk_id],
+        )
+        .expect("read approved identity")
+        .map(|row| {
+            (
+                row.get(0),
+                row.get::<_, Option<String>>(1).unwrap_or_default(),
+            )
+        })
+}
+
 fn citation_exists(
     dsn: &str,
     corpus: &str,
@@ -367,6 +385,14 @@ fn api_contract_upload_status_query_health_and_refusal() {
             !source["text"].as_str().unwrap_or_default().is_empty(),
             "a source must carry its passage text"
         );
+        let chunk_id = source["chunk_id"]
+            .as_i64()
+            .expect("a source must carry its chunk id");
+        let identity = approved_identity(&dsn, &corpus, chunk_id)
+            .expect("source must resolve to an approved row");
+        assert_eq!(source["corpus"], serde_json::json!(corpus));
+        assert_eq!(source["document_version_id"], serde_json::json!(identity.0));
+        assert_eq!(source["content_hash"], serde_json::json!(identity.1));
     }
 
     // Empty question is rejected.

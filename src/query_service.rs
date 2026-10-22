@@ -9,19 +9,24 @@
 //! are synchronous. Async callers run [`QueryService::answer`] on a blocking
 //! task instead of blocking an executor thread.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::answer::service::{Answer, AnswerError, AnswerService, RetrievalSource};
+use crate::answer::context_budget::{ContextPassage, PassageIdentity};
+use crate::answer::service::{
+    Answer, AnswerError, AnswerService, PublicationError, PublicationGuard, RetrievalSource,
+};
 use crate::config::Config;
 use crate::corpus::Corpus;
+use crate::document::Chunk;
 use crate::embedding::{Embedder, OllamaEmbedder};
 use crate::generation::OllamaGenerator;
 use crate::ollama::{HttpTransport, OllamaClient};
-use crate::retrieval::{dedup, expand, Candidate};
+use crate::retrieval::{candidate_id, dedup, expand, Candidate, ChunkProvenance};
 use crate::retrieval_pg;
-use crate::storage_pg::PgStore;
+use crate::storage_pg::{PgStore, PublicationRow};
 
 /// Default character budget for the model context, matching `bin/query`.
 const DEFAULT_CONTEXT_BUDGET: usize = 4000;
@@ -74,16 +79,30 @@ impl RetrievalSource for DbRetrieval<'_> {
         &self,
         question: &str,
     ) -> Result<Vec<Candidate>, crate::answer::service::RetrievalError> {
-        let chunks = self
+        let snapshot = self
             .store
-            .chunks_for_corpus(self.corpus)
+            .retrieval_snapshot(self.corpus)
             .map_err(|source| DbRetrievalError::Corpus {
                 corpus: self.corpus.to_string(),
                 source,
             })?;
-        if chunks.is_empty() {
+        if snapshot.is_empty() {
             return Ok(Vec::new());
         }
+
+        // The snapshot is both the expansion corpus and the authoritative
+        // provenance source. A candidate that is not in it has no approved
+        // identity and is dropped rather than answered.
+        let chunks: Vec<Chunk> = snapshot.iter().map(publication_chunk).collect();
+        let provenance: HashMap<String, ChunkProvenance> = snapshot
+            .iter()
+            .map(|row| {
+                (
+                    candidate_id(&publication_chunk(row)),
+                    publication_provenance(row),
+                )
+            })
+            .collect();
 
         let query = self
             .embedder
@@ -104,8 +123,52 @@ impl RetrievalSource for DbRetrieval<'_> {
         let mut candidates = retrieval_pg::fuse(&[vector_hits, keyword_hits], self.candidate_k);
         candidates = dedup::dedup(candidates);
         candidates = expand::expand(&candidates, &chunks, self.expand_limit);
+        for candidate in &mut candidates {
+            if let Some(found) = provenance.get(&candidate.id) {
+                candidate.provenance = found.clone();
+            }
+        }
+        candidates.retain(|candidate| candidate.provenance.chunk_id.is_some());
         candidates.truncate(self.final_k);
         Ok(candidates)
+    }
+}
+
+/// Builds the expansion chunk for one approved snapshot row.
+fn publication_chunk(row: &PublicationRow) -> Chunk {
+    Chunk {
+        source: row.source.clone(),
+        section: row.section.clone(),
+        language: row.language.clone(),
+        chunk_index: row.chunk_index.max(0) as u32,
+        content: row.content.clone(),
+        page: row.page.and_then(|page| u32::try_from(page).ok()),
+    }
+}
+
+/// Builds the authoritative provenance for one approved snapshot row.
+fn publication_provenance(row: &PublicationRow) -> ChunkProvenance {
+    ChunkProvenance {
+        chunk_id: Some(row.chunk_id),
+        document_version_id: Some(row.document_version_id),
+        corpus: row.corpus.clone(),
+        content_hash: row.content_hash.clone(),
+    }
+}
+
+/// Revalidates the answer's evidence against the live approved view.
+struct StorePublicationGuard<'a> {
+    store: &'a PgStore,
+    corpus: &'a str,
+}
+
+impl PublicationGuard for StorePublicationGuard<'_> {
+    fn revalidate(&self, passages: &[ContextPassage]) -> Result<bool, PublicationError> {
+        let identities: Vec<&PassageIdentity> =
+            passages.iter().map(|passage| &passage.identity).collect();
+        self.store
+            .revalidate_publication(self.corpus, &identities)
+            .map_err(|error| PublicationError(error.to_string()))
     }
 }
 
@@ -187,9 +250,14 @@ impl QueryService {
             expand_limit: self.expand_limit,
             language: &self.language,
         };
+        let guard = StorePublicationGuard {
+            store: &self.store,
+            corpus: &self.corpus,
+        };
         let service = AnswerService::new(&retrieval, &self.generator, self.budget)
             .with_citation_validation(self.citation_validation)
-            .with_answerability_gate(self.answerability_gate);
+            .with_answerability_gate(self.answerability_gate)
+            .with_publication_guard(&guard);
         let retrieval_query = if self.query_rewrite {
             crate::answer::query_rewrite::rewrite(&self.generator, question)
         } else {

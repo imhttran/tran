@@ -29,6 +29,7 @@ mod tests {
             section: "Intro".to_string(),
             page: None,
             content: content.to_string(),
+            identity: crate::answer::context_budget::PassageIdentity::default(),
         }
     }
 

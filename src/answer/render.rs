@@ -23,6 +23,7 @@ mod tests {
             section: section.to_string(),
             page,
             content: "body".to_string(),
+            identity: crate::answer::context_budget::PassageIdentity::default(),
         }
     }
 

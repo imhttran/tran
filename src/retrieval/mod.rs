@@ -16,6 +16,23 @@ pub mod vector;
 use crate::document::{Chunk, RetrievedDocument};
 use serde::{Deserialize, Serialize};
 
+/// Authoritative provenance for one retrieved chunk.
+///
+/// The retrieval layer observes this from `approved_documents` at query time.
+/// It is what a citation must resolve to; a human-readable filename alone is not
+/// sufficient source identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkProvenance {
+    /// `documents.id` of the approved chunk.
+    pub chunk_id: Option<i64>,
+    /// `document_version.version_id` of the approved version.
+    pub document_version_id: Option<i64>,
+    /// Corpus the chunk was published in.
+    pub corpus: String,
+    /// Content fingerprint bound to the approval.
+    pub content_hash: String,
+}
+
 /// A retrieval candidate shared by every search stage.
 ///
 /// `id` is a stable identity (`source::section::chunk_index`) used by
@@ -30,17 +47,27 @@ pub struct Candidate {
     pub document: RetrievedDocument,
     /// Path-local score (cosine similarity, FTS rank, fused score, ...).
     pub score: f64,
+    /// Authoritative chunk and version identity, when the candidate came from
+    /// the approved database snapshot.
+    #[serde(default)]
+    pub provenance: ChunkProvenance,
 }
 
 impl Candidate {
     /// Builds a candidate from a chunk and a score, deriving `id` from
     /// provenance so equality across search paths holds.
     pub fn new(chunk: Chunk, score: f64) -> Self {
+        Self::with_provenance(chunk, score, ChunkProvenance::default())
+    }
+
+    /// Builds a candidate that carries the approved database identity.
+    pub fn with_provenance(chunk: Chunk, score: f64, provenance: ChunkProvenance) -> Self {
         let id = candidate_id(&chunk);
         Self {
             id,
             document: RetrievedDocument::new(chunk, score),
             score,
+            provenance,
         }
     }
 }
