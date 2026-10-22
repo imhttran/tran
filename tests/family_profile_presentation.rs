@@ -202,7 +202,10 @@ impl TestDb {
     /// Runs a closure with the value guard disabled, then always re-enables it.
     ///
     /// Only used to simulate rows a legacy or out-of-band writer could leave
-    /// behind; foreign keys and check constraints still apply.
+    /// behind; foreign keys and check constraints still apply. Disabling a user
+    /// trigger requires table ownership, which the project's disposable
+    /// databases grant to the role that applies migrations (the same role the
+    /// tests connect as).
     fn without_value_guard<F>(&mut self, writes: F) -> Result<(), postgres::Error>
     where
         F: FnOnce(&mut Client) -> Result<(), postgres::Error>,

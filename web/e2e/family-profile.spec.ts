@@ -197,6 +197,8 @@ test.describe.serial("family profile presentation", () => {
     expect(before.status, JSON.stringify(before.body)).toBe(200);
     expect(JSON.stringify(before.body)).toContain(FAMILY_MARKER);
 
+    // "e2e-family-member" is the account subject; its linked genealogy person
+    // is deliberately a different key under the synthetic branch prefix.
     const { linkId, personKey } = await linkIdFor(request, "e2e-family-member");
     expect(personKey).toBe("e2e-branch-family-member");
 
