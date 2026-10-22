@@ -225,7 +225,9 @@ SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
    AND r.status = 'approved';
 
 -- A draft for the same person that is never approved. It has no approved
--- value row, so the family profile page must never render it.
+-- value row, so the family profile page must never render it. The guard is by
+-- field, not by status: the fixture never approves this field, and the guard
+-- keeps a rerun from creating a second revision for it.
 INSERT INTO onboarding_profile_revision
     (person_id, field_key, prior_value_text, prior_approved_revision_number,
      new_value_text, changed_by, revision_number, status, visibility)

@@ -292,7 +292,6 @@ function messageOf(error: unknown): string {
     if (error.status === 0) {
       return "The family profile could not be reached. Check your connection and try again.";
     }
-    if (error.body?.message) return error.body.message;
   }
   return error instanceof Error
     ? error.message

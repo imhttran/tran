@@ -228,13 +228,19 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
 # The privacy assertion is only meaningful if the private value really exists.
 # psql does not interpolate variables in `-c`, so the query comes from stdin.
-seeded_private=$(psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-v marker="$E2E_PRIVATE_PROFILE_MARKER" -tA <<'SQL'
-SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'marker';
+# All three markers must exist, or the privacy and draft assertions would be
+# testing nothing.
+seeded_markers=$(psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
+	-v family_marker="$E2E_FAMILY_PROFILE_MARKER" \
+	-v draft_marker="$E2E_FAMILY_DRAFT_MARKER" -tA <<'SQL'
+SELECT (SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'marker')
+     + (SELECT count(*) FROM onboarding_profile_value WHERE value_text = :'family_marker')
+     + (SELECT count(*) FROM onboarding_profile_revision WHERE new_value_text = :'draft_marker');
 SQL
 )
-if [ "$seeded_private" != "1" ]; then
-	echo "web-e2e: the private profile fixture was not seeded (found ${seeded_private:-none}). An approved revision is immutable, so a changed marker needs fresh disposable databases." >&2
+if [ "$seeded_markers" != "3" ]; then
+	echo "web-e2e: the profile fixtures were not all seeded (found ${seeded_markers:-none}, expected 3). An approved revision is immutable, so changed markers need fresh disposable databases." >&2
 	exit 1
 fi
 

@@ -320,6 +320,7 @@ function FamilyTree() {
                     <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
                     <EvidenceBadge status={selectedPerson.evidence_status} />
                     <p>
+                      {/* The tree payload's record_id is the person key. */}
                       <Link
                         className="family-text-button"
                         href={`/family/${encodeURIComponent(selectedPerson.record_id)}`}

@@ -6,6 +6,14 @@ This matrix is the acceptance plan for the publication boundary defined in
 The test names and files cited below were checked against this branch's tree;
 run the commands in the next section to reproduce them.
 
+**Recorded runs.** USR-006-B executed the browser suites twice against one pair
+of disposable databases: the full suite passed once (118/118), and the
+deterministic set — every spec except the stochastic `rag.spec.ts` — passed
+twice (113/113 each). The full suite's second attempt failed only in
+`rag.spec.ts`, which is the unresolved PR #54 P1 recorded under row 13. Rows
+marked PASS for browser behaviour are backed by that executed run, not by
+inspection.
+
 Status meanings:
 
 - **PASS** — an existing, executed test proves the scenario for the content

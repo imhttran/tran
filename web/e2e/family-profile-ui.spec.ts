@@ -214,6 +214,19 @@ test.describe.serial("family profile page", () => {
     page,
     request,
   }) => {
+    // The same linked account works before deactivation, so the denial below is
+    // caused by deactivation and not by a missing membership.
+    const before = await api(
+      request,
+      DEACTIVATED,
+      "GET",
+      `/api/family/persons/${SUBJECT}/profile`,
+    );
+    expect(before.status, JSON.stringify(before.body)).toBe(200);
+    // The fixture person may have published values; the point is only that the
+    // same request succeeds before deactivation.
+    expect(["published", "empty"]).toContain(before.body.state);
+
     const deactivated = await api(
       request,
       ADMIN,
@@ -221,6 +234,14 @@ test.describe.serial("family profile page", () => {
       `/api/admin/users/e2e-deactivated/deactivate?issuer=${encodeURIComponent(ISSUER)}`,
     );
     expect(deactivated.status, JSON.stringify(deactivated.body)).toBe(200);
+
+    const after = await api(
+      request,
+      DEACTIVATED,
+      "GET",
+      `/api/family/persons/${SUBJECT}/profile`,
+    );
+    expect([401, 403]).toContain(after.status);
 
     await useToken(page, DEACTIVATED);
     await page.goto(`/family/${SUBJECT}`);
