@@ -3,9 +3,12 @@
 `GET /api/family/persons/{person_key}/profile` returns another member's
 **currently approved, family-visible** profile values.
 
-It is the first implementation of the presentation half of
+The endpoint (USR-006-A) and the page that renders it (USR-006-B) are the
+implemented part of the presentation half of
 [`docs/architecture/FAMILY-PUBLICATION-CONTRACT.md`](../architecture/FAMILY-PUBLICATION-CONTRACT.md).
-It adds no storage, no approval workflow, and no indexing.
+They add no storage, no approval workflow, and no indexing. Media presentation,
+standalone story collections, privacy mutations, and RAG indexing remain
+unimplemented.
 
 ## Authorization
 
@@ -57,6 +60,12 @@ inputs are the verified identity, the active account, and the reviewed link.
   leaves a previous person's biography on screen.
 - The read is `cache: no-store`; nothing is written to browser storage, and no
   media is requested.
+- The route keys the view by person key, so a change of `personKey` on the same
+  route remounts it with an empty state rather than reusing the previous
+  person's data; the in-component reset remains as defense in depth.
+- Failure text is fixed and user-facing. An unexpected status (for example a
+  500) is never rendered from the response body: a proxy or server message could
+  carry private data. Authorization outcomes are mapped before that point.
 
 ## Response
 

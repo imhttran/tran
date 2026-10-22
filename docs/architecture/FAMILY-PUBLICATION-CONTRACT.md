@@ -360,9 +360,10 @@ requires an explicit change to this document and its tests.
 
 ## 11. Implementation status
 
-This contract describes the whole boundary. Only one part of it is implemented.
+This contract describes the whole boundary. Two related pieces of it are
+implemented; nothing that publishes or indexes content is.
 
-### Implemented (USR-006-A)
+### Implemented (USR-006-A, USR-006-B)
 
 - **Presentation of profile values**, read-only:
   `GET /api/family/persons/{person_key}/profile` returns approved,
@@ -371,7 +372,14 @@ This contract describes the whole boundary. Only one part of it is implemented.
   the read re-establishes the §3.1 provenance binding rather than trusting it,
   so a value whose approved revision is missing, unapproved, or inconsistent is
   excluded.
-- The endpoint contract and error mapping are in
+- **The family profile page**, `/family/{person_key}`. It renders that response
+  for one person: approved display/preferred name, biography, personal story,
+  and family memories, with provenance. It applies a narrower field allow-list
+  than the API (contact and location fields are omitted until their policy is
+  settled), keys the view by person so a same-route change cannot retain another
+  person's data, and renders fixed text for every failure instead of
+  server-supplied messages.
+- Both are documented in
   [guides/family-profile-presentation.md](../guides/family-profile-presentation.md).
 
 ### Not implemented
@@ -382,8 +390,13 @@ This contract describes the whole boundary. Only one part of it is implemented.
   `approved_documents` remains the only retrieval source; decision **D**
   (indexing allow-list) is unresolved.
 - **No indexing of profile values, biographies, stories, or media.**
-- **No presentation of media, genealogy facts, or story collections**, and no
-  family profile UI page. Only text profile values are presented.
+- **No media presentation.** Photographs and personal documents remain
+  owner/reviewer-only; there is no family-facing media surface.
+- **No standalone story collections.** There is no browse-by-theme, timeline, or
+  multi-person narrative view; only one person's approved fields are shown at a
+  time.
+- **No genealogy publication.** The verified family tree is unchanged and is not
+  part of this contract's presentation surface.
 - **No privacy mutation:** decision **A** (immediate owner restriction) is not
   implemented, and the BR-004 and Head of Family policies in §10 are untouched.
 - **No change to ingestion, storage, workers, or retrieval.** Those remain

@@ -20,8 +20,8 @@ import type { APIRequestContext, Page } from "@playwright/test";
 //  6  unlinked user denied                           -> "denied"
 //  7  deactivated account cannot view                -> "deactivated"
 //  8  unknown person not found                       -> "not found"
-//  9  network/server errors leave no stale content   -> "errors"
-// 10  switching people shows only the new person     -> "person switch"
+//  9  network/server errors leave no stale content   -> "errors", "unexpected error"
+// 10  switching people shows only the new person     -> "person switch", "transition"
 // 11  no media or contact data exposed               -> "privacy"
 // 12  mobile layout and keyboard navigation          -> "mobile and keyboard"
 
@@ -323,6 +323,102 @@ test.describe.serial("family profile page", () => {
     const body = await page.locator("body").innerText();
     expect(body).not.toContain(FAMILY_MARKER);
     expect(body).not.toContain(SUBJECT_NAME);
+  });
+
+
+  test("an unexpected server error renders neither its body nor stale content", async ({
+    page,
+  }) => {
+    await useToken(page, REVIEWER);
+    await page.goto(`/family/${SUBJECT}`);
+    await expect(page.getByTestId("family-profile-field-biography")).toContainText(
+      FAMILY_MARKER,
+    );
+
+    // A 500 carrying a distinctive private marker in its body. The page must
+    // show fixed text and neither the marker nor the previous profile.
+    await page.route("**/api/family/persons/**", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: "internal_error",
+          message: `unexpected failure ${PRIVATE_MARKER}`,
+        }),
+      }),
+    );
+
+    // Same-route reload is a fresh mount; the client-side transition below is
+    // the interesting one.
+    await page.goto(`/family/${EMPTY_PERSON}`);
+    await expect(page.getByTestId("family-profile-unavailable")).toBeVisible();
+    let body = await page.locator("body").innerText();
+    expect(body).not.toContain(PRIVATE_MARKER);
+    expect(body).not.toContain(FAMILY_MARKER);
+    expect(body).toContain("could not be loaded");
+
+    // Client-side transition into an error must also replace the old profile.
+    await page.unroute("**/api/family/persons/**");
+    await page.goto(`/family/${SUBJECT}`);
+    await expect(page.getByTestId("family-profile-field-biography")).toContainText(
+      FAMILY_MARKER,
+    );
+    await page.route("**/api/family/persons/**", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: "internal_error",
+          message: `unexpected failure ${PRIVATE_MARKER}`,
+        }),
+      }),
+    );
+    await page.getByTestId("family-profile-back").click();
+    await page
+      .getByTestId("genealogy-records")
+      .getByRole("button", { name: EMPTY_NAME })
+      .click();
+    await page.getByTestId("open-family-profile").click();
+    await expect(page.getByTestId("family-profile-unavailable")).toBeVisible();
+    body = await page.locator("body").innerText();
+    expect(body).not.toContain(PRIVATE_MARKER);
+    expect(body).not.toContain(FAMILY_MARKER);
+    await page.unroute("**/api/family/persons/**");
+  });
+
+  test("a person change clears the previous profile while the new one loads", async ({
+    page,
+  }) => {
+    await useToken(page, REVIEWER);
+    await page.goto(`/family/${SUBJECT}`);
+    await expect(page.getByTestId("family-profile-field-biography")).toContainText(
+      FAMILY_MARKER,
+    );
+
+    // Hold the next profile response so the transition can be observed. The
+    // previous person's content must be gone before the new data arrives.
+    await page.route("**/api/family/persons/**", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+    });
+    await page.getByTestId("family-profile-back").click();
+    await page
+      .getByTestId("genealogy-records")
+      .getByRole("button", { name: EMPTY_NAME })
+      .click();
+    await page.getByTestId("open-family-profile").click();
+
+    await expect(page.getByTestId("family-profile-loading")).toBeVisible();
+    const during = await page.locator("body").innerText();
+    expect(during).not.toContain(FAMILY_MARKER);
+    expect(during).not.toContain(SUBJECT_NAME);
+
+    await expect(page.getByTestId("family-profile-empty")).toBeVisible();
+    const after = await page.locator("body").innerText();
+    expect(after).not.toContain(FAMILY_MARKER);
+    await page.unroute("**/api/family/persons/**");
   });
 
   test("the page is usable on mobile and by keyboard", async ({ page }) => {
