@@ -23,6 +23,7 @@ pub mod invitation;
 pub mod link;
 pub mod media;
 pub mod profile;
+pub mod profile_restriction;
 pub mod profile_revisions;
 pub mod reservation;
 pub mod review_queue;
@@ -65,6 +66,7 @@ pub use media::{
     DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
+pub use profile_restriction::{restrict_own_field, RestrictionError, RestrictionOutcome};
 pub use profile_revisions::{
     cancel_owned_draft, create_draft, create_owned_draft, is_allowed_profile_field, is_media_field,
     is_terminal, is_text_profile_field, list_open_revisions, list_revision_history,
