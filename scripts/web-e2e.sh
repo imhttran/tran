@@ -103,6 +103,10 @@ export E2E_PRIVATE_PROFILE_MARKER
 # profile suite proves it is returned while the private value is not.
 E2E_FAMILY_PROFILE_MARKER="ZX-FAMILY-PROFILE-BIOGRAPHY-7c14"
 export E2E_FAMILY_PROFILE_MARKER
+# An unsubmitted draft for the same person. The family profile page must never
+# render it.
+E2E_FAMILY_DRAFT_MARKER="ZX-FAMILY-PROFILE-DRAFT-3a02"
+export E2E_FAMILY_DRAFT_MARKER
 # A dedicated linked member the family profile suite revokes and deactivates.
 E2E_FAMILY_MEMBER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-family-member --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_FAMILY_MEMBER_TOKEN
@@ -220,6 +224,7 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v family_fingerprint="$E2E_FAMILY_MEMBER_FINGERPRINT" \
 	-v marker="$E2E_PRIVATE_PROFILE_MARKER" \
 	-v family_marker="$E2E_FAMILY_PROFILE_MARKER" \
+	-v draft_marker="$E2E_FAMILY_DRAFT_MARKER" \
 	-f scripts/seed-branch-review-e2e.sql >/dev/null
 # The privacy assertion is only meaningful if the private value really exists.
 # psql does not interpolate variables in `-c`, so the query comes from stdin.
