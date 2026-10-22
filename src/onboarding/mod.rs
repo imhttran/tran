@@ -18,6 +18,7 @@ pub mod branch_review;
 pub mod candidate;
 pub mod delivery;
 pub mod dry_run;
+pub mod family_profile;
 pub mod invitation;
 pub mod link;
 pub mod media;
@@ -49,6 +50,9 @@ pub use delivery::{
 pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
     Page, Selector, REVIEW_NEEDED_EMPTY,
+};
+pub use family_profile::{
+    read_family_profile, FamilyProfile, FamilyProfileError, FamilyProfileField,
 };
 pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
 pub use link::{

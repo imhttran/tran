@@ -31,6 +31,11 @@ make web-check
 Database-backed tests take `DATABASE_URL` and `GENEALOGY_DATABASE_URL` and use
 disposable databases only. No test in this matrix touches real family data.
 
+Browser checks in `web/e2e/*` skip when the harness variables are absent; they
+are executed through `scripts/web-e2e.sh`, which starts the synthetic OIDC
+issuer and seeds the disposable genealogy database. A skipped browser file is
+not evidence for a PASS row — only an executed `make web-e2e` run is.
+
 ## Matrix
 
 | # | Scenario | Status | Evidence or specification |
@@ -39,7 +44,7 @@ disposable databases only. No test in this matrix touches real family data.
 | 2 | Pending revisions excluded | PASS | `tests/onboarding_profile_revisions.rs::draft_and_submission_keep_the_approved_value_until_independent_approval`; `pending_content_never_reaches_family_or_rag` |
 | 3 | Rejected revisions excluded | PASS | `tests/onboarding_profile_revisions.rs::rejection_and_needs_changes_leave_the_approved_value_unchanged`; `pending_content_never_reaches_family_or_rag` |
 | 4 | Approved owner-private values excluded | PASS | `tests/onboarding_profile_revisions.rs::approved_values_are_filtered_by_audience`, `::owner_private_and_unapproved_values_stay_out_of_family_audience` |
-| 5 | Approved family-visible values eligible for presentation | PARTIAL | Data layer PASS: `::approved_values_are_filtered_by_audience`. No family-facing HTTP route exists yet — specified as test F1 below |
+| 5 | Approved family-visible values eligible for presentation | PASS | `tests/family_profile_presentation.rs` (service) and `web/e2e/family-profile.spec.ts` (HTTP through the proxy) exercise `GET /api/family/persons/{person_key}/profile`; see [family-profile-presentation.md](family-profile-presentation.md) |
 | 6 | Private media excluded | PASS | `tests/onboarding_profile_media.rs::photo_is_private_until_approved_and_current`, `::document_is_private_until_approved_and_current`, `::cross_account_and_revoked_link_cannot_access_media` |
 | 7 | Disputed genealogy facts excluded | PASS | `tests/branch_review.rs::a_disputed_fact_is_not_verified_by_submission_alone`; `src/genealogy/tree.rs` only marks verified facts as verified and returns citations only for verified edges. Publication of genealogy facts is out of scope (contract §4) |
 | 8 | Superseded versions excluded | PASS | `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (approved version binding); `tests/document_processing.rs::processing_is_durable_idempotent_and_approved_only`; profile side: `tests/onboarding_profile_revisions.rs::approved_revision_number_is_part_of_the_conflict_check`; media side: `onboarding_profile_media.rs::replacement_owner_sees_only_current_approved_or_own_media` |
@@ -49,7 +54,7 @@ disposable databases only. No test in this matrix touches real family data.
 | 12 | Stale indexing cannot republish revoked content | PASS | `tests/document_processing.rs::processing_is_durable_idempotent_and_approved_only` — an approval withdrawn after queueing makes the job fail and writes no chunks |
 | 13 | Citations resolve to the actual approved version | PARTIAL | Retrieval reads only `approved_documents`, so citations necessarily come from approved chunks. No test asserts the negative case explicitly — specified as test F3 below |
 | 14 | Cross-branch access cannot reveal restricted information | PARTIAL | Person-scope PASS: `tests/branch_review.rs::proposals_are_scoped_to_the_person_branch_not_the_reviewer`, `web/e2e/branch-review-security.spec.ts`. Cross-branch relationship escalation is decision B and is not implemented |
-| 15 | A user without family access cannot retrieve family content | PARTIAL | Anonymous requests are refused: `web/e2e/proxy-rbac.spec.ts` (no token → 401), `web/e2e/family-tree.spec.ts` (anonymous graph request denied by Rust API). There is no per-family membership model: any authenticated viewer reads the family archive. Specified as test F4 below |
+| 15 | A user without family access cannot retrieve family content | PARTIAL | Profile presentation now requires an active reviewed account-person link: unlinked accounts get 403 and deactivated accounts are refused (`web/e2e/family-profile.spec.ts`). The shared family tree remains readable by any authenticated viewer, and there is still no per-family membership model — specified as test F4 below |
 | 16 | RAG responses cannot contain unpublished or revoked versions | PASS for existing content; NOT IMPLEMENTED for profiles/stories | Documents: `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (pending and legacy content absent from retrieval; approved present; removed absent) and `document_processing.rs` (stale job writes nothing). Profiles: `tests/onboarding_profile_submission.rs::pending_content_never_reaches_family_or_rag` (profile content creates no retrieval rows). There is no profile/story publication path to test yet — specified as test F5 below |
 
 ## Existing coverage summary
@@ -61,6 +66,7 @@ disposable databases only. No test in this matrix touches real family data.
 | Genealogy fact review and branch scope | `tests/branch_review.rs`, `tests/genealogy_schema.rs` |
 | Document lifecycle and approved-only retrieval | `tests/document_lifecycle.rs` |
 | Processing and stale-job refusal | `tests/document_processing.rs` |
+| Family profile presentation | `tests/family_profile_presentation.rs`, `web/e2e/family-profile.spec.ts` |
 | HTTP boundary | `acceptance/api_contract/tests/api_contract.rs`, `web/e2e/*` |
 
 ## Specifications for later slices
@@ -68,13 +74,17 @@ disposable databases only. No test in this matrix touches real family data.
 Each specification names the slice that should implement it. None of these may
 be marked PASS until executed.
 
-### F1 — Family-visible profile presentation (slice: presentation API)
+### F1 — Family-visible profile presentation — IMPLEMENTED (USR-006-A)
 
 *Given* a person with one approved `family` value and one approved
 `owner_private` value, *when* an authorized family member reads the person's
 profile, *then* the response contains the family value and the owner-private
 field is absent from the body, the headers, and any error text. *And* the same
 request as the owner returns both.
+
+Implemented by `GET /api/family/persons/{person_key}/profile` and proven by
+`tests/family_profile_presentation.rs` plus `web/e2e/family-profile.spec.ts`.
+The owner keeps both values through the unchanged `GET /api/profile`.
 
 ### F2 — Profile visibility downgrade (slice: presentation API, after decision A)
 

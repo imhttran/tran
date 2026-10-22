@@ -45,9 +45,10 @@ use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient};
 use crate::onboarding::{
-    self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, LinkDecision, LinkError,
-    MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage, OwnerProfile, PreviewSummary,
-    ProfileRevision, ProfileVisibility, ReviewDecision, RevisionError, RevisionStatus,
+    self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, FamilyProfileError,
+    LinkDecision, LinkError, MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage,
+    OwnerProfile, PreviewSummary, ProfileRevision, ProfileVisibility, ReviewDecision,
+    RevisionError, RevisionStatus,
 };
 use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
@@ -250,6 +251,10 @@ impl AppState {
             .route(
                 "/api/profile/media/{id}",
                 get(profile_media).delete(withdraw_profile_media),
+            )
+            .route(
+                "/api/family/persons/{person_key}/profile",
+                get(family_profile),
             )
             .route("/api/branch-review/grants/me", get(branch_review_grants))
             .route(
@@ -2242,6 +2247,93 @@ fn parse_review_decision(value: &str) -> Result<ReviewDecision, Response> {
             "decision must be approve, reject, or needs_changes",
         )),
     }
+}
+
+/// Reads another member's approved, family-visible profile.
+///
+/// The Rust API is the authorization authority: the caller's identity, active
+/// account, and reviewed person link are re-established here, and the service
+/// re-checks membership in the same transaction as the read. No client-supplied
+/// identity, role, visibility, or authorization status is trusted.
+#[allow(clippy::result_large_err)]
+async fn family_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::FamilyProfileRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_family_profile(&mut genealogy, &account, &person_key)
+            .map_err(family_profile_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(profile)) => {
+            let state_label = if profile.fields.is_empty() {
+                "empty"
+            } else {
+                "published"
+            };
+            Json(serde_json::json!({
+                "ok": true,
+                "state": state_label,
+                "person": {
+                    "person_key": profile.person_key,
+                    "display_name": profile.display_name,
+                },
+                "fields": profile.fields.iter().map(|field| serde_json::json!({
+                    "field_key": field.field_key,
+                    "value": field.value,
+                    "visibility": field.visibility,
+                    "approved_revision_number": field.approved_revision_number,
+                    "updated_at": field.updated_at,
+                })).collect::<Vec<_>>(),
+            }))
+            .into_response()
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: family profile task failed: {err}");
+            family_profile_unavailable()
+        }
+    }
+}
+
+/// Maps a family profile failure without revealing restricted content.
+///
+/// An unlinked caller is refused before the person is looked up, so a 403 and a
+/// 404 cannot be combined to probe which person keys exist.
+fn family_profile_error(err: FamilyProfileError) -> Response {
+    eprintln!("api: family profile request refused: {err}");
+    match err {
+        FamilyProfileError::NotFamilyMember => error(
+            StatusCode::FORBIDDEN,
+            "family_profile_forbidden",
+            "the authenticated account may not read this family profile",
+        ),
+        FamilyProfileError::UnknownPerson => error(
+            StatusCode::NOT_FOUND,
+            "family_profile_not_found",
+            "no such family profile",
+        ),
+        FamilyProfileError::Database(_) => family_profile_unavailable(),
+    }
+}
+
+fn family_profile_unavailable() -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "family_profile_unavailable",
+        "the family profile store is unavailable",
+    )
 }
 
 fn revision_error(err: RevisionError) -> Response {

@@ -6,12 +6,15 @@
 -- dates, addresses, or source material.
 --
 -- psql variables: reviewer_account_id, reviewer_fingerprint,
--- off_account_id, off_fingerprint, marker.
+-- off_account_id, off_fingerprint, family_account_id, family_fingerprint,
+-- marker, family_marker.
 --
 -- `marker` is a distinctive synthetic value written as an approved,
--- owner-private profile value for the reviewed person. The browser acceptance
--- suite proves that exact value never reaches the branch review API or page,
--- so the assertion is about a real value rather than a field name.
+-- owner-private profile value for the reviewed person, and `family_marker` is
+-- an approved family-visible biography for the same person. The browser
+-- acceptance suites prove the private value never reaches the branch review API
+-- or page, and that the family profile endpoint returns the family value while
+-- still withholding the private one.
 
 BEGIN;
 
@@ -46,7 +49,8 @@ INSERT INTO person (person_key, display_name) VALUES
     ('e2e-branch-subject', 'Synthetic Branch Subject'),
     ('e2e-branch-other', 'Synthetic Second Branch Subject'),
     ('e2e-branch-owner', 'Synthetic Linked Reviewer Person'),
-    ('e2e-branch-off', 'Synthetic Offboarding Reviewer Person');
+    ('e2e-branch-off', 'Synthetic Offboarding Reviewer Person'),
+    ('e2e-family-member', 'Synthetic Family Profile Member');
 
 WITH branch_claims (person_key, branch_key) AS (
     VALUES ('e2e-branch-subject', 'branch-1'),
@@ -122,6 +126,44 @@ SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
    AND r.field_key = 'current_location'
    AND r.status = 'approved';
 
+-- One approved family-visible biography for the same person, so the family
+-- profile endpoint has exactly one value to publish beside the private one.
+INSERT INTO onboarding_profile_revision
+    (person_id, field_key, prior_value_text, prior_approved_revision_number,
+     new_value_text, changed_by, revision_number, status, visibility)
+SELECT person_id, 'biography', NULL, 0, :'family_marker', 'e2e-seed', 1,
+       'draft', 'family'
+  FROM person
+ WHERE person_key = 'e2e-branch-subject';
+
+UPDATE onboarding_profile_revision r
+   SET status = 'pending_review', submitted_at = now()
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'biography'
+   AND r.status = 'draft';
+
+UPDATE onboarding_profile_revision r
+   SET status = 'approved', reviewed_at = now(),
+       reviewed_by = 'e2e-seed-reviewer', review_note = 'synthetic fixture'
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'biography'
+   AND r.status = 'pending_review';
+
+INSERT INTO onboarding_profile_value
+    (person_id, field_key, value_text, visibility, updated_by,
+     approved_revision_number, approved_revision_id)
+SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
+       r.revision_number, r.revision_id
+  FROM onboarding_profile_revision r
+  JOIN person p ON p.person_id = r.person_id
+ WHERE p.person_key = 'e2e-branch-subject'
+   AND r.field_key = 'biography'
+   AND r.status = 'approved';
+
 INSERT INTO onboarding_person_account_link
     (person_id, account_id, linked_by, identity_fingerprint)
 SELECT p.person_id, :reviewer_account_id, 'e2e-seed', :'reviewer_fingerprint'
@@ -134,5 +176,13 @@ INSERT INTO onboarding_person_account_link
 SELECT p.person_id, :off_account_id, 'e2e-seed', :'off_fingerprint'
   FROM person p
  WHERE p.person_key = 'e2e-branch-off';
+
+-- Dedicated linked member for the family profile revocation/deactivation
+-- scenario, so the shared reviewer's link is never touched.
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :family_account_id, 'e2e-seed', :'family_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-family-member';
 
 COMMIT;
