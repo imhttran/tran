@@ -7,7 +7,8 @@
 --
 -- psql variables: reviewer_account_id, reviewer_fingerprint,
 -- off_account_id, off_fingerprint, family_account_id, family_fingerprint,
--- marker, family_marker, draft_marker.
+-- restrict_account_id, restrict_fingerprint,
+-- marker, family_marker, draft_marker, restrict_marker.
 --
 -- `marker` is a distinctive synthetic value written as an approved,
 -- owner-private profile value for the reviewed person, `family_marker` is an
@@ -73,7 +74,8 @@ INSERT INTO person (person_key, display_name) VALUES
     ('e2e-branch-other', 'Synthetic Second Branch Subject'),
     ('e2e-branch-owner', 'Synthetic Linked Reviewer Person'),
     ('e2e-branch-off', 'Synthetic Offboarding Reviewer Person'),
-    ('e2e-branch-family-member', 'Synthetic Family Profile Member')
+    ('e2e-branch-family-member', 'Synthetic Family Profile Member'),
+    ('e2e-branch-restrictable', 'Synthetic Restrictable Member')
 ON CONFLICT (person_key) DO UPDATE SET display_name = EXCLUDED.display_name;
 
 -- Verified branch claims for the people the branch review suite reviews. The
@@ -255,10 +257,87 @@ SELECT p.person_id, :off_account_id, 'e2e-seed', :'off_fingerprint'
 
 -- Dedicated linked member for the family profile revocation/deactivation
 -- scenario, so the shared reviewer's link is never touched.
+-- Fixture reset for the owner-privacy scenario. A previous interrupted run
+-- may have left the dedicated field restricted; lift it the way the product
+-- records a lift, so the next run starts from family visibility again. The
+-- product path itself (a new approved family revision) is exercised by the
+-- browser suite, not by this reset.
+WITH active AS (
+    SELECT r.restriction_id, r.generation, r.person_id, r.field_key
+      FROM onboarding_profile_field_restriction r
+      JOIN person p ON p.person_id = r.person_id
+     WHERE p.person_key = 'e2e-branch-restrictable'
+       AND r.field_key = 'biography'
+       AND r.lifted_at IS NULL
+), lifted AS (
+    UPDATE onboarding_profile_field_restriction r
+       SET lifted_at = now(), lifted_by = 'e2e-seed',
+           lifted_generation = a.generation
+      FROM active a
+     WHERE r.restriction_id = a.restriction_id
+    RETURNING r.restriction_id, r.person_id, r.field_key, r.generation
+)
+INSERT INTO onboarding_profile_field_restriction_event
+    (restriction_id, person_id, field_key, generation, event, actor,
+     prior_visibility, new_visibility)
+SELECT restriction_id, person_id, field_key, generation, 'lifted',
+       'e2e-seed', 'owner_private', 'family'
+  FROM lifted;
+
+-- One approved family-visible biography for the restrictable member, so the
+-- owner can make it private and the family read can be verified.
+INSERT INTO onboarding_profile_revision
+    (person_id, field_key, prior_value_text, prior_approved_revision_number,
+     new_value_text, changed_by, revision_number, status, visibility)
+SELECT p.person_id, 'biography', NULL, 0, :'restrict_marker', 'e2e-seed', 1,
+       'draft', 'family'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-restrictable'
+   AND NOT EXISTS (
+       SELECT 1 FROM onboarding_profile_revision r
+        WHERE r.person_id = p.person_id AND r.field_key = 'biography'
+   );
+
+UPDATE onboarding_profile_revision r
+   SET status = 'pending_review', submitted_at = now()
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-restrictable'
+   AND r.field_key = 'biography'
+   AND r.status = 'draft';
+
+UPDATE onboarding_profile_revision r
+   SET status = 'approved', reviewed_at = now(),
+       reviewed_by = 'e2e-seed-reviewer', review_note = 'synthetic fixture'
+  FROM person p
+ WHERE p.person_id = r.person_id
+   AND p.person_key = 'e2e-branch-restrictable'
+   AND r.field_key = 'biography'
+   AND r.status = 'pending_review';
+
+INSERT INTO onboarding_profile_value
+    (person_id, field_key, value_text, visibility, updated_by,
+     approved_revision_number, approved_revision_id)
+SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
+       r.revision_number, r.revision_id
+  FROM onboarding_profile_revision r
+  JOIN person p ON p.person_id = r.person_id
+ WHERE p.person_key = 'e2e-branch-restrictable'
+   AND r.field_key = 'biography'
+   AND r.status = 'approved'
+ON CONFLICT (person_id, field_key) DO NOTHING;
+
 INSERT INTO onboarding_person_account_link
     (person_id, account_id, linked_by, identity_fingerprint)
 SELECT p.person_id, :family_account_id, 'e2e-seed', :'family_fingerprint'
   FROM person p
  WHERE p.person_key = 'e2e-branch-family-member';
+
+-- Dedicated owner for the privacy-restriction scenario.
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :restrict_account_id, 'e2e-seed', :'restrict_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-restrictable';
 
 COMMIT;

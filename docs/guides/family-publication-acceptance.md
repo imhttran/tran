@@ -57,7 +57,7 @@ not evidence for a PASS row — only an executed `make web-e2e` run is.
 | 7 | Disputed genealogy facts excluded | PASS | `tests/branch_review.rs::a_disputed_fact_is_not_verified_by_submission_alone`; `src/genealogy/tree.rs` only marks verified facts as verified and returns citations only for verified edges. Publication of genealogy facts is out of scope (contract §4) |
 | 8 | Superseded versions excluded | PASS | Documents: `tests/rag_publication.rs::superseded_cross_corpus_and_revalidation_are_exact` (superseded and removed versions do not resolve, cross-corpus exactness), `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only`, `tests/document_processing.rs::processing_is_durable_idempotent_and_approved_only`. Profile: `tests/onboarding_profile_revisions.rs::approved_revision_number_is_part_of_the_conflict_check` and the presentation join, which reads only the value bound to the current approved revision. Media: `tests/onboarding_profile_media.rs::replacement_owner_sees_only_current_approved_or_own_media` |
 | 9 | Removal revokes presentation | PASS | `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (remove → retrieval empty); `tests/onboarding_profile_media.rs::owner_can_withdraw_pending_media_and_reupload` |
-| 10 | Visibility changes revoke publication | PARTIAL | Documents PASS: `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (scope change resets to pending review). Profile values: a change requires a new approved revision, so the previous value stays presentable until that commits — decision A in the contract; specified as test F2 below |
+| 10 | Visibility changes revoke publication | PASS | Documents: `tests/document_lifecycle.rs::lifecycle_is_additive_quarantined_and_approved_only` (a scope change resets the version to review). Profile values: decision A2 is implemented — `tests/profile_restriction.rs` (immediate exclusion from the family read, owner view keeps the value, stale approval refused, post-restriction expansion lifts the restriction, concurrent approval/restriction serialize, and a restriction still waiting for its lock cannot be lifted by a submission created meanwhile) and `web/e2e/profile-privacy.spec.ts` (owner **Make private**, family API/page exclusion, reload persistence, independent re-approval restores). Ordering is the monotonic restriction generation, never a transaction-start timestamp; a submission from an earlier generation and a legacy submission with no generation both fail closed. See F2 below |
 | 11 | Account/person removal prevents unauthorized visibility | PASS | `tests/onboarding_profile_media.rs::cross_account_and_revoked_link_cannot_access_media`; `tests/onboarding_profile_submission.rs::revoked_link_blocks_further_owner_writes`; `tests/branch_review.rs::linked_owner_and_replaced_account_cannot_use_a_grant` |
 | 12 | Stale indexing cannot republish revoked content | PASS | `tests/document_processing.rs::processing_is_durable_idempotent_and_approved_only` — an approval withdrawn after queueing makes the job fail and writes no chunks |
 | 13 | Citations resolve to the actual approved version | PARTIAL | Proven for the single-chunk case: `tests/rag_publication.rs::citations_carry_version_identity_and_never_mix_documents` (exact key resolves to one version; an ambiguous filename is rejected), `::superseded_cross_corpus_and_revalidation_are_exact`, and `src/answer/citation.rs` unit tests (same filename, different keys). **Unresolved P1 in PR #54 (Linux-owned):** when section expansion places several chunks of the *same* source, section, and page into the context — a normal multi-chunk section — the match count exceeds one and the citation is treated as ambiguous, so a valid citation can be stripped when validation is enabled or returned with an empty `sources` array when it is disabled. Citation resolution is therefore not universally complete until Linux deduplicates matches by publication/citation coordinates |
@@ -75,6 +75,7 @@ not evidence for a PASS row — only an executed `make web-e2e` run is.
 | Document lifecycle and approved-only retrieval | `tests/document_lifecycle.rs` |
 | Processing and stale-job refusal | `tests/document_processing.rs` |
 | Family profile presentation | `tests/family_profile_presentation.rs`, `web/e2e/family-profile.spec.ts` |
+| Owner privacy restriction (A2) | `tests/profile_restriction.rs`, `web/e2e/profile-privacy.spec.ts` |
 | HTTP boundary | `acceptance/api_contract/tests/api_contract.rs`, `web/e2e/*` |
 
 ## Specifications for later slices
@@ -94,13 +95,31 @@ Implemented by `GET /api/family/persons/{person_key}/profile` and proven by
 `tests/family_profile_presentation.rs` plus `web/e2e/family-profile.spec.ts`.
 The owner keeps both values through the unchanged `GET /api/profile`.
 
-### F2 — Profile visibility downgrade (slice: presentation API, after decision A)
+### F2 — Profile visibility downgrade — IMPLEMENTED (USR-006-P, decision A2)
 
-*Given* an approved family-visible biography, *when* the owner requests
-owner-private visibility, *then* — if decision A2 is chosen — the family read
-stops returning it in the same transaction and any published identity is
-removed; if A1 is chosen, the family read continues to return it until the new
-revision is approved, and the response states that a change is pending.
+*Given* an approved family-visible biography, *when* the owner restricts it,
+*then* the family read stops returning it immediately, the family page no longer
+renders it, the owner still reads it privately with `restricted_from_family`
+set, and the historical approved revision is unchanged. A pending submission
+created before the restriction is refused at approval, and only a new
+independently approved family-visible revision created under the active
+restriction generation restores presentation.
+
+Ordering is the monotonic restriction `generation` recorded on the revision at
+creation, compared for exact equality at approval. It is deliberately never
+derived from `changed_at`/`created_at`, because `now()` is fixed at transaction
+start and two overlapping transactions can record timestamps that do not reflect
+commit order. The deterministic regression holds the person row so the
+restriction waits for its lock, submits a family-visible revision through the
+product path during that wait, releases the lock, and asserts the approval is
+refused with `RestrictionConflict`, no `lifted` event is written, the restriction
+stays active, and the family read returns nothing.
+
+The recorded generation is immutable after insert: a `BEFORE UPDATE` guard in
+migration `0022` rejects any change, including NULL to value, while ordinary
+draft edits, submission, and reviewer transitions still succeed.
+
+Proven by `tests/profile_restriction.rs` and `web/e2e/profile-privacy.spec.ts`.
 
 ### F3 — Citations never resolve to a superseded version (slice: indexing adapter)
 
@@ -155,6 +174,7 @@ document:
 2. **Head of Family validity** — a read-time validation and suspension proposal
    is recorded in the contract; no succession or automatic replacement is
    implemented.
-3. **Immediate owner restriction of profile values** — decision A; the current
-   behavior is review-gated.
+3. **Immediate owner restriction of profile values** — **decided (A2) and
+   implemented**; listed here only to record that the previous review-gated
+   behaviour no longer applies.
 4. **Indexing allow-list** — decision D; the default is "documents only".

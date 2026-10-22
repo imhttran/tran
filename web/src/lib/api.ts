@@ -305,6 +305,9 @@ export type ApprovedProfileValue = {
   approved_revision_number: number;
   approved_revision_id: number | null;
   updated_at: string;
+  /** An active owner restriction keeps this family value off family pages. */
+  restricted_from_family: boolean;
+  restriction_generation: number | null;
 };
 
 export type ProfileRevision = {
@@ -907,6 +910,21 @@ export type FamilyProfileResponse = {
   person: { person_key: string; display_name: string };
   fields: FamilyProfileFieldView[];
 };
+
+/// Decision A2: immediately stop an approved family-visible field from being
+/// presented to the family. Idempotent; only the owner's own field is reachable.
+export function restrictProfileField(fieldKey: string): Promise<{
+  ok: true;
+  field_key: string;
+  generation: number;
+  already_restricted: boolean;
+  restricted_from_family: boolean;
+}> {
+  return request(
+    `/api/profile/fields/${encodeURIComponent(fieldKey)}/restrict`,
+    { method: "POST" },
+  );
+}
 
 export function getFamilyProfile(
   personKey: string,

@@ -238,6 +238,10 @@ impl AppState {
                 post(review_profile_revision),
             )
             .route(
+                "/api/profile/fields/{field_key}/restrict",
+                post(restrict_profile_field),
+            )
+            .route(
                 "/api/profile/media/photo",
                 post(upload_profile_photo)
                     .layer(DefaultBodyLimit::max(MediaKind::Photo.max_body_bytes())),
@@ -1836,6 +1840,8 @@ fn approved_json(value: &ApprovedProfileValue) -> serde_json::Value {
         "updated_at": value.updated_at,
         "approved_revision_number": value.approved_revision_number,
         "approved_revision_id": value.approved_revision_id,
+        "restricted_from_family": value.restricted_from_family,
+        "restriction_generation": value.restriction_generation,
     })
 }
 
@@ -2336,6 +2342,77 @@ fn family_profile_unavailable() -> Response {
     )
 }
 
+/// Records an owner-initiated privacy restriction for one approved field.
+///
+/// Decision A2: the owner may stop family presentation immediately. The call is
+/// idempotent for a field that is already restricted, never accepts a person,
+/// issuer, subject, or visibility from the browser, and only reports success
+/// after the authoritative restriction and its audit event have committed.
+#[allow(clippy::result_large_err)]
+async fn restrict_profile_field(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(field_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileWrite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::restrict_own_field(&mut genealogy, &account, &field_key)
+            .map_err(restriction_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcome)) => Json(serde_json::json!({
+            "ok": true,
+            "field_key": outcome.field_key,
+            "generation": outcome.generation,
+            "already_restricted": outcome.already_restricted,
+            "restricted_from_family": true,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: profile restriction task failed: {err}");
+            restriction_unavailable()
+        }
+    }
+}
+
+/// Maps a restriction failure without echoing content.
+fn restriction_error(err: onboarding::RestrictionError) -> Response {
+    eprintln!("api: profile restriction refused: {err}");
+    match err {
+        onboarding::RestrictionError::Unlinked => error(
+            StatusCode::FORBIDDEN,
+            "profile_forbidden",
+            "the authenticated account may not restrict this profile field",
+        ),
+        onboarding::RestrictionError::InvalidField
+        | onboarding::RestrictionError::NoApprovedValue
+        | onboarding::RestrictionError::NotFamilyVisible => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_profile_restriction",
+            "only an approved, family-visible profile value can be made private",
+        ),
+        onboarding::RestrictionError::Database(_) => restriction_unavailable(),
+    }
+}
+
+fn restriction_unavailable() -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "profile_restriction_unavailable",
+        "the profile store is unavailable",
+    )
+}
+
 fn revision_error(err: RevisionError) -> Response {
     eprintln!("api: profile revision failed: {err}");
     match err {
@@ -2352,6 +2429,7 @@ fn revision_error(err: RevisionError) -> Response {
         RevisionError::OpenRevisionExists
         | RevisionError::InvalidTransition
         | RevisionError::VersionConflict
+        | RevisionError::RestrictionConflict
         | RevisionError::MediaRevisionMissing => error(
             StatusCode::CONFLICT,
             "profile_revision_conflict",

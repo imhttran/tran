@@ -104,7 +104,11 @@ pub fn read_review_queue(
                 cm.width, cm.height, \
                 EXISTS (SELECT 1 FROM onboarding_person_account_link l \
                          WHERE l.person_id = r.person_id \
-                           AND l.identity_fingerprint = $3) AS reviewer_owns_person \
+                           AND l.identity_fingerprint = $3) AS reviewer_owns_person, \
+                (SELECT fr.generation \
+                   FROM onboarding_profile_field_restriction fr \
+                  WHERE fr.person_id = r.person_id AND fr.field_key = r.field_key \
+                    AND fr.lifted_at IS NULL) AS current_restriction_generation \
            FROM onboarding_profile_revision r \
            JOIN person p ON p.person_id = r.person_id \
            LEFT JOIN onboarding_profile_value v \
@@ -159,7 +163,11 @@ pub fn read_review_detail(
                 cm.width, cm.height, \
                 EXISTS (SELECT 1 FROM onboarding_person_account_link l \
                          WHERE l.person_id = r.person_id \
-                           AND l.identity_fingerprint = $2) AS reviewer_owns_person \
+                           AND l.identity_fingerprint = $2) AS reviewer_owns_person, \
+                (SELECT fr.generation \
+                   FROM onboarding_profile_field_restriction fr \
+                  WHERE fr.person_id = r.person_id AND fr.field_key = r.field_key \
+                    AND fr.lifted_at IS NULL) AS current_restriction_generation \
            FROM onboarding_profile_revision r \
            JOIN person p ON p.person_id = r.person_id \
            LEFT JOIN onboarding_profile_value v \
@@ -195,6 +203,7 @@ fn entry_from_row(
     let current_updated_at: Option<String> = row.get(19);
     let current_revision_number: Option<i64> = row.get(20);
     let current_revision_id: Option<i64> = row.get(21);
+    let current_restriction_generation: Option<i64> = row.get(37);
     let media_id: Option<i64> = row.get(22);
     let media_kind: Option<String> = row.get(23);
     let media_mime: Option<String> = row.get(24);
@@ -221,6 +230,8 @@ fn entry_from_row(
             updated_at: current_updated_at.unwrap_or_default(),
             approved_revision_number: current_revision_number.unwrap_or_default(),
             approved_revision_id: current_revision_id,
+            restricted_from_family: current_restriction_generation.is_some(),
+            restriction_generation: current_restriction_generation,
         }),
         None => None,
     };

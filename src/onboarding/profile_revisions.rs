@@ -174,6 +174,11 @@ pub struct ApprovedProfileValue {
     pub updated_at: String,
     pub approved_revision_number: i64,
     pub approved_revision_id: Option<i64>,
+    /// True when an active owner restriction keeps this approved family value
+    /// out of family presentation. The stored visibility is unchanged.
+    pub restricted_from_family: bool,
+    /// The active restriction generation, when one applies.
+    pub restriction_generation: Option<i64>,
 }
 
 /// The owner-visible profile: approved values and owner-private open revisions
@@ -207,6 +212,8 @@ pub enum RevisionError {
     InvalidTransition,
     #[error("the approved value changed since this draft was created")]
     VersionConflict,
+    #[error("an owner restriction requires a new submission approved after it")]
+    RestrictionConflict,
     #[error("a rejection or needs-changes decision requires a review note")]
     ReviewNoteRequired,
     #[error("a media revision has no matching stored asset")]
@@ -493,15 +500,26 @@ fn create_draft_in_tx(
 
     let prior_value_text = current_approved_value(tx, person_id, &field_key)?;
 
+    // Record the owner-restriction generation that is active right now.
+    // `lock_field` above already holds this field's advisory lock for the rest of
+    // the transaction, and the restriction write inserts its row under that same
+    // lock, so this read and the insert below observe one serialization order
+    // rather than a transaction-start timestamp. A draft created before a
+    // restriction stores NULL, and a draft created under one generation never
+    // acquires a newer one: a genuine expansion needs a new submission.
+    //
     // The revision number is allocated inside the same statement as the insert,
     // while the per-field advisory lock is held. Concurrent creates for the same
     // field therefore serialize and cannot allocate the same version.
     let sql = format!(
         "INSERT INTO onboarding_profile_revision \
              (person_id, field_key, prior_value_text, prior_approved_revision_number, \
-              new_value_text, changed_by, revision_number, status, visibility) \
+              new_value_text, changed_by, revision_number, status, visibility, \
+              restriction_generation) \
          SELECT $1, $2, $3, $4, $5, $6, \
-                COALESCE(max(revision_number), 0) + 1, 'draft', $7 \
+                COALESCE(max(revision_number), 0) + 1, 'draft', $7, \
+                (SELECT generation FROM onboarding_profile_field_restriction \
+                  WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL) \
            FROM onboarding_profile_revision \
           WHERE person_id = $1 AND field_key = $2 \
          RETURNING {REVISION_COLUMNS}"
@@ -879,6 +897,70 @@ pub fn review_revision(
                 return Err(RevisionError::MediaRevisionMissing);
             }
         }
+        // Owner privacy (decision A2): an active restriction blocks family
+        // publication until an independent reviewer approves a submission the
+        // owner created *under that restriction generation*.
+        //
+        // The ordering is the durable, monotonic restriction generation, not a
+        // timestamp: `now()` is fixed at transaction start, so `changed_at` and
+        // `created_at` do not establish commit order when the two transactions
+        // overlap. A submission created while a restriction was still waiting for
+        // its lock would otherwise appear "newer" than the restriction and lift
+        // it.
+        //
+        // `onboarding_profile_revision.restriction_generation` records the active
+        // generation observed at draft creation. Approval requires an exact match
+        // with the generation that is active now, so a revision created before
+        // the restriction (NULL), under an earlier generation, or with missing/
+        // legacy provenance fails closed.
+        let restriction = tx.query_opt(
+            "SELECT x.restriction_id, x.generation, vr.restriction_generation \
+               FROM onboarding_profile_field_restriction x \
+               JOIN onboarding_profile_revision vr ON vr.revision_id = $3 \
+              WHERE x.person_id = $1 AND x.field_key = $2 \
+                AND x.lifted_at IS NULL \
+              FOR UPDATE OF x",
+            &[&revision.person_id, &revision.field_key, &revision_id],
+        )?;
+        if let Some(restriction) = restriction {
+            if revision.visibility == ProfileVisibility::Family {
+                let restriction_id: i64 = restriction.get(0);
+                let generation: i64 = restriction.get(1);
+                let submitted_generation: Option<i64> = restriction.get(2);
+                if submitted_generation != Some(generation) {
+                    return Err(RevisionError::RestrictionConflict);
+                }
+                // The reviewer is approving an expansion submitted under this
+                // exact restriction, so the restriction is lifted in this
+                // decision.
+                tx.execute(
+                    "UPDATE onboarding_profile_field_restriction \
+                        SET lifted_at = now(), lifted_by = $2, \
+                            lifted_generation = generation \
+                      WHERE restriction_id = $1 AND lifted_at IS NULL",
+                    &[&restriction_id, &reviewer],
+                )?;
+                tx.execute(
+                    "INSERT INTO onboarding_profile_field_restriction_event \
+                         (restriction_id, person_id, field_key, generation, event, \
+                          actor, approved_revision_id, approved_revision_number, \
+                          prior_visibility, new_visibility) \
+                     VALUES ($1, $2, $3, $4, 'lifted', $5, $6, $7, \
+                             'owner_private', 'family')",
+                    &[
+                        &restriction_id,
+                        &revision.person_id,
+                        &revision.field_key,
+                        &generation,
+                        &reviewer,
+                        &revision.revision_id,
+                        &revision.revision_number,
+                    ],
+                )?;
+            }
+            // Approving an owner_private revision never lifts a restriction.
+        }
+
         let value_text = clean_value(&revision.field_key, &revision.new_value_text)?;
         tx.execute(
             "INSERT INTO onboarding_profile_value \
@@ -995,18 +1077,24 @@ fn approved_values_in_tx(
     audience: ProfileAudience,
 ) -> Result<Vec<ApprovedProfileValue>, RevisionError> {
     let rows = tx.query(
-        "SELECT field_key, value_text, visibility, updated_by, updated_at::text, \
-                approved_revision_number, approved_revision_id \
-           FROM onboarding_profile_value \
-          WHERE person_id = $1 AND ($2 = 'owner' OR visibility = 'family') \
-            AND field_key NOT IN ('profile_photo', 'personal_document') \
-          ORDER BY field_key",
+        "SELECT v.field_key, v.value_text, v.visibility, v.updated_by, \
+                v.updated_at::text, v.approved_revision_number, \
+                v.approved_revision_id, r.generation \
+           FROM onboarding_profile_value v \
+           LEFT JOIN onboarding_profile_field_restriction r \
+             ON r.person_id = v.person_id AND r.field_key = v.field_key \
+            AND r.lifted_at IS NULL \
+          WHERE v.person_id = $1 \
+            AND ($2 = 'owner' OR (v.visibility = 'family' AND r.restriction_id IS NULL)) \
+            AND v.field_key NOT IN ('profile_photo', 'personal_document') \
+          ORDER BY v.field_key",
         &[&person_id, &audience.as_str()],
     )?;
     rows.into_iter()
         .map(|row| {
             let visibility = ProfileVisibility::parse(&row.get::<_, String>(2))
                 .ok_or_else(|| RevisionError::Database("unknown profile visibility".into()))?;
+            let restriction_generation: Option<i64> = row.get(7);
             Ok(ApprovedProfileValue {
                 field_key: row.get(0),
                 value_text: row.get(1),
@@ -1015,6 +1103,8 @@ fn approved_values_in_tx(
                 updated_at: row.get(4),
                 approved_revision_number: row.get(5),
                 approved_revision_id: row.get(6),
+                restricted_from_family: restriction_generation.is_some(),
+                restriction_generation,
             })
         })
         .collect()

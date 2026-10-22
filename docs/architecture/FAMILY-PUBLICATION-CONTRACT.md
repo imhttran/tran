@@ -162,7 +162,7 @@ Rules:
 | --- | --- | --- | --- |
 | First approval | becomes presentable in the same transaction | candidate created; published only after the sink revalidates | approval event already recorded by the owning workflow |
 | Approved replacement | new version presentable; prior version no longer presentable | upsert new identity, delete superseded identity | the owning workflow records the decision; publication records the identity it published |
-| Visibility change `family → owner_private` / `admin_only` | **immediate** on commit of the change | delete the identity; block re-indexing | visibility change plus removal |
+| Visibility change `family → owner_private` / `admin_only` | **immediate** on commit: documents by resetting the version to review, profile values by an owner restriction (A2) | delete the identity; block re-indexing | visibility change or restriction event, plus removal |
 | Withdrawal of a pending submission | nothing was presentable | nothing was published | existing withdrawal audit |
 | Removal / `removed_at` | immediate | delete the identity; a queued job for it must fail closed | removal event |
 | Person or account deactivation | presentation follows the authorization check at read time | deletion is required if the content is no longer authorized for any audience | deactivation audit + publication removal |
@@ -309,18 +309,46 @@ below are still open; the endpoint does not implement either recommendation.
 These are policy, not implementation detail. Until each is decided, the
 fail-closed default below applies.
 
-### A. Immediate owner-initiated restriction of a profile value
+### A. Immediate owner-initiated restriction of a profile value — DECIDED (A2)
 
-*Question:* may an owner make an approved family-visible value owner-private
-immediately, without a new review?
+**Decision A2 is approved and implemented (USR-006-P).**
 
-- Option A1 — review required (current model). Simple and consistent, but a
-  member who wants to withdraw a family-visible value must wait for review
-  while it stays visible.
-- Option A2 — restriction is immediate, expansion requires review. Matches the
-  document rule and the principle that restriction never needs approval.
-- **Default until decided:** keep A1 (no immediate change), and state the delay
-  in the interface. Recommended: A2.
+An owner may immediately restrict their own approved, family-visible profile
+value to `owner_private`. Increasing visibility still requires an independent
+review.
+
+- The restriction is an additive, audited record
+  (`onboarding_profile_field_restriction` + append-only
+  `onboarding_profile_field_restriction_event`). The approved revision and its
+  visibility are never rewritten.
+- The family read requires an approved family-visible value **and** no active
+  restriction, evaluated in the same statement and serialized with restrictions
+  through the person row lock.
+- An owner restriction commits synchronously; nothing depends on a queue.
+- Expansion is a new submission created **under the active restriction**,
+  approved by an independent reviewer. Each restriction carries a monotonic
+  per-(person, field) `generation`, and a revision records the generation that
+  was active when the owner created it
+  (`onboarding_profile_revision.restriction_generation`). Approval lifts the
+  restriction only when that recorded generation exactly matches the generation
+  active at approval time, and it records a `lifted` event. A pending submission
+  created before the restriction carries no generation, and one created under an
+  earlier generation cannot lift a later one; both are refused with a conflict.
+  Legacy or incomplete generation data fails closed. The column is written
+  once at creation and is guarded against any later change, including NULL to
+  value, so a draft cannot be rewritten into an authorized expansion before it
+  is submitted.
+- Ordering is never derived from timestamps. `now()` is fixed at transaction
+  start, so a restriction that is still waiting for its lock and a submission
+  created in that window have timestamps that do not reflect commit order; only
+  the generation comparison establishes the order. Draft creation, restriction,
+  and approval therefore serialize on the same per-field state: draft creation
+  and approval take the per-field advisory lock the restriction takes, and the
+  restriction and the approval both lock the person row.
+- Approving an owner-private revision never lifts a restriction.
+- The owner keeps the value privately, and the owner view reports
+  `restricted_from_family` and the restriction generation without relabelling the
+  historical approval.
 
 ### B. BR-004 — cross-branch relationships
 
@@ -372,6 +400,12 @@ implemented; nothing that publishes or indexes content is.
   the read re-establishes the §3.1 provenance binding rather than trusting it,
   so a value whose approved revision is missing, unapproved, or inconsistent is
   excluded.
+- **Owner privacy restriction** (decision A2): `POST
+  /api/profile/fields/{field_key}/restrict` records an active restriction for the
+  caller's own approved family-visible field. The family API read and page stop
+  presenting it immediately; the owner keeps it privately and the historical
+  approved revision is unchanged. Lifting requires a new independently approved
+  family-visible revision created after the restriction.
 - **The family profile page**, `/family/{person_key}`. It renders that response
   for one person: approved display/preferred name, biography, personal story,
   and family memories, with provenance. It applies a narrower field allow-list

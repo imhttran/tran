@@ -89,8 +89,11 @@ pub fn read_family_profile(
         return Err(FamilyProfileError::NotFamilyMember);
     }
 
+    // `FOR SHARE` serializes this read with an owner restriction or approval,
+    // which lock the person row for update. A restriction cannot commit in the
+    // middle of a family read that has already decided eligibility.
     let target = tx.query_opt(
-        "SELECT person_id, display_name FROM person WHERE person_key = $1",
+        "SELECT person_id, display_name FROM person WHERE person_key = $1 FOR SHARE",
         &[&person_key],
     )?;
     let Some(target) = target else {
@@ -145,6 +148,12 @@ fn family_visible_values(
             AND r.new_value_text = v.value_text \
           WHERE v.person_id = $1 AND v.visibility = 'family' \
             AND v.field_key <> ALL($2) \
+            AND NOT EXISTS ( \
+                SELECT 1 FROM onboarding_profile_field_restriction fr \
+                 WHERE fr.person_id = v.person_id \
+                   AND fr.field_key = v.field_key \
+                   AND fr.lifted_at IS NULL \
+            ) \
           ORDER BY v.field_key",
         &[&person_id, &media_fields],
     )?;

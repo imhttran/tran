@@ -12,6 +12,7 @@ import {
   createProfileDraft,
   getProfile,
   profileMediaUrl,
+  restrictProfileField,
   submitProfileDraft,
   updateProfileDraft,
   uploadProfileMedia,
@@ -569,6 +570,34 @@ function ProfileFieldCard({
     }
   }
 
+  async function makePrivate() {
+    if (
+      !approved ||
+      approved.visibility !== "family" ||
+      approved.restricted_from_family
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Make this private? It will immediately stop appearing on family profile pages.",
+      )
+    ) {
+      return;
+    }
+    setBusy("restrict");
+    setError(null);
+    try {
+      await restrictProfileField(field.key);
+      setEditing(false);
+      onChanged();
+      setBusy(null);
+    } catch (err) {
+      setError(messageOf(err));
+      setBusy(null);
+    }
+  }
+
   async function withdraw() {
     if (!openRevision || openRevision.status !== "draft") return;
     if (!window.confirm("Withdraw this draft? It will not be sent for review."))
@@ -697,12 +726,32 @@ function ProfileFieldCard({
               <p className="hint">Not added yet.</p>
             )}
             {approved ? (
-              <span className="hint">
+              <span className="hint" data-testid={`profile-visibility-${field.key}`}>
                 Approved ·{" "}
-                {approved.visibility === "family"
-                  ? "Authorized family"
-                  : "Owner-private"}
+                {approved.restricted_from_family
+                  ? "private (you restricted it from family pages)"
+                  : approved.visibility === "family"
+                    ? "Authorized family"
+                    : "Owner-private"}
               </span>
+            ) : null}
+            {approved?.visibility === "family" &&
+            !approved.restricted_from_family ? (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => void makePrivate()}
+                disabled={busy !== null}
+                data-testid={`profile-make-private-${field.key}`}
+              >
+                {busy === "restrict" ? "Making private…" : "Make private"}
+              </button>
+            ) : null}
+            {approved?.restricted_from_family ? (
+              <p className="hint" data-testid={`profile-restricted-${field.key}`}>
+                Hidden from family pages. To share it again, submit a new
+                family-visible revision for independent review.
+              </p>
             ) : null}
           </div>
 
