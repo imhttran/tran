@@ -77,7 +77,9 @@ pub fn read_family_profile(
     }
     let mut tx = client.transaction()?;
 
-    // Family membership: an active, reviewed link bound to this exact identity.
+    // Family membership: a reviewed link bound to this exact identity. A link
+    // has no status column by design: revocation deletes the row, so "the row
+    // exists with this fingerprint" is exactly "the membership is active".
     let linked = tx.query_opt(
         "SELECT person_id FROM onboarding_person_account_link \
           WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
@@ -111,6 +113,16 @@ pub fn read_family_profile(
 /// The media reference fields are excluded because media presentation has its
 /// own authorization rule; a profile text response must never imply that a
 /// photograph or personal document is available.
+///
+/// The read also re-establishes the provenance binding instead of trusting it:
+/// the value must join an `approved` revision for the same person and field
+/// whose number, text, and visibility match. The write-time guard
+/// (`onboarding_profile_value_guard`, migration 0012) enforces the same rule for
+/// new and updated rows, but 0012 does not backfill `approved_revision_id` for
+/// values that existed before it and the column is nullable, so a legacy or
+/// out-of-band row could otherwise be presented without provable approval. Such
+/// a row fails the join and is silently excluded, which is the fail-closed
+/// behavior the publication contract requires.
 fn family_visible_values(
     tx: &mut Transaction<'_>,
     person_id: i64,
@@ -120,12 +132,20 @@ fn family_visible_values(
         .map(|field| field.to_string())
         .collect();
     let rows = tx.query(
-        "SELECT field_key, value_text, visibility, approved_revision_number, \
-                updated_at::text \
-           FROM onboarding_profile_value \
-          WHERE person_id = $1 AND visibility = 'family' \
-            AND field_key <> ALL($2) \
-          ORDER BY field_key",
+        "SELECT v.field_key, v.value_text, v.visibility, v.approved_revision_number, \
+                v.updated_at::text \
+           FROM onboarding_profile_value v \
+           JOIN onboarding_profile_revision r \
+             ON r.revision_id = v.approved_revision_id \
+            AND r.person_id = v.person_id \
+            AND r.field_key = v.field_key \
+            AND r.revision_number = v.approved_revision_number \
+            AND r.status = 'approved' \
+            AND r.visibility = v.visibility \
+            AND r.new_value_text = v.value_text \
+          WHERE v.person_id = $1 AND v.visibility = 'family' \
+            AND v.field_key <> ALL($2) \
+          ORDER BY v.field_key",
         &[&person_id, &media_fields],
     )?;
     Ok(rows

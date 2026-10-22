@@ -197,8 +197,10 @@ test.describe.serial("family profile presentation", () => {
     expect(before.status, JSON.stringify(before.body)).toBe(200);
     expect(JSON.stringify(before.body)).toContain(FAMILY_MARKER);
 
+    // "e2e-family-member" is the account subject; its linked genealogy person
+    // is deliberately a different key under the synthetic branch prefix.
     const { linkId, personKey } = await linkIdFor(request, "e2e-family-member");
-    expect(personKey).toBe("e2e-family-member");
+    expect(personKey).toBe("e2e-branch-family-member");
 
     // Revocation is immediate: the next read is refused.
     const revoked = await api(
@@ -219,7 +221,7 @@ test.describe.serial("family profile presentation", () => {
       "POST",
       "/api/admin/family-members/links",
       {
-        person_key: "e2e-family-member",
+        person_key: "e2e-branch-family-member",
         issuer: ISSUER,
         subject: "e2e-family-member",
         decision: "approve",
@@ -238,6 +240,8 @@ test.describe.serial("family profile presentation", () => {
     );
     expect(deactivated.status, JSON.stringify(deactivated.body)).toBe(200);
     const afterDeactivate = await proxiedProfile(page, "e2e-branch-subject");
+    // 403 when the API sees the deactivated account; 401 if the proxy has
+    // already turned the session anonymous. Either way no content is returned.
     expect([401, 403]).toContain(afterDeactivate.status);
     expect(JSON.stringify(afterDeactivate.body)).not.toContain(FAMILY_MARKER);
   });
