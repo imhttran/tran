@@ -24,7 +24,7 @@ use rag_foundation::onboarding::{
     UnconfiguredAdapter,
 };
 
-const MIGRATIONS: [&str; 21] = [
+const MIGRATIONS: [&str; 22] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -46,6 +46,7 @@ const MIGRATIONS: [&str; 21] = [
     "genealogy/migrations/0019_branch_reviewer_grants.sql",
     "genealogy/migrations/0020_branch_review_proposals.sql",
     "genealogy/migrations/0021_profile_field_restriction.sql",
+    "genealogy/migrations/0022_profile_revision_restriction_generation.sql",
 ];
 
 fn genealogy_dsn() -> Option<String> {

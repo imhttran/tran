@@ -325,10 +325,23 @@ review.
   restriction, evaluated in the same statement and serialized with restrictions
   through the person row lock.
 - An owner restriction commits synchronously; nothing depends on a queue.
-- Expansion is a new submission created **after** the restriction, approved by
-  an independent reviewer. The approval lifts the restriction and records a
-  `lifted` event. A pending submission created before the restriction is refused
-  with a conflict, so a stale reviewer action cannot republish the field.
+- Expansion is a new submission created **under the active restriction**,
+  approved by an independent reviewer. Each restriction carries a monotonic
+  per-(person, field) `generation`, and a revision records the generation that
+  was active when the owner created it
+  (`onboarding_profile_revision.restriction_generation`). Approval lifts the
+  restriction only when that recorded generation exactly matches the generation
+  active at approval time, and it records a `lifted` event. A pending submission
+  created before the restriction carries no generation, and one created under an
+  earlier generation cannot lift a later one; both are refused with a conflict.
+  Legacy or incomplete generation data fails closed.
+- Ordering is never derived from timestamps. `now()` is fixed at transaction
+  start, so a restriction that is still waiting for its lock and a submission
+  created in that window have timestamps that do not reflect commit order; only
+  the generation comparison establishes the order. Draft creation, restriction,
+  and approval therefore serialize on the same per-field state: draft creation
+  and approval take the per-field advisory lock the restriction takes, and the
+  restriction and the approval both lock the person row.
 - Approving an owner-private revision never lifts a restriction.
 - The owner keeps the value privately, and the owner view reports
   `restricted_from_family` and the restriction generation without relabelling the

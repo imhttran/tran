@@ -500,15 +500,26 @@ fn create_draft_in_tx(
 
     let prior_value_text = current_approved_value(tx, person_id, &field_key)?;
 
+    // Record the owner-restriction generation that is active right now.
+    // `lock_field` above already holds this field's advisory lock for the rest of
+    // the transaction, and the restriction write inserts its row under that same
+    // lock, so this read and the insert below observe one serialization order
+    // rather than a transaction-start timestamp. A draft created before a
+    // restriction stores NULL, and a draft created under one generation never
+    // acquires a newer one: a genuine expansion needs a new submission.
+    //
     // The revision number is allocated inside the same statement as the insert,
     // while the per-field advisory lock is held. Concurrent creates for the same
     // field therefore serialize and cannot allocate the same version.
     let sql = format!(
         "INSERT INTO onboarding_profile_revision \
              (person_id, field_key, prior_value_text, prior_approved_revision_number, \
-              new_value_text, changed_by, revision_number, status, visibility) \
+              new_value_text, changed_by, revision_number, status, visibility, \
+              restriction_generation) \
          SELECT $1, $2, $3, $4, $5, $6, \
-                COALESCE(max(revision_number), 0) + 1, 'draft', $7 \
+                COALESCE(max(revision_number), 0) + 1, 'draft', $7, \
+                (SELECT generation FROM onboarding_profile_field_restriction \
+                  WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL) \
            FROM onboarding_profile_revision \
           WHERE person_id = $1 AND field_key = $2 \
          RETURNING {REVISION_COLUMNS}"
@@ -887,38 +898,41 @@ pub fn review_revision(
             }
         }
         // Owner privacy (decision A2): an active restriction blocks family
-        // publication until an independent reviewer approves a revision that was
-        // created after the restriction. A stale pending submission from before
-        // the restriction can never silently republish the field.
+        // publication until an independent reviewer approves a submission the
+        // owner created *under that restriction generation*.
         //
-        // `changed_at` is the revision's own timestamp: migration 0012 freezes it
-        // once the revision is submitted, so it records when this content took
-        // its current form. Comparing it (rather than the review time) against the
-        // restriction's `created_at` is the conservative test: a submission
-        // written before the owner restricted the field stays stale even if a
-        // reviewer only gets to it afterwards. A missing comparison row yields
-        // NULL and is treated as stale below, so the check fails closed.
+        // The ordering is the durable, monotonic restriction generation, not a
+        // timestamp: `now()` is fixed at transaction start, so `changed_at` and
+        // `created_at` do not establish commit order when the two transactions
+        // overlap. A submission created while a restriction was still waiting for
+        // its lock would otherwise appear "newer" than the restriction and lift
+        // it.
+        //
+        // `onboarding_profile_revision.restriction_generation` records the active
+        // generation observed at draft creation. Approval requires an exact match
+        // with the generation that is active now, so a revision created before
+        // the restriction (NULL), under an earlier generation, or with missing/
+        // legacy provenance fails closed.
         let restriction = tx.query_opt(
-            "SELECT x.restriction_id, x.generation, \
-                    (SELECT vr.changed_at <= x.created_at \
-                       FROM onboarding_profile_revision vr \
-                      WHERE vr.revision_id = $3) AS stale \
+            "SELECT x.restriction_id, x.generation, vr.restriction_generation \
                FROM onboarding_profile_field_restriction x \
+               JOIN onboarding_profile_revision vr ON vr.revision_id = $3 \
               WHERE x.person_id = $1 AND x.field_key = $2 \
                 AND x.lifted_at IS NULL \
-              FOR UPDATE",
+              FOR UPDATE OF x",
             &[&revision.person_id, &revision.field_key, &revision_id],
         )?;
         if let Some(restriction) = restriction {
             if revision.visibility == ProfileVisibility::Family {
                 let restriction_id: i64 = restriction.get(0);
                 let generation: i64 = restriction.get(1);
-                let stale: Option<bool> = restriction.get(2);
-                if stale.unwrap_or(true) {
+                let submitted_generation: Option<i64> = restriction.get(2);
+                if submitted_generation != Some(generation) {
                     return Err(RevisionError::RestrictionConflict);
                 }
-                // The reviewer is approving an expansion submitted after the
-                // restriction, so the restriction is lifted in this decision.
+                // The reviewer is approving an expansion submitted under this
+                // exact restriction, so the restriction is lifted in this
+                // decision.
                 tx.execute(
                     "UPDATE onboarding_profile_field_restriction \
                         SET lifted_at = now(), lifted_by = $2, \

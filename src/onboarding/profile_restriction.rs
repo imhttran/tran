@@ -6,10 +6,11 @@
 //! must honour.
 //!
 //! Lifting a restriction is deliberately not an owner action. It happens only
-//! when an independent reviewer approves a *new* revision created after the
-//! restriction (see [`super::profile_revisions::review_revision`]), so a stale
-//! pending submission from before the restriction cannot silently republish the
-//! field.
+//! when an independent reviewer approves a *new* revision the owner created
+//! under the currently active restriction generation (see
+//! [`super::profile_revisions::review_revision`]), so a submission from before
+//! the restriction, or from an earlier generation, can never silently republish
+//! the field. The ordering is the monotonic generation, not a timestamp.
 
 use postgres::Transaction;
 use thiserror::Error;

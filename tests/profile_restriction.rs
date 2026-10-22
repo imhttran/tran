@@ -5,18 +5,18 @@
 
 use std::fs;
 use std::str::FromStr;
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    read_approved_values, read_family_profile, read_owner_profile, restrict_own_field,
-    review_revision, IdentityAccount, ProfileAudience, ProfileVisibility, RestrictionError,
-    ReviewDecision, RevisionError,
+    create_owned_draft, read_approved_values, read_family_profile, read_owner_profile,
+    restrict_own_field, review_revision, submit_owned_revision, IdentityAccount, ProfileAudience,
+    ProfileVisibility, RestrictionError, ReviewDecision, RevisionError,
 };
 
-const MIGRATIONS: [&str; 21] = [
+const MIGRATIONS: [&str; 22] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -38,6 +38,7 @@ const MIGRATIONS: [&str; 21] = [
     "genealogy/migrations/0019_branch_reviewer_grants.sql",
     "genealogy/migrations/0020_branch_review_proposals.sql",
     "genealogy/migrations/0021_profile_field_restriction.sql",
+    "genealogy/migrations/0022_profile_revision_restriction_generation.sql",
 ];
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
@@ -199,12 +200,13 @@ impl TestDb {
             .expect("seed approved value");
     }
 
+    /// Seeds a draft the way the product does: it captures the currently
+    /// approved snapshot and the restriction generation that is active now.
+    /// Approval rejects a draft whose snapshot no longer matches, and a draft
+    /// created before a restriction carries no generation and can never lift it.
     fn revision(&mut self, person_id: i64, field_key: &str, value: &str, visibility: &str) -> i64 {
         let revision_number = self.next_revision_number(person_id, field_key);
         let actor = self.owner_actor();
-        // A draft captures the currently approved snapshot, exactly as the
-        // product does; approval rejects a draft whose snapshot no longer
-        // matches.
         let prior = self
             .genealogy
             .query_opt(
@@ -222,8 +224,10 @@ impl TestDb {
                 "INSERT INTO onboarding_profile_revision \
                      (person_id, field_key, prior_value_text, \
                       prior_approved_revision_number, new_value_text, changed_by, \
-                      revision_number, status, visibility) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8) \
+                      revision_number, status, visibility, restriction_generation) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, \
+                         (SELECT generation FROM onboarding_profile_field_restriction \
+                           WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL)) \
                  RETURNING revision_id",
                 &[
                     &person_id,
@@ -669,4 +673,340 @@ fn concurrent_restriction_and_approval_serialize() {
         .expect("active restriction")
         .get(0);
     assert_eq!(active, 1);
+}
+/// Observes that `pid` is really waiting for a lock. This polls PostgreSQL's
+/// own wait state (`pg_blocking_pids`) instead of assuming a sleep is long
+/// enough, so the regression does not depend on timing.
+fn wait_until_blocked(db: &mut TestDb, pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let blocked: bool = db
+            .genealogy
+            .query_one("SELECT pg_blocking_pids($1) <> '{}'", &[&pid])
+            .expect("read lock wait state")
+            .get(0);
+        if blocked {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "backend {pid} never blocked on its lock"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_restriction_waiting_for_its_lock_cannot_be_lifted_by_a_submission_created_meanwhile() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, value) = family_biography(&mut db, "blocked");
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let reviewer = db.account("reviewer");
+    let (reviewer_person, _) = db.person("reviewer");
+    db.link(&reviewer, reviewer_person);
+    let reviewer_id = reviewer.identity_fingerprint.clone();
+
+    // A control transaction holds the person row, so the restriction cannot
+    // acquire the lock it needs. This is exactly the window in which a
+    // submission created while the restriction was still waiting used to look
+    // "newer" than the restriction under a transaction-start timestamp.
+    let pending: i64;
+    let mut control = Client::connect(&db.dsn, NoTls).expect("control connection");
+    {
+        let mut guard = control.transaction().expect("control transaction");
+        guard
+            .query_one(
+                "SELECT 1 FROM person WHERE person_id = $1 FOR SHARE",
+                &[&person],
+            )
+            .expect("hold the person row");
+
+        let dsn = db.dsn.clone();
+        let owner_account = owner.clone();
+        let (pid_tx, pid_rx) = mpsc::channel::<i32>();
+        let restrict_handle = thread::spawn(move || {
+            let mut client = Client::connect(&dsn, NoTls).expect("restriction connection");
+            let pid: i32 = client
+                .query_one("SELECT pg_backend_pid()", &[])
+                .expect("restriction backend id")
+                .get(0);
+            pid_tx.send(pid).expect("report restriction backend id");
+            restrict_own_field(&mut client, &owner_account, "biography")
+        });
+
+        let pid = pid_rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("restriction backend id");
+        wait_until_blocked(&mut db, pid);
+
+        // The restriction has started but is not authoritative yet. The owner
+        // submits a family-visible expansion through the real product path.
+        let draft = create_owned_draft(
+            &mut db.genealogy,
+            &owner,
+            "biography",
+            &format!("{value}-submitted-while-blocked"),
+            ProfileVisibility::Family,
+        )
+        .expect("draft created while the restriction waits");
+        pending = submit_owned_revision(&mut db.genealogy, &owner, draft.revision_id)
+            .expect("submitted while the restriction waits")
+            .revision_id;
+        let observed_generation: Option<i64> = db
+            .genealogy
+            .query_one(
+                "SELECT restriction_generation FROM onboarding_profile_revision \
+                  WHERE revision_id = $1",
+                &[&pending],
+            )
+            .expect("recorded generation")
+            .get(0);
+        assert_eq!(
+            observed_generation, None,
+            "an uncommitted restriction is not observed, so no generation is recorded"
+        );
+
+        // Let the restriction acquire its lock and commit.
+        guard.commit().expect("release the person row");
+        let restricted = restrict_handle
+            .join()
+            .expect("restriction thread")
+            .expect("the restriction commits");
+        assert!(!restricted.already_restricted);
+        assert_eq!(restricted.generation, 1);
+        drop(control);
+    }
+
+    // Independent approval of the submission created during the wait is refused:
+    // it carries no generation, so it can never lift this restriction.
+    assert_eq!(
+        review_revision(
+            &mut db.genealogy,
+            pending,
+            &reviewer_id,
+            ReviewDecision::Approve,
+            None
+        ),
+        Err(RevisionError::RestrictionConflict)
+    );
+
+    assert_eq!(
+        db.restriction_events(person, "biography"),
+        vec!["restricted".to_string()],
+        "a refused approval writes no lift event"
+    );
+    let active: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT count(*) FROM onboarding_profile_field_restriction \
+              WHERE person_id = $1 AND field_key = 'biography' AND lifted_at IS NULL",
+            &[&person],
+        )
+        .expect("active restriction")
+        .get(0);
+    assert_eq!(active, 1, "the restriction stays active");
+    let status: String = db
+        .genealogy
+        .query_one(
+            "SELECT status FROM onboarding_profile_revision WHERE revision_id = $1",
+            &[&pending],
+        )
+        .expect("revision status")
+        .get(0);
+    assert_eq!(status, "pending_review", "the failed approval rolls back");
+    let family = read_family_profile(&mut db.genealogy, &reader, &person_key).expect("family read");
+    assert!(
+        family.fields.is_empty(),
+        "no family-visible content survives the refused approval"
+    );
+}
+
+#[test]
+fn a_submission_from_an_earlier_generation_cannot_lift_a_later_restriction() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, _value) = family_biography(&mut db, "generation");
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let reviewer = db.account("reviewer");
+    let (reviewer_person, _) = db.person("reviewer");
+    db.link(&reviewer, reviewer_person);
+    let reviewer_id = reviewer.identity_fingerprint.clone();
+
+    // Generation 1, through the product path.
+    restrict_own_field(&mut db.genealogy, &owner, "biography").expect("first restriction");
+
+    // A pending family submission that recorded generation 1.
+    let stale = db.revision(
+        person,
+        "biography",
+        &format!("{}-generation-one-submission", db.prefix),
+        "family",
+    );
+    db.submit(stale);
+    let stale_generation: Option<i64> = db
+        .genealogy
+        .query_one(
+            "SELECT restriction_generation FROM onboarding_profile_revision WHERE revision_id = $1",
+            &[&stale],
+        )
+        .expect("generation")
+        .get(0);
+    assert_eq!(stale_generation, Some(1));
+
+    // Reach generation 2 the way the product does once a lift has closed
+    // generation 1: the old restriction is lifted and a new one is recorded.
+    //
+    // The approved value is deliberately left untouched. In production a lift is
+    // itself an approval, so it also moves the approved revision and the version
+    // guard would refuse this submission first. Constructing the ordering state
+    // directly is what isolates the generation rule from that unrelated guard.
+    let approved: postgres::Row = db
+        .genealogy
+        .query_one(
+            "SELECT approved_revision_id, approved_revision_number \
+               FROM onboarding_profile_value \
+              WHERE person_id = $1 AND field_key = 'biography'",
+            &[&person],
+        )
+        .expect("approved value");
+    let approved_revision_id: i64 = approved.get(0);
+    let approved_revision_number: i64 = approved.get(1);
+    let lifted: i64 = db
+        .genealogy
+        .query_one(
+            "UPDATE onboarding_profile_field_restriction \
+                SET lifted_at = now(), lifted_by = 'synthetic-reviewer', \
+                    lifted_generation = generation \
+              WHERE person_id = $1 AND field_key = 'biography' AND lifted_at IS NULL \
+              RETURNING restriction_id",
+            &[&person],
+        )
+        .expect("lift generation one")
+        .get(0);
+    db.genealogy
+        .execute(
+            "INSERT INTO onboarding_profile_field_restriction_event \
+                 (restriction_id, person_id, field_key, generation, event, actor, \
+                  approved_revision_id, approved_revision_number, \
+                  prior_visibility, new_visibility) \
+             VALUES ($1, $2, 'biography', 1, 'lifted', 'synthetic-reviewer', \
+                     $3, $4, 'owner_private', 'family')",
+            &[
+                &lifted,
+                &person,
+                &approved_revision_id,
+                &approved_revision_number,
+            ],
+        )
+        .expect("lift event");
+    let second: i64 = db
+        .genealogy
+        .query_one(
+            "INSERT INTO onboarding_profile_field_restriction \
+                 (person_id, field_key, generation, approved_revision_id, \
+                  approved_revision_number, prior_visibility, new_visibility, \
+                  restricted_by) \
+             VALUES ($1, 'biography', 2, $2, $3, 'family', 'owner_private', \
+                     'synthetic-owner') \
+             RETURNING restriction_id",
+            &[&person, &approved_revision_id, &approved_revision_number],
+        )
+        .expect("generation two")
+        .get(0);
+    db.genealogy
+        .execute(
+            "INSERT INTO onboarding_profile_field_restriction_event \
+                 (restriction_id, person_id, field_key, generation, event, actor, \
+                  approved_revision_id, approved_revision_number, \
+                  prior_visibility, new_visibility) \
+             VALUES ($1, $2, 'biography', 2, 'restricted', 'synthetic-owner', \
+                     $3, $4, 'family', 'owner_private')",
+            &[
+                &second,
+                &person,
+                &approved_revision_id,
+                &approved_revision_number,
+            ],
+        )
+        .expect("generation two event");
+
+    // Generation 1 provenance cannot lift generation 2.
+    assert_eq!(
+        review_revision(
+            &mut db.genealogy,
+            stale,
+            &reviewer_id,
+            ReviewDecision::Approve,
+            None
+        ),
+        Err(RevisionError::RestrictionConflict)
+    );
+    assert_eq!(
+        db.restriction_events(person, "biography"),
+        vec![
+            "restricted".to_string(),
+            "lifted".to_string(),
+            "restricted".to_string()
+        ]
+    );
+    let family = read_family_profile(&mut db.genealogy, &reader, &person_key).expect("family read");
+    assert!(family.fields.is_empty(), "generation 2 stays private");
+}
+
+#[test]
+fn legacy_revisions_without_generation_fail_closed_under_an_active_restriction() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, _value) = family_biography(&mut db, "legacy");
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let reviewer = db.account("reviewer");
+    let (reviewer_person, _) = db.person("reviewer");
+    db.link(&reviewer, reviewer_person);
+    let reviewer_id = reviewer.identity_fingerprint.clone();
+
+    restrict_own_field(&mut db.genealogy, &owner, "biography").expect("restrict");
+
+    // A row written before this column existed carries NULL. It must not be
+    // reinterpreted as a newly authorized expansion.
+    let revision = db.revision(
+        person,
+        "biography",
+        &format!("{}-legacy-null", db.prefix),
+        "family",
+    );
+    db.genealogy
+        .execute(
+            "UPDATE onboarding_profile_revision SET restriction_generation = NULL \
+              WHERE revision_id = $1",
+            &[&revision],
+        )
+        .expect("clear generation");
+    db.submit(revision);
+
+    assert_eq!(
+        review_revision(
+            &mut db.genealogy,
+            revision,
+            &reviewer_id,
+            ReviewDecision::Approve,
+            None
+        ),
+        Err(RevisionError::RestrictionConflict)
+    );
+    assert_eq!(
+        db.restriction_events(person, "biography"),
+        vec!["restricted".to_string()]
+    );
+    let family = read_family_profile(&mut db.genealogy, &reader, &person_key).expect("family read");
+    assert!(family.fields.is_empty());
 }
