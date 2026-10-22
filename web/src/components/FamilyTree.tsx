@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
 
 import { DenialView } from "@/components/DenialView";
@@ -318,6 +319,15 @@ function FamilyTree() {
                     <h2>{selectedPerson.person_label}</h2>
                     <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
                     <EvidenceBadge status={selectedPerson.evidence_status} />
+                    <p>
+                      <Link
+                        className="family-text-button"
+                        href={`/family/${encodeURIComponent(selectedPerson.record_id)}`}
+                        data-testid="open-family-profile"
+                      >
+                        View family profile
+                      </Link>
+                    </p>
                     <h3>Relatives</h3>
                     {graph.links.filter((link) =>
                       link.from_id === selected || link.to_id === selected).length === 0 ? (
