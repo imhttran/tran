@@ -15,12 +15,12 @@ use rag_foundation::document_lifecycle::{
     create_submission, queue_processing, review, AccessScope, Category, DocumentStorage,
     NewSubmission,
 };
-use rag_foundation::document_processing::{claim_next_job, retry_job, run_due_jobs};
+use rag_foundation::document_processing::{claim_next_job, process_job, retry_job, run_due_jobs};
 use rag_foundation::embedding::{Embedder, EmbeddingError};
 use rag_foundation::storage::EMBEDDING_DIM;
 use rag_foundation::storage_pg::PgStore;
 
-const MIGRATIONS: [&str; 9] = [
+const MIGRATIONS: [&str; 10] = [
     "migrations/001_init.sql",
     "migrations/002_ingestion_metadata.sql",
     "migrations/003_add_language.sql",
@@ -30,6 +30,7 @@ const MIGRATIONS: [&str; 9] = [
     "migrations/007_user_lifecycle.sql",
     "migrations/008_identity_issuer_subject.sql",
     "migrations/009_document_lifecycle.sql",
+    "migrations/010_document_security_hardening.sql",
 ];
 
 fn dsn() -> Option<String> {
@@ -112,6 +113,7 @@ fn submission(client: &mut Client, storage: &DocumentStorage, title: &str, body:
             category: Category::Story,
             access_scope: AccessScope::Family,
             owner_subject: Some("editor-subject"),
+            owner_issuer: Some("synthetic-issuer"),
             original_filename: "synthetic.md",
             bytes: body.as_bytes(),
             document_key: None,
@@ -146,13 +148,14 @@ fn processing_is_durable_idempotent_and_approved_only() {
     review(
         &mut client,
         version,
+        "family-docs",
         "admin",
         true,
         Some("approved"),
         Some(AccessScope::Family),
     )
     .expect("approve");
-    let job = queue_processing(&mut client, version, "admin").expect("queue");
+    let job = queue_processing(&mut client, version, "family-docs", "admin").expect("queue");
     let outcomes = run_due_jobs(
         &mut client,
         &store,
@@ -161,13 +164,15 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &config,
         "test-worker",
         10,
+        Some("family-docs"),
+        300,
     )
     .expect("run jobs");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].status, "ready");
     assert_eq!(store.rows_for_corpus("family-docs").unwrap().len(), 1);
     assert_eq!(
-        queue_processing(&mut client, version, "admin").expect("idempotent queue"),
+        queue_processing(&mut client, version, "family-docs", "admin").expect("idempotent queue"),
         job
     );
     assert!(run_due_jobs(
@@ -178,6 +183,8 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &config,
         "test-worker",
         10,
+        Some("family-docs"),
+        300,
     )
     .expect("no extra jobs")
     .is_empty());
@@ -192,17 +199,18 @@ fn processing_is_durable_idempotent_and_approved_only() {
     review(
         &mut client,
         concurrent,
+        "family-docs",
         "admin",
         true,
         Some("approved"),
         Some(AccessScope::Family),
     )
     .expect("approve concurrent");
-    queue_processing(&mut client, concurrent, "admin").expect("queue concurrent");
+    queue_processing(&mut client, concurrent, "family-docs", "admin").expect("queue concurrent");
     let mut first = Client::connect(&dsn, NoTls).expect("first claim client");
     let mut second = Client::connect(&dsn, NoTls).expect("second claim client");
-    let one = claim_next_job(&mut first, "worker-a").expect("claim a");
-    let two = claim_next_job(&mut second, "worker-b").expect("claim b");
+    let one = claim_next_job(&mut first, "worker-a", Some("family-docs"), 300).expect("claim a");
+    let two = claim_next_job(&mut second, "worker-b", Some("family-docs"), 300).expect("claim b");
     assert!(one.is_some() ^ two.is_some(), "exactly one claim must win");
 
     // Failure and explicit retry.
@@ -215,13 +223,15 @@ fn processing_is_durable_idempotent_and_approved_only() {
     review(
         &mut client,
         failing,
+        "family-docs",
         "admin",
         true,
         Some("approved"),
         Some(AccessScope::Family),
     )
     .expect("approve failing");
-    let failing_job = queue_processing(&mut client, failing, "admin").expect("queue failing");
+    let failing_job =
+        queue_processing(&mut client, failing, "family-docs", "admin").expect("queue failing");
     let failed = run_due_jobs(
         &mut client,
         &store,
@@ -230,6 +240,8 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &config,
         "test-worker",
         10,
+        Some("family-docs"),
+        300,
     )
     .expect("run failing");
     assert_eq!(failed.len(), 1);
@@ -239,7 +251,7 @@ fn processing_is_durable_idempotent_and_approved_only() {
         .unwrap()
         .iter()
         .all(|row| { row.chunk.source.as_deref() != Some("retry-processing") }));
-    retry_job(&mut client, failing_job, "admin").expect("retry");
+    retry_job(&mut client, failing_job, "admin", "family-docs").expect("retry");
     let recovered = run_due_jobs(
         &mut client,
         &store,
@@ -248,6 +260,8 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &config,
         "test-worker",
         10,
+        Some("family-docs"),
+        300,
     )
     .expect("run recovery");
     assert_eq!(recovered[0].status, "ready");
@@ -262,14 +276,37 @@ fn processing_is_durable_idempotent_and_approved_only() {
     review(
         &mut client,
         stale,
+        "family-docs",
         "admin",
         true,
         Some("approved"),
         Some(AccessScope::Family),
     )
     .expect("approve stale");
-    queue_processing(&mut client, stale, "admin").expect("queue stale");
-    review(&mut client, stale, "admin", false, Some("withdrawn"), None).expect("reject stale");
+    queue_processing(&mut client, stale, "family-docs", "admin").expect("queue stale");
+    review(
+        &mut client,
+        stale,
+        "family-docs",
+        "admin",
+        false,
+        Some("withdrawn"),
+        None,
+    )
+    .expect("reject stale");
+    // The rejection already invalidated the queued job, so an ordinary run
+    // finds nothing to do. Force the same job back to `queued` to prove the
+    // worker itself refuses to publish a withdrawn approval, rather than only
+    // relying on the invalidation that happened when the review changed.
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET status = 'queued', claimed_by = NULL, claimed_at = NULL,
+                    lease_expires_at = NULL, finished_at = NULL
+              WHERE version_id = $1",
+            &[&stale],
+        )
+        .expect("requeue stale job");
     let stale_outcomes = run_due_jobs(
         &mut client,
         &store,
@@ -278,16 +315,189 @@ fn processing_is_durable_idempotent_and_approved_only() {
         &config,
         "test-worker",
         10,
+        Some("family-docs"),
+        300,
     )
     .expect("run stale");
     let stale_outcome = stale_outcomes
         .iter()
         .find(|outcome| outcome.version_id == stale)
-        .expect("stale job attempted");
+        .expect("stale job was attempted");
     assert_eq!(stale_outcome.status, "failed");
+    assert_eq!(stale_outcome.error.as_deref(), Some("stale approval"));
+    let job_status: String = client
+        .query_one(
+            "SELECT status FROM document_processing_job WHERE version_id = $1",
+            &[&stale],
+        )
+        .expect("read stale job")
+        .get(0);
+    assert_eq!(job_status, "failed");
     assert!(store
         .rows_for_corpus("family-docs")
         .unwrap()
         .iter()
         .all(|row| { row.chunk.source.as_deref() != Some("stale-processing") }));
+    // An abandoned claim is reclaimable after its lease expires, and the old
+    // worker cannot publish after the new worker takes over.
+    let leased = submission(
+        &mut client,
+        &storage,
+        "Leased Processing",
+        "## Lease\n\nA synthetic document with an abandoned claim.\n",
+    );
+    review(
+        &mut client,
+        leased,
+        "family-docs",
+        "admin",
+        true,
+        Some("approved"),
+        Some(AccessScope::Family),
+    )
+    .expect("approve leased");
+    let leased_job =
+        queue_processing(&mut client, leased, "family-docs", "admin").expect("queue leased");
+    let leased_source: String = client
+        .query_one(
+            "SELECT source FROM document_version WHERE version_id = $1",
+            &[&leased],
+        )
+        .expect("read leased source")
+        .get(0);
+    let old_job = claim_next_job(&mut client, "worker-old", Some("family-docs"), 300)
+        .expect("claim leased")
+        .expect("leased job available");
+    assert_eq!(old_job.job_id, leased_job);
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&leased_job],
+        )
+        .expect("expire lease");
+    let new_job = claim_next_job(&mut client, "worker-new", Some("family-docs"), 300)
+        .expect("reclaim leased")
+        .expect("expired lease reclaimable");
+    assert_eq!(new_job.job_id, leased_job);
+    assert_eq!(new_job.claimed_by, "worker-new");
+    let old_outcome = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        &old_job,
+        "worker-old",
+    )
+    .expect("old worker attempt");
+    assert_eq!(old_outcome.status, "stale");
+    assert!(store
+        .rows_for_corpus("family-docs")
+        .expect("retrieval")
+        .iter()
+        .all(|row| row.chunk.source.as_deref() != Some(leased_source.as_str())));
+    let new_outcome = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        &new_job,
+        "worker-new",
+    )
+    .expect("new worker attempt");
+    assert_eq!(new_outcome.status, "ready");
+    assert!(store
+        .rows_for_corpus("family-docs")
+        .expect("retrieval")
+        .iter()
+        .any(|row| row.chunk.source.as_deref() == Some(leased_source.as_str())));
+
+    // A job row carried over from before leases existed has a NULL lease. The
+    // current claim holder must still be able to publish it; the claimed_by
+    // check, not the lease, is what stops a reclaimed job.
+    let legacy_lease = submission(
+        &mut client,
+        &storage,
+        "Null Lease Processing",
+        "## Null lease\n\nA synthetic document with no lease timestamp.\n",
+    );
+    review(
+        &mut client,
+        legacy_lease,
+        "family-docs",
+        "admin",
+        true,
+        Some("approved"),
+        Some(AccessScope::Family),
+    )
+    .expect("approve null lease");
+    queue_processing(&mut client, legacy_lease, "family-docs", "admin").expect("queue null lease");
+    let null_lease_job = claim_next_job(&mut client, "worker-lease", Some("family-docs"), 300)
+        .expect("claim null lease")
+        .expect("null lease job available");
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = NULL
+              WHERE job_id = $1",
+            &[&null_lease_job.job_id],
+        )
+        .expect("clear lease");
+    let null_lease_outcome = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        &null_lease_job,
+        "worker-lease",
+    )
+    .expect("null lease attempt");
+    assert_eq!(null_lease_outcome.status, "ready");
+
+    // A lease may also expire while a long processing run is still healthy. If
+    // no other worker reclaimed the job, the holder must still be able to
+    // publish; only a changed claimed_by blocks it.
+    let long_run = submission(
+        &mut client,
+        &storage,
+        "Long Run Processing",
+        "## Long run\n\nA synthetic document that outlives its lease.\n",
+    );
+    review(
+        &mut client,
+        long_run,
+        "family-docs",
+        "admin",
+        true,
+        Some("approved"),
+        Some(AccessScope::Family),
+    )
+    .expect("approve long run");
+    queue_processing(&mut client, long_run, "family-docs", "admin").expect("queue long run");
+    let long_job = claim_next_job(&mut client, "worker-long", Some("family-docs"), 300)
+        .expect("claim long run")
+        .expect("long run job available");
+    client
+        .execute(
+            "UPDATE document_processing_job
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE job_id = $1",
+            &[&long_job.job_id],
+        )
+        .expect("expire long lease");
+    let long_outcome = process_job(
+        &mut client,
+        &store,
+        &FakeEmbedder::accepting(),
+        &storage,
+        &config,
+        &long_job,
+        "worker-long",
+    )
+    .expect("long run attempt");
+    assert_eq!(long_outcome.status, "ready");
 }

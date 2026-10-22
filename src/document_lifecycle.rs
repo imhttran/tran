@@ -206,6 +206,8 @@ pub struct DocumentVersion {
     pub category: String,
     pub origin: String,
     pub access_scope: Option<String>,
+    pub owner_subject: Option<String>,
+    pub owner_issuer: Option<String>,
     pub review_status: String,
     pub processing_status: String,
     pub content_sha256: String,
@@ -254,6 +256,8 @@ pub enum LifecycleError {
     InvalidTransition,
     #[error("the document version is not approved for processing")]
     NotApproved,
+    #[error("approval cannot change the document scope")]
+    ScopeChange,
     #[error("the document original is missing")]
     MissingFile,
     #[error("document storage failed")]
@@ -401,6 +405,67 @@ fn new_document_key(title: &str, sha256: &str) -> String {
     format!("{}-{}", slug(title), &sha256[..8])
 }
 
+/// Composes the chunk source for one version.
+///
+/// Both ingestion paths (browser/API submissions and trusted operator imports)
+/// use this single scheme, so a source can never be produced by two different
+/// rules. The document key keeps two documents with the same filename apart and
+/// the version suffix keeps a new version from replacing an older version's
+/// chunks before it is approved and ready.
+fn compose_source(base: &str, document_key: &str, version_number: i32) -> String {
+    let base = base.trim();
+    if version_number <= 1 {
+        format!("{base} ({document_key})")
+    } else {
+        format!("{base} ({document_key}) (v{version_number})")
+    }
+}
+
+/// Allocates the next version number for a logical document and a source that
+/// no existing version in the corpus holds yet.
+///
+/// The caller holds `pg_advisory_xact_lock` on `(corpus, document_key)`, so two
+/// concurrent versions of the same document are serialized. The `(corpus,
+/// source)` probe keeps a pre-existing row from another source scheme (a legacy
+/// quarantine or an older operator row) from turning a version insert into a raw
+/// unique violation.
+fn allocate_version<C: GenericClient>(
+    client: &mut C,
+    corpus: &str,
+    document_key: &str,
+    base: &str,
+) -> Result<(i32, String), LifecycleError> {
+    let first_free: i32 = client
+        .query_one(
+            "SELECT coalesce(max(version_number), 0) + 1
+               FROM document_version
+              WHERE corpus = $1 AND document_key = $2",
+            &[&corpus, &document_key],
+        )?
+        .get(0);
+    // The probe is bounded: a pathological corpus cannot make allocation spin.
+    for offset in 0..1000 {
+        let version_number = first_free + offset;
+        let source = compose_source(base, document_key, version_number);
+        let taken: bool = client
+            .query_one(
+                "SELECT EXISTS (
+                     SELECT 1 FROM document_version
+                      WHERE corpus = $1 AND source = $2
+                 )",
+                &[&corpus, &source],
+            )?
+            .get(0);
+        if !taken {
+            return Ok((version_number, source));
+        }
+    }
+    Err(LifecycleError::Invalid(
+        "version",
+        "no free source in range".to_string(),
+    ))
+}
+
 /// Input for a new browser/API submission.
 pub struct NewSubmission<'a> {
     pub actor: &'a str,
@@ -410,6 +475,7 @@ pub struct NewSubmission<'a> {
     pub category: Category,
     pub access_scope: AccessScope,
     pub owner_subject: Option<&'a str>,
+    pub owner_issuer: Option<&'a str>,
     pub original_filename: &'a str,
     pub bytes: &'a [u8],
     /// Optional existing document key, used to create a new version.
@@ -453,50 +519,39 @@ pub fn create_submission(
     }
     let sha256 = sha256_hex(input.bytes);
     let storage_key = storage.put(&sha256, extension, input.bytes)?;
-    let document_key = input
+    // A client may supply a document key, but it is embedded into the chunk
+    // source. Normalize it to the same slug alphabet the generated keys use so
+    // a crafted value cannot forge a version suffix or another source shape.
+    let document_key = match input
         .document_key
-        .map(|value| value.trim().to_string())
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| new_document_key(title, &sha256));
+    {
+        Some(value) => slug(value),
+        None => new_document_key(title, &sha256),
+    };
 
     let mut tx = client.transaction()?;
-    let version_number: i32 = tx
-        .query_one(
-            "SELECT coalesce(max(version_number), 0) + 1
-               FROM document_version
-              WHERE corpus = $1 AND document_key = $2",
-            &[&input.corpus, &document_key],
-        )?
-        .get(0);
-    // The chunk source keeps the original filename for citations while the
-    // short document-key suffix keeps two same-named uploads distinct. A
-    // version-specific suffix prevents a new version from replacing an older
-    // version's chunks before it is approved and ready.
-    let short_key: String = document_key
-        .chars()
-        .rev()
-        .take(8)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    let source = if version_number <= 1 {
-        format!("{} ({short_key})", input.original_filename)
-    } else {
-        format!(
-            "{} ({short_key}) (v{version_number})",
-            input.original_filename
-        )
-    };
+    // Serialize allocation of the next version for this logical document.
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+        &[&input.corpus, &document_key],
+    )?;
+    let (version_number, source) = allocate_version(
+        &mut tx,
+        input.corpus,
+        &document_key,
+        input.original_filename,
+    )?;
     let version_id: i64 = tx
         .query_one(
             "INSERT INTO document_version
                  (document_key, version_number, corpus, source, title, description,
-                  category, origin, access_scope, owner_subject, content_sha256,
-                  byte_size, mime_type, original_filename, storage_key,
+                  category, origin, access_scope, owner_subject, owner_issuer,
+                  content_sha256, byte_size, mime_type, original_filename, storage_key,
                   review_status, processing_status, created_by)
              VALUES ($1, $2, $3, $4, $5, $6, $7, 'submission', $8, $9, $10,
-                     $11, $12, $13, $14, 'pending_review', 'unprocessed', $15)
+                     $11, $12, $13, $14, $15, 'pending_review', 'unprocessed', $16)
              RETURNING version_id",
             &[
                 &document_key,
@@ -508,6 +563,7 @@ pub fn create_submission(
                 &input.category.as_str(),
                 &input.access_scope.as_str(),
                 &input.owner_subject,
+                &input.owner_issuer,
                 &sha256,
                 &(input.bytes.len() as i64),
                 &mime_for(extension),
@@ -529,16 +585,29 @@ pub fn create_submission(
             "content_sha256": sha256,
         }),
     )?;
-    let version = fetch_version(&mut tx, version_id)?;
+    let version = fetch_version(&mut tx, version_id, input.corpus)?;
     tx.commit()?;
     Ok(version)
 }
 
-/// Records a trusted local operator import as an approved, ready version and
-/// links the chunks already written by the CLI ingest. This is the separate
-/// trusted operator boundary; browser/API uploads never call it.
+/// The result of starting a trusted operator import. The CLI ingests into
+/// `source`, then calls [`finish_operator_import`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorImport {
+    pub version_id: i64,
+    pub source: String,
+    pub content_sha256: String,
+    /// True when an identical ready operator version already exists.
+    pub already_ready: bool,
+}
+
+/// Starts a trusted local operator import before any chunk write.
+///
+/// The version is approved for the trusted operator boundary but is not
+/// retrievable until `finish_operator_import` marks it ready. The caller must
+/// ingest into `OperatorImport::source`, then either finish or fail the import.
 #[allow(clippy::too_many_arguments)]
-pub fn record_operator_import(
+pub fn begin_operator_import(
     client: &mut Client,
     storage: &DocumentStorage,
     actor: &str,
@@ -547,71 +616,93 @@ pub fn record_operator_import(
     title: &str,
     original_filename: &str,
     bytes: &[u8],
-) -> Result<DocumentVersion, LifecycleError> {
+) -> Result<OperatorImport, LifecycleError> {
+    if bytes.is_empty() {
+        return Err(LifecycleError::Invalid("file", "empty".to_string()));
+    }
     let extension = extension_for(original_filename)?;
     let sha256 = sha256_hex(bytes);
     let storage_key = storage.put(&sha256, extension, bytes)?;
     let document_key = slug(source);
     let mut tx = client.transaction()?;
-    // Re-running the same trusted import with unchanged content is a no-op.
-    let existing: Option<i64> = tx
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+        &[&corpus, &document_key],
+    )?;
+    // The same unchanged trusted import is a no-op. Match on the logical
+    // document key and fingerprint rather than the source string, so an import
+    // recorded under an earlier source scheme is still recognized.
+    let existing = tx
         .query_opt(
-            "SELECT version_id FROM document_version
-              WHERE corpus = $1 AND source = $2 AND content_sha256 = $3
+            "SELECT version_id, source FROM document_version
+              WHERE corpus = $1 AND document_key = $2 AND content_sha256 = $3
                 AND origin = 'operator_import' AND review_status = 'approved'
                 AND processing_status = 'ready'
               ORDER BY version_id DESC LIMIT 1",
-            &[&corpus, &source, &sha256],
+            &[&corpus, &document_key, &sha256],
         )?
-        .map(|row| row.get(0));
-    if let Some(version_id) = existing {
-        tx.execute(
-            "UPDATE documents SET document_version_id = $1
-              WHERE corpus = $2 AND source = $3",
-            &[&version_id, &corpus, &source],
-        )?;
-        let version = fetch_version(&mut tx, version_id)?;
+        .map(|row| (row.get::<_, i64>(0), row.get::<_, String>(1)));
+    if let Some((version_id, source)) = existing {
         tx.commit()?;
-        return Ok(version);
+        return Ok(OperatorImport {
+            version_id,
+            source,
+            content_sha256: sha256,
+            already_ready: true,
+        });
     }
-    let version_number: i32 = tx
-        .query_one(
-            "SELECT coalesce(max(version_number), 0) + 1
-               FROM document_version
-              WHERE corpus = $1 AND document_key = $2",
-            &[&corpus, &document_key],
+    // A previous attempt that exited between begin and finish left its version
+    // in `processing`. Reuse that row so a retry completes the same version
+    // instead of stranding it and creating a duplicate.
+    let stranded = tx
+        .query_opt(
+            "SELECT version_id, source FROM document_version
+              WHERE corpus = $1 AND document_key = $2 AND content_sha256 = $3
+                AND origin = 'operator_import' AND review_status = 'approved'
+                AND processing_status = 'processing' AND removed_at IS NULL
+              ORDER BY version_id DESC LIMIT 1",
+            &[&corpus, &document_key, &sha256],
         )?
-        .get(0);
+        .map(|row| (row.get::<_, i64>(0), row.get::<_, String>(1)));
+    if let Some((version_id, source)) = stranded {
+        tx.commit()?;
+        return Ok(OperatorImport {
+            version_id,
+            source,
+            content_sha256: sha256,
+            already_ready: false,
+        });
+    }
+    let (version_number, version_source) =
+        allocate_version(&mut tx, corpus, &document_key, source)?;
     let version_id: i64 = tx
         .query_one(
             "INSERT INTO document_version
                  (document_key, version_number, corpus, source, title, category, origin,
-                  access_scope, content_sha256, byte_size, mime_type, original_filename,
-                  storage_key, review_status, processing_status, reviewed_by, reviewed_at,
-                  approved_sha256, approved_scope, approved_version_number, created_by)
+                  access_scope, owner_subject, owner_issuer, content_sha256, byte_size,
+                  mime_type, original_filename, storage_key, review_status,
+                  processing_status, reviewed_by, reviewed_at, approved_sha256,
+                  approved_scope, approved_version_number, created_by)
              VALUES ($1, $2, $3, $4, $5, 'other', 'operator_import', 'family', $6, $7,
-                     $8, $9, $10, 'approved', 'ready', $11, now(), $6, 'family', $2, $11)
+                     $8, $9, $10, $11, $12, 'approved', 'processing', $6, now(), $8,
+                     'family', $2, $6)
              RETURNING version_id",
             &[
                 &document_key,
                 &version_number,
                 &corpus,
-                &source,
+                &version_source,
                 &title,
+                &actor,
+                &"local-operator",
                 &sha256,
                 &(bytes.len() as i64),
                 &mime_for(extension),
                 &original_filename,
                 &storage_key,
-                &actor,
             ],
         )?
         .get(0);
-    tx.execute(
-        "UPDATE documents SET document_version_id = $1
-          WHERE corpus = $2 AND source = $3",
-        &[&version_id, &corpus, &source],
-    )?;
     audit(
         &mut tx,
         Some(version_id),
@@ -624,16 +715,118 @@ pub fn record_operator_import(
             "content_sha256": sha256,
         }),
     )?;
-    let version = fetch_version(&mut tx, version_id)?;
+    tx.commit()?;
+    Ok(OperatorImport {
+        version_id,
+        source: version_source,
+        content_sha256: sha256,
+        already_ready: false,
+    })
+}
+
+/// Marks a trusted operator import ready after its chunks were committed.
+pub fn finish_operator_import(
+    client: &mut Client,
+    version_id: i64,
+    corpus: &str,
+    actor: &str,
+) -> Result<DocumentVersion, LifecycleError> {
+    let mut tx = client.transaction()?;
+    // Lock the row for the whole transition so a concurrent removal or review
+    // change cannot slip between the state check and the chunk linkage.
+    let locked = tx
+        .query_opt(
+            "SELECT origin, review_status, processing_status, (removed_at IS NOT NULL)
+               FROM document_version WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
+        )?
+        .ok_or(LifecycleError::NotFound)?;
+    if locked.get::<_, String>(0) != "operator_import"
+        || locked.get::<_, String>(1) != "approved"
+        || locked.get::<_, String>(2) != "processing"
+        || locked.get::<_, bool>(3)
+    {
+        return Err(LifecycleError::InvalidTransition);
+    }
+    let version = fetch_version(&mut tx, version_id, corpus)?;
+    tx.execute(
+        "UPDATE documents SET document_version_id = $1
+          WHERE corpus = $2 AND source = $3 AND document_version_id IS NULL",
+        &[&version.version_id, &version.corpus, &version.source],
+    )?;
+    tx.execute(
+        "UPDATE document_version
+            SET processing_status = 'ready', updated_at = now()
+          WHERE version_id = $1",
+        &[&version.version_id],
+    )?;
+    tx.execute(
+        "UPDATE document_version
+            SET removed_at = now(), removed_by = 'system:superseded', updated_at = now()
+          WHERE corpus = $1 AND document_key = $2 AND version_number < $3
+            AND removed_at IS NULL",
+        &[
+            &version.corpus,
+            &version.document_key,
+            &version.version_number,
+        ],
+    )?;
+    audit(
+        &mut tx,
+        Some(version.version_id),
+        None,
+        "processing_ready",
+        actor,
+        serde_json::json!({ "origin": "operator_import" }),
+    )?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
+}
+
+/// Marks a failed trusted operator import as failed and non-retrievable.
+pub fn fail_operator_import(
+    client: &mut Client,
+    version_id: i64,
+    corpus: &str,
+    actor: &str,
+) -> Result<(), LifecycleError> {
+    let mut tx = client.transaction()?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
+    if version.origin != "operator_import" || version.processing_status == "ready" {
+        return Err(LifecycleError::InvalidTransition);
+    }
+    tx.execute(
+        "UPDATE document_version
+            SET processing_status = 'failed', updated_at = now()
+          WHERE version_id = $1",
+        &[&version.version_id],
+    )?;
+    // A failed import is never publishable, so any partial chunk batch that was
+    // written under its source must not stay linked to the version.
+    tx.execute(
+        "UPDATE documents SET document_version_id = NULL
+          WHERE document_version_id = $1",
+        &[&version.version_id],
+    )?;
+    audit(
+        &mut tx,
+        Some(version.version_id),
+        None,
+        "processing_failed",
+        actor,
+        serde_json::json!({ "error": "operator import failed" }),
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn version_columns() -> &'static str {
     "version_id, document_key, version_number, corpus, source, title, description, \
      category, origin, access_scope, review_status, processing_status, content_sha256, \
      byte_size, mime_type, original_filename, reviewed_by, reviewed_at::text, \
-     review_note, removed_at::text, created_by, created_at::text, updated_at::text"
+     review_note, removed_at::text, created_by, created_at::text, updated_at::text, \
+     owner_subject, owner_issuer"
 }
 
 fn row_to_version(row: postgres::Row) -> DocumentVersion {
@@ -661,19 +854,22 @@ fn row_to_version(row: postgres::Row) -> DocumentVersion {
         created_by: row.get(20),
         created_at: row.get(21),
         updated_at: row.get(22),
+        owner_subject: row.get(23),
+        owner_issuer: row.get(24),
     }
 }
 
 fn fetch_version<C: GenericClient>(
     client: &mut C,
     version_id: i64,
+    corpus: &str,
 ) -> Result<DocumentVersion, LifecycleError> {
     let sql = format!(
-        "SELECT {} FROM document_version WHERE version_id = $1",
+        "SELECT {} FROM document_version WHERE version_id = $1 AND corpus = $2",
         version_columns()
     );
     client
-        .query_opt(&sql, &[&version_id])?
+        .query_opt(&sql, &[&version_id, &corpus])?
         .map(row_to_version)
         .ok_or(LifecycleError::NotFound)
 }
@@ -681,8 +877,9 @@ fn fetch_version<C: GenericClient>(
 pub fn get_version(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
 ) -> Result<DocumentVersion, LifecycleError> {
-    fetch_version(client, version_id)
+    fetch_version(client, version_id, corpus)
 }
 
 /// Lists submissions. An admin sees every version; an editor sees only versions
@@ -691,14 +888,15 @@ pub fn list_submissions(
     client: &mut Client,
     actor: &str,
     is_admin: bool,
+    corpus: &str,
 ) -> Result<Vec<DocumentVersion>, LifecycleError> {
     let sql = format!(
         "SELECT {} FROM document_version
-          WHERE ($1 OR created_by = $2)
+          WHERE corpus = $1 AND ($2 OR created_by = $3)
           ORDER BY created_at DESC, version_id DESC",
         version_columns()
     );
-    let rows = client.query(&sql, &[&is_admin, &actor])?;
+    let rows = client.query(&sql, &[&corpus, &is_admin, &actor])?;
     Ok(rows.into_iter().map(row_to_version).collect())
 }
 
@@ -707,8 +905,9 @@ pub fn read_original(
     client: &mut Client,
     storage: &DocumentStorage,
     version_id: i64,
+    corpus: &str,
 ) -> Result<(DocumentVersion, Vec<u8>), LifecycleError> {
-    let version = fetch_version(client, version_id)?;
+    let version = fetch_version(client, version_id, corpus)?;
     if version.is_removed() {
         return Err(LifecycleError::NotFound);
     }
@@ -723,11 +922,33 @@ pub fn read_original(
     Ok((version, bytes))
 }
 
+fn invalidate_processing<C: GenericClient>(
+    client: &mut C,
+    version_id: i64,
+    reason: &str,
+) -> Result<(), LifecycleError> {
+    client.execute(
+        "UPDATE document_processing_job
+            SET status = 'failed', last_error = $2, lease_expires_at = NULL,
+                updated_at = now(), finished_at = now()
+          WHERE version_id = $1 AND status IN ('queued', 'processing', 'ready')",
+        &[&version_id, &reason],
+    )?;
+    client.execute(
+        "UPDATE document_version
+            SET processing_status = 'unprocessed', updated_at = now()
+          WHERE version_id = $1 AND processing_status IN ('queued', 'processing', 'ready')",
+        &[&version_id],
+    )?;
+    Ok(())
+}
+
 /// Records an explicit review decision. Approval binds the exact fingerprint,
 /// version, and scope; rejection clears any prior approval binding.
 pub fn review(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
     actor: &str,
     approve: bool,
     note: Option<&str>,
@@ -737,8 +958,8 @@ pub fn review(
     let row = tx
         .query_opt(
             "SELECT review_status, content_sha256, version_number, access_scope, (removed_at IS NOT NULL)
-               FROM document_version WHERE version_id = $1 FOR UPDATE",
-            &[&version_id],
+               FROM document_version WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
         )?
         .ok_or(LifecycleError::NotFound)?;
     let current: String = row.get(0);
@@ -751,9 +972,15 @@ pub fn review(
     let actor_owned = actor.to_string();
     let note_owned = note.unwrap_or("").to_string();
     if approve {
+        let current_scope = row.get::<_, Option<String>>(3);
+        if let (Some(requested), Some(current)) = (scope, current_scope.as_deref()) {
+            if requested.as_str() != current {
+                return Err(LifecycleError::ScopeChange);
+            }
+        }
         let effective_scope = scope
             .map(|value| value.as_str().to_string())
-            .or_else(|| row.get::<_, Option<String>>(3))
+            .or(current_scope)
             .ok_or_else(|| LifecycleError::Invalid("scope", "required for approval".to_string()))?;
         tx.execute(
             "UPDATE document_version
@@ -783,12 +1010,13 @@ pub fn review(
                 SET review_status = 'rejected', reviewed_by = $2, reviewed_at = now(),
                     review_note = $3, approved_sha256 = NULL, approved_scope = NULL,
                     approved_version_number = NULL,
-                    processing_status = CASE WHEN processing_status = 'ready'
+                    processing_status = CASE WHEN processing_status IN ('queued', 'processing', 'ready')
                                              THEN 'unprocessed' ELSE processing_status END,
                     updated_at = now()
               WHERE version_id = $1",
             &[&version_id, &actor_owned, &note_owned],
         )?;
+        invalidate_processing(&mut tx, version_id, "approval rejected")?;
         audit(
             &mut tx,
             Some(version_id),
@@ -798,7 +1026,7 @@ pub fn review(
             serde_json::json!({ "note": note }),
         )?;
     }
-    let version = fetch_version(&mut tx, version_id)?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
 }
@@ -808,6 +1036,7 @@ pub fn review(
 pub fn change_scope(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
     actor: &str,
     scope: AccessScope,
 ) -> Result<DocumentVersion, LifecycleError> {
@@ -815,21 +1044,22 @@ pub fn change_scope(
     let row = tx
         .query_opt(
             "SELECT access_scope, review_status FROM document_version
-              WHERE version_id = $1 FOR UPDATE",
-            &[&version_id],
+              WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
         )?
         .ok_or(LifecycleError::NotFound)?;
     let old_scope: Option<String> = row.get(0);
     let old_review: String = row.get(1);
     let changed = old_scope.as_deref() != Some(scope.as_str());
     if changed && old_review == "approved" {
+        invalidate_processing(&mut tx, version_id, "scope changed")?;
         tx.execute(
             "UPDATE document_version
                 SET access_scope = $2, review_status = 'pending_review',
                     approved_sha256 = NULL, approved_scope = NULL,
                     approved_version_number = NULL, reviewed_by = NULL,
                     reviewed_at = NULL,
-                    processing_status = CASE WHEN processing_status = 'ready'
+                    processing_status = CASE WHEN processing_status IN ('queued', 'processing', 'ready')
                                              THEN 'unprocessed' ELSE processing_status END,
                     updated_at = now()
               WHERE version_id = $1",
@@ -850,7 +1080,7 @@ pub fn change_scope(
         actor,
         serde_json::json!({ "scope": scope.as_str(), "approval_invalidated": changed && old_review == "approved" }),
     )?;
-    let version = fetch_version(&mut tx, version_id)?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
 }
@@ -859,9 +1089,19 @@ pub fn change_scope(
 pub fn remove(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
     actor: &str,
 ) -> Result<DocumentVersion, LifecycleError> {
     let mut tx = client.transaction()?;
+    let exists = tx
+        .query_opt(
+            "SELECT 1 FROM document_version WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
+        )?
+        .is_some();
+    if !exists {
+        return Err(LifecycleError::NotFound);
+    }
     tx.execute(
         "UPDATE document_version
             SET removed_at = now(), removed_by = $2, updated_at = now()
@@ -870,9 +1110,9 @@ pub fn remove(
     )?;
     tx.execute(
         "UPDATE document_processing_job
-            SET status = 'failed', last_error = 'version removed', updated_at = now(),
-                finished_at = now()
-          WHERE version_id = $1 AND status IN ('queued', 'processing')",
+            SET status = 'failed', last_error = 'version removed', lease_expires_at = NULL,
+                updated_at = now(), finished_at = now()
+          WHERE version_id = $1 AND status IN ('queued', 'processing', 'ready')",
         &[&version_id],
     )?;
     audit(
@@ -883,7 +1123,7 @@ pub fn remove(
         actor,
         serde_json::json!({}),
     )?;
-    let version = fetch_version(&mut tx, version_id)?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
 }
@@ -893,6 +1133,7 @@ pub fn remove(
 pub fn queue_processing(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
     actor: &str,
 ) -> Result<i64, LifecycleError> {
     let mut tx = client.transaction()?;
@@ -901,8 +1142,8 @@ pub fn queue_processing(
             "SELECT review_status, processing_status, (removed_at IS NOT NULL), content_sha256,
                     approved_sha256, approved_scope, access_scope, approved_version_number,
                     version_number, origin
-               FROM document_version WHERE version_id = $1 FOR UPDATE",
-            &[&version_id],
+               FROM document_version WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
         )?
         .ok_or(LifecycleError::NotFound)?;
     if row.get::<_, bool>(2)
@@ -918,14 +1159,18 @@ pub fn queue_processing(
     // Repeated queue requests are idempotent: return the existing job for a
     // queued, processing, or ready version.
     if matches!(status.as_str(), "queued" | "processing" | "ready") {
-        let job_id: i64 = tx
-            .query_one(
-                "SELECT job_id FROM document_processing_job WHERE job_key = $1",
-                &[&job_key],
-            )?
-            .get(0);
-        tx.commit()?;
-        return Ok(job_id);
+        let job = tx.query_opt(
+            "SELECT job_id, status FROM document_processing_job WHERE job_key = $1",
+            &[&job_key],
+        )?;
+        if let Some(job) = job {
+            let job_status: String = job.get(1);
+            if job_status != "failed" {
+                let job_id: i64 = job.get(0);
+                tx.commit()?;
+                return Ok(job_id);
+            }
+        }
     }
     if !matches!(status.as_str(), "unprocessed" | "failed" | "legacy_indexed") {
         return Err(LifecycleError::InvalidTransition);
@@ -973,17 +1218,20 @@ pub struct LegacyInventoryRow {
     pub fingerprint: String,
 }
 
-pub fn legacy_inventory(client: &mut Client) -> Result<Vec<LegacyInventoryRow>, LifecycleError> {
+pub fn legacy_inventory(
+    client: &mut Client,
+    corpus: &str,
+) -> Result<Vec<LegacyInventoryRow>, LifecycleError> {
     let rows = client.query(
         "SELECT v.corpus, v.source, v.version_id, count(d.id)::bigint,
                 v.review_status, v.processing_status, v.content_sha256
            FROM document_version v
            LEFT JOIN documents d ON d.document_version_id = v.version_id
-          WHERE v.origin = 'legacy_import'
+          WHERE v.origin = 'legacy_import' AND v.corpus = $1
           GROUP BY v.corpus, v.source, v.version_id, v.review_status,
                    v.processing_status, v.content_sha256
           ORDER BY v.corpus, v.source",
-        &[],
+        &[&corpus],
     )?;
     Ok(rows
         .into_iter()
@@ -1004,6 +1252,7 @@ pub fn legacy_inventory(client: &mut Client) -> Result<Vec<LegacyInventoryRow>, 
 pub fn promote_legacy(
     client: &mut Client,
     version_id: i64,
+    corpus: &str,
     actor: &str,
 ) -> Result<DocumentVersion, LifecycleError> {
     let mut tx = client.transaction()?;
@@ -1011,8 +1260,8 @@ pub fn promote_legacy(
         .query_opt(
             "SELECT origin, review_status, approved_sha256, content_sha256,
                     approved_scope, access_scope, (removed_at IS NOT NULL)
-               FROM document_version WHERE version_id = $1 FOR UPDATE",
-            &[&version_id],
+               FROM document_version WHERE version_id = $1 AND corpus = $2 FOR UPDATE",
+            &[&version_id, &corpus],
         )?
         .ok_or(LifecycleError::NotFound)?;
     if row.get::<_, String>(0) != "legacy_import"
@@ -1037,7 +1286,7 @@ pub fn promote_legacy(
         actor,
         serde_json::json!({ "origin": "legacy_import" }),
     )?;
-    let version = fetch_version(&mut tx, version_id)?;
+    let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
 }
