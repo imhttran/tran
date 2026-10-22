@@ -265,12 +265,19 @@ cleanup() {
 		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member')" >/dev/null 2>&1 || true
+	# Profile members have no assertion review history, so they can be removed.
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer') OR person_key LIKE 'e2e-branch-%'" >/dev/null 2>&1 || true
+		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null 2>&1 || true
+	# Branch-review people keep their assertions, their append-only review
+	# events, and the synthetic source: a person delete would cascade into
+	# assertion_review_event, which refuses deletion. Remove only the rows the
+	# next seed re-creates, so teardown is safe and the fixture stays idempotent.
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM source_evidence WHERE source_document_id IN (SELECT source_document_id FROM source_document WHERE relative_path = 'synthetic/e2e-branch-review-source.md')" >/dev/null 2>&1 || true
+		-c "DELETE FROM genealogy_fact_proposal WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%')" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM source_document WHERE relative_path = 'synthetic/e2e-branch-review-source.md'" >/dev/null 2>&1 || true
+		-c "DELETE FROM onboarding_person_account_link WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%')" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM onboarding_profile_value WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%')" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM
