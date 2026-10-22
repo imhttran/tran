@@ -3,6 +3,9 @@
 This matrix is the acceptance plan for the publication boundary defined in
 [`docs/architecture/FAMILY-PUBLICATION-CONTRACT.md`](../architecture/FAMILY-PUBLICATION-CONTRACT.md).
 
+The test names and files cited below were checked against this branch's tree;
+run the commands in the next section to reproduce them.
+
 Status meanings:
 
 - **PASS** — an existing, executed test proves the scenario for the content

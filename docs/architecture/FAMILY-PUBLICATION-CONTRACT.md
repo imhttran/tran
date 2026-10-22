@@ -72,8 +72,24 @@ an item that is eligible for one relative is not thereby eligible for another.
 | Genealogy fact | `assertion.review_status = verified` | shared family fact | latest `assertion_review_event` is the current one | evidence is an original, non-derivative source with page ≥ 1 and a locator | `review_status` is not `disputed` or `needs_review` |
 | Document | `review_status = approved` | `access_scope = family` | `processing_status = ready` and `approved_version_number` is current | `approved_sha256 = content_sha256`, `approved_scope = access_scope`, `approved_version_number = version_number`, `removed_at IS NULL` | n/a |
 
-The document row matches the existing `approved_documents` view exactly; this
-contract must not weaken or duplicate that predicate.
+The document row matches the existing `approved_documents` view exactly
+(`genealogy/migrations/009_document_lifecycle.sql`):
+
+```sql
+CREATE VIEW approved_documents AS
+SELECT d.*
+FROM documents d
+JOIN document_version v ON v.version_id = d.document_version_id
+WHERE v.review_status = 'approved'
+  AND v.processing_status = 'ready'
+  AND v.removed_at IS NULL
+  AND v.access_scope = 'family'
+  AND v.approved_sha256 = v.content_sha256
+  AND v.approved_scope = v.access_scope
+  AND v.approved_version_number = v.version_number;
+```
+
+This contract must not weaken or duplicate that predicate.
 
 ### 3.2 Default deny
 
