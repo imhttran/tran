@@ -183,6 +183,39 @@ impl TestDb {
             .expect("seed draft");
     }
 
+    /// Inserts a draft revision and returns its id.
+    fn draft_revision_id(&mut self, person_id: i64, field_key: &str, value: &str) -> i64 {
+        self.genealogy
+            .query_one(
+                "INSERT INTO onboarding_profile_revision \
+                     (person_id, field_key, prior_value_text, \
+                      prior_approved_revision_number, new_value_text, changed_by, \
+                      revision_number, status, visibility) \
+                 VALUES ($1, $2, NULL, 0, $3, 'synthetic-owner', 1, 'draft', 'family') \
+                 RETURNING revision_id",
+                &[&person_id, &field_key, &value],
+            )
+            .expect("draft revision")
+            .get(0)
+    }
+
+    /// Runs a closure with the value guard disabled, then always re-enables it.
+    ///
+    /// Only used to simulate rows a legacy or out-of-band writer could leave
+    /// behind; foreign keys and check constraints still apply.
+    fn without_value_guard<F>(&mut self, writes: F) -> Result<(), postgres::Error>
+    where
+        F: FnOnce(&mut Client) -> Result<(), postgres::Error>,
+    {
+        self.genealogy
+            .batch_execute("ALTER TABLE onboarding_profile_value DISABLE TRIGGER USER")?;
+        let outcome = writes(&mut self.genealogy);
+        let restored = self
+            .genealogy
+            .batch_execute("ALTER TABLE onboarding_profile_value ENABLE TRIGGER USER");
+        outcome.and(restored)
+    }
+
     fn rag_document_count(&self) -> Option<i64> {
         let dsn = std::env::var("DATABASE_URL").ok()?;
         if dsn.trim().is_empty() {
@@ -451,6 +484,96 @@ fn family_read_does_not_change_the_owners_private_view_or_create_retrieval_rows(
             db.rag_document_count(),
             Some(before),
             "presenting a profile must not create retrieval documents"
+        );
+    }
+}
+
+#[test]
+fn inconsistent_or_missing_provenance_is_never_presented() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let (subject, subject_key) = db.person("subject");
+
+    // One fully consistent value written through the product path.
+    let valid = format!("{}-valid-biography", db.prefix);
+    db.approved(subject, "biography", &valid, "family");
+
+    // One family value per provenance clause, each made inconsistent only in
+    // that clause. The write-time guard enforces all of them, so these rows can
+    // only come from a legacy or out-of-band writer; the read must fail closed
+    // rather than trust them.
+    db.approved(subject, "preferred_name", "Revision name", "family");
+    db.approved(subject, "family_memories", "Family memory", "owner_private");
+    db.approved(subject, "whatsapp", "+0000000000", "family");
+    db.approved(subject, "my_story", "A long story", "family");
+    let draft_revision = db.draft_revision_id(subject, "contact_preferences", "Draft text");
+
+    db.without_value_guard(|genealogy| {
+        // 1. Value text no longer matches the approved revision.
+        genealogy.execute(
+            "UPDATE onboarding_profile_value SET value_text = 'Mismatched text' \
+              WHERE person_id = $1 AND field_key = 'preferred_name'",
+            &[&subject],
+        )?;
+        // 2. Visibility claims family, the approved revision says otherwise.
+        genealogy.execute(
+            "UPDATE onboarding_profile_value SET visibility = 'family' \
+              WHERE person_id = $1 AND field_key = 'family_memories'",
+            &[&subject],
+        )?;
+        // 3. Revision number no longer matches the approved revision.
+        genealogy.execute(
+            "UPDATE onboarding_profile_value SET approved_revision_number = 99 \
+              WHERE person_id = $1 AND field_key = 'my_story'",
+            &[&subject],
+        )?;
+        // 4. The value points at a revision that is not approved.
+        genealogy.execute(
+            "UPDATE onboarding_profile_value SET approved_revision_id = $2 \
+              WHERE person_id = $1 AND field_key = 'whatsapp'",
+            &[&subject, &draft_revision],
+        )?;
+        // 5. A legacy row with no approved revision at all: migration 0012
+        // leaves pre-existing values without a backfilled revision.
+        genealogy.execute(
+            "INSERT INTO onboarding_profile_value \
+                 (person_id, field_key, value_text, visibility, updated_by, \
+                  approved_revision_number) \
+             VALUES ($1, 'current_location', 'Legacy unprovenanced value', 'family', \
+                     'legacy', 0)",
+            &[&subject],
+        )?;
+        Ok(())
+    })
+    .expect("simulate inconsistent legacy rows");
+
+    let profile = read_family_profile(&mut db.genealogy, &reader, &subject_key)
+        .expect("family profile with inconsistent rows present");
+
+    // Only the value with a complete, matching provenance is presented.
+    assert_eq!(
+        profile
+            .fields
+            .iter()
+            .map(|field| field.field_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["biography"]
+    );
+    let rendered = format!("{profile:?}");
+    for excluded in [
+        "Mismatched text",
+        "Family memory",
+        "+0000000000",
+        "A long story",
+        "Legacy unprovenanced value",
+    ] {
+        assert!(
+            !rendered.contains(excluded),
+            "inconsistent provenance leaked: {excluded}"
         );
     }
 }
