@@ -358,10 +358,36 @@ reviewer. What is the rule?
 Defined in §4. The allow-list is a decision, not a default: expanding it
 requires an explicit change to this document and its tests.
 
-## 11. Out of scope for this slice
+## 11. Implementation status
 
-- No publication tables, views, endpoints, or background jobs.
-- No change to ingestion, document processing, storage, or retrieval code.
-- No family-content indexing, and no change to `/api/query`.
-- No presentation endpoints for family-visible profiles or stories.
-- No BR-004 or Head of Family succession behavior.
+This contract describes the whole boundary. Only one part of it is implemented.
+
+### Implemented (USR-006-A)
+
+- **Presentation of profile values**, read-only:
+  `GET /api/family/persons/{person_key}/profile` returns approved,
+  `family`-visible, non-media values to a caller holding an active reviewed
+  account-person link. Membership and the value read share one transaction, and
+  the read re-establishes the §3.1 provenance binding rather than trusting it,
+  so a value whose approved revision is missing, unapproved, or inconsistent is
+  excluded.
+- The endpoint contract and error mapping are in
+  [guides/family-profile-presentation.md](../guides/family-profile-presentation.md).
+
+### Not implemented
+
+- **No publication (indexing) endpoint, candidate adapter, publication record,
+  or background job.** §4's second gate and §9's adapter are design only.
+- **No content enters the retrieval corpus** through this contract.
+  `approved_documents` remains the only retrieval source; decision **D**
+  (indexing allow-list) is unresolved.
+- **No indexing of profile values, biographies, stories, or media.**
+- **No presentation of media, genealogy facts, or story collections**, and no
+  family profile UI page. Only text profile values are presented.
+- **No privacy mutation:** decision **A** (immediate owner restriction) is not
+  implemented, and the BR-004 and Head of Family policies in §10 are untouched.
+- **No change to ingestion, storage, workers, or retrieval.** Those remain
+  Linux-owned.
+
+A follow-up slice that adds indexing must satisfy §3–§7 and §9 in full before
+any content becomes retrievable.
