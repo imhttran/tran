@@ -30,7 +30,9 @@ use std::sync::Arc;
 
 use rag_foundation::config::Config;
 use rag_foundation::corpus::Corpus;
-use rag_foundation::document_lifecycle::{record_operator_import, DocumentStorage};
+use rag_foundation::document_lifecycle::{
+    begin_operator_import, fail_operator_import, finish_operator_import, DocumentStorage,
+};
 use rag_foundation::embedding::OllamaEmbedder;
 use rag_foundation::fingerprint::{fingerprint, ChunkerConfig};
 use rag_foundation::ingest::IngestRejection;
@@ -93,33 +95,64 @@ fn run() -> Result<ExitCode, String> {
     // Exactly one pipeline: the service composes `IngestPipeline`.
     let service = IngestService::new(&embedder, &store, &store, pipeline_config);
 
-    let outcome = service
-        .ingest_source(&path, &source, &content_hash)
-        .map_err(|err| format!("ingest failed: {err}"))?;
+    // Register the trusted operator version before any chunk write. If the
+    // ingest or publication fails, the version stays non-ready and the previous
+    // approved version's chunks remain untouched.
+    let mut lifecycle_client = postgres::Client::connect(&config.database_url, postgres::NoTls)
+        .map_err(|err| format!("failed to open the lifecycle store: {err}"))?;
+    let storage = DocumentStorage::new(config.document_root.clone());
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source.clone());
+    let title = filename.clone();
+    let operator = begin_operator_import(
+        &mut lifecycle_client,
+        &storage,
+        "cli-operator",
+        corpus.as_str(),
+        &source,
+        &title,
+        &filename,
+        &bytes,
+    )
+    .map_err(|err| format!("failed to prepare the operator import: {err}"))?;
+    if operator.already_ready {
+        println!("unchanged {source}: approved operator version already ready");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let outcome = match service.ingest_source(&path, &operator.source, &content_hash) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let _ = fail_operator_import(
+                &mut lifecycle_client,
+                operator.version_id,
+                corpus.as_str(),
+                "cli-operator",
+            );
+            return Err(format!("ingest failed: {err}"));
+        }
+    };
 
     if matches!(
         outcome,
         IngestOutcome::Replaced { .. } | IngestOutcome::Unchanged { .. }
     ) {
-        let mut client = postgres::Client::connect(&config.database_url, postgres::NoTls)
-            .map_err(|err| format!("failed to record the operator import: {err}"))?;
-        let storage = DocumentStorage::new(config.document_root.clone());
-        let filename = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| source.clone());
-        let title = filename.clone();
-        record_operator_import(
-            &mut client,
-            &storage,
-            "cli-operator",
+        finish_operator_import(
+            &mut lifecycle_client,
+            operator.version_id,
             corpus.as_str(),
-            &source,
-            &title,
-            &filename,
-            &bytes,
+            "cli-operator",
         )
-        .map_err(|err| format!("failed to record the operator import: {err}"))?;
+        .map_err(|err| format!("failed to publish the operator import: {err}"))?;
+    } else {
+        let _ = fail_operator_import(
+            &mut lifecycle_client,
+            operator.version_id,
+            corpus.as_str(),
+            "cli-operator",
+        );
     }
 
     Ok(report(&source, &outcome))

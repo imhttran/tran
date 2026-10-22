@@ -546,6 +546,10 @@ fn operation_requires_corpus(operation: Operation) -> bool {
         Operation::Ingest
             | Operation::Query
             | Operation::DocumentStatus
+            | Operation::DocumentSubmit
+            | Operation::DocumentRead
+            | Operation::DocumentReview
+            | Operation::DocumentProcess
             | Operation::GenealogyRead
             | Operation::GenealogyNominate
     )
@@ -4683,6 +4687,11 @@ fn lifecycle_error(err: document_lifecycle::LifecycleError) -> Response {
             "unknown_document",
             "no such document submission",
         ),
+        document_lifecycle::LifecycleError::ScopeChange => error(
+            StatusCode::CONFLICT,
+            "scope_change_requires_explicit_scope",
+            "approval cannot change the document scope; change the scope explicitly first",
+        ),
         document_lifecycle::LifecycleError::NotApproved
         | document_lifecycle::LifecycleError::InvalidTransition => error(
             StatusCode::CONFLICT,
@@ -4704,7 +4713,9 @@ fn lifecycle_error(err: document_lifecycle::LifecycleError) -> Response {
 }
 
 fn can_access_document(identity: &VerifiedIdentity, version: &DocumentVersion) -> bool {
-    identity.has_role(Role::Admin) || version.created_by == identity.subject()
+    identity.has_role(Role::Admin)
+        || (version.created_by == identity.subject()
+            && version.owner_issuer.as_deref() == Some(identity.issuer()))
 }
 
 struct DocumentSubmissionForm {
@@ -4955,6 +4966,7 @@ async fn submit_document(
     let config = state.config.clone();
     let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
+    let actor_issuer = identity.issuer().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
         let storage = DocumentStorage::new(config.document_root.clone());
@@ -4969,6 +4981,7 @@ async fn submit_document(
                 category: form.category,
                 access_scope: form.scope,
                 owner_subject: Some(&actor),
+                owner_issuer: Some(&actor_issuer),
                 original_filename: &form.original_filename,
                 bytes: &form.bytes,
                 document_key: form.document_key.as_deref(),
@@ -5005,11 +5018,13 @@ async fn list_document_submissions(State(state): State<AppState>, headers: Heade
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let is_admin = identity.has_role(Role::Admin);
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_lifecycle::list_submissions(&mut client, &actor, is_admin).map_err(lifecycle_error)
+        document_lifecycle::list_submissions(&mut client, &actor, is_admin, &corpus)
+            .map_err(lifecycle_error)
     })
     .await;
     match result {
@@ -5041,9 +5056,10 @@ async fn get_document_submission(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)
+        document_lifecycle::get_version(&mut client, version_id, &corpus).map_err(lifecycle_error)
     })
     .await;
     match result {
@@ -5080,10 +5096,11 @@ async fn get_document_content(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
         let storage = DocumentStorage::new(config.document_root.clone());
-        document_lifecycle::read_original(&mut client, &storage, version_id)
+        document_lifecycle::read_original(&mut client, &storage, version_id, &corpus)
             .map_err(lifecycle_error)
     })
     .await;
@@ -5167,12 +5184,14 @@ async fn review_document_submission(
         None => None,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
         document_lifecycle::review(
             &mut client,
             version_id,
+            &corpus,
             &actor,
             request.approve,
             Some(note.as_str()),
@@ -5226,10 +5245,11 @@ async fn change_document_submission_scope(
         }
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_lifecycle::change_scope(&mut client, version_id, &actor, scope)
+        document_lifecycle::change_scope(&mut client, version_id, &corpus, &actor, scope)
             .map_err(lifecycle_error)
     })
     .await;
@@ -5262,20 +5282,26 @@ async fn remove_document_submission(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
+    let actor_issuer = identity.issuer().to_string();
     let is_admin = identity.has_role(Role::Admin);
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        let version =
-            document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)?;
-        if !is_admin && version.created_by != actor {
+        let version = document_lifecycle::get_version(&mut client, version_id, &corpus)
+            .map_err(lifecycle_error)?;
+        if !is_admin
+            && (version.created_by != actor
+                || version.owner_issuer.as_deref() != Some(actor_issuer.as_str()))
+        {
             return Err(error(
                 StatusCode::FORBIDDEN,
                 "forbidden",
                 "the authenticated account may not remove this document",
             ));
         }
-        document_lifecycle::remove(&mut client, version_id, &actor).map_err(lifecycle_error)
+        document_lifecycle::remove(&mut client, version_id, &corpus, &actor)
+            .map_err(lifecycle_error)
     })
     .await;
     match result {
@@ -5307,21 +5333,23 @@ async fn process_document_submission(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        let version =
-            document_lifecycle::get_version(&mut client, version_id).map_err(lifecycle_error)?;
+        let version = document_lifecycle::get_version(&mut client, version_id, &corpus)
+            .map_err(lifecycle_error)?;
         if version.origin == "legacy_import" {
-            let promoted = document_lifecycle::promote_legacy(&mut client, version_id, &actor)
-                .map_err(lifecycle_error)?;
+            let promoted =
+                document_lifecycle::promote_legacy(&mut client, version_id, &corpus, &actor)
+                    .map_err(lifecycle_error)?;
             return Ok(serde_json::json!({
                 "ok": true,
                 "promoted": true,
                 "submission": promoted,
             }));
         }
-        let job_id = document_lifecycle::queue_processing(&mut client, version_id, &actor)
+        let job_id = document_lifecycle::queue_processing(&mut client, version_id, &corpus, &actor)
             .map_err(lifecycle_error)?;
         Ok(serde_json::json!({
             "ok": true,
@@ -5350,9 +5378,10 @@ async fn legacy_document_inventory(State(state): State<AppState>, headers: Heade
         return response;
     }
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_lifecycle::legacy_inventory(&mut client).map_err(lifecycle_error)
+        document_lifecycle::legacy_inventory(&mut client, &corpus).map_err(lifecycle_error)
     })
     .await;
     match result {
@@ -5380,10 +5409,12 @@ async fn promote_legacy_document(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_lifecycle::promote_legacy(&mut client, version_id, &actor).map_err(lifecycle_error)
+        document_lifecycle::promote_legacy(&mut client, version_id, &corpus, &actor)
+            .map_err(lifecycle_error)
     })
     .await;
     match result {
@@ -5417,6 +5448,11 @@ fn processing_error(err: document_processing::ProcessingError) -> Response {
             "stale_approval",
             "the document approval is no longer valid",
         ),
+        document_processing::ProcessingError::ClaimLost => error(
+            StatusCode::CONFLICT,
+            "claim_lost",
+            "the processing claim was taken over by another worker",
+        ),
         document_processing::ProcessingError::MissingOriginal => error(
             StatusCode::CONFLICT,
             "document_original_missing",
@@ -5442,9 +5478,10 @@ async fn list_document_jobs(State(state): State<AppState>, headers: HeaderMap) -
         return response;
     }
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_processing::list_jobs(&mut client).map_err(processing_error)
+        document_processing::list_jobs(&mut client, &corpus).map_err(processing_error)
     })
     .await;
     match result {
@@ -5467,6 +5504,7 @@ async fn run_document_jobs(State(state): State<AppState>, headers: HeaderMap) ->
         return response;
     }
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
         let store = PgStore::connect(&config.database_url).map_err(|_| {
@@ -5495,6 +5533,8 @@ async fn run_document_jobs(State(state): State<AppState>, headers: HeaderMap) ->
             &config,
             "api-worker",
             10,
+            Some(&corpus),
+            300,
         )
         .map_err(processing_error)
     })
@@ -5528,10 +5568,12 @@ async fn retry_document_job(
         Err(response) => return response,
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_rag(&config)?;
-        document_processing::retry_job(&mut client, job_id, &actor).map_err(processing_error)
+        document_processing::retry_job(&mut client, job_id, &actor, &corpus)
+            .map_err(processing_error)
     })
     .await;
     match result {
@@ -5679,5 +5721,43 @@ mod tests {
             "Bearer token-value".parse().unwrap(),
         );
         assert_eq!(bearer_token(&headers), Some("token-value".to_string()));
+    }
+    #[test]
+    fn document_ownership_is_issuer_qualified() {
+        let version = DocumentVersion {
+            version_id: 1,
+            document_key: "synthetic".to_string(),
+            version_number: 1,
+            corpus: "synthetic-corpus".to_string(),
+            source: "synthetic.md".to_string(),
+            title: "Synthetic".to_string(),
+            description: None,
+            category: "other".to_string(),
+            origin: "submission".to_string(),
+            access_scope: Some("family".to_string()),
+            owner_subject: Some("sub-1".to_string()),
+            owner_issuer: Some("https://issuer-a".to_string()),
+            review_status: "pending_review".to_string(),
+            processing_status: "unprocessed".to_string(),
+            content_sha256: "a".repeat(64),
+            byte_size: 1,
+            mime_type: "text/plain".to_string(),
+            original_filename: "synthetic.md".to_string(),
+            reviewed_by: None,
+            reviewed_at: None,
+            review_note: None,
+            removed_at: None,
+            created_by: "sub-1".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        };
+        let same_issuer =
+            VerifiedIdentity::new("sub-1", "https://issuer-a", vec![Role::Editor], vec![]);
+        let other_issuer =
+            VerifiedIdentity::new("sub-1", "https://issuer-b", vec![Role::Editor], vec![]);
+        let admin = VerifiedIdentity::new("other", "https://issuer-b", vec![Role::Admin], vec![]);
+        assert!(can_access_document(&same_issuer, &version));
+        assert!(!can_access_document(&other_issuer, &version));
+        assert!(can_access_document(&admin, &version));
     }
 }

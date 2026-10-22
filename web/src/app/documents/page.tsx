@@ -278,7 +278,13 @@ function DocumentsContent({ role }: { role: Role | null }) {
                             type="button"
                             disabled={busy || item.review_status === "approved"}
                             onClick={() => void act(
-                              () => reviewDocument(item.version_id, { approve: true, scope }),
+                              () => reviewDocument(item.version_id, {
+                                approve: true,
+                                // Keep the stored scope. Omitting it when the row
+                                // has none lets the server decide instead of
+                                // silently broadening a legacy row to family.
+                                ...(item.access_scope ? { scope: item.access_scope } : {}),
+                              }),
                               `Approved submission ${item.version_id}.`,
                             )}
                           >

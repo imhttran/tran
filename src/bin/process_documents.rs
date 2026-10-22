@@ -61,6 +61,10 @@ fn run_once() -> Result<Vec<rag_foundation::document_processing::JobOutcome>, St
     let model = OllamaClient::new(config.ollama_url.clone(), transport, config.request_timeout);
     let embedder = OllamaEmbedder::new(model, config.embed_model.clone())
         .with_embed_dim(config.embed_dim as usize);
+    let corpus = std::env::var("RAG_CORPUS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     run_due_jobs(
         &mut client,
         &store,
@@ -69,6 +73,8 @@ fn run_once() -> Result<Vec<rag_foundation::document_processing::JobOutcome>, St
         &config,
         "cli-worker",
         100,
+        corpus.as_deref(),
+        300,
     )
     .map_err(|err| err.to_string())
 }

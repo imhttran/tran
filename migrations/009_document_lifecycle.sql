@@ -152,43 +152,53 @@ CREATE INDEX IF NOT EXISTS documents_document_version_idx
 
 -- Quarantine one legacy version per existing `(corpus, source)` group. No owner
 -- or approved scope is invented, and neither `approved` nor `ready` is written.
-INSERT INTO document_version (
-    document_key, version_number, corpus, source, title, category, origin,
-    access_scope, owner_subject, content_sha256, byte_size, mime_type,
-    original_filename, storage_key, review_status, processing_status, created_by
+-- One-time quarantine backfill. The CTE links only the versions inserted by
+-- THIS run, so a later `make db-schema` / migration rerun cannot attach
+-- post-migration chunks to an already approved legacy version.
+WITH inserted AS (
+    INSERT INTO document_version (
+        document_key, version_number, corpus, source, title, category, origin,
+        access_scope, owner_subject, content_sha256, byte_size, mime_type,
+        original_filename, storage_key, review_status, processing_status, created_by
+    )
+    SELECT
+        'legacy-' || substr(encode(sha256(convert_to(coalesce(d.corpus, '') || ':' || coalesce(d.source, ''), 'UTF8')), 'hex'), 1, 24),
+        1,
+        coalesce(d.corpus, ''),
+        coalesce(d.source, ''),
+        coalesce(d.source, 'Legacy document'),
+        'legacy',
+        'legacy_import',
+        NULL,
+        NULL,
+        encode(sha256(convert_to(coalesce(d.corpus, '') || ':' || coalesce(d.source, ''), 'UTF8')), 'hex'),
+        0,
+        'application/octet-stream',
+        coalesce(d.source, 'legacy'),
+        NULL,
+        'pending_review',
+        'legacy_indexed',
+        'legacy_backfill'
+    FROM documents d
+    WHERE d.document_version_id IS NULL
+      -- A rerun must not mint a second legacy version for a group that already
+      -- has one, including when migration 010's unique (corpus, source) index
+      -- is not present yet.
+      AND NOT EXISTS (
+          SELECT 1 FROM document_version v
+           WHERE v.corpus = coalesce(d.corpus, '')
+             AND v.source = coalesce(d.source, '')
+      )
+    GROUP BY d.corpus, d.source
+    ON CONFLICT DO NOTHING
+    RETURNING version_id, corpus, source
 )
-SELECT
-    'legacy-' || substr(encode(sha256(convert_to(coalesce(d.corpus, '') || ':' || coalesce(d.source, ''), 'UTF8')), 'hex'), 1, 24),
-    1,
-    coalesce(d.corpus, ''),
-    coalesce(d.source, ''),
-    coalesce(d.source, 'Legacy document'),
-    'legacy',
-    'legacy_import',
-    NULL,
-    NULL,
-    encode(sha256(convert_to(coalesce(d.corpus, '') || ':' || coalesce(d.source, ''), 'UTF8')), 'hex'),
-    0,
-    'application/octet-stream',
-    coalesce(d.source, 'legacy'),
-    NULL,
-    'pending_review',
-    'legacy_indexed',
-    'legacy_backfill'
-FROM documents d
-WHERE d.document_version_id IS NULL
-GROUP BY d.corpus, d.source
-ON CONFLICT DO NOTHING;
-
--- Link pre-existing chunks to their quarantine version. The version remains
--- pending, so the approved view below still excludes them.
 UPDATE documents d
-SET document_version_id = v.version_id
-FROM document_version v
-WHERE v.origin = 'legacy_import'
-  AND v.corpus = coalesce(d.corpus, '')
-  AND v.source = coalesce(d.source, '')
-  AND d.document_version_id IS NULL;
+SET document_version_id = inserted.version_id
+FROM inserted
+WHERE d.document_version_id IS NULL
+  AND d.corpus = inserted.corpus
+  AND d.source = inserted.source;
 
 -- The only retrieval view. It requires explicit approval bound to the exact
 -- content fingerprint, version, and scope, plus successful processing and no

@@ -39,25 +39,53 @@ fn normalize(citation: &str) -> String {
 fn normalize_source(source: &str) -> String {
     let trimmed = source.trim().to_lowercase();
     let mut base = trimmed.as_str();
-    // Drop a trailing " (vN)".
+    // Drop a trailing " (vN)" only when it follows a parenthesised document
+    // key, which is the only form the lifecycle generates. A real filename that
+    // happens to end in " (v2)" is left intact.
     if base.ends_with(')') {
         if let Some(index) = base.rfind(" (v") {
             let inner = &base[index + 3..base.len() - 1];
-            if !inner.is_empty() && inner.chars().all(|ch| ch.is_ascii_digit()) {
+            if !inner.is_empty()
+                && inner.chars().all(|ch| ch.is_ascii_digit())
+                && base[..index].trim_end().ends_with(')')
+            {
                 base = base[..index].trim_end();
             }
         }
     }
-    // Drop a trailing " (8 hex)" version key.
+    // Drop a trailing document key: the generated " (8 hex)", the submission
+    // " (slug-8 hex)", or the operator " (slug-with-dash)" form. A plain
+    // single word in parentheses is not a generated key.
     if base.ends_with(')') {
         if let Some(index) = base.rfind(" (") {
             let inner = &base[index + 2..base.len() - 1];
-            if inner.len() == 8 && inner.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            let hex_tail = inner.len() >= 8
+                && inner[inner.len() - 8..]
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit());
+            let plain_key = inner.len() == 8 && hex_tail;
+            let prefixed_key =
+                inner.len() > 8 && inner.as_bytes()[inner.len() - 9] == b'-' && hex_tail;
+            let operator_key = inner.contains('-')
+                && inner
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
+            if plain_key || prefixed_key || operator_key {
                 base = base[..index].trim_end();
             }
         }
     }
     base.strip_suffix(".md").unwrap_or(base).to_string()
+}
+
+fn normalize_section(section: &str) -> String {
+    let trimmed = section.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("section:") {
+        trimmed[8..].trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn parse_page_segment(segment: &str) -> Option<u32> {
@@ -126,7 +154,7 @@ pub fn matches(citation: &Citation, passage: &ContextPassage) -> bool {
     if normalize_source(&passage.source) != normalize_source(&citation.source) {
         return false;
     }
-    if passage.section != citation.section {
+    if normalize_section(&passage.section) != normalize_section(&citation.section) {
         return false;
     }
     match citation.page {

@@ -28,6 +28,7 @@ pub struct ClaimedJob {
     pub version_id: i64,
     pub attempts: i32,
     pub max_attempts: i32,
+    pub claimed_by: String,
 }
 
 /// The outcome of one processing attempt.
@@ -46,6 +47,8 @@ pub enum ProcessingError {
     NotFound,
     #[error("the version is no longer approved for publication")]
     StaleApproval,
+    #[error("the processing claim was lost to another worker")]
+    ClaimLost,
     #[error("the document original is unavailable")]
     MissingOriginal,
     #[error("the document storage failed")]
@@ -81,6 +84,8 @@ fn audit<C: GenericClient>(
     detail: serde_json::Value,
 ) -> Result<(), ProcessingError> {
     let detail = detail.to_string();
+    let action = action.to_string();
+    let actor = actor.to_string();
     client.execute(
         "INSERT INTO document_audit_event (version_id, job_id, action, actor, detail)
          VALUES ($1, $2, $3, $4, $5::text::jsonb)",
@@ -89,27 +94,41 @@ fn audit<C: GenericClient>(
     Ok(())
 }
 
-/// Claims the oldest runnable job. Concurrent workers cannot claim the same row.
+/// Claims the oldest runnable job. A queued job, or a `processing` job whose
+/// lease expired, may be claimed. Concurrent workers cannot claim the same row.
 pub fn claim_next_job(
     client: &mut Client,
     worker: &str,
+    corpus: Option<&str>,
+    lease_seconds: i64,
 ) -> Result<Option<ClaimedJob>, ProcessingError> {
     let mut tx = client.transaction()?;
+    let worker_owned = worker.to_string();
+    let corpus_owned = corpus.map(str::to_string);
+    let lease = lease_seconds as f64;
     let row = tx.query_opt(
         "WITH candidate AS (
-             SELECT job_id FROM document_processing_job
-              WHERE status = 'queued' AND attempts < max_attempts
-              ORDER BY job_id
-              FOR UPDATE SKIP LOCKED
+             SELECT job.job_id
+               FROM document_processing_job job
+               JOIN document_version version ON version.version_id = job.version_id
+              WHERE (job.status = 'queued'
+                     OR (job.status = 'processing'
+                         AND (job.lease_expires_at IS NULL
+                              OR job.lease_expires_at <= now())))
+                AND job.attempts < job.max_attempts
+                AND ($3::text IS NULL OR version.corpus = $3)
+              ORDER BY job.job_id
+              FOR UPDATE OF job SKIP LOCKED
               LIMIT 1
          )
          UPDATE document_processing_job job
             SET status = 'processing', claimed_by = $1, claimed_at = now(),
+                lease_expires_at = now() + make_interval(secs => $2),
                 attempts = job.attempts + 1, updated_at = now()
            FROM candidate
           WHERE job.job_id = candidate.job_id
          RETURNING job.job_id, job.version_id, job.attempts, job.max_attempts",
-        &[&worker],
+        &[&worker_owned, &lease, &corpus_owned],
     )?;
     let Some(row) = row else {
         tx.commit()?;
@@ -120,6 +139,7 @@ pub fn claim_next_job(
         version_id: row.get(1),
         attempts: row.get(2),
         max_attempts: row.get(3),
+        claimed_by: worker.to_string(),
     };
     tx.execute(
         "UPDATE document_version SET processing_status = 'processing', updated_at = now()
@@ -225,12 +245,22 @@ fn fail_job(
     error: &str,
 ) -> Result<JobOutcome, ProcessingError> {
     let mut tx = client.transaction()?;
-    tx.execute(
+    let updated = tx.execute(
         "UPDATE document_processing_job
-            SET status = 'failed', last_error = $2, updated_at = now(), finished_at = now()
-          WHERE job_id = $1",
-        &[&job.job_id, &error],
+            SET status = 'failed', last_error = $2, lease_expires_at = NULL,
+                updated_at = now(), finished_at = now()
+          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $3",
+        &[&job.job_id, &error, &job.claimed_by],
     )?;
+    if updated == 0 {
+        tx.rollback()?;
+        return Ok(JobOutcome {
+            job_id: job.job_id,
+            version_id: job.version_id,
+            status: "stale",
+            error: Some("claim lost".to_string()),
+        });
+    }
     tx.execute(
         "UPDATE document_version
             SET processing_status = 'failed', updated_at = now()
@@ -290,7 +320,7 @@ fn publish_ready<C: GenericClient>(
     }
     client.execute(
         "UPDATE documents SET document_version_id = $1
-          WHERE corpus = $2 AND source = $3",
+          WHERE corpus = $2 AND source = $3 AND document_version_id IS NULL",
         &[&version.version_id, &version.corpus, &version.source],
     )?;
     // A newer ready version supersedes older versions for retrieval while
@@ -312,12 +342,20 @@ fn publish_ready<C: GenericClient>(
           WHERE version_id = $1",
         &[&version.version_id],
     )?;
-    client.execute(
+    // Publication is authorized by claim ownership, not by the lease clock: a
+    // lease can expire while a long embedding run is still healthy, and
+    // reclaiming the job changes `claimed_by`, so a stolen job is already
+    // rejected here.
+    let updated = client.execute(
         "UPDATE document_processing_job
-            SET status = 'ready', updated_at = now(), finished_at = now(), last_error = NULL
-          WHERE job_id = $1",
-        &[&job.job_id],
+            SET status = 'ready', updated_at = now(), finished_at = now(),
+                last_error = NULL, lease_expires_at = NULL
+          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $2",
+        &[&job.job_id, &job.claimed_by],
     )?;
+    if updated == 0 {
+        return Err(ProcessingError::ClaimLost);
+    }
     audit(
         client,
         version.version_id,
@@ -426,6 +464,15 @@ pub fn process_job<E: Embedder>(
                         error: None,
                     })
                 }
+                Err(ProcessingError::ClaimLost) => {
+                    tx.rollback()?;
+                    Ok(JobOutcome {
+                        job_id: job.job_id,
+                        version_id: version.version_id,
+                        status: "stale",
+                        error: Some("claim lost".to_string()),
+                    })
+                }
                 Err(ProcessingError::StaleApproval) => {
                     tx.rollback()?;
                     fail_job(client, job, "stale approval")
@@ -450,6 +497,7 @@ pub fn process_job<E: Embedder>(
 }
 
 /// Runs up to `max_jobs` queued jobs. Returns one outcome per attempted job.
+#[allow(clippy::too_many_arguments)]
 pub fn run_due_jobs<E: Embedder>(
     client: &mut Client,
     store: &PgStore,
@@ -458,10 +506,12 @@ pub fn run_due_jobs<E: Embedder>(
     config: &Config,
     worker: &str,
     max_jobs: usize,
+    corpus: Option<&str>,
+    lease_seconds: i64,
 ) -> Result<Vec<JobOutcome>, ProcessingError> {
     let mut outcomes = Vec::new();
     for _ in 0..max_jobs {
-        let Some(job) = claim_next_job(client, worker)? else {
+        let Some(job) = claim_next_job(client, worker, corpus, lease_seconds)? else {
             break;
         };
         outcomes.push(process_job(
@@ -476,14 +526,17 @@ pub fn retry_job(
     client: &mut Client,
     job_id: i64,
     actor: &str,
+    corpus: &str,
 ) -> Result<ClaimedJob, ProcessingError> {
     let mut tx = client.transaction()?;
     let row = tx
         .query_opt(
-            "SELECT job_id, version_id, attempts, max_attempts
-               FROM document_processing_job
-              WHERE job_id = $1 AND status = 'failed' FOR UPDATE",
-            &[&job_id],
+            "SELECT job.job_id, job.version_id, job.attempts, job.max_attempts
+               FROM document_processing_job job
+               JOIN document_version version ON version.version_id = job.version_id
+              WHERE job.job_id = $1 AND job.status = 'failed' AND version.corpus = $2
+              FOR UPDATE OF job",
+            &[&job_id, &corpus],
         )?
         .ok_or(ProcessingError::NotFound)?;
     let job = ClaimedJob {
@@ -491,12 +544,13 @@ pub fn retry_job(
         version_id: row.get(1),
         attempts: row.get(2),
         max_attempts: row.get(3),
+        claimed_by: actor.to_string(),
     };
     tx.execute(
         "UPDATE document_processing_job
             SET status = 'queued', max_attempts = GREATEST(max_attempts, attempts + 1),
                 last_error = NULL, claimed_by = NULL, claimed_at = NULL,
-                updated_at = now(), finished_at = NULL
+                lease_expires_at = NULL, updated_at = now(), finished_at = NULL
           WHERE job_id = $1",
         &[&job_id],
     )?;
@@ -531,14 +585,16 @@ pub struct JobRecord {
     pub updated_at: String,
 }
 
-pub fn list_jobs(client: &mut Client) -> Result<Vec<JobRecord>, ProcessingError> {
+pub fn list_jobs(client: &mut Client, corpus: &str) -> Result<Vec<JobRecord>, ProcessingError> {
     let rows = client.query(
-        "SELECT job_id, version_id, status, attempts, max_attempts, last_error,
-                created_at::text, updated_at::text
-           FROM document_processing_job
-          ORDER BY job_id DESC
+        "SELECT job.job_id, job.version_id, job.status, job.attempts, job.max_attempts,
+                job.last_error, job.created_at::text, job.updated_at::text
+           FROM document_processing_job job
+           JOIN document_version version ON version.version_id = job.version_id
+          WHERE version.corpus = $1
+          ORDER BY job.job_id DESC
           LIMIT 200",
-        &[],
+        &[&corpus],
     )?;
     Ok(rows
         .into_iter()
