@@ -36,6 +36,28 @@ Corpus grants govern RAG retrieval. This endpoint reads the genealogy database
 and never touches retrieval, so no corpus grant applies. The only authorization
 inputs are the verified identity, the active account, and the reviewed link.
 
+## Family profile page (USR-006-B)
+
+`/family/{person_key}` renders this response for an authorized family member.
+
+- Enter from the family tree: selecting a person shows **View family profile**,
+  which links to that person's key.
+- The page presents `display_name`, `preferred_name`, `biography`, `my_story`,
+  and `family_memories`, grouped as About / Personal story / Family memories,
+  with friendly labels and paragraph breaks preserved.
+- Provenance is shown per field as "Approved version N · updated <date>". No
+  reviewer identity, account id, or internal key is rendered.
+- Contact and location fields are **not** presented, even when marked
+  `family`-visible, until the field-level policy is settled (see the acceptance
+  matrix's presentation field policy). The page also decides emptiness from the
+  allow-listed fields only, so it never reveals that excluded fields exist.
+- States: published, empty, sign-in required (401), denied (403, no membership
+  or deactivated), not found (404), and unavailable (503 or network) with a
+  retry. Each failure replaces the content, so navigating between people never
+  leaves a previous person's biography on screen.
+- The read is `cache: no-store`; nothing is written to browser storage, and no
+  media is requested.
+
 ## Response
 
 `200` with one of two states:
@@ -112,5 +134,10 @@ Always, without exception:
 - `web/e2e/family-profile.spec.ts` — three browser tests through the real proxy:
   published profile, empty/unknown/unauthorized distinctions, and immediate
   refusal after link revocation and account deactivation.
+- `web/e2e/family-profile-ui.spec.ts` — nine browser tests over the page,
+  covering all twelve USR-006-B cases: tree entry point, approved narrative
+  rendering, owner-private and draft exclusion, no media or contact data, empty,
+  denied, deactivated, not found, server and network failures without stale
+  content, person switching, mobile layout, and keyboard navigation.
 - `docs/guides/family-publication-acceptance.md` — the matrix this slice
   satisfies row 5 of, and F1.

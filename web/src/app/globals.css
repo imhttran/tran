@@ -257,3 +257,7 @@ a { color:var(--accent); }
 .documents-actions button { margin:0; padding:6px 9px; font-size:.85rem; }
 .documents-actions a { color:var(--accent); font-weight:600; }
 .documents-note { max-width:420px; margin-top:12px; }
+
+.family-profile-back { margin: 0 0 8px; font-size: .92rem; }
+.family-profile-back a { color: var(--accent); }
+.family-profile-text { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }

@@ -7,11 +7,12 @@
 --
 -- psql variables: reviewer_account_id, reviewer_fingerprint,
 -- off_account_id, off_fingerprint, family_account_id, family_fingerprint,
--- marker, family_marker.
+-- marker, family_marker, draft_marker.
 --
 -- `marker` is a distinctive synthetic value written as an approved,
--- owner-private profile value for the reviewed person, and `family_marker` is
--- an approved family-visible biography for the same person. The browser
+-- owner-private profile value for the reviewed person, `family_marker` is an
+-- approved family-visible biography for the same person, and `draft_marker` is
+-- an unsubmitted draft that must never appear on a family page. The browser
 -- acceptance suites prove the private value never reaches the branch review API
 -- or page, and that the family profile endpoint returns the family value while
 -- still withholding the private one.
@@ -222,6 +223,22 @@ SELECT r.person_id, r.field_key, r.new_value_text, r.visibility, 'e2e-seed',
  WHERE p.person_key = 'e2e-branch-subject'
    AND r.field_key = 'biography'
    AND r.status = 'approved';
+
+-- A draft for the same person that is never approved. It has no approved
+-- value row, so the family profile page must never render it. The guard is by
+-- field, not by status: the fixture never approves this field, and the guard
+-- keeps a rerun from creating a second revision for it.
+INSERT INTO onboarding_profile_revision
+    (person_id, field_key, prior_value_text, prior_approved_revision_number,
+     new_value_text, changed_by, revision_number, status, visibility)
+SELECT p.person_id, 'my_story', NULL, 0, :'draft_marker', 'e2e-owner', 1,
+       'draft', 'family'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-subject'
+   AND NOT EXISTS (
+       SELECT 1 FROM onboarding_profile_revision r
+        WHERE r.person_id = p.person_id AND r.field_key = 'my_story'
+   );
 
 INSERT INTO onboarding_person_account_link
     (person_id, account_id, linked_by, identity_fingerprint)
