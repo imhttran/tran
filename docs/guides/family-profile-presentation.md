@@ -25,6 +25,11 @@ The operation (`Operation::FamilyProfileRead`) has no role gate, matching the
 existing self-service reads: a newly linked member may not hold a role yet. The
 reviewed link is the authorization rule.
 
+There is no per-family membership model today. One deployment serves one family
+archive, so "linked to a person" is the family membership proof and every linked
+member may read any person's family-visible values. Per-family or per-branch
+scoping would extend this rule, not replace it.
+
 ### Corpus grants
 
 Corpus grants govern RAG retrieval. This endpoint reads the genealogy database
@@ -100,7 +105,7 @@ Always, without exception:
 
 ## Verification
 
-- `tests/family_profile_presentation.rs` — six service tests: family-only
+- `tests/family_profile_presentation.rs` — seven service tests: family-only
   values, owner-private and media exclusion, drafts excluded, unknown person,
   revoked link, authorized empty profile, owner-private view unchanged, and no
   retrieval rows created.

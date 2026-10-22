@@ -31,6 +31,12 @@ BEGIN;
 
 -- Replace rows that may be re-created. Proposal events are append-only and
 -- intentionally survive; they carry no content and are never read by key.
+--
+-- NOTE: an approved profile revision survives and is immutable, so a value is
+-- always rebuilt from that revision's own text. Changing `MARKER` or
+-- `FAMILY_MARKER` in scripts/web-e2e.sh therefore requires recreating the
+-- disposable databases; the harness fails loudly when the marker is absent
+-- rather than silently testing nothing.
 DELETE FROM genealogy_fact_proposal
  WHERE person_id IN (
      SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%'

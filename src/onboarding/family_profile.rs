@@ -77,7 +77,9 @@ pub fn read_family_profile(
     }
     let mut tx = client.transaction()?;
 
-    // Family membership: an active, reviewed link bound to this exact identity.
+    // Family membership: a reviewed link bound to this exact identity. A link
+    // has no status column by design: revocation deletes the row, so "the row
+    // exists with this fingerprint" is exactly "the membership is active".
     let linked = tx.query_opt(
         "SELECT person_id FROM onboarding_person_account_link \
           WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
