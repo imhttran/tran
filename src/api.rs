@@ -21,13 +21,16 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::admin_members::{
     self, MemberFilter, MemberStatus, ResetError, ResetRequest, ResetState,
+};
+use crate::browser_session::{
+    self, HttpRefreshProvider, NewSession, RenewOutcome, SessionConfig, SessionError,
 };
 use crate::config::Config;
 use crate::corpus::Corpus;
@@ -116,6 +119,9 @@ pub struct AppState {
     /// One shared client for password-reset provider calls; redirects are
     /// never followed.
     reset_client: Arc<Mutex<Option<reqwest::blocking::Client>>>,
+    /// Server-side browser sessions and refresh-token storage. Disabled when
+    /// the renewal configuration is absent.
+    session: Arc<SessionConfig>,
 }
 
 /// The JWKS fetcher type held by the cached verifier.
@@ -151,6 +157,7 @@ impl AppState {
             (config.auth_rate_limit as u32).saturating_mul(READ_RATE_LIMIT_FACTOR),
             Duration::from_secs(60),
         ));
+        let session = Arc::new(SessionConfig::from_config(&config));
         Ok(Self {
             config: Arc::new(config),
             store,
@@ -162,6 +169,7 @@ impl AppState {
             query_service: Arc::new(Mutex::new(None)),
             health_client: Arc::new(Mutex::new(None)),
             reset_client: Arc::new(Mutex::new(None)),
+            session,
         })
     }
 
@@ -182,6 +190,15 @@ impl AppState {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/health", get(health))
+            .route("/api/internal/sessions", post(create_internal_session))
+            .route(
+                "/api/internal/sessions/{id}/renew",
+                post(renew_internal_session),
+            )
+            .route(
+                "/api/internal/sessions/{id}",
+                delete(revoke_internal_session),
+            )
             .route("/api/documents/ingest", post(submit_document))
             .route(
                 "/api/documents/submissions",
@@ -698,6 +715,259 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response 
         })
         .into_response(),
         Err(response) => response,
+    }
+}
+
+// --- internal browser-session endpoints ------------------------------------
+//
+// These are server-to-server only. The Next.js server holds the opaque `rag_sid`
+// cookie and calls them with `X-Internal-Secret`; the browser never has that
+// secret. They never return a refresh token.
+
+#[derive(Deserialize)]
+struct InternalSessionCreate {
+    session_id: String,
+    id_token: String,
+    refresh_token: String,
+}
+
+#[derive(Serialize)]
+struct InternalSessionCreated {
+    ok: bool,
+    absolute_expires_in: i64,
+    idle_expires_in: i64,
+}
+
+#[derive(Serialize)]
+struct InternalSessionRenewed {
+    ok: bool,
+    id_token: String,
+    expires_in: i64,
+    absolute_expires_in: i64,
+}
+
+#[allow(clippy::result_large_err)]
+fn authorize_internal(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let Some(expected) = state.config.web_session_secret.as_deref() else {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_configured",
+            "browser session renewal is not configured",
+        ));
+    };
+    let Some(provided) = headers
+        .get("x-internal-secret")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "the internal credential is required",
+        ));
+    };
+    if !constant_time_eq(expected.as_bytes(), provided.as_bytes()) {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "the internal credential is not valid",
+        ));
+    }
+    Ok(())
+}
+
+/// Constant-time byte comparison for the internal shared secret. Length is
+/// compared first, which only reveals the secret's length, never its content.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+fn session_error(err: SessionError) -> Response {
+    match err {
+        SessionError::NotConfigured => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_configured",
+            "browser session renewal is not configured",
+        ),
+        SessionError::AlreadyExists => error(
+            StatusCode::CONFLICT,
+            "session_exists",
+            "the browser session already exists",
+        ),
+        SessionError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "unknown_session",
+            "no such browser session",
+        ),
+        SessionError::Crypto => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_session",
+            "the browser session credentials are invalid",
+        ),
+        SessionError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "the browser session store is unavailable",
+        ),
+    }
+}
+
+async fn create_internal_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<InternalSessionCreate>,
+) -> Response {
+    if let Err(response) = authorize_internal(&state, &headers) {
+        return response;
+    }
+    if !state.session.enabled() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_configured",
+            "browser session renewal is not configured",
+        );
+    }
+    let config = state.config.clone();
+    let session = state.session.clone();
+    let auth = state.auth.clone();
+    let jwks = state.jwks.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let identity =
+            validate_token(&body.id_token, &auth, &jwks).map_err(|_| SessionError::Crypto)?;
+        let id_token_exp = crate::oidc::token_exp(&body.id_token).ok_or(SessionError::Crypto)?;
+        let mut client = browser_session::connect(&config)?;
+        browser_session::create_session(
+            &mut client,
+            &session,
+            NewSession {
+                session_id: &body.session_id,
+                identity: &identity,
+                id_token: &body.id_token,
+                id_token_exp,
+                refresh_token: &body.refresh_token,
+            },
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(created)) => Json(InternalSessionCreated {
+            ok: true,
+            absolute_expires_in: created.absolute_expires_in,
+            idle_expires_in: created.idle_expires_in,
+        })
+        .into_response(),
+        Ok(Err(err)) => session_error(err),
+        Err(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "the browser session store is unavailable",
+        ),
+    }
+}
+
+async fn renew_internal_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Response {
+    if let Err(response) = authorize_internal(&state, &headers) {
+        return response;
+    }
+    if !state.session.enabled() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_configured",
+            "browser session renewal is not configured",
+        );
+    }
+    let config = state.config.clone();
+    let session = state.session.clone();
+    let auth = state.auth.clone();
+    let jwks = state.jwks.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let provider = HttpRefreshProvider::new(&session).ok_or(SessionError::NotConfigured)?;
+        let mut client = browser_session::connect(&config)?;
+        let validate = |token: &str| validate_token(token, &auth, &jwks);
+        browser_session::renew_or_touch(&mut client, &session, &provider, &validate, &session_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(RenewOutcome::Current {
+            id_token,
+            expires_in,
+            absolute_expires_in,
+        }))
+        | Ok(Ok(RenewOutcome::Renewed {
+            id_token,
+            expires_in,
+            absolute_expires_in,
+        })) => Json(InternalSessionRenewed {
+            ok: true,
+            id_token,
+            expires_in,
+            absolute_expires_in,
+        })
+        .into_response(),
+        Ok(Ok(RenewOutcome::Expired)) => error(
+            StatusCode::UNAUTHORIZED,
+            "session_expired",
+            "the browser session has expired",
+        ),
+        Ok(Ok(RenewOutcome::Busy { retry_after_ms })) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "renewal_in_progress",
+                "message": "another request is renewing the session",
+                "retry_after_ms": retry_after_ms,
+            })),
+        )
+            .into_response(),
+        Ok(Ok(RenewOutcome::Unavailable)) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_unavailable",
+            "the identity provider is temporarily unavailable",
+        ),
+        Ok(Err(err)) => session_error(err),
+        Err(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "the browser session store is unavailable",
+        ),
+    }
+}
+
+async fn revoke_internal_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Response {
+    if let Err(response) = authorize_internal(&state, &headers) {
+        return response;
+    }
+    // Revocation deliberately works even when renewal is disabled: it only
+    // clears local credentials and never needs the encryption key.
+    let config = state.config.clone();
+    let session = state.session.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = browser_session::connect(&config)?;
+        browser_session::revoke_session(&mut client, &session, &session_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Err(err)) => session_error(err),
+        Err(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_store_unavailable",
+            "the browser session store is unavailable",
+        ),
     }
 }
 

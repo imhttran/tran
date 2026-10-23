@@ -26,6 +26,10 @@ CLIENT_ID = "tran-e2e"
 SUBJECT = "e2e-admin"
 
 
+class ProviderUnavailable(Exception):
+    """Test-only transient identity-provider failure."""
+
+
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -94,8 +98,13 @@ class Provider:
         self.issuer = f"http://127.0.0.1:{port}"
         # code -> (challenge, redirect_uri, nonce, subject)
         self.codes: dict[str, tuple[str, str, str, str]] = {}
+        # refresh token -> claims reissued on renewal
+        self.refresh_tokens: dict[str, dict] = {}
+        self.refresh_calls = 0
+        self.fail_refreshes = False
+        self.ttl = 3600
 
-    def token(self, code: str, verifier: str, redirect_uri: str) -> str | None:
+    def token(self, code: str, verifier: str, redirect_uri: str) -> tuple[str, str] | None:
         record = self.codes.pop(code, None)
         if record is None:
             return None
@@ -105,16 +114,49 @@ class Provider:
         computed = b64url(hashlib.sha256(verifier.encode("ascii")).digest())
         if computed != challenge:
             return None
-        return make_token(
+        id_token = make_token(
             self.key,
             self.issuer,
             CLIENT_ID,
             subject,
             ["admin"],
             [],
-            3600,
+            self.ttl,
             nonce=nonce,
         )
+        refresh_token = secrets.token_urlsafe(32)
+        self.refresh_tokens[refresh_token] = {
+            "subject": subject,
+            "roles": ["admin"],
+            "corpora": [],
+        }
+        return id_token, refresh_token
+
+    def refresh(self, token: str) -> tuple[str, str] | None:
+        """Rotates a refresh token. The old token is invalidated on success."""
+        record = self.refresh_tokens.get(token)
+        if record is None:
+            return None
+        self.refresh_calls += 1
+        if self.fail_refreshes:
+            # A transient failure must not consume the refresh token.
+            raise ProviderUnavailable()
+        self.refresh_tokens.pop(token, None)
+        id_token = make_token(
+            self.key,
+            self.issuer,
+            CLIENT_ID,
+            record["subject"],
+            record["roles"],
+            record["corpora"],
+            self.ttl,
+        )
+        new_refresh = secrets.token_urlsafe(32)
+        self.refresh_tokens[new_refresh] = record
+        return id_token, new_refresh
+
+    def revoke(self, token: str) -> None:
+        self.refresh_tokens.pop(token, None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -166,33 +208,117 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/logout":
             self.send_json(200, {"ok": True})
             return
+        if parsed.path == "/test/stats":
+            self.send_json(
+                200,
+                {"refresh_calls": self.server.provider.refresh_calls},
+            )
+            return
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
         parsed = urlparse(self.path)
+        length = int(self.headers.get("content-length", "0"))
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+
+        if parsed.path == "/revoke":
+            form = parse_qs(raw)
+            token = form.get("token", [""])[0]
+            if token:
+                self.server.provider.revoke(token)
+            self.send_json(200, {"ok": True})
+            return
+
+        if parsed.path == "/test/mint":
+            payload = json.loads(raw or "{}")
+            subject = payload.get("subject", SUBJECT)
+            ttl = int(payload.get("ttl", 30))
+            roles = payload.get("roles", ["admin"])
+            corpora = payload.get("corpora", [])
+            id_token = make_token(
+                self.server.provider.key,
+                self.server.provider.issuer,
+                CLIENT_ID,
+                subject,
+                roles,
+                corpora,
+                ttl,
+            )
+            refresh = secrets.token_urlsafe(32)
+            self.server.provider.refresh_tokens[refresh] = {
+                "subject": subject,
+                "roles": roles,
+                "corpora": corpora,
+            }
+            self.send_json(
+                200,
+                {
+                    "id_token": id_token,
+                    "refresh_token": refresh,
+                    "expires_in": ttl,
+                },
+            )
+            return
+
+        if parsed.path == "/test/refresh-failure":
+            payload = json.loads(raw or "{}")
+            self.server.provider.fail_refreshes = bool(payload.get("enabled", False))
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "enabled": self.server.provider.fail_refreshes,
+                },
+            )
+            return
+
         if parsed.path != "/token":
             self.send_json(404, {"error": "not_found"})
             return
-        length = int(self.headers.get("content-length", "0"))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
-        code = form.get("code", [""])[0]
-        verifier = form.get("code_verifier", [""])[0]
-        redirect_uri = form.get("redirect_uri", [""])[0]
+        form = parse_qs(raw)
         client_id = form.get("client_id", [""])[0]
         if client_id != CLIENT_ID:
             self.send_json(400, {"error": "invalid_client"})
             return
-        token = self.server.provider.token(code, verifier, redirect_uri)
-        if token is None:
+        grant_type = form.get("grant_type", ["authorization_code"])[0]
+        if grant_type == "refresh_token":
+            refresh_token = form.get("refresh_token", [""])[0]
+            try:
+                result = self.server.provider.refresh(refresh_token)
+            except ProviderUnavailable:
+                self.send_json(503, {"error": "temporarily_unavailable"})
+                return
+            if result is None:
+                self.send_json(400, {"error": "invalid_grant"})
+                return
+            id_token, rotated = result
+            self.send_json(
+                200,
+                {
+                    "id_token": id_token,
+                    "access_token": id_token,
+                    "refresh_token": rotated,
+                    "token_type": "Bearer",
+                    "expires_in": self.server.provider.ttl,
+                },
+            )
+            return
+        code = form.get("code", [""])[0]
+        verifier = form.get("code_verifier", [""])[0]
+        redirect_uri = form.get("redirect_uri", [""])[0]
+        result = self.server.provider.token(code, verifier, redirect_uri)
+        if result is None:
             self.send_json(400, {"error": "invalid_grant"})
             return
+        id_token, refresh_token = result
         self.send_json(
             200,
             {
-                "id_token": token,
-                "access_token": token,
+                "id_token": id_token,
+                "access_token": id_token,
+                "refresh_token": refresh_token,
                 "token_type": "Bearer",
-                "expires_in": 3600,
+                "expires_in": self.server.provider.ttl,
             },
         )
 

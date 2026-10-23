@@ -45,10 +45,26 @@ Browser sign-in environment:
 | `OIDC_END_SESSION_ENDPOINT` | Optional provider logout endpoint. |
 | `OIDC_SCOPES` | Optional scope list; default `openid profile email`. |
 | `OIDC_COOKIE_SECURE` | Set `false` only for local HTTP E2E; production remains Secure. |
+| `OIDC_REVOCATION_ENDPOINT` | Optional provider token-revocation endpoint used on sign-out. |
+| `WEB_SESSION_SECRET` | Shared secret for the server-to-server session endpoints. Required for automatic renewal. |
+| `SESSION_STORE_KEY` | 32-byte base64/base64url AES-256-GCM key for the ID and refresh tokens at rest. Required for renewal. |
+| `SESSION_IDLE_SECONDS` | Optional idle limit for a renewed session; default 1800. |
+| `SESSION_ABSOLUTE_SECONDS` | Optional absolute session limit; default 28800. |
+| `SESSION_REFRESH_WINDOW_SECONDS` | Optional renewal window before expiry; default 60. |
 
 The browser never receives a token, subject, email, issuer, JWKS value, corpus
 grant list, or database URL. The HttpOnly `rag_session` cookie carries the
 credential server-to-server; `rag_csrf` supports the double-submit check.
+
+When `WEB_SESSION_SECRET` and `SESSION_STORE_KEY` are configured, sign-in also
+stores the OIDC refresh token in the identity database (`browser_session`,
+migration 011), encrypted at rest, behind the opaque HttpOnly `rag_sid` cookie.
+Before the ID token expires, the Rust API performs a refresh grant, validates
+the new token, and rotates the stored refresh token. Idle and absolute limits
+are enforced server-side. If the variables are unset, or the Keycloak client
+does not issue refresh tokens, the cookie-only session from PR #65 remains in
+force and expires into the sign-in-again action. See
+[`docs/guides/session-expiry.md`](../guides/session-expiry.md).
 
 ## Role matrix
 

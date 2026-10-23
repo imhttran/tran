@@ -341,7 +341,7 @@ where
     }
 }
 
-fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer: u32 = 0;
     let mut bits = 0u32;
@@ -564,6 +564,30 @@ where
     }
 
     claims_to_identity(&claims, issuer)
+}
+
+/// Reads the `exp` claim from a token without verifying it.
+///
+/// The caller must only use this after the token itself has been validated, or
+/// to bound a cookie lifetime to the credential it carries. It is never an
+/// authorization decision.
+pub fn token_exp(token: &str) -> Option<i64> {
+    token_claims(token).map(|(_, _, exp)| exp)
+}
+
+/// Reads `(issuer, subject, exp)` from a token without verifying it.
+///
+/// The caller must validate the token first. The session store uses this to
+/// bind a stored session to the token's own claims rather than to a
+/// caller-supplied identity.
+pub fn token_claims(token: &str) -> Option<(String, String, i64)> {
+    let payload = token.trim().split('.').nth(1)?;
+    let bytes = base64url_decode(payload)?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let issuer = claims.get("iss")?.as_str()?.to_string();
+    let subject = claims.get("sub")?.as_str()?.to_string();
+    let exp = claims.get("exp")?.as_i64()?;
+    Some((issuer, subject, exp))
 }
 
 /// Signs a compact JWT with the supplied RSA key (RS256). Test and synthetic

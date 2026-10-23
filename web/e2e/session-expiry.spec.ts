@@ -81,10 +81,11 @@ test.describe("session cookie lifetime", () => {
     expect(csrfCookie("csrf", 60).httpOnly).toBe(false);
   });
 
-  test("clears both cookies with matching attributes", () => {
+  test("clears the session cookies with matching attributes", () => {
     const cleared = clearedSessionCookies();
     expect(cleared.map((cookie) => cookie.name)).toEqual([
       "rag_session",
+      "rag_sid",
       "rag_csrf",
     ]);
     for (const cookie of cleared) {

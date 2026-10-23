@@ -20,6 +20,7 @@ pub mod admin_members;
 pub mod answer;
 pub mod api;
 pub mod bilingual;
+pub mod browser_session;
 pub mod chunker;
 pub mod config;
 pub mod corpus;
