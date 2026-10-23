@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
 import {
   ApiRequestError,
+  familyProfileMediaUrl,
   getFamilyProfile,
   type FamilyProfileFieldView,
   type FamilyProfileResponse,
@@ -199,6 +200,13 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   const { profile } = state;
   const presented = presentFields(profile.fields);
   const displayName = profile.person.display_name;
+  // Media is presentation only as well: the API already excluded pending,
+  // rejected, owner-private, restricted, and unprovenanced assets, and each
+  // `<img>`/link below re-authorizes server-side when the browser fetches it.
+  const photos = profile.media.filter((item) => item.kind === "profile_photo");
+  const documents = profile.media.filter((item) => item.kind === "personal_document");
+  const hasContent =
+    presented.length > 0 || photos.length > 0 || documents.length > 0;
 
   return (
     <>
@@ -214,7 +222,101 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       />
 
       <div className="profile-workspace" data-testid="family-profile">
-        {presented.length === 0 ? (
+        {photos.length > 0 ? (
+          <section
+            className="profile-section"
+            aria-labelledby="family-profile-photos"
+            data-testid="family-profile-photos"
+          >
+            <div className="profile-section-heading">
+              <h2 id="family-profile-photos">Photographs</h2>
+              <p>Approved photographs shared with the family.</p>
+            </div>
+            <ul className="family-profile-media">
+              {photos.map((photo) => (
+                <li key={photo.media_id} data-testid={`family-profile-photo-${photo.media_id}`}>
+                  <img
+                    className="family-profile-photo"
+                    src={familyProfileMediaUrl(profile.person.person_key, photo.media_id)}
+                    alt={`Photograph shared by ${displayName}`}
+                    width={photo.width ?? undefined}
+                    height={photo.height ?? undefined}
+                    loading="lazy"
+                  />
+                  <p className="meta">
+                    Approved version {photo.approved_revision_number} · {formatDate(photo.created_at)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {presented.length === 0
+          ? null
+          : SECTION_ORDER.map((section) => {
+              const fields = presented.filter((field) => field.section === section);
+              if (fields.length === 0) return null;
+              const copy = SECTION_COPY[section];
+              return (
+                <section
+                  key={section}
+                  className="profile-section"
+                  aria-labelledby={`family-profile-${section}`}
+                  data-testid={`family-profile-section-${section}`}
+                >
+                  <div className="profile-section-heading">
+                    <h2 id={`family-profile-${section}`}>{copy.title}</h2>
+                    <p>{copy.intro}</p>
+                  </div>
+                  {fields.map((field) => (
+                    <article key={field.field_key} data-testid={`family-profile-field-${field.field_key}`}>
+                      <h3>{labelOf(field.field_key)}</h3>
+                      <p className="family-profile-text">{field.value}</p>
+                      <p className="meta">
+                        Approved version {field.approved_revision_number} ·{" "}
+                        {formatDate(field.updated_at)}
+                      </p>
+                    </article>
+                  ))}
+                </section>
+              );
+            })}
+
+        {documents.length > 0 ? (
+          <section
+            className="profile-section"
+            aria-labelledby="family-profile-documents"
+            data-testid="family-profile-documents"
+          >
+            <div className="profile-section-heading">
+              <h2 id="family-profile-documents">Shared documents</h2>
+              <p>Documents approved for the family archive.</p>
+            </div>
+            <ul className="family-profile-media">
+              {documents.map((document) => (
+                <li
+                  key={document.media_id}
+                  className="family-profile-document"
+                  data-testid={`family-profile-document-${document.media_id}`}
+                >
+                  <a
+                    href={familyProfileMediaUrl(profile.person.person_key, document.media_id)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {document.file_name}
+                  </a>
+                  <span className="meta">
+                    Approved version {document.approved_revision_number} · {formatDate(document.created_at)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {hasContent ? null : (
           <section className="card" data-testid="family-profile-empty">
             <h2>No family information yet</h2>
             <p>
@@ -223,35 +325,6 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
               contribution is available.
             </p>
           </section>
-        ) : (
-          SECTION_ORDER.map((section) => {
-            const fields = presented.filter((field) => field.section === section);
-            if (fields.length === 0) return null;
-            const copy = SECTION_COPY[section];
-            return (
-              <section
-                key={section}
-                className="profile-section"
-                aria-labelledby={`family-profile-${section}`}
-                data-testid={`family-profile-section-${section}`}
-              >
-                <div className="profile-section-heading">
-                  <h2 id={`family-profile-${section}`}>{copy.title}</h2>
-                  <p>{copy.intro}</p>
-                </div>
-                {fields.map((field) => (
-                  <article key={field.field_key} data-testid={`family-profile-field-${field.field_key}`}>
-                    <h3>{labelOf(field.field_key)}</h3>
-                    <p className="family-profile-text">{field.value}</p>
-                    <p className="meta">
-                      Approved version {field.approved_revision_number} ·{" "}
-                      {formatDate(field.updated_at)}
-                    </p>
-                  </article>
-                ))}
-              </section>
-            );
-          })
         )}
       </div>
     </>

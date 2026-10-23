@@ -260,6 +260,10 @@ impl AppState {
                 "/api/family/persons/{person_key}/profile",
                 get(family_profile),
             )
+            .route(
+                "/api/family/persons/{person_key}/media/{media_id}",
+                get(family_media),
+            )
             .route("/api/branch-review/grants/me", get(branch_review_grants))
             .route(
                 "/api/branch-review/submissions",
@@ -2283,7 +2287,7 @@ async fn family_profile(
     .await;
     match result {
         Ok(Ok(profile)) => {
-            let state_label = if profile.fields.is_empty() {
+            let state_label = if profile.fields.is_empty() && profile.media.is_empty() {
                 "empty"
             } else {
                 "published"
@@ -2301,6 +2305,20 @@ async fn family_profile(
                     "visibility": field.visibility,
                     "approved_revision_number": field.approved_revision_number,
                     "updated_at": field.updated_at,
+                })).collect::<Vec<_>>(),
+                // Approved, family-visible, unrestricted assets only. The bytes
+                // are served by the person-scoped family media route, which
+                // applies the same predicate.
+                "media": profile.media.iter().map(|item| serde_json::json!({
+                    "media_id": item.media_id,
+                    "kind": item.kind,
+                    "mime_type": item.mime_type,
+                    "byte_size": item.byte_size,
+                    "file_name": item.file_name,
+                    "width": item.width,
+                    "height": item.height,
+                    "approved_revision_number": item.approved_revision_number,
+                    "created_at": item.created_at,
                 })).collect::<Vec<_>>(),
             }))
             .into_response()
@@ -2340,6 +2358,68 @@ fn family_profile_unavailable() -> Response {
         "family_profile_unavailable",
         "the family profile store is unavailable",
     )
+}
+
+/// Serves one approved, family-visible media asset to a linked family member.
+///
+/// The person key scopes the asset, so a valid media id belonging to another
+/// person is `404`. Pending, rejected, owner-private, restricted, superseded, and
+/// unprovenanced assets are indistinguishable from "not found", and the error
+/// body never names the field, the revision, or the owner.
+#[allow(clippy::result_large_err)]
+async fn family_media(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((person_key, media_id)): Path<(String, i64)>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::FamilyProfileRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let storage = MediaStorage::new(config.media_root.clone());
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_family_media(&mut genealogy, &storage, &account, &person_key, media_id)
+            .map_err(family_media_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(download)) => media_download_response(download),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: family media task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "family_media_failed",
+                "the family media download failed",
+            )
+        }
+    }
+}
+
+fn family_media_error(err: MediaError) -> Response {
+    eprintln!("api: family media request refused: {err}");
+    match err {
+        MediaError::Unlinked => error(
+            StatusCode::FORBIDDEN,
+            "family_media_forbidden",
+            "the authenticated account may not read this family media",
+        ),
+        MediaError::MissingFile | MediaError::Io(_) | MediaError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "family_media_unavailable",
+            "the family media store is unavailable",
+        ),
+        _ => error(
+            StatusCode::NOT_FOUND,
+            "family_media_not_found",
+            "no such family media",
+        ),
+    }
 }
 
 /// Records an owner-initiated privacy restriction for one approved field.

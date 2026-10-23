@@ -261,3 +261,8 @@ a { color:var(--accent); }
 .family-profile-back { margin: 0 0 8px; font-size: .92rem; }
 .family-profile-back a { color: var(--accent); }
 .family-profile-text { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+.family-profile-media { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin: 0; padding: 0; list-style: none; }
+.family-profile-media li { display: grid; gap: 6px; align-content: start; }
+.family-profile-photo { max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); background: var(--card); }
+.family-profile-document { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; grid-column: 1 / -1; }
+.family-profile-document a { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }

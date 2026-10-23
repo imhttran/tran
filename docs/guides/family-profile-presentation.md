@@ -114,8 +114,9 @@ Always, without exception:
 
 - drafts, pending revisions, rejected or needs-changes revisions;
 - `owner_private` values, including contact details the owner kept private;
-- the `profile_photo` and `personal_document` reference fields — media has its
-  own authorization rule and is not served here;
+- the `profile_photo` and `personal_document` reference fields in the text
+  response — approved, family-visible media is listed separately in `media`
+  and served only by the person-scoped family media route;
 - superseded values (only the value row bound to the current approved revision
   is read);
 - values with an active owner restriction (decision A2): the owner can make an
@@ -132,7 +133,10 @@ Always, without exception:
 
 - No write path, no visibility change, no withdrawal. Policy decision **A**
   (immediate owner restriction) remains open.
-- No media presentation and no genealogy fact publication.
+- Genealogy fact publication is not implemented. Approved, family-visible
+  media is listed and served (USR-006-C); owner-private, pending, rejected,
+  superseded, cross-person, and restricted assets are excluded from both the
+  listing and the asset route.
 - No indexing. Policy decision **D** (indexing allow-list) remains open; this
   endpoint creates no retrieval rows.
 - No family profile UI page. The response is designed so the family tree and

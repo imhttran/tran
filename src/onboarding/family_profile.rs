@@ -7,13 +7,17 @@
 //!
 //! Only values whose effective visibility is `family` are returned. Drafts,
 //! pending or rejected revisions, owner-private values, contact details the
-//! owner kept private, and the profile media references are never read, so they
-//! cannot appear in a response, an error body, or a log line.
+//! owner kept private, and private media are never returned, so they cannot
+//! appear in a response, an error body, or a log line. Media is listed only when
+//! an approved, family-visible asset is the person's current approved value for
+//! that field and no owner restriction is active; the bytes themselves are only
+//! served by the family media route.
 
 use postgres::Transaction;
 use thiserror::Error;
 
 use super::account_map::IdentityAccount;
+use super::media::{FAMILY_VISIBLE_MEDIA_JOIN, FAMILY_VISIBLE_MEDIA_PREDICATE};
 use super::profile_revisions::MEDIA_PROFILE_FIELDS;
 
 /// One approved family-visible profile value.
@@ -28,16 +32,36 @@ pub struct FamilyProfileField {
     pub updated_at: String,
 }
 
+/// One approved, family-visible media item.
+///
+/// `media_id` addresses the asset through the family media route; the storage
+/// key, the content hash, and the owning person id never leave the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyProfileMedia {
+    pub media_id: i64,
+    pub kind: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub file_name: String,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    /// Provenance: the approved revision this asset came from.
+    pub approved_revision_number: i64,
+    pub created_at: String,
+}
+
 /// One person's family-visible profile.
 ///
-/// `fields` may be empty: an authorized member with nothing approved for the
-/// family audience still gets a profile, but no private information.
+/// `fields` and `media` may both be empty: an authorized member with nothing
+/// approved for the family audience still gets a profile, but no private
+/// information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FamilyProfile {
     pub person_key: String,
     /// The shared genealogy display name, already visible in the family tree.
     pub display_name: String,
     pub fields: Vec<FamilyProfileField>,
+    pub media: Vec<FamilyProfileMedia>,
 }
 
 /// Errors raised by family profile presentation.
@@ -103,11 +127,13 @@ pub fn read_family_profile(
     let display_name: String = target.get(1);
 
     let fields = family_visible_values(&mut tx, person_id)?;
+    let media = family_visible_media(&mut tx, person_id)?;
     tx.commit()?;
     Ok(FamilyProfile {
         person_key: person_key.to_string(),
         display_name,
         fields,
+        media,
     })
 }
 
@@ -165,6 +191,43 @@ fn family_visible_values(
             visibility: row.get(2),
             approved_revision_number: row.get(3),
             updated_at: row.get(4),
+        })
+        .collect())
+}
+
+/// Reads the approved, family-visible media assets for one person.
+///
+/// The predicate is shared with the family asset route
+/// ([`FAMILY_VISIBLE_MEDIA_PREDICATE`]) so a listed asset and a downloaded asset
+/// are authorized by exactly the same rule: approved revision, matching
+/// provenance, current approved value, `family` visibility, and no active owner
+/// restriction. Pending, rejected, owner-private, superseded, restricted, and
+/// unprovenanced rows are silently excluded rather than reported.
+fn family_visible_media(
+    tx: &mut Transaction<'_>,
+    person_id: i64,
+) -> Result<Vec<FamilyProfileMedia>, FamilyProfileError> {
+    let sql = format!(
+        "SELECT m.media_id, m.media_kind, m.mime_type, m.byte_size, m.file_name, \
+                m.width, m.height, r.revision_number, m.created_at::text \
+           FROM onboarding_media_metadata m \
+           {FAMILY_VISIBLE_MEDIA_JOIN} \
+          WHERE m.person_id = $1 AND {FAMILY_VISIBLE_MEDIA_PREDICATE} \
+          ORDER BY m.media_kind, m.media_id"
+    );
+    let rows = tx.query(&sql, &[&person_id])?;
+    Ok(rows
+        .into_iter()
+        .map(|row| FamilyProfileMedia {
+            media_id: row.get(0),
+            kind: row.get(1),
+            mime_type: row.get(2),
+            byte_size: row.get(3),
+            file_name: row.get(4),
+            width: row.get(5),
+            height: row.get(6),
+            approved_revision_number: row.get(7),
+            created_at: row.get(8),
         })
         .collect())
 }
