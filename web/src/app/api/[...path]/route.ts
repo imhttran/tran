@@ -173,7 +173,7 @@ async function proxy(
   let updates: CookieAttributes[] = [];
 
   if (sessionId && renewalConfigured()) {
-    if (tokenNeedsRenewal(sessionToken) || renewalDue(sessionId)) {
+    if (tokenNeedsRenewal(sessionToken) || renewalDue(sessionId) || !csrf) {
       const renewal = await renewStoredSession(sessionId);
       if (renewal.kind === "ok") {
         markTouched(sessionId);

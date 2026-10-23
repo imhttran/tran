@@ -140,10 +140,19 @@ fn validator() -> impl Fn(&str) -> Result<VerifiedIdentity, AuthError> {
 
 #[derive(Clone)]
 enum FakeMode {
-    Grant { exp: i64 },
+    Grant {
+        exp: i64,
+    },
     InvalidGrant,
     Unavailable,
-    Blocking { exp: i64, delay: Duration },
+    Blocking {
+        exp: i64,
+        delay: Duration,
+    },
+    BlockingInvalidGrant {
+        started: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    },
 }
 
 struct FakeProvider {
@@ -185,6 +194,11 @@ impl RefreshProvider for FakeProvider {
                     id_token: fake_token(exp),
                     refresh_token: Some("rotated-refresh".to_string()),
                 })
+            }
+            FakeMode::BlockingInvalidGrant { started, release } => {
+                started.wait();
+                release.wait();
+                Err(RefreshFailure::InvalidGrant)
             }
         }
     }
@@ -571,4 +585,90 @@ fn cleanup_removes_dead_sessions() {
         .expect("age session");
     let removed = browser_session::cleanup_expired(&mut client).expect("cleanup");
     assert_eq!(removed, 1);
+}
+
+#[test]
+fn a_stale_invalid_grant_does_not_revoke_a_newer_generation() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping browser session test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    prepare(&mut client);
+    let config = test_config(&dsn, 1800, 3600, 60);
+    let sessions = SessionConfig::from_config(&config);
+    create(&mut client, &sessions, "session-stale", now() + 10);
+
+    let started = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let stale_provider = Arc::new(FakeProvider::new(FakeMode::BlockingInvalidGrant {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let worker_dsn = dsn.clone();
+    let worker_sessions = sessions.clone();
+    let handle = std::thread::spawn(move || {
+        let mut worker = Client::connect(&worker_dsn, NoTls).expect("worker connect");
+        let validate = validator();
+        stale_provider.calls(); // keep the counter alive in this closure
+        browser_session::renew_or_touch(
+            &mut worker,
+            &worker_sessions,
+            stale_provider.as_ref(),
+            &validate,
+            "session-stale",
+        )
+        .expect("stale renew")
+    });
+
+    // The stale worker has claimed the lease and is inside the provider.
+    started.wait();
+    client
+        .execute(
+            "UPDATE browser_session SET renewal_lease_until = now() - interval '1 second'
+              WHERE session_id_hash = $1",
+            &[&browser_session::session_hash("session-stale")],
+        )
+        .expect("expire stale lease");
+
+    // A newer generation renews and stores its token.
+    let new_exp = now() + 1800;
+    let fresh_provider = FakeProvider::new(FakeMode::Grant { exp: new_exp });
+    let validate = validator();
+    let fresh = browser_session::renew_or_touch(
+        &mut client,
+        &sessions,
+        &fresh_provider,
+        &validate,
+        "session-stale",
+    )
+    .expect("fresh renew");
+    assert!(matches!(fresh, RenewOutcome::Renewed { .. }));
+
+    // The stale worker's invalid_grant must not revoke the newer generation.
+    release.wait();
+    let stale = handle.join().expect("stale thread");
+    assert_eq!(
+        stale,
+        RenewOutcome::Busy {
+            retry_after_ms: 250
+        }
+    );
+
+    let row = client
+        .query_one(
+            "SELECT revoked_at IS NULL,
+                    EXTRACT(EPOCH FROM id_token_exp)::bigint,
+                    refresh_generation
+               FROM browser_session WHERE session_id_hash = $1",
+            &[&browser_session::session_hash("session-stale")],
+        )
+        .expect("read session");
+    assert!(
+        row.get::<_, bool>(0),
+        "the newer generation must stay active"
+    );
+    assert_eq!(row.get::<_, i64>(1), new_exp, "the newer token is stored");
+    assert_eq!(row.get::<_, i64>(2), 2);
 }

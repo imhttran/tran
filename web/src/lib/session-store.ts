@@ -8,6 +8,7 @@
 // A transient provider failure keeps the session and is reported as
 // `unavailable`; only a definitive expiry or revocation returns `expired`.
 
+import { randomString } from "./oidc";
 import {
   SESSION_MAX_SECONDS,
   csrfCookie,
@@ -223,11 +224,17 @@ export async function renewStoredSession(
       if (typeof body.id_token !== "string" || body.id_token.length === 0) {
         return { kind: "unavailable" };
       }
+      const expiresIn =
+        typeof body.expires_in === "number" ? body.expires_in : 0;
+      if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
+        // A provider that returns an already-expired token is an expiry, not a
+        // usable renewal.
+        return { kind: "expired" };
+      }
       return {
         kind: "ok",
         idToken: body.id_token,
-        expiresIn:
-          typeof body.expires_in === "number" ? body.expires_in : 0,
+        expiresIn,
         absoluteExpiresIn:
           typeof body.absolute_expires_in === "number"
             ? body.absolute_expires_in
@@ -276,16 +283,23 @@ export function renewalCookies(
   absoluteExpiresIn: number,
   csrf: string | null,
 ): CookieAttributes[] {
-  const tokenMaxAge = Math.max(
-    1,
-    Math.min(expiresIn > 0 ? expiresIn : SESSION_MAX_SECONDS, SESSION_MAX_SECONDS),
-  );
-  const updates: CookieAttributes[] = [
+  // An expired or invalid lifetime must never produce a live credential
+  // cookie. Zero expires the session and CSRF cookies instead.
+  const usableLifetime = Number.isFinite(expiresIn) && expiresIn > 0;
+  const tokenMaxAge = usableLifetime
+    ? Math.min(Math.floor(expiresIn), SESSION_MAX_SECONDS)
+    : 0;
+  // A successful renewal restores the double-submit cookie when the previous
+  // CSRF cookie expired. The new value is delivered to the browser; writes
+  // are never replayed automatically.
+  const csrfValue =
+    csrf && csrf.trim() !== "" ? csrf : randomString(32);
+  return [
     sessionCookie(idToken, tokenMaxAge),
-    sidCookie(sessionId, Math.max(1, absoluteExpiresIn)),
+    sidCookie(
+      sessionId,
+      Number.isFinite(absoluteExpiresIn) ? absoluteExpiresIn : 0,
+    ),
+    csrfCookie(csrfValue, tokenMaxAge),
   ];
-  if (csrf) {
-    updates.push(csrfCookie(csrf, tokenMaxAge));
-  }
-  return updates;
 }

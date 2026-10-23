@@ -42,15 +42,20 @@ token:
   token and its lifetime.
 
 A successful renewal replaces `rag_session`, refreshes the `rag_sid` lifetime up
-to the absolute limit, and keeps the same CSRF token.
+to the absolute limit, and restores `rag_csrf` when the previous CSRF cookie has
+expired. The new CSRF value is delivered to the browser so the next write passes
+the double-submit check; a write is never replayed automatically.
 
 ### Concurrency
 
 Renewal is coalesced in PostgreSQL:
 
-- a claimant increments `refresh_generation` and takes a 15-second
-  `renewal_lease_until`;
-- only that generation may write the rotated credentials;
+- a claimant increments `refresh_generation` and takes a 45-second
+  `renewal_lease_until`, long enough to cover the provider timeout and its
+  bounded retries;
+- only that generation may write the rotated credentials, and only that
+  generation may revoke the session on `invalid_grant`, so a stale claim cannot
+  undo a newer renewal;
 - a second request gets `409 renewal_in_progress`, retries briefly, then uses the
   now-fresh stored token (the provider is called once).
 

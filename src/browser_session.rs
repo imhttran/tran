@@ -27,7 +27,10 @@ use crate::identity::VerifiedIdentity;
 use crate::oidc::AuthError;
 
 /// How long a claimed renewal may run before another worker may take over.
-const RENEWAL_LEASE_SECONDS: i64 = 15;
+/// The HTTP provider timeout is 10 seconds with three bounded attempts plus
+/// short backoff (about 31 seconds worst case), so the lease covers the whole
+/// provider policy.
+const RENEWAL_LEASE_SECONDS: i64 = 45;
 /// Expired and revoked rows are kept briefly for audit, then removed.
 const RETENTION_DAYS: i64 = 7;
 /// Upper bound on rows removed by one opportunistic cleanup.
@@ -312,6 +315,24 @@ fn revoke_hash(client: &mut Client, hash: &str) -> Result<(), SessionError> {
     Ok(())
 }
 
+/// Revokes only while `generation` still owns the session. A stale claim whose
+/// lease expired must not revoke a newer generation that already renewed.
+fn revoke_hash_generation(
+    client: &mut Client,
+    hash: &str,
+    generation: i64,
+) -> Result<bool, SessionError> {
+    let updated = client.execute(
+        "UPDATE browser_session
+            SET revoked_at = now(), renewal_lease_until = NULL,
+                id_token = ''::bytea, refresh_token = ''::bytea, last_error = NULL
+          WHERE session_id_hash = $1 AND refresh_generation = $2
+            AND revoked_at IS NULL",
+        &[&hash, &generation],
+    )?;
+    Ok(updated > 0)
+}
+
 /// Records a signed-in browser session.
 pub fn create_session(
     client: &mut Client,
@@ -454,8 +475,14 @@ pub fn renew_or_touch(
     let grant = match provider.refresh(&stored_refresh) {
         Ok(grant) => grant,
         Err(RefreshFailure::InvalidGrant) => {
-            revoke_hash(client, &hash)?;
-            return Ok(RenewOutcome::Expired);
+            // Generation-safe: a stale claim whose lease expired while the
+            // provider was slow must not revoke a newer generation.
+            if revoke_hash_generation(client, &hash, new_generation)? {
+                return Ok(RenewOutcome::Expired);
+            }
+            return Ok(RenewOutcome::Busy {
+                retry_after_ms: 250,
+            });
         }
         Err(RefreshFailure::Unavailable) => {
             clear_lease(client, &hash, new_generation)?;
@@ -473,8 +500,12 @@ pub fn renew_or_touch(
         }
     };
     if identity.issuer() != issuer || identity.subject() != subject {
-        revoke_hash(client, &hash)?;
-        return Ok(RenewOutcome::Expired);
+        if revoke_hash_generation(client, &hash, new_generation)? {
+            return Ok(RenewOutcome::Expired);
+        }
+        return Ok(RenewOutcome::Busy {
+            retry_after_ms: 250,
+        });
     }
     let Some(id_token_exp) = crate::oidc::token_exp(&grant.id_token) else {
         clear_lease(client, &hash, new_generation)?;

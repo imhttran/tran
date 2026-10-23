@@ -192,6 +192,43 @@ test.describe("automatic session renewal", () => {
     await expect(page.getByTestId("account-role")).toHaveText("admin");
   });
 
+  test("renewal restores the CSRF cookie for a later authorized write", async ({
+    request,
+    page,
+  }) => {
+    const minted = await mint(request, 10);
+    const id = sessionId();
+    await createSession(request, id, minted);
+    // Only the opaque session id survives; both the token and CSRF cookies are
+    // gone, as after a long idle period.
+    await page.context().addCookies([
+      {
+        name: "rag_sid",
+        value: id,
+        url: ORIGIN,
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+
+    const account = await page.request.get(`${ORIGIN}/api/account`);
+    expect(account.status()).toBe(200);
+    const cookies = await page.context().cookies(ORIGIN);
+    const csrf = cookies.find((cookie) => cookie.name === "rag_csrf")?.value;
+    expect(csrf, "renewal must restore the CSRF cookie").toBeTruthy();
+    expect(
+      cookies.some((cookie) => cookie.name === "rag_session"),
+      "renewal must restore the token cookie",
+    ).toBe(true);
+
+    // The restored double-submit cookie authorizes a later write.
+    const post = await page.request.post(
+      `${ORIGIN}/api/documents/jobs/run`,
+      { headers: { "x-csrf-token": csrf ?? "" } },
+    );
+    expect(post.status()).toBe(200);
+  });
+
   test("sign-out revokes the stored session", async ({ request, page }) => {
     const minted = await mint(request, 600);
     const id = sessionId();

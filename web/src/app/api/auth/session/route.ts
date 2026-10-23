@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
   let updates: CookieAttributes[] = [];
 
   if (sessionId && renewalConfigured()) {
-    if (tokenNeedsRenewal(token) || renewalDue(sessionId)) {
+    if (tokenNeedsRenewal(token) || renewalDue(sessionId) || !csrf) {
       const renewal = await renewStoredSession(sessionId);
       if (renewal.kind === "ok") {
         markTouched(sessionId);
