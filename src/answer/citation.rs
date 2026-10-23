@@ -148,16 +148,23 @@ pub fn parse(answer: &str) -> Vec<Citation> {
         .collect()
 }
 
-/// Resolves `citation` to the single passage it names.
+/// Resolves `citation` to every supporting passage of the one publication it
+/// names.
 ///
 /// Resolution is exact-source first. Only when no passage carries the exact
-/// stored source does it fall back to normalized filename matching, and only
-/// when exactly one passage matches. Zero matches, and more than one distinct
-/// match at either tier, resolve to `None`. This is what keeps two documents
-/// with the same filename from being confused, and what makes an ambiguous
-/// model citation fail closed instead of being attributed to the first
-/// passage.
-pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize> {
+/// stored source does it fall back to normalized filename matching.
+///
+/// A citation names a *publication*, identified by what the prompt exposes:
+/// source, section, and page. Several chunks of the same source, section, and
+/// page are therefore one citeable publication, not an ambiguity. All of them
+/// are returned so the answer can expose each chunk's real text, chunk id, and
+/// version identity rather than an arbitrary representative. Passages that
+/// differ in exact source, section, page, or provenance (corpus, version,
+/// content fingerprint) name more than one publication, and the citation is
+/// ambiguous and resolves to `None`. This keeps two documents with the same
+/// filename from being confused and makes an ambiguous model citation fail
+/// closed instead of being attributed to the first passage.
+pub fn resolve_all(citation: &Citation, passages: &[ContextPassage]) -> Option<Vec<usize>> {
     let section_matches = |passage: &ContextPassage| {
         normalize_section(&passage.section) == normalize_section(&citation.section)
     };
@@ -174,11 +181,8 @@ pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize
         })
         .map(|(index, _)| index)
         .collect();
-    match exact.len() {
-        1 => return Some(exact[0]),
-        0 => {}
-        // The exact source is itself ambiguous; do not fall back.
-        _ => return None,
+    if !exact.is_empty() {
+        return publication_matches(&exact, passages);
     }
 
     let normalized: Vec<usize> = passages
@@ -191,8 +195,37 @@ pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize
         })
         .map(|(index, _)| index)
         .collect();
-    if normalized.len() == 1 {
-        Some(normalized[0])
+    publication_matches(&normalized, passages)
+}
+
+/// Resolves `citation` to a representative passage of the publication it names.
+///
+/// Use [`resolve_all`] when the supporting evidence is needed; this is the
+/// convenience form for validity checks and reference rendering. The
+/// representative is the first matching passage in context order; it is never
+/// used to drop the other supporting chunks.
+pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize> {
+    resolve_all(citation, passages).and_then(|matches| matches.first().copied())
+}
+
+/// Returns every matching passage when they all name the same publication
+/// (exact source, section, page, corpus, version, and content fingerprint);
+/// `None` when they name more than one publication or carry conflicting
+/// provenance.
+fn publication_matches(matches: &[usize], passages: &[ContextPassage]) -> Option<Vec<usize>> {
+    let first = *matches.first()?;
+    let reference = &passages[first];
+    let same_publication = matches.iter().all(|index| {
+        let passage = &passages[*index];
+        passage.source == reference.source
+            && normalize_section(&passage.section) == normalize_section(&reference.section)
+            && passage.page == reference.page
+            && passage.identity.corpus == reference.identity.corpus
+            && passage.identity.document_version_id == reference.identity.document_version_id
+            && passage.identity.content_hash == reference.identity.content_hash
+    });
+    if same_publication {
+        Some(matches.to_vec())
     } else {
         None
     }
@@ -392,6 +425,80 @@ mod tests {
         ];
         let cited = parse("[report.md - Findings]");
         // Ambiguity is not "pick the first": it is invalid.
+        assert!(!is_valid(&cited[0], &passages));
+    }
+
+    #[test]
+    fn several_chunks_of_one_section_are_one_citeable_publication() {
+        // Section expansion routinely places several chunks of the same
+        // source, section, and page into the context. The model cannot cite a
+        // chunk, so this is one publication, not an ambiguity.
+        let passages = vec![
+            passage("doc.md", "Payments", Some(2)),
+            passage("doc.md", "Payments", Some(2)),
+            passage("doc.md", "Payments", Some(2)),
+        ];
+        let cited = parse("[doc.md - Payments - p.2]");
+        assert_eq!(resolve_all(&cited[0], &passages), Some(vec![0, 1, 2]));
+        assert_eq!(resolve(&cited[0], &passages), Some(0));
+        assert!(is_valid(&cited[0], &passages));
+        assert!(is_clean("[doc.md - Payments - p.2]", &passages));
+        assert_eq!(
+            repair("[doc.md - Payments - p.2]", &passages),
+            "[doc.md - Payments - p.2]"
+        );
+    }
+
+    #[test]
+    fn conflicting_provenance_is_rejected() {
+        let mut first = passage("doc.md", "Payments", Some(2));
+        first.identity = crate::answer::context_budget::PassageIdentity {
+            chunk_id: Some(1),
+            document_version_id: Some(10),
+            corpus: "family-docs".to_string(),
+            content_hash: "sha-a".to_string(),
+        };
+        let mut second = first.clone();
+        second.identity.chunk_id = Some(2);
+        second.identity.document_version_id = Some(11);
+        let cited = parse("[doc.md - Payments - p.2]");
+        assert_eq!(resolve_all(&cited[0], &[first, second]), None);
+
+        // A conflicting fingerprint is also rejected.
+        let mut first = passage("doc.md", "Payments", Some(2));
+        first.identity = crate::answer::context_budget::PassageIdentity {
+            chunk_id: Some(1),
+            document_version_id: Some(10),
+            corpus: "family-docs".to_string(),
+            content_hash: "sha-a".to_string(),
+        };
+        let mut second = first.clone();
+        second.identity.chunk_id = Some(2);
+        second.identity.content_hash = "sha-b".to_string();
+        assert_eq!(resolve_all(&cited[0], &[first, second]), None);
+
+        // A conflicting corpus is also rejected.
+        let mut first = passage("doc.md", "Payments", Some(2));
+        first.identity = crate::answer::context_budget::PassageIdentity {
+            chunk_id: Some(1),
+            document_version_id: Some(10),
+            corpus: "family-docs".to_string(),
+            content_hash: "sha-a".to_string(),
+        };
+        let mut second = first.clone();
+        second.identity.chunk_id = Some(2);
+        second.identity.corpus = "other-corpus".to_string();
+        assert_eq!(resolve_all(&cited[0], &[first, second]), None);
+    }
+
+    #[test]
+    fn several_pages_of_one_section_without_a_page_stay_ambiguous() {
+        let passages = vec![
+            passage("doc.md", "Payments", Some(1)),
+            passage("doc.md", "Payments", Some(2)),
+        ];
+        let cited = parse("[doc.md - Payments]");
+        assert_eq!(resolve(&cited[0], &passages), None);
         assert!(!is_valid(&cited[0], &passages));
     }
 }

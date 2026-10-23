@@ -254,24 +254,33 @@ where
     fn references(&self, answer: &str, passages: &[ContextPassage]) -> Vec<String> {
         let mut out = Vec::new();
         for cited in citation::parse(answer) {
-            if let Some(index) = citation::resolve(&cited, passages) {
-                out.push(render::render_page(&passages[index]));
+            if let Some(matches) = citation::resolve_all(&cited, passages) {
+                if let Some(index) = matches.first() {
+                    out.push(render::render_page(&passages[*index]));
+                }
             }
         }
         out
     }
 
-    /// Returns the cited passages in answer order, deduplicated by provenance
+    /// Returns every cited passage in answer order, deduplicated by provenance
     /// identity so a repeated citation does not produce a repeated source entry
     /// and two different documents are never collapsed into one.
+    ///
+    /// A citation names a publication, and a multi-chunk section contributes all
+    /// of its chunks: the answer exposes each chunk's real text, `chunk_id`,
+    /// version id, corpus, and fingerprint instead of an arbitrary
+    /// representative.
     fn cited_passages(&self, answer: &str, passages: &[ContextPassage]) -> Vec<ContextPassage> {
         let mut out: Vec<ContextPassage> = Vec::new();
         for cited in citation::parse(answer) {
-            if let Some(index) = citation::resolve(&cited, passages) {
-                let passage = &passages[index];
-                let duplicate = out.iter().any(|existing| same_identity(existing, passage));
-                if !duplicate {
-                    out.push(passage.clone());
+            if let Some(matches) = citation::resolve_all(&cited, passages) {
+                for index in matches {
+                    let passage = &passages[index];
+                    let duplicate = out.iter().any(|existing| same_identity(existing, passage));
+                    if !duplicate {
+                        out.push(passage.clone());
+                    }
                 }
             }
         }

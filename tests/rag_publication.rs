@@ -758,3 +758,90 @@ fn citations_carry_version_identity_and_never_mix_documents() {
     assert!(answer.references.is_empty());
     assert!(!answer.text.contains("[report.md - Findings]"));
 }
+
+#[test]
+fn multi_chunk_section_keeps_all_supporting_chunks() {
+    // Section expansion routinely puts several chunks of one section into the
+    // context. They are one citeable publication; every chunk is returned so
+    // the answer exposes the real supporting text and provenance rather than an
+    // arbitrary first chunk.
+    let chunk = |index: u32, id: i64, content: &str| {
+        Candidate::with_provenance(
+            Chunk {
+                source: "minutes.md (minutes-md-aaaa1111)".to_string(),
+                section: "Decisions".to_string(),
+                language: "english".to_string(),
+                chunk_index: index,
+                content: content.to_string(),
+                page: Some(2),
+            },
+            0.9,
+            ChunkProvenance {
+                chunk_id: Some(id),
+                document_version_id: Some(700),
+                corpus: CORPUS.to_string(),
+                content_hash: "sha-minutes".to_string(),
+            },
+        )
+    };
+    let retrieval = FixedRetrieval::new(vec![
+        chunk(0, 10, "Agenda and attendance."),
+        chunk(1, 11, "The decision was to approve the 2026 budget."),
+    ]);
+
+    struct StaticGenerator(String);
+    impl Generator for StaticGenerator {
+        fn generate(&self, _prompt: &str) -> Result<String, GenerationError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let generator = StaticGenerator(
+        "The decision was recorded [minutes.md (minutes-md-aaaa1111) - Decisions - p.2]."
+            .to_string(),
+    );
+    let service = AnswerService::new(&retrieval, &generator, 4000);
+    let answer = service.answer("what was decided?").expect("answer");
+    assert!(!answer.refused);
+    assert_eq!(
+        answer.citations.len(),
+        2,
+        "every supporting chunk of the publication is exposed"
+    );
+    assert_eq!(answer.references.len(), 1);
+    assert!(
+        answer
+            .text
+            .contains("[minutes.md (minutes-md-aaaa1111) - Decisions - p.2]"),
+        "the valid citation must be preserved: {}",
+        answer.text
+    );
+
+    let ids: Vec<_> = answer
+        .citations
+        .iter()
+        .map(|passage| passage.identity.chunk_id)
+        .collect();
+    assert_eq!(ids, vec![Some(10), Some(11)]);
+    assert!(answer.citations.iter().all(|passage| {
+        passage.identity.document_version_id == Some(700)
+            && passage.identity.corpus == CORPUS
+            && passage.identity.content_hash == "sha-minutes"
+    }));
+
+    // The answer depends on the second chunk; its content and provenance are
+    // exposed instead of the unrelated first chunk.
+    let support = answer
+        .citations
+        .iter()
+        .find(|passage| passage.identity.chunk_id == Some(11))
+        .expect("second chunk is a supporting citation");
+    assert!(support.content.contains("approve the 2026 budget"));
+
+    // The human-readable form resolves to the same publication and all chunks.
+    let generator = StaticGenerator("Recorded [minutes.md - Decisions - p.2].".to_string());
+    let service = AnswerService::new(&retrieval, &generator, 4000);
+    let answer = service.answer("what was decided?").expect("answer");
+    assert_eq!(answer.citations.len(), 2);
+    assert_eq!(answer.references.len(), 1);
+}
