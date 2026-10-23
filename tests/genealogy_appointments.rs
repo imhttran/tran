@@ -1,11 +1,16 @@
 //! Synthetic Head of Family workflow tests (TRAN-003E).
 //!
-//! Uses a dedicated disposable genealogy database derived from
-//! `GENEALOGY_DATABASE_URL`. It never touches real family data.
+//! Uses a dedicated disposable genealogy target derived from
+//! `GENEALOGY_DATABASE_URL` through `tests/support/genealogy_isolation.rs`.
+//! Each suite owns its own uniquely named target and drops only that target.
+//! It never touches real family data.
 
-use std::str::FromStr;
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
+
 use std::thread;
 
+use genealogy_isolation::{base_dsn, create_isolated_target, IsolatedTarget};
 use postgres::{Client, NoTls};
 use rag_foundation::genealogy::appointments;
 use rag_foundation::genealogy::eligibility;
@@ -13,88 +18,12 @@ use rag_foundation::genealogy::GenealogyError;
 
 const BRANCH: &str = "branch-3";
 
-fn base_dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let config = postgres::Config::from_str(&dsn).ok()?;
-    let database = config.get_dbname()?;
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-    Some(dsn)
-}
-
-fn with_database(dsn: &str, database: &str) -> String {
-    let scheme_end = dsn.find("://").expect("dsn scheme") + 3;
-    let authority_end = dsn[scheme_end..]
-        .find('/')
-        .map(|index| scheme_end + index)
-        .unwrap_or(dsn.len());
-    let query = dsn[authority_end..]
-        .find('?')
-        .map(|index| &dsn[authority_end + index..])
-        .unwrap_or("");
-    format!("{}/{}{}", &dsn[..authority_end], database, query)
-}
-
-fn ensure_database(admin_dsn: &str, database: &str) {
-    let mut client = Client::connect(admin_dsn, NoTls).expect("connect to postgres");
-    let exists: i64 = client
-        .query_one(
-            "SELECT count(*) FROM pg_database WHERE datname = $1",
-            &[&database],
-        )
-        .expect("check database")
-        .get(0);
-    if exists == 0 {
-        client
-            .batch_execute(&format!("CREATE DATABASE {database};"))
-            .expect("create disposable database");
-    }
-}
-
-fn reset_schema(client: &mut Client) {
-    client
-        .batch_execute(
-            "DROP TABLE IF EXISTS
-                head_of_family_audit_event,
-                head_of_family_appointment,
-                head_of_family_nomination,
-                assertion_review_event,
-                assertion_review_baseline,
-                assertion_evidence,
-                assertion,
-                parent_child_link,
-                spouse_link,
-                catalog_entry,
-                family_branch,
-                source_evidence,
-                source_document,
-                gravesite,
-                business_name,
-                genealogy_fact_proposal_event,
-                genealogy_fact_proposal,
-                person_name_variant,
-                person,
-                genealogy_schema_version
-             CASCADE;",
-        )
-        .expect("reset disposable genealogy schema");
-}
-
-fn migrate(client: &mut Client) {
-    for migration in [
-        include_str!("../genealogy/migrations/0001_genealogy_schema_version.sql"),
-        include_str!("../genealogy/migrations/0002_catalog_keys.sql"),
-        include_str!("../genealogy/migrations/0003_assertions_evidence_and_links.sql"),
-        include_str!("../genealogy/migrations/0004_review_workflow.sql"),
-        include_str!("../genealogy/migrations/0005_source_kind.sql"),
-        include_str!("../genealogy/migrations/0006_head_of_family.sql"),
-    ] {
-        client
-            .batch_execute(migration)
-            .expect("apply genealogy migration");
-    }
+/// Create and migrate a uniquely named target owned by this test run.
+fn prepare(label: &str) -> Option<IsolatedTarget> {
+    let base = base_dsn()?;
+    let target = create_isolated_target(&base, label);
+    target.apply_migrations();
+    Some(target)
 }
 
 fn seed_person(client: &mut Client, key: &str, branch: &str, living: bool) {
@@ -166,16 +95,11 @@ fn seed_person(client: &mut Client, key: &str, branch: &str, living: bool) {
 
 #[test]
 fn eligible_candidate_can_be_nominated_approved_and_revoked() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("appointments_approval") else {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping appointment test");
         return;
     };
-    let database = "genealogy_appointments_approval_test";
-    ensure_database(&with_database(&base, "postgres"), database);
-    let dsn = with_database(&base, database);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect");
-    reset_schema(&mut client);
-    migrate(&mut client);
+    let mut client = target.connect();
     seed_person(&mut client, "synthetic-first", BRANCH, true);
 
     let input = eligibility::load_input(&mut client, "synthetic-first", BRANCH).unwrap();
@@ -202,19 +126,17 @@ fn eligible_candidate_can_be_nominated_approved_and_revoked() {
     assert!(appointments::list_active_appointments(&mut client)
         .unwrap()
         .is_empty());
+
+    drop(client);
+    target.cleanup();
 }
 
 #[test]
 fn nominator_cannot_approve_their_own_nomination() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("appointments_self_approval") else {
         return;
     };
-    let database = "genealogy_appointments_self_approval_test";
-    ensure_database(&with_database(&base, "postgres"), database);
-    let dsn = with_database(&base, database);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect");
-    reset_schema(&mut client);
-    migrate(&mut client);
+    let mut client = target.connect();
     seed_person(&mut client, "synthetic-self", BRANCH, true);
 
     let nomination =
@@ -228,19 +150,17 @@ fn nominator_cannot_approve_their_own_nomination() {
         .unwrap()
         .is_empty());
     appointments::approve(&mut client, nomination, BRANCH, "other-admin").expect("approve");
+
+    drop(client);
+    target.cleanup();
 }
 
 #[test]
 fn ineligible_candidate_is_rejected_without_an_appointment() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("appointments_ineligible") else {
         return;
     };
-    let database = "genealogy_appointments_ineligible_test";
-    ensure_database(&with_database(&base, "postgres"), database);
-    let dsn = with_database(&base, database);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect");
-    reset_schema(&mut client);
-    migrate(&mut client);
+    let mut client = target.connect();
     seed_person(&mut client, "synthetic-no-living", BRANCH, false);
 
     let nomination =
@@ -255,25 +175,24 @@ fn ineligible_candidate_is_rejected_without_an_appointment() {
     assert!(appointments::list_active_appointments(&mut client)
         .unwrap()
         .is_empty());
+
+    drop(client);
+    target.cleanup();
 }
 
 #[test]
 fn concurrent_approvals_leave_at_most_one_active_appointment() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("appointments_concurrent") else {
         return;
     };
-    let database = "genealogy_appointments_concurrent_test";
-    ensure_database(&with_database(&base, "postgres"), database);
-    let dsn = with_database(&base, database);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect");
-    reset_schema(&mut client);
-    migrate(&mut client);
+    let mut client = target.connect();
     seed_person(&mut client, "synthetic-a", BRANCH, true);
     seed_person(&mut client, "synthetic-b", BRANCH, true);
 
     let first = appointments::nominate(&mut client, "synthetic-a", BRANCH, "editor").unwrap();
     let second = appointments::nominate(&mut client, "synthetic-b", BRANCH, "editor").unwrap();
 
+    let dsn = target.dsn.clone();
     let results = thread::scope(|scope| {
         let first_dsn = dsn.clone();
         let second_dsn = dsn.clone();
@@ -299,4 +218,7 @@ fn concurrent_approvals_leave_at_most_one_active_appointment() {
             .len(),
         1
     );
+
+    drop(client);
+    target.cleanup();
 }

@@ -80,6 +80,97 @@ database and pick up migrations added after `001`.
 make db-down          # stop and remove the disposable PostgreSQL container
 ```
 
+## Genealogy integration-test isolation (TDI-002)
+
+The genealogy suites that mutate the genealogy schema no longer share one database.
+Each suite derives its own disposable target from `GENEALOGY_DATABASE_URL`, applies
+the full migration set to that target, and drops only what it created. Parallel
+runs stay safe, so no suite needs `--test-threads=1` or a cross-suite lock.
+
+### Per-suite target
+
+The shared helper lives at `tests/support/genealogy_isolation.rs`. It builds a
+run-unique name from a suite label plus a per-run token (process id, timestamp,
+and an atomic counter):
+
+```text
+genealogy_<suite_label>_<pid>_<nanos>_<seq>_test
+```
+
+Two targets created in the same process with the same base DSN therefore always
+get different names. PostgreSQL limits identifiers to 63 bytes, so a long suite
+label is truncated to fit; the unique token and the mandatory `_test` suffix are
+never truncated.
+
+### Migration initialisation
+
+The helper applies `GENEALOGY_MIGRATIONS`, the sorted list of every
+`genealogy/migrations/*.sql` file from `0001` through `0022`, to the target it just
+created. Suites no longer keep their own partial migration arrays; the one
+exception is the schema-contract suite, which keeps its original `0001`-`0005`
+scope so its assertions still describe the same contract.
+
+### Cleanup ownership
+
+The helper records the exact name it created. `cleanup()` drops only that owned
+database (`DROP DATABASE ... WITH (FORCE)`), and the target also drops it from
+`Drop`, so a failing assertion does not leave the database behind. It never issues
+`DROP TABLE` or `TRUNCATE` against a shared table name, so no development or
+production table can be reset by a test run. Pre-existing databases outside the
+run are never touched.
+
+### Failure behaviour
+
+The helper requires `CREATE DATABASE`. It tries the `postgres` maintenance
+database, then `template1`; if neither can create the database it panics with an
+explicit message naming the suite, both attempted maintenance databases, and their
+server-side errors. It never falls back to a shared database or a schema, so a run
+fails loudly instead of silently touching a shared target.
+
+### Database-creation capability (from configured validation commands)
+
+The isolation mode is concluded from the configured commands, not from a direct
+`psql` probe:
+
+- `.github/workflows/ci.yml` sets `GENEALOGY_DATABASE_URL` to
+  `postgres://rag:rag@127.0.0.1:5432/genealogy_test?sslmode=disable` and its
+  `Create genealogy database and apply its migrations` step runs
+  `psql "$DATABASE_URL" ... -c "CREATE DATABASE genealogy_test"`. That step is
+  itself evidence that the CI role can create databases; locally, the isolated
+  suites create and drop their own databases on the disposable cluster.
+- The `Makefile` targets `rust-build`, `rust-test`, `rust-fmt`, `rust-clippy` run
+  `cargo build|test|fmt|clippy` and never rely on a pre-created genealogy database;
+  the suites create their own.
+- `scripts/web-e2e.sh` requires `GENEALOGY_DATABASE_URL` and applies the migrations
+  with `psql`, but it does not create the database, so a fresh disposable database
+  is provided by the run environment.
+
+Because the CI role can create databases, the helper works there. An environment
+whose role lacks `CREATEDB` fails with the explicit message above; the fix is to
+grant the test role `CREATEDB` on the disposable cluster, never to point the suite
+at a shared database.
+
+### Why there is no schema fallback
+
+Genealogy migrations `0010_onboarding_foreign_keys.sql` and
+`0011_onboarding_foreign_key_reconciliation.sql` resolve constraints through
+`pg_constraint`, which is database-global rather than schema-scoped. Two suites
+sharing one database under different schemas would therefore see each other's
+constraints and produce false passes and false fails. Database-per-suite is the
+only isolation the migration set supports.
+
+### Validation commands
+
+These commands exercise the isolated genealogy suites:
+
+```sh
+cargo build --locked
+cargo test --locked
+cargo test --locked --test genealogy_schema -- --nocapture
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+```
+
 ## Atomic ingestion
 
 Replacement ingest is atomic: `ReplaceDocument` embeds every chunk **before**

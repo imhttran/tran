@@ -1,101 +1,38 @@
 //! Synthetic PostgreSQL integration tests for the genealogy schema.
 //!
-//! These tests write only to the explicitly configured disposable genealogy
-//! database. They skip when `GENEALOGY_DATABASE_URL` is absent and refuse a
-//! destination that is not clearly a test database or that equals `DATABASE_URL`.
+//! Uses a per-suite disposable target from `tests/support/genealogy_isolation.rs`:
+//! a uniquely named database created by the run. It skips when
+//! `GENEALOGY_DATABASE_URL` is absent and refuses a destination that is not
+//! clearly a test database or that equals `DATABASE_URL`.
 
-use std::fs;
-use std::str::FromStr;
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
 
-use postgres::{Client, NoTls};
-
-const MIGRATIONS: [&str; 5] = [
-    "genealogy/migrations/0001_genealogy_schema_version.sql",
-    "genealogy/migrations/0002_catalog_keys.sql",
-    "genealogy/migrations/0003_assertions_evidence_and_links.sql",
-    "genealogy/migrations/0004_review_workflow.sql",
-    "genealogy/migrations/0005_source_kind.sql",
-];
-
-fn genealogy_dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let dsn = dsn.trim().to_string();
-    if dsn.is_empty() {
-        return None;
-    }
-
-    let config = postgres::Config::from_str(&dsn).expect("GENEALOGY_DATABASE_URL parses");
-    let database = config.get_dbname().unwrap_or_default();
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-
-    if let Ok(rag) = std::env::var("DATABASE_URL") {
-        let rag_config = postgres::Config::from_str(&rag).expect("DATABASE_URL parses");
-        assert_ne!(
-            (config.get_dbname(), config.get_hosts(), config.get_ports()),
-            (
-                rag_config.get_dbname(),
-                rag_config.get_hosts(),
-                rag_config.get_ports()
-            ),
-            "the genealogy integration test must not target the RAG database"
-        );
-    }
-
-    Some(dsn)
-}
-
-fn connect(dsn: &str) -> Client {
-    Client::connect(dsn, NoTls).expect("connect to the disposable genealogy database")
-}
-
-fn reset_schema(client: &mut Client) {
-    client
-        .batch_execute(
-            "DROP TABLE IF EXISTS
-                assertion_evidence,
-                assertion,
-                parent_child_link,
-                spouse_link,
-                catalog_entry,
-                family_branch,
-                source_evidence,
-                source_document,
-                gravesite,
-                business_name,
-                genealogy_fact_proposal_event,
-                genealogy_fact_proposal,
-                person_name_variant,
-                person,
-                genealogy_schema_version
-             CASCADE;",
-        )
-        .expect("drop prior genealogy tables in the disposable database");
-}
-
-fn apply_migrations(client: &mut Client) {
-    for path in MIGRATIONS {
-        let sql = fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
-        client
-            .batch_execute(&sql)
-            .unwrap_or_else(|err| panic!("apply {path}: {err}"));
-    }
-}
+use genealogy_isolation::{base_dsn, create_isolated_target};
 
 #[test]
 fn migrations_constraints_and_rollback_are_enforced() {
-    let Some(dsn) = genealogy_dsn() else {
+    let Some(base) = base_dsn() else {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping genealogy integration test");
         return;
     };
-    let mut client = connect(&dsn);
 
-    reset_schema(&mut client);
-    apply_migrations(&mut client);
+    // Create the owned target, migrate it, and drop only that target afterwards.
+    // The schema contract covers migrations 0001-0005, exactly as before. The
+    // suite now runs that subset against its own disposable database instead of
+    // the shared one; other suites apply the full migration set.
+    let migrations = &genealogy_isolation::GENEALOGY_MIGRATIONS[..5];
+    let target = create_isolated_target(&base, "schema");
+    target.apply_migration_files(migrations);
+    let mut client = target.connect();
+
     // A second application is a no-op because every object is guarded.
-    apply_migrations(&mut client);
+    for path in migrations {
+        let sql = std::fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
+        client
+            .batch_execute(&sql)
+            .unwrap_or_else(|err| panic!("re-apply {path}: {err}"));
+    }
 
     client
         .batch_execute(
@@ -193,7 +130,9 @@ fn migrations_constraints_and_rollback_are_enforced() {
         "a rolled-back import must leave no partial family graph"
     );
 
-    reset_schema(&mut client);
+    // Release the client before cleanup drops the owned target.
+    drop(client);
+    target.cleanup();
 
     // SOP's PostgreSQL integration category requires structured test events. The
     // events below are emitted only after every real assertion above passed.

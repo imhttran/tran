@@ -1,18 +1,18 @@
 //! Migration 0011 regression tests: fresh schema, legacy schema, and orphans.
 //!
-//! Each scenario runs in its own dedicated disposable database created from
-//! `GENEALOGY_DATABASE_URL`. The test never targets the configured genealogy
-//! database itself, never targets RAG data, and only resets synthetic test
-//! databases. Orphan validation is asserted without deleting the orphan row.
+//! Each scenario runs in its own disposable target created from
+//! `GENEALOGY_DATABASE_URL` through `tests/support/genealogy_isolation.rs`.
+//! The test never targets the configured genealogy database itself, never
+//! targets RAG data, and drops only the target it created. Orphan validation is
+//! asserted without deleting the orphan row.
+
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
 
 use std::fs;
-use std::str::FromStr;
 
-use postgres::{Client, NoTls};
-
-const FRESH_DB: &str = "genealogy_migration_0011_fresh_test";
-const LEGACY_DB: &str = "genealogy_migration_0011_legacy_test";
-const ORPHAN_DB: &str = "genealogy_migration_0011_orphan_test";
+use genealogy_isolation::{base_dsn, create_isolated_target, IsolatedTarget};
+use postgres::Client;
 
 const LINK_TABLES: [&str; 4] = [
     "onboarding_invitation",
@@ -55,89 +55,6 @@ struct ForeignKey {
     validated: bool,
     definition: String,
     delete_action: String,
-}
-
-fn base_dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let config = postgres::Config::from_str(&dsn).expect("GENEALOGY_DATABASE_URL parses");
-    let database = config.get_dbname().unwrap_or_default();
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-    Some(dsn)
-}
-
-fn with_database(dsn: &str, database: &str) -> String {
-    let scheme_end = dsn.find("://").expect("dsn scheme") + 3;
-    let authority_end = dsn[scheme_end..]
-        .find('/')
-        .map(|index| scheme_end + index)
-        .unwrap_or(dsn.len());
-    let query = dsn[authority_end..]
-        .find('?')
-        .map(|index| &dsn[authority_end + index..])
-        .unwrap_or("");
-    format!("{}/{}{}", &dsn[..authority_end], database, query)
-}
-
-fn ensure_database(base_dsn: &str, database: &str) {
-    assert!(
-        !database.is_empty()
-            && database
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
-        "refusing to interpolate an unsafe database identifier {database:?}"
-    );
-    let admin_dsn = with_database(base_dsn, "postgres");
-    let mut client = Client::connect(&admin_dsn, NoTls).expect("connect to postgres");
-    let exists: i64 = client
-        .query_one(
-            "SELECT count(*) FROM pg_database WHERE datname = $1",
-            &[&database],
-        )
-        .expect("check database")
-        .get(0);
-    if exists == 0 {
-        client
-            .batch_execute(&format!("CREATE DATABASE {database};"))
-            .expect("create disposable migration database");
-    }
-}
-
-fn reset_schema(client: &mut Client) {
-    client
-        .batch_execute(
-            "DROP TABLE IF EXISTS
-                onboarding_link_audit,
-                onboarding_media_metadata,
-                onboarding_profile_revision,
-                onboarding_profile_value,
-                onboarding_branch_reviewer_grant,
-                onboarding_person_account_link,
-                onboarding_username_reservation,
-                onboarding_invitation,
-                head_of_family_audit_event,
-                head_of_family_appointment,
-                head_of_family_nomination,
-                assertion_review_event,
-                assertion_review_baseline,
-                assertion_evidence,
-                assertion,
-                parent_child_link,
-                spouse_link,
-                catalog_entry,
-                family_branch,
-                source_evidence,
-                source_document,
-                gravesite,
-                business_name,
-                person_name_variant,
-                person,
-                genealogy_schema_version
-             CASCADE;",
-        )
-        .expect("reset disposable migration schema");
 }
 
 fn apply(client: &mut Client, paths: &[&str]) {
@@ -216,16 +133,18 @@ fn assert_single_validated_cascade(keys: &[ForeignKey]) {
     }
 }
 
+fn prepare(label: &str) -> Option<IsolatedTarget> {
+    let base = base_dsn()?;
+    Some(create_isolated_target(&base, label))
+}
+
 #[test]
 fn fresh_schema_0010_duplicates_are_reconciled_by_0011() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("migration_0011_fresh") else {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping migration 0011 fresh test");
         return;
     };
-    ensure_database(&base, FRESH_DB);
-    let dsn = with_database(&base, FRESH_DB);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect fresh migration database");
-    reset_schema(&mut client);
+    let mut client = target.connect();
 
     apply(&mut client, &ALL_MIGRATIONS[..10]);
     let before = onboarding_foreign_keys(&mut client);
@@ -257,18 +176,18 @@ fn fresh_schema_0010_duplicates_are_reconciled_by_0011() {
         .expect("count unvalidated constraints")
         .get(0);
     assert_eq!(unvalidated, 0, "0011 must leave no unvalidated constraint");
+
+    drop(client);
+    target.cleanup();
 }
 
 #[test]
 fn legacy_schema_0010_constraints_are_validated_by_0011() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("migration_0011_legacy") else {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping migration 0011 legacy test");
         return;
     };
-    ensure_database(&base, LEGACY_DB);
-    let dsn = with_database(&base, LEGACY_DB);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect legacy migration database");
-    reset_schema(&mut client);
+    let mut client = target.connect();
 
     apply(&mut client, &PRE_RECONCILIATION);
     // Simulate the earlier schema that created the tables without the inline
@@ -294,18 +213,18 @@ fn legacy_schema_0010_constraints_are_validated_by_0011() {
     apply(&mut client, &ALL_MIGRATIONS[10..]);
     let after = onboarding_foreign_keys(&mut client);
     assert_single_validated_cascade(&after);
+
+    drop(client);
+    target.cleanup();
 }
 
 #[test]
 fn legacy_orphan_rows_fail_validation_without_being_deleted() {
-    let Some(base) = base_dsn() else {
+    let Some(target) = prepare("migration_0011_orphan") else {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping migration 0011 orphan test");
         return;
     };
-    ensure_database(&base, ORPHAN_DB);
-    let dsn = with_database(&base, ORPHAN_DB);
-    let mut client = Client::connect(&dsn, NoTls).expect("connect orphan migration database");
-    reset_schema(&mut client);
+    let mut client = target.connect();
 
     apply(&mut client, &PRE_RECONCILIATION);
     client
@@ -337,7 +256,7 @@ fn legacy_orphan_rows_fail_validation_without_being_deleted() {
 
     // Reconnect because the validation error rolled back the DO statement.
     drop(client);
-    let mut client = Client::connect(&dsn, NoTls).expect("reconnect orphan migration database");
+    let mut client = target.connect();
     let orphan_count: i64 = client
         .query_one(
             "SELECT count(*) FROM onboarding_invitation WHERE person_id = 999999",
@@ -355,4 +274,7 @@ fn legacy_orphan_rows_fail_validation_without_being_deleted() {
         .expect("read invitation constraint")
         .get(0);
     assert!(!validated, "the failed constraint must remain NOT VALID");
+
+    drop(client);
+    target.cleanup();
 }
