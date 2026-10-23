@@ -74,11 +74,14 @@ retrieved passage:
    one passage matches.
 3. **One publication, not one chunk.** The prompt exposes source, section, and
    page, so several chunks of the same source, section, and page are one
-   citeable publication; the first matching chunk represents it and the
-   citation resolves normally. This is the normal multi-chunk section case.
-4. **Ambiguity fails closed.** Matches that differ in exact source, section, or
-   page name more than one publication and return no resolution. The citation
-   is stripped by repair, never attributed to the first passage.
+   citeable publication. Every matching chunk is kept as supporting evidence
+   with its own `chunk_id`, version identity, corpus, and fingerprint; the
+   answer never substitutes an arbitrary first chunk. This is the normal
+   multi-chunk section case.
+4. **Ambiguity fails closed.** Matches that differ in exact source, section,
+   page, corpus, version, or content fingerprint name more than one publication
+   or carry conflicting provenance and return no resolution. The citation is
+   stripped by repair, never attributed to the first passage.
 
 Consequences:
 
