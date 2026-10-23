@@ -21,3 +21,6 @@ AUDIT.md*
 
 # Private owner media written by the API (never commit real family files).
 /data/
+
+# Local API process state (pid and log files) written by scripts/local-app.sh.
+/.run/

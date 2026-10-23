@@ -41,6 +41,47 @@ This procedure is never applied by `make db-schema`, `make db-up`, or the
 `docker-entrypoint-initdb.d` mount in `docker-compose.yml`, because it is not
 under `migrations/*.sql`.
 
+## Update the local app after a merge
+
+```bash
+git pull --ff-only
+make app-update
+```
+
+`app-update` updates **local data and processes using the code already checked
+out**. It does not fetch, switch branches, stash, reset, or discard changes; run
+the `git pull` yourself. It never starts or stops PostgreSQL, Keycloak, or
+containers, and never removes stored data.
+
+The command stops at the first failure:
+
+1. validates the configuration (`DATABASE_URL`, an explicit
+   `GENEALOGY_DATABASE_URL`, and their reachability);
+2. applies the genealogy migrations;
+3. imports the catalog (`CATALOG` or
+   `docs/tran/Tran-Family-People-Catalog.md`) idempotently, preserving person
+   identity, citations, namesakes, and review decisions;
+4. rebuilds the API;
+5. restarts only the API/UI processes these scripts started;
+6. prints the health status, URLs, and log paths.
+
+Individual steps:
+
+| Command | Does |
+| --- | --- |
+| `make genealogy-migrate` | apply the genealogy migrations |
+| `make genealogy-import` | import `CATALOG` (idempotent; override with `CATALOG=…`) |
+| `make app-restart` | restart only the API/UI processes these scripts own |
+| `make app-update` | validate → migrate → import → rebuild → restart → report |
+
+API process state lives in `.run/api.pid` and `.run/api.log`; the UI uses
+`web/.run/`. A server started some other way is reported with the command to
+stop it and is never killed.
+
+Administrator provisioning stays explicit and is **not** part of `app-update`:
+see
+[operations/RBAC-OPERATIONS.md](../operations/RBAC-OPERATIONS.md#keycloak-administrator-setup).
+
 ## Clean checkout (Rust-only)
 
 The Cargo package is at the repository root; Go is not required. A clean checkout

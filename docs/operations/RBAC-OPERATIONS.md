@@ -72,17 +72,127 @@ embeddings, or model calls.
 
 1. Apply every migration in `migrations/` to the target database.
 2. Configure the API environment above and start the API on loopback.
-3. Create the first administrator with the explicit bootstrap command. This is
-   the only path to the first admin and it refuses once an admin exists:
-
-   ```bash
-   DATABASE_URL=... cargo run --locked --bin admin -- \
-     bootstrap --subject <provider-subject> --issuer <issuer> --corpus <private-corpus>
-   ```
+3. Create the first administrator with the explicit `make admin-setup` command
+   (see [Keycloak administrator setup](#keycloak-administrator-setup)). It
+   resolves a Keycloak username to the provider's immutable user id, shows the
+   result, and then uses the bootstrap or the provision/grant commands. It is
+   never run automatically by `make app-update`.
 
 4. Start the Next.js UI with `API_URL` pointing at the loopback API.
 5. Do not expose the API publicly until a real OIDC provider, TLS, secure
    session configuration, and the bootstrap procedure are in place.
+
+## Keycloak administrator setup
+
+`make admin-setup` is the supported way to configure an administrator from a
+Keycloak username. It resolves the username to the **immutable Keycloak user
+id** (the OIDC subject) before provisioning, so no username, email, or guessed
+subject reaches the application.
+
+### Required configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `KEYCLOAK_URL` | Keycloak **base** URL, for example `https://kc.example.com`. Never the realm URL. |
+| `KEYCLOAK_REALM` | Realm that issues the application tokens. |
+| `AUTH_ISSUER` | Must equal `KEYCLOAK_URL/realms/KEYCLOAK_REALM`; setup refuses a mismatch. |
+| `DATABASE_URL` | Application database that holds users, roles, grants, and audit events. |
+| `KEYCLOAK_USERNAME` or `--username` | Username to resolve. Prompted when neither is supplied. |
+| `ADMIN_CORPUS` or `--corpus` | Corpus to grant. Defaults to `trusted`. |
+| `KEYCLOAK_ADMIN_CLIENT_ID` | Optional admin client id. Defaults to `admin-cli`. |
+| `KEYCLOAK_ADMIN_CLIENT_SECRET` | Optional. When set, a client-credentials service account is used instead of a password grant. |
+| `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` | Optional provider credentials. Missing values are prompted for; the password is read without echo. |
+
+Caller environment values win over `.env` defaults. Secrets are never printed,
+written to audit events, or stored by the script.
+
+### Command
+
+```bash
+make admin-setup KEYCLOAK_USERNAME=alice
+```
+
+The command:
+
+1. Prints the realm, username, resolved user id, issuer, corpus, and whether it
+   is creating the first administrator or provisioning an existing one.
+2. Rejects a missing user, an ambiguous (case-insensitive) match, and a
+   placeholder or template user id.
+3. Uses `admin bootstrap` when no administrative role exists, and the existing
+   `admin provision`, `admin grant --role admin`, and `admin grant-corpus`
+   commands otherwise.
+4. Runs only the commands that are still needed, so a repeated run is a no-op
+   that writes no duplicate rows and no extra audit events.
+5. Never writes genealogy data and never creates an account-to-person link.
+
+To resolve and display without writing anything:
+
+```bash
+scripts/admin-setup.sh --username alice --dry-run
+```
+
+### Equivalent manual CLI commands
+
+Resolve the user id in Keycloak (Admin console → Users → the user → **ID**),
+then use it as `--subject`. The subject is the immutable user id, never the
+username or email, and `--issuer` is required.
+
+```bash
+# First administrator, only while no admin exists
+cargo run --locked --bin admin -- bootstrap \
+  --subject <resolved-user-id> --issuer <issuer> --corpus trusted
+
+# An additional administrator
+cargo run --locked --bin admin -- provision \
+  --subject <resolved-user-id> --issuer <issuer>
+cargo run --locked --bin admin -- grant \
+  --subject <resolved-user-id> --issuer <issuer> --role admin
+cargo run --locked --bin admin -- grant-corpus \
+  --subject <resolved-user-id> --issuer <issuer> --corpus trusted
+```
+
+### Verify administrator access
+
+1. Sign in at `/signin` as that Keycloak user.
+2. `GET /api/account` returns `roles` containing `admin` and the expected corpus
+   grants; the review console and administrative pages become available.
+3. Optionally confirm in the database with a read-only query:
+
+   ```sql
+   SELECT u.subject, u.issuer, r.role, c.corpus
+     FROM users u
+     LEFT JOIN role_assignments r
+       ON r.user_id = u.id AND r.revoked_at IS NULL
+     LEFT JOIN corpus_grants c
+       ON c.user_id = u.id AND c.revoked_at IS NULL
+    WHERE u.subject = '<resolved-user-id>'
+      AND u.issuer = '<issuer>'
+      AND u.deactivated_at IS NULL;
+   ```
+
+### Recover from an incorrect subject
+
+Never remove the last valid administrator before the replacement works.
+
+1. Resolve the correct Keycloak user and run `make admin-setup` for it. Because
+   an administrator already exists, it provisions the account and grants the
+   admin role and corpus.
+2. Verify the new administrator can sign in and reach the admin surfaces.
+3. Only then revoke the admin role from the incorrect account:
+
+   ```bash
+   cargo run --locked --bin admin -- revoke \
+     --subject <incorrect-user-id> --issuer <issuer> --role admin
+   ```
+
+   The last-admin safeguard refuses a revocation that would leave no active
+   administrator.
+4. Deactivate the incorrect account if it should no longer sign in:
+
+   ```bash
+   cargo run --locked --bin admin -- deactivate \
+     --subject <incorrect-user-id> --issuer <issuer>
+   ```
 
 ## Invite and role administration
 
@@ -91,12 +201,12 @@ changes. Every write is transactional and records an `audit_events` row.
 
 ```bash
 # Grant or revoke an application role
-cargo run --locked --bin admin -- grant  --subject <sub> --role viewer
-cargo run --locked --bin admin -- revoke --subject <sub> --role editor
+cargo run --locked --bin admin -- grant  --subject <sub> --issuer <issuer> --role viewer
+cargo run --locked --bin admin -- revoke --subject <sub> --issuer <issuer> --role editor
 
 # Grant or revoke a corpus grant
-cargo run --locked --bin admin -- grant-corpus  --subject <sub> --corpus <corpus>
-cargo run --locked --bin admin -- revoke-corpus --subject <sub> --corpus <corpus>
+cargo run --locked --bin admin -- grant-corpus  --subject <sub> --issuer <issuer> --corpus <corpus>
+cargo run --locked --bin admin -- revoke-corpus --subject <sub> --issuer <issuer> --corpus <corpus>
 ```
 
 Admin HTTP operations are available for role and Head of Family workflows and
@@ -109,7 +219,7 @@ administrator remains.
 ```bash
 # Provision/reactivate or deactivate an account
 cargo run --locked --bin admin -- provision --subject <sub> --issuer <issuer>
-cargo run --locked --bin admin -- deactivate --subject <sub>
+cargo run --locked --bin admin -- deactivate --subject <sub> --issuer <issuer>
 ```
 
 Audit rules:
