@@ -735,7 +735,20 @@ async fn profile(State(state): State<AppState>, headers: HeaderMap) -> Response 
             "ok": true,
             "linked": true,
             "profile": owner_profile_json(&view),
-            "media": media.iter().map(media_json).collect::<Vec<_>>(),
+            "media": media.iter().map(|item| {
+                let mut value = media_json(&item.asset);
+                // The owner needs to distinguish "approved for the family" from
+                // "approved but restricted from the family" and from an
+                // owner-private approval, so the effective state travels with the
+                // row. It is the same flag the family predicate uses.
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "restricted_from_family".to_string(),
+                        serde_json::json!(item.restricted_from_family),
+                    );
+                }
+                value
+            }).collect::<Vec<_>>(),
         }))
         .into_response(),
         Ok(Ok((None, _))) => Json(serde_json::json!({

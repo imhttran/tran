@@ -11,8 +11,10 @@
 use std::fs;
 use std::io::Cursor;
 use std::str::FromStr;
+use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use image::{DynamicImage, ImageFormat};
 use postgres::{Client, NoTls};
@@ -109,6 +111,7 @@ struct TestDb {
     identity: Client,
     genealogy: Client,
     storage: MediaStorage,
+    genealogy_dsn: String,
     prefix: String,
     _temp: TempDir,
     _guard: MutexGuard<'static, ()>,
@@ -133,6 +136,7 @@ impl TestDb {
             identity,
             genealogy,
             storage,
+            genealogy_dsn,
             prefix: format!("synthetic-family-media-{}-{nanos}", std::process::id()),
             _temp: temp,
             _guard: guard,
@@ -710,4 +714,209 @@ fn a_pre_restriction_media_submission_cannot_lift_the_restriction() {
         .media;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].media_id, restored.media_id);
+}
+/// Observes that `pid` is really waiting for a lock. This polls PostgreSQL's own
+/// wait state rather than assuming a sleep is long enough, so the regression is
+/// deterministic.
+fn wait_until_blocked(db: &mut TestDb, pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let blocked: bool = db
+            .genealogy
+            .query_one("SELECT pg_blocking_pids($1) <> '{}'", &[&pid])
+            .expect("read lock wait state")
+            .get(0);
+        if blocked {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "backend {pid} never blocked on its lock"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Runs a family media read on its own connection. `person_key` selects the
+/// person-scoped family route; `None` selects the generic asset route.
+fn spawn_family_read(
+    dsn: String,
+    storage: MediaStorage,
+    viewer: IdentityAccount,
+    person_key: Option<String>,
+    media_id: i64,
+) -> (
+    mpsc::Receiver<i32>,
+    thread::JoinHandle<Result<MediaDownload, MediaError>>,
+) {
+    let (pid_tx, pid_rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("media read connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("media read backend id")
+            .get(0);
+        pid_tx.send(pid).expect("report media read backend id");
+        match person_key {
+            Some(key) => read_family_media(&mut client, &storage, &viewer, &key, media_id),
+            None => read_authorized_media(&mut client, &storage, &viewer, media_id),
+        }
+    });
+    (pid_rx, handle)
+}
+
+/// Runs the shared read/lock scenario for one route.
+///
+/// A control transaction holds the media owner's person row `FOR UPDATE`, which
+/// is exactly what an owner restriction takes. The family read must therefore
+/// block before it can authorize; once the lock is released it must return the
+/// approved bytes. If the read did not take the lock, it would return `Ok`
+/// immediately and `wait_until_blocked` would fail.
+fn family_read_waits_for_the_person_lock(person_key_route: bool) {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let label = if person_key_route {
+        "scoped-lock"
+    } else {
+        "generic-lock"
+    };
+    let (owner, person, person_key, viewer) = scene(&mut db, label);
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "lock.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    let expected = db
+        .any_media(&owner, photo.media_id)
+        .expect("owner read")
+        .bytes;
+
+    let mut control = Client::connect(&db.genealogy_dsn, NoTls).expect("control connection");
+    let mut guard = control.transaction().expect("control transaction");
+    guard
+        .query_one(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+            &[&person],
+        )
+        .expect("hold the person row");
+
+    let scope = if person_key_route {
+        Some(person_key.clone())
+    } else {
+        None
+    };
+    let (pid_rx, handle) = spawn_family_read(
+        db.genealogy_dsn.clone(),
+        db.storage.clone(),
+        viewer.clone(),
+        scope,
+        photo.media_id,
+    );
+    let pid = pid_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("media read backend id");
+    wait_until_blocked(&mut db, pid);
+
+    // The read is waiting on the same row a restriction writer would hold.
+    guard.commit().expect("release the person row");
+    let download = handle
+        .join()
+        .expect("media read thread")
+        .expect("family read succeeds after the lock is released");
+    assert_eq!(download.bytes, expected, "the approved bytes are served");
+    assert_eq!(download.asset.sha256, photo.sha256);
+    assert_eq!(download.asset.person_id, person);
+}
+
+#[test]
+fn a_generic_family_read_waits_for_the_person_lock() {
+    family_read_waits_for_the_person_lock(false);
+}
+
+#[test]
+fn a_person_scoped_family_read_waits_for_the_person_lock() {
+    family_read_waits_for_the_person_lock(true);
+}
+
+#[test]
+fn a_restriction_cannot_commit_while_a_family_read_holds_the_person_lock() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, viewer) = scene(&mut db, "restrict-blocked");
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "blocked.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    let expected = db
+        .any_media(&owner, photo.media_id)
+        .expect("owner read")
+        .bytes;
+
+    // A family read holds the person row `FOR SHARE` for the whole request.
+    let mut control = Client::connect(&db.genealogy_dsn, NoTls).expect("control connection");
+    let mut guard = control.transaction().expect("control transaction");
+    guard
+        .query_one(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR SHARE",
+            &[&person],
+        )
+        .expect("hold the person row for reading");
+
+    let dsn = db.genealogy_dsn.clone();
+    let owner_account = owner.clone();
+    let (pid_tx, pid_rx) = mpsc::channel::<i32>();
+    let restrict_handle = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("restriction connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("restriction backend id")
+            .get(0);
+        pid_tx.send(pid).expect("report restriction backend id");
+        restrict_own_field(&mut client, &owner_account, "profile_photo")
+            .map(|outcome| outcome.generation)
+    });
+
+    let pid = pid_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("restriction backend id");
+    // The restriction cannot commit while the read holds the row.
+    wait_until_blocked(&mut db, pid);
+    guard.commit().expect("release the person row");
+
+    let generation = restrict_handle
+        .join()
+        .expect("restriction thread")
+        .expect("the restriction commits once the read finishes");
+    assert_eq!(generation, 1);
+
+    // Every request started after the restriction committed is refused by both
+    // family routes, and no bytes are returned.
+    assert_eq!(
+        db.any_media(&viewer, photo.media_id),
+        Err(MediaError::NotFound)
+    );
+    assert_eq!(
+        db.family_media(&viewer, &person_key, photo.media_id),
+        Err(MediaError::NotFound)
+    );
+    assert!(db
+        .family_profile(&viewer, &person_key)
+        .expect("family profile")
+        .media
+        .is_empty());
+
+    // The owner keeps the approved bytes and the historical revision.
+    let owner_read = db
+        .any_media(&owner, photo.media_id)
+        .expect("owner keeps access");
+    assert_eq!(owner_read.bytes, expected);
 }

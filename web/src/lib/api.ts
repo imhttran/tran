@@ -337,6 +337,9 @@ export type ProfileMediaAsset = {
   height: number | null;
   status: ProfileStatus;
   created_at: string;
+  /// True when an active A2 restriction withholds this approved family-visible
+  /// asset from family pages. Present on the owner profile's `media` entries.
+  restricted_from_family?: boolean;
 };
 
 export type ProfileResponse = {
