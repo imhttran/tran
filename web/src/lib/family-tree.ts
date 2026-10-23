@@ -86,6 +86,7 @@ export type PopupPlacement = {
   left: number;
   top: number;
   placement: "above" | "below" | "left" | "right";
+  maxWidth: number;
   maxHeight: number;
 };
 
@@ -202,7 +203,7 @@ export function popupPosition(
   container: Box,
   popup: { width: number; height: number },
   gap = 10,
-  padding = 10,
+  padding = 12,
 ): PopupPlacement | null {
   if (view.width <= 0 || view.height <= 0 || svg.width <= 0 || svg.height <= 0) return null;
   const scale = Math.min(svg.width / view.width, svg.height / view.height);
@@ -242,12 +243,37 @@ export function popupPosition(
   // beside a card near the top of the canvas.
   const sideTop = Math.max(clipTop + padding,
     Math.min(top, clipBottom - padding - height));
+  const sideFitsVertically = sideTop >= clipTop + padding &&
+    sideTop + height <= clipBottom - padding;
+  const rightSpace = clipRight - padding - (right + gap);
+  const leftSpace = left - gap - (clipLeft + padding);
+  // A side popup may shrink a little to stay beside the card. In a parent-focused
+  // view that keeps the children below uncovered, which matters more than the
+  // full width.
+  const minimumSideWidth = 220;
 
-  // Prefer a side placement: in a parent-focused view the children sit below the
-  // card, so a popup underneath would hide the generation the user just opened.
-  const candidates: { placement: "right" | "left" | "below" | "above"; left: number; top: number }[] = [
-    { placement: "right", left: right + gap, top: sideTop },
-    { placement: "left", left: left - gap - width, top: sideTop },
+  if (sideFitsVertically && rightSpace >= minimumSideWidth) {
+    const sideWidth = Math.min(popup.width, rightSpace);
+    return {
+      left: right + gap - container.left,
+      top: sideTop - container.top,
+      placement: "right",
+      maxWidth: sideWidth,
+      maxHeight,
+    };
+  }
+  if (sideFitsVertically && leftSpace >= minimumSideWidth) {
+    const sideWidth = Math.min(popup.width, leftSpace);
+    return {
+      left: left - gap - sideWidth - container.left,
+      top: sideTop - container.top,
+      placement: "left",
+      maxWidth: sideWidth,
+      maxHeight,
+    };
+  }
+
+  const candidates: { placement: "below" | "above"; left: number; top: number }[] = [
     { placement: "below", left: centreX, top: bottom + gap },
     { placement: "above", left: centreX, top: top - gap - height },
   ];
@@ -261,6 +287,7 @@ export function popupPosition(
         left: candidate.left - container.left,
         top: candidate.top - container.top,
         placement: candidate.placement,
+        maxWidth: width,
         maxHeight,
       };
     }
@@ -275,6 +302,7 @@ export function popupPosition(
     left: leftPos - container.left,
     top: topPos - container.top,
     placement: "below",
+    maxWidth: width,
     maxHeight,
   };
 }
