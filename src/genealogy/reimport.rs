@@ -28,8 +28,23 @@ pub struct ImportAssertion {
     pub key: String,
     /// The optional value text.
     pub value_text: Option<String>,
+    /// The resolved target person key, when the relationship was unambiguous.
+    /// `None` keeps the statement unresolved and visible for review.
+    pub object_key: Option<String>,
     /// The evidence rows (document_ref, page).
     pub evidence: Vec<(String, i32)>,
+}
+
+/// One resolved relationship edge. Only statements whose target names exactly one
+/// catalog person reach this list; the planner never guesses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportLink {
+    /// `parent_child` or `spouse`.
+    pub kind: String,
+    /// The parent (`parent_child`) or the key-ordered first spouse.
+    pub from_key: String,
+    /// The child (`parent_child`) or the key-ordered second spouse.
+    pub to_key: String,
 }
 
 /// One imported person identity. Upserted in the same transaction as the
@@ -56,6 +71,8 @@ pub struct ImportDocument {
     pub persons: Vec<ImportPerson>,
     /// The assertions to import.
     pub assertions: Vec<ImportAssertion>,
+    /// The resolved relationship edges to import. Absent edges stay unresolved.
+    pub links: Vec<ImportLink>,
 }
 
 /// The counters for one re-import run.
@@ -67,6 +84,10 @@ pub struct ReimportReport {
     pub unchanged: usize,
     /// Verified assertions reopened because the evidence changed.
     pub reopened: usize,
+    /// Relationship edges inserted for the first time.
+    pub links_inserted: usize,
+    /// Relationship edges that already existed.
+    pub links_unchanged: usize,
 }
 
 /// Imports one document and its assertions idempotently inside one transaction.
@@ -149,21 +170,48 @@ fn reimport_in_transaction(
                 } else {
                     report.unchanged += 1;
                 }
+                // Fill a missing object binding for a non-verified assertion. A
+                // verified assertion is left exactly as the reviewer decided.
+                if let Some(object_key) = assertion.object_key.as_deref() {
+                    tx.execute(
+                        "UPDATE assertion
+                            SET object_person_id = (
+                                SELECT person_id FROM person WHERE person_key = $2
+                            )
+                          WHERE assertion_id = $1
+                            AND object_person_id IS NULL
+                            AND review_status <> 'verified'",
+                        &[&id, &object_key],
+                    )
+                    .map_err(GenealogyError::Query)?;
+                }
                 id
             }
             None => {
                 // New candidates are always unverified and have no events.
+                let object_person_id: Option<i64> = match assertion.object_key.as_deref() {
+                    Some(key) => tx
+                        .query_opt(
+                            "SELECT person_id FROM person WHERE person_key = $1",
+                            &[&key],
+                        )
+                        .map_err(GenealogyError::Query)?
+                        .map(|row| row.get(0)),
+                    None => None,
+                };
                 let id: i64 = tx
                     .query_one(
                         "INSERT INTO assertion
-                            (person_id, assertion_kind, assertion_key, value_text, review_status)
-                         VALUES ($1, $2, $3, $4, 'unverified')
+                            (person_id, assertion_kind, assertion_key, value_text,
+                             object_person_id, review_status)
+                         VALUES ($1, $2, $3, $4, $5, 'unverified')
                          RETURNING assertion_id",
                         &[
                             &person_id,
                             &assertion.kind,
                             &assertion.key,
                             &assertion.value_text,
+                            &object_person_id,
                         ],
                     )
                     .map_err(GenealogyError::Query)?
@@ -174,6 +222,51 @@ fn reimport_in_transaction(
             }
         };
         let _ = assertion_id;
+    }
+
+    // Resolved edges are inserted last, after every person exists. Both inserts
+    // are idempotent, so a re-import of unchanged input never duplicates an edge
+    // and never discards a reviewed assertion. A spouse edge is matched in
+    // either orientation, so an existing reversed row is reused rather than
+    // duplicated.
+    for link in &document.links {
+        let inserted = match link.kind.as_str() {
+            "parent_child" => tx
+                .execute(
+                    "INSERT INTO parent_child_link (parent_id, child_id)
+                     SELECT parent.person_id, child.person_id
+                       FROM person parent, person child
+                      WHERE parent.person_key = $1 AND child.person_key = $2
+                     ON CONFLICT (parent_id, child_id) DO NOTHING",
+                    &[&link.from_key, &link.to_key],
+                )
+                .map_err(GenealogyError::Query)?,
+            "spouse" => tx
+                .execute(
+                    "INSERT INTO spouse_link (person_id, spouse_id, source_order)
+                     SELECT first.person_id, second.person_id, 1
+                       FROM person first, person second
+                      WHERE first.person_key = $1 AND second.person_key = $2
+                        AND NOT EXISTS (
+                          SELECT 1 FROM spouse_link existing
+                           WHERE (existing.person_id = first.person_id
+                                  AND existing.spouse_id = second.person_id)
+                              OR (existing.person_id = second.person_id
+                                  AND existing.spouse_id = first.person_id)
+                        )
+                     ON CONFLICT (person_id, spouse_id, source_order) DO NOTHING",
+                    &[&link.from_key, &link.to_key],
+                )
+                .map_err(GenealogyError::Query)?,
+            // `plan_links` only emits the two kinds above; an unknown kind is a
+            // programming error, so it is not counted as an unchanged edge.
+            _ => continue,
+        };
+        if inserted > 0 {
+            report.links_inserted += 1;
+        } else {
+            report.links_unchanged += 1;
+        }
     }
     Ok(report)
 }

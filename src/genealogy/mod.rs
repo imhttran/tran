@@ -12,6 +12,7 @@ pub mod migrate;
 pub mod parser;
 pub mod query;
 pub mod reimport;
+pub mod relationships;
 pub mod report;
 pub mod review;
 pub mod tree;

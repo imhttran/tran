@@ -26,6 +26,13 @@ export const CARD_WIDTH = 190;
 export const CARD_HEIGHT = 76;
 const STEP_X = 250;
 const STEP_Y = 126;
+/** Disconnected groups wrap instead of forming one unreadable row. */
+const MAX_BAND_WIDTH = 1600;
+const COMPONENT_GAP_X = 48;
+const COMPONENT_GAP_Y = 56;
+/** The camera starts (and follows a selected person) at this readable scale. */
+export const READABLE_WIDTH = 1100;
+export const READABLE_HEIGHT = 720;
 
 /** Accent-insensitive search. The original name remains untouched in display. */
 export function normalizedName(value: string): string {
@@ -197,10 +204,23 @@ export function layoutTree(graph: TreeGraph, collapsed: ReadonlySet<string>): Tr
     rows.set(key, [...(rows.get(key) ?? []), person.record_id]);
   }
   const result: PositionedPerson[] = [];
-  let xOffset = 24;
+  // Components are packed into bands. A catalog with no relationships is one
+  // component per person, so a single row would make the canvas hundreds of
+  // thousands of pixels wide and scale every card down to nothing.
+  let cursorX = 24;
+  let bandY = 24;
+  let bandHeight = 0;
   for (let c = 0; c < component; c++) {
     const levels = [...rows.keys()].filter((key) => key.startsWith(String(c) + ":"));
     const max = Math.max(1, ...levels.map((key) => rows.get(key)?.length ?? 0));
+    const componentWidth = max * STEP_X - (STEP_X - CARD_WIDTH);
+    const depthCount = Math.max(1, ...levels.map((key) => Number(key.split(":")[1]) + 1));
+    const componentHeight = depthCount * STEP_Y - (STEP_Y - CARD_HEIGHT);
+    if (cursorX > 24 && cursorX + componentWidth > MAX_BAND_WIDTH) {
+      cursorX = 24;
+      bandY += bandHeight + COMPONENT_GAP_Y;
+      bandHeight = 0;
+    }
     for (const key of levels) {
       const depth = Number(key.split(":")[1]);
       (rows.get(key) ?? []).forEach((id, index) => {
@@ -208,13 +228,14 @@ export function layoutTree(graph: TreeGraph, collapsed: ReadonlySet<string>): Tr
         if (!person) return;
         result.push({
           ...person,
-          x: xOffset + index * STEP_X,
-          y: 24 + depth * STEP_Y,
+          x: cursorX + index * STEP_X,
+          y: bandY + depth * STEP_Y,
           childCount: children.get(id)?.length ?? 0,
         });
       });
     }
-    xOffset += max * STEP_X + 48;
+    cursorX += componentWidth + COMPONENT_GAP_X;
+    bandHeight = Math.max(bandHeight, componentHeight);
   }
   const shown = new Set(result.map((p) => p.record_id));
   return {

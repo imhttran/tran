@@ -13,7 +13,8 @@ import { SourceDialog } from "@/components/SourceDetails";
 import type { CitedFact, OpenSource } from "@/components/SourceDetails";
 import type { EvidenceRef } from "@/lib/experience-contract";
 import {
-  CARD_HEIGHT, CARD_WIDTH, layoutTree, normalizedName, parseTreeGraph, relationLabel, revealPerson,
+  CARD_HEIGHT, CARD_WIDTH, READABLE_HEIGHT, READABLE_WIDTH, layoutTree, normalizedName,
+  parseTreeGraph, relationLabel, revealPerson,
 } from "@/lib/family-tree";
 import type { TreeGraph, TreeLink } from "@/lib/family-tree";
 
@@ -59,6 +60,7 @@ function FamilyTree() {
   const [detail, setDetail] = useState<PersonDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
 
@@ -104,8 +106,25 @@ function FamilyTree() {
 
   useEffect(() => {
     if (!layout) return;
-    setView({ x: 0, y: 0, width: Math.max(layout.width, 600), height: Math.max(layout.height, 370) });
+    // Open at a readable scale. A large disconnected catalog is taller than it
+    // is wide, so fitting everything at once would shrink each card to a few
+    // pixels; the user can pan or press Fit.
+    setView({
+      x: 0,
+      y: 0,
+      width: Math.min(Math.max(layout.width, 600), READABLE_WIDTH),
+      height: Math.min(Math.max(layout.height, 370), READABLE_HEIGHT),
+    });
   }, [graph]); // Only reset the camera when source data changes, not on collapse.
+
+  useEffect(() => {
+    if (!expanded) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [expanded]);
 
   useEffect(() => {
     if (!selected) {
@@ -133,6 +152,37 @@ function FamilyTree() {
     return () => controller.abort();
   }, [selected]);
 
+  /**
+   * Centre a card at a readable scale. A tighter zoom the user already chose is
+   * kept, but a whole-canvas view is never inherited: that is what shrank the
+   * selected card to nothing.
+   */
+  function focusViewFor(positioned: { x: number; y: number }, old: View): View {
+    const width = Math.min(old.width, READABLE_WIDTH);
+    const height = Math.min(old.height, READABLE_HEIGHT);
+    return {
+      x: positioned.x + CARD_WIDTH / 2 - width / 2,
+      y: positioned.y + CARD_HEIGHT / 2 - height / 2,
+      width,
+      height,
+    };
+  }
+
+  /** Show the whole graph. A large catalog is necessarily scaled down here. */
+  function fitAll() {
+    if (!layout) return;
+    setView({ x: 0, y: 0, width: Math.max(600, layout.width),
+      height: Math.max(370, layout.height) });
+  }
+
+  /** Return to the selected person at a readable scale. */
+  function focusSelected() {
+    if (!layout || !selected) return;
+    const positioned = layout.people.find((p) => p.record_id === selected);
+    if (!positioned) return;
+    setView((old) => focusViewFor(positioned, old));
+  }
+
   function selectPerson(id: string) {
     if (!graph) return;
     // Expand only the hidden ancestor path; unrelated collapsed branches stay.
@@ -141,11 +191,7 @@ function FamilyTree() {
     setSelected(id);
     setSearch("");
     const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
-    if (positioned) {
-      setView((old) => ({ ...old,
-        x: positioned.x + CARD_WIDTH / 2 - old.width / 2,
-        y: positioned.y + CARD_HEIGHT / 2 - old.height / 2 }));
-    }
+    if (positioned) setView((old) => focusViewFor(positioned, old));
     svgRef.current?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -204,7 +250,8 @@ function FamilyTree() {
       {denial ? <DenialView kind={denial.kind} reason={denial.reason} /> : !graph || !layout ? (
         <p className="hint" data-testid="genealogy-loading">Loading family tree…</p>
       ) : (
-        <section className="family-workspace" data-testid="genealogy-tree">
+        <section className={"family-workspace" + (expanded ? " family-workspace-expanded" : "")}
+          data-testid="genealogy-tree" data-expanded={expanded ? "true" : "false"}>
           <div className="family-toolbar">
             <div className="family-search">
               <label htmlFor="family-person-search">Find a person</label>
@@ -227,15 +274,27 @@ function FamilyTree() {
             <div className="family-controls">
               <button type="button" onClick={() => scaleView(0.8)} aria-label="Zoom in">＋</button>
               <button type="button" onClick={() => scaleView(1.25)} aria-label="Zoom out">−</button>
-              <button type="button" onClick={() => layout &&
-                setView({ x: 0, y: 0, width: Math.max(600, layout.width),
-                  height: Math.max(370, layout.height) })}>Fit</button>
+              <button type="button" onClick={fitAll} data-testid="family-fit-all">Fit all</button>
+              <button type="button" onClick={focusSelected} disabled={!selected}
+                data-testid="family-focus-selected">Focus selected</button>
               <button type="button" onClick={() => setCollapsed(new Set())}>Expand all</button>
+              <button type="button" onClick={() => setExpanded((current) => !current)}
+                aria-pressed={expanded} data-testid="family-canvas-toggle"
+                aria-label={expanded ? "Exit full screen" : "Expand canvas to full screen"}>
+                {expanded ? "Exit full screen" : "Expand canvas"}
+              </button>
             </div>
           </div>
           {graph.truncated && (
             <p role="status" className="family-limit">
               Showing the first 500 authorized people. This is a partial graph; not all relatives are shown.
+            </p>
+          )}
+          {graph.links.length === 0 && (
+            <p className="hint" data-testid="genealogy-no-links">
+              No relationships are available yet, so every authorized person is shown on
+              their own. Relationship statements appear on each person&apos;s evidence list
+              until a reviewer confirms them.
             </p>
           )}
           {graph.people.length === 0 ? (
@@ -302,7 +361,10 @@ function FamilyTree() {
                     </g>
                   ))}
                 </svg>
-                <p className="family-canvas-help">Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom.</p>
+                <p className="family-canvas-help">
+                  Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom,
+                  Fit all to see everyone, and Focus selected to return to the person.
+                </p>
                 {selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
                   <button type="button" data-testid="family-collapse" onClick={() =>
                     setCollapsed((current) => {
@@ -332,7 +394,11 @@ function FamilyTree() {
                     <h3>Relatives</h3>
                     {graph.links.filter((link) =>
                       link.from_id === selected || link.to_id === selected).length === 0 ? (
-                      <p className="hint">No stored relationships are available.</p>
+                      <p className="hint">
+                        No reviewed relationships are recorded for this person yet.
+                        Relationship statements that are still unconfirmed appear
+                        under recorded assertions with their evidence.
+                      </p>
                     ) : (
                       <ul className="family-detail-list">
                         {graph.links.filter((link) =>

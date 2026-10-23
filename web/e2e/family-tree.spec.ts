@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-import { layoutTree, relationLabel, revealPerson } from "../src/lib/family-tree";
+import {
+  layoutTree, relationLabel, revealPerson, READABLE_HEIGHT, READABLE_WIDTH,
+} from "../src/lib/family-tree";
 import type { TreeGraph } from "../src/lib/family-tree";
 
 const session = { state: "signed_in", role: "viewer", display_name: "Synthetic viewer" };
@@ -266,4 +268,184 @@ test("a tree citation opens metadata-only source details", async ({ page }) => {
   await expect(dialog.locator("a")).toHaveCount(0); // No link to a nonexistent viewer.
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toBeHidden();
+});
+
+// --- Explicit camera controls, full screen, and a 263-person catalog --------
+
+const manyUnlinked: TreeGraph = {
+  people: Array.from({ length: 263 }, (_, index) =>
+    p("L" + String(index).padStart(3, "0"))),
+  links: [],
+  truncated: false,
+};
+
+async function stubManyUnlinked(page: import("@playwright/test").Page) {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(manyUnlinked) }));
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+  });
+}
+
+test("Fit all and Focus selected are separate camera controls", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A1", exact: true }).click();
+  const before = await readViewBox(page);
+  await page.getByTestId("family-focus-selected").click();
+  const focused = await readViewBox(page);
+  expect(focused.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(focused.height).toBeLessThanOrEqual(READABLE_HEIGHT);
+  expect(focused.x).not.toBe(before.x);
+  const card = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  const canvas = await page.getByTestId("family-tree-canvas").boundingBox();
+  expect(card && canvas).toBeTruthy();
+  if (card && canvas) {
+    expect(card.x).toBeGreaterThanOrEqual(canvas.x);
+    expect(card.x + card.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
+  }
+  await page.getByTestId("family-fit-all").click();
+  const fitted = await readViewBox(page);
+  expect(fitted.x).toBe(0);
+  expect(fitted.y).toBe(0);
+  expect(fitted.width).toBeGreaterThanOrEqual(600);
+  expect(fitted.height).toBeGreaterThanOrEqual(370);
+});
+
+test("the canvas expands to full screen and Escape restores the layout", async ({ page }) => {
+  await stubManyUnlinked(page);
+  await page.goto("/genealogy");
+  const toggle = page.getByTestId("family-canvas-toggle");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  const before = await readViewBox(page);
+  await toggle.click();
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  // Expanding changes the viewport, never the camera.
+  expect(await readViewBox(page)).toEqual(before);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+});
+
+test("manual pan and zoom survive unrelated UI updates", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const canvas = page.getByTestId("family-tree-canvas");
+  const box = await canvas.boundingBox();
+  expect(box).toBeTruthy();
+  if (!box) return;
+
+  // Pan by dragging blank canvas space.
+  await page.mouse.move(box.x + 40, box.y + box.height - 30);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 120, box.y + box.height - 90, { steps: 5 });
+  await page.mouse.up();
+  const panned = await readViewBox(page);
+
+  // Zoom with the toolbar control.
+  await page.getByRole("button", { name: "Zoom out" }).click();
+  const zoomed = await readViewBox(page);
+  expect(zoomed.width).toBeGreaterThan(panned.width);
+
+  // Selecting a card, searching, and toggling the canvas must not reset it.
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await expect(page.getByTestId("family-person-details")).toContainText("Person A");
+  await page.getByTestId("family-search").fill("B1");
+  await page.getByTestId("family-canvas-toggle").click();
+  await page.getByTestId("family-canvas-toggle").click();
+  expect(await readViewBox(page)).toEqual(zoomed);
+  expect(zoomed.x).not.toBe(0);
+});
+
+test("263 unlinked people open readable and a search selection stays readable", async ({ page }) => {
+  await stubManyUnlinked(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(263);
+
+  const initial = await readViewBox(page);
+  expect(initial.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(initial.height).toBeLessThanOrEqual(READABLE_HEIGHT);
+
+  const canvas = await page.getByTestId("family-tree-canvas").boundingBox();
+  expect(canvas).toBeTruthy();
+  if (!canvas) return;
+  // A 76-unit card drawn into this viewport must stay a readable size.
+  const cardHeight = (76 / initial.height) * canvas.height;
+  expect(cardHeight).toBeGreaterThanOrEqual(30);
+
+  await page.getByTestId("family-search").fill("L262");
+  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  const selected = await readViewBox(page);
+  expect(selected.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(selected.height).toBeLessThanOrEqual(READABLE_HEIGHT);
+
+  const card = await page.getByRole("button", { name: "Select L262", exact: true }).boundingBox();
+  expect(card).toBeTruthy();
+  if (!card) return;
+  expect(card.width).toBeGreaterThanOrEqual(100);
+  expect(card.y).toBeGreaterThanOrEqual(canvas.y - 1);
+  expect(card.y + card.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+});
+
+// --- A catalog without relationships still renders readable cards ----------
+
+const unlinked: TreeGraph = {
+  people: Array.from({ length: 60 }, (_, index) => p("L" + String(index).padStart(2, "0"))),
+  links: [],
+  truncated: false,
+};
+
+async function stubUnlinked(page: import("@playwright/test").Page) {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(unlinked) }));
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+  });
+}
+
+async function readViewBox(page: import("@playwright/test").Page) {
+  const value = await page.getByTestId("family-tree-canvas").getAttribute("viewBox");
+  const [x, y, width, height] = (value ?? "").split(" ").map(Number);
+  return { x, y, width, height };
+}
+
+test("an unlinked catalog wraps components into bands instead of one long row", () => {
+  const layout = layoutTree(unlinked, new Set());
+  expect(layout.people).toHaveLength(60);
+  // A single row of 60 cards would be ~15,000px wide and scale every card to
+  // less than a pixel; the bands keep the canvas bounded (max band + one card).
+  expect(layout.width).toBeLessThanOrEqual(1790);
+  expect(layout.height).toBeGreaterThan(720);
+  expect(new Set(layout.people.map((person) => person.y)).size).toBeGreaterThan(1);
+  expect(layout.people.every((person) => person.x >= 0 && person.y >= 0)).toBe(true);
+});
+
+test("every authorized person renders without a relationship edge", async ({ page }) => {
+  await stubUnlinked(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(60);
+  await expect(page.getByTestId("genealogy-no-links")).toBeVisible();
+  const view = await readViewBox(page);
+  expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(view.height).toBeLessThanOrEqual(720);
+});
+
+test("search selection reveals a readable card in an unlinked catalog", async ({ page }) => {
+  await stubUnlinked(page);
+  await page.goto("/genealogy");
+  await page.getByTestId("family-search").fill("L59");
+  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await expect(page.getByTestId("family-person-details")).toContainText("L59");
+  const view = await readViewBox(page);
+  expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(view.height).toBeLessThanOrEqual(720);
 });

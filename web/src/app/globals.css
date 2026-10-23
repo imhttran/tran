@@ -91,8 +91,13 @@ a { color:var(--accent); }
 .family-suggestions button:hover { background:#e8eee8; }
 .family-main { display:grid; grid-template-columns:minmax(0, 1fr) 310px; min-height:540px; background:#f9f7f0; border:1px solid #ddd4bf; border-top:0; }
 .family-canvas { min-width:0; padding:12px; overflow:hidden; }
-.family-canvas svg { width:100%; height:490px; display:block; border-radius:12px; background:#f4f3eb; touch-action:none; }
+.family-canvas svg { width:100%; height:clamp(370px, 56vh, 640px); display:block; border-radius:12px; background:#f4f3eb; touch-action:none; }
 .family-canvas-help { font-size:13px; color:#5d625e; margin:10px 0; }
+.family-workspace-expanded { position:fixed; inset:0; z-index:60; margin:0; padding:14px; background:#f9f7f0; overflow:auto; }
+.family-workspace-expanded .family-toolbar { border-radius:14px; }
+.family-workspace-expanded .family-main { min-height:0; }
+.family-workspace-expanded .family-canvas svg { height:calc(100vh - 240px); min-height:360px; }
+.family-workspace-expanded .family-detail { max-height:calc(100vh - 230px); }
 .family-node { cursor:pointer; outline:none; }
 .family-node rect { fill:#fff; stroke:#a8b4aa; stroke-width:1.5; filter:drop-shadow(0 3px 3px #0001); }
 .family-node:hover rect, .family-node:focus rect { stroke:#356954; stroke-width:3; }

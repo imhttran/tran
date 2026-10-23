@@ -2,7 +2,9 @@
 //!
 //! Physical links are *candidates*, not proof. A displayed verified edge must
 //! have a matching reviewed relationship assertion; conflicting assertions
-//! keep the edge in needs_review. All reads use the separate genealogy DB.
+//! keep the edge in needs_review. An assertion may be recorded from either
+//! endpoint of the pair (a child naming its parent, or a parent naming its
+//! child), and the match accepts both. All reads use the separate genealogy DB.
 
 use super::{query::Citation, GenealogyError};
 use postgres::Client;
@@ -86,8 +88,10 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
 
     let keys: Vec<String> = people.iter().map(|p| p.person_key.clone()).collect();
     // The link and assertion must match the same person pair and relationship
-    // kind. Spouses are unordered: review claims in either orientation count.
-    // Source metadata is returned only for verified, non-conflicting edges.
+    // kind. A statement may be recorded from either endpoint (a child naming a
+    // parent, or a parent naming a child; either spouse naming the other), so
+    // both orientations count. Source metadata is returned only for verified,
+    // non-conflicting edges.
     let rows = client.query(
         "WITH links AS (
             SELECT 'parent_child'::text AS kind,
@@ -117,7 +121,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                         (a.person_id = l.from_id
                          AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
                         OR
-                        (l.kind = 'spouse' AND a.person_id = l.to_id
+                        (a.person_id = l.to_id
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status IN ('needs_review', 'disputed')
@@ -129,7 +133,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                         (a.person_id = l.from_id
                          AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
                         OR
-                        (l.kind = 'spouse' AND a.person_id = l.to_id
+                        (a.person_id = l.to_id
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status = 'verified'
@@ -147,7 +151,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                  (a.person_id = l.from_id
                   AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
                  OR
-                 (l.kind = 'spouse' AND a.person_id = l.to_id
+                 (a.person_id = l.to_id
                   AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                )
                AND a.review_status = 'verified'
