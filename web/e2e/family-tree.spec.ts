@@ -531,7 +531,12 @@ test("the popup sits below the card, above when needed, and stays inside", () =>
 
   const clamped = popupPosition({ x: 0, y: 0 }, { x: 0, y: 0, width: 400, height: 500 },
     narrow, narrow, { width: 300, height: 200 });
-  expect(clamped?.left).toBe(10);
+  expect(clamped?.left).toBe(12);
+
+  // A card near the right edge flips to the left rather than clipping.
+  const flipped = popupPosition({ x: 600, y: 100 }, view, svg, container,
+    { width: 420, height: 200 });
+  expect(flipped?.placement).toBe("left");
 
   const huge = popupPosition({ x: 100, y: 100 }, view, svg, container, { width: 5000, height: 5000 });
   expect(huge?.maxHeight).toBeLessThanOrEqual(480);
@@ -909,4 +914,89 @@ test.describe("touch hint", () => {
     );
     await expect(hint).not.toContainText("Double-click");
   });
+});
+
+// --- Popup sizing, scrolling, and motion -------------------------------------
+
+test("the popup is about 420px wide on desktop and animates opacity and transform", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  const box = await popup.boundingBox();
+  expect(box).toBeTruthy();
+  if (box) {
+    expect(Math.round(box.width)).toBeGreaterThanOrEqual(419);
+    expect(Math.round(box.width)).toBeLessThanOrEqual(421);
+  }
+  const motion = await popup.evaluate((element) => {
+    const style = getComputedStyle(element as HTMLElement);
+    return { duration: style.transitionDuration, properties: style.transitionProperty };
+  });
+  expect(motion.duration).toContain("0.18s");
+  expect(motion.properties).toContain("opacity");
+  expect(motion.properties).toContain("transform");
+});
+
+test.describe("popup on a narrow screen", () => {
+  test.use({ viewport: { width: 390, height: 780 } });
+
+  test("fits with 12px clearance and scrolls its content", async ({ page }) => {
+    await stubBranches(page);
+    const assertions = Array.from({ length: 40 }, (_, index) => ({
+      assertion_id: 1000 + index,
+      kind: "note",
+      key: "note-" + index,
+      value_text: "Synthetic note line " + index,
+      review_status: "verified",
+      evidence: [],
+    }));
+    await page.route("**/api/genealogy/person/**", (route) => {
+      const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions }),
+      });
+    });
+    await page.goto("/genealogy");
+    await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+    const popup = page.getByTestId("family-person-details");
+    await expect(popup).toBeVisible();
+
+    const box = await popup.boundingBox();
+    expect(box).toBeTruthy();
+    if (box) {
+      expect(box.x).toBeGreaterThanOrEqual(12);
+      expect(box.x + box.width).toBeLessThanOrEqual(390 - 12 + 0.5);
+    }
+    const overflow = await popup.evaluate(
+      (element) => getComputedStyle(element as HTMLElement).overflowY,
+    );
+    expect(["auto", "scroll"]).toContain(overflow);
+    expect(await popup.evaluate((element) => element.scrollHeight > element.clientHeight))
+      .toBe(true);
+    await popup.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    expect(await popup.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  });
+});
+
+test("reduced motion removes the fade and slide and still dismisses instantly", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  const motion = await popup.evaluate((element) => {
+    const style = getComputedStyle(element as HTMLElement);
+    return { duration: style.transitionDuration, transform: style.transform };
+  });
+  expect(motion.duration).toBe("0s");
+  expect(motion.transform).toBe("none");
+  await page.keyboard.press("Escape");
+  await expect(popup).toHaveCount(0);
 });

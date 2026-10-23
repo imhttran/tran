@@ -45,6 +45,8 @@ type HistoryEntry = {
 
 /** Long enough to swallow the second click of a double-click, short enough not to feel laggy. */
 const SINGLE_CLICK_DELAY_MS = 260;
+/** Popup fade/slide duration; must match the CSS transition. */
+const POPUP_ANIMATION_MS = 180;
 /** A pointer that moves more than this is a drag, never a selection. */
 const DRAG_THRESHOLD_PX = 6;
 const EMPTY_COLLAPSED: ReadonlySet<string> = new Set();
@@ -89,6 +91,7 @@ function FamilyTree() {
   const [focus, setFocus] = useState<Focus | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [popupOpen, setPopupOpen] = useState(false);
+  const [popupMounted, setPopupMounted] = useState(false);
   const [placement, setPlacement] = useState<PopupPlacement | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
@@ -101,6 +104,8 @@ function FamilyTree() {
   const cardRefs = useRef(new Map<string, SVGGElement>());
   const clickTimer = useRef<number | null>(null);
   const focusedPopupFor = useRef<string | null>(null);
+  const popupExitTimer = useRef<number | null>(null);
+  const reducedMotion = useRef(false);
   const press = useRef<{ id: string; x: number; y: number; pointerType: string } | null>(null);
   const fullTreeView = useRef<View | null>(null);
   const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
@@ -191,6 +196,16 @@ function FamilyTree() {
   }, [helpOpen]);
 
   useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotion.current = query.matches;
+    const onChange = (event: MediaQueryListEvent) => {
+      reducedMotion.current = event.matches;
+    };
+    query.addEventListener?.("change", onChange);
+    return () => query.removeEventListener?.("change", onChange);
+  }, []);
+
+  useEffect(() => {
     // Touch devices get tap wording; a mouse gets click wording. This reads the
     // pointer capability once, after hydration, so the server render is stable.
     const coarse = typeof window !== "undefined" &&
@@ -255,8 +270,7 @@ function FamilyTree() {
       // camera or navigation actions, not dismissals. A click elsewhere on the
       // page closes the popup.
       if (workspaceRef.current?.contains(target)) return;
-      setPopupOpen(false);
-      setPlacement(null);
+      dismissPopup(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("pointerup", onPointerUp);
@@ -288,10 +302,7 @@ function FamilyTree() {
   // Reposition on pan, zoom, resize, and full-screen changes. A null result
   // means the anchor left the visible canvas, so the popup closes.
   useEffect(() => {
-    if (!popupOpen) {
-      if (placement !== null) setPlacement(null);
-      return;
-    }
+    if (!popupOpen) return; // keep the last placement while the exit animation runs
     const svg = svgRef.current;
     const container = canvasRef.current;
     const popup = popupRef.current;
@@ -299,6 +310,7 @@ function FamilyTree() {
     const person = layout.people.find((p) => p.record_id === selected);
     if (!person) {
       setPopupOpen(false);
+      setPopupMounted(false);
       setPlacement(null);
       return;
     }
@@ -313,7 +325,9 @@ function FamilyTree() {
       { width: popupBox.width, height: popupBox.height },
     );
     if (!next) {
+      // The anchor left the visible canvas: unmount immediately, no exit slide.
       setPopupOpen(false);
+      setPopupMounted(false);
       setPlacement(null);
       return;
     }
@@ -327,7 +341,10 @@ function FamilyTree() {
       : next);
   }); // Every camera/viewport change must reposition the popup.
 
-  useEffect(() => () => cancelScheduledOpen(), []);
+  useEffect(() => () => {
+    cancelScheduledOpen();
+    if (popupExitTimer.current !== null) window.clearTimeout(popupExitTimer.current);
+  }, []);
 
   function closeHelp() {
     setHelpOpen(false);
@@ -341,18 +358,47 @@ function FamilyTree() {
     }
   }
 
+  /** Show the popup (or keep it mounted) and cancel any running exit timer. */
+  function showPopup() {
+    if (popupExitTimer.current !== null) {
+      window.clearTimeout(popupExitTimer.current);
+      popupExitTimer.current = null;
+    }
+    setPopupMounted(true);
+    setPopupOpen(true);
+  }
+
+  /**
+   * Close the popup immediately for interaction purposes, then unmount it after
+   * the fade. Clicks, focus, and Escape are never delayed by the animation.
+   */
+  function dismissPopup(restoreTo: string | null) {
+    setPopupOpen(false);
+    if (restoreTo) cardRefs.current.get(restoreTo)?.focus({ preventScroll: true });
+    if (popupExitTimer.current !== null) window.clearTimeout(popupExitTimer.current);
+    const delay = reducedMotion.current ? 0 : POPUP_ANIMATION_MS;
+    if (delay === 0) {
+      setPopupMounted(false);
+      setPlacement(null);
+      return;
+    }
+    popupExitTimer.current = window.setTimeout(() => {
+      popupExitTimer.current = null;
+      setPopupMounted(false);
+      setPlacement(null);
+    }, delay);
+  }
+
   function openPopup(id: string) {
     cancelScheduledOpen();
     setSelected(id);
     setNotice(null);
     setPlacement(null);
-    setPopupOpen(true);
+    showPopup();
   }
 
   function closePopup(restoreTo: string | null) {
-    setPopupOpen(false);
-    setPlacement(null);
-    if (restoreTo) cardRefs.current.get(restoreTo)?.focus({ preventScroll: true });
+    dismissPopup(restoreTo);
   }
 
   function scheduleOpen(id: string, pointerType: string) {
@@ -363,12 +409,12 @@ function FamilyTree() {
     if (pointerType === "touch") {
       // No hover or double-tap on touch: a tap opens the popup, and the visible
       // buttons provide the generation navigation.
-      setPopupOpen(true);
+      showPopup();
       return;
     }
     clickTimer.current = window.setTimeout(() => {
       clickTimer.current = null;
-      setPopupOpen(true);
+      showPopup();
     }, SINGLE_CLICK_DELAY_MS);
   }
 
@@ -396,7 +442,7 @@ function FamilyTree() {
     setFocus(next);
     setCollapsed(new Set());
     setSelected(next.rootId);
-    setPopupOpen(true);
+    showPopup();
     setNotice(null);
     setPlacement(null);
     const camera = cameraFor(next);
@@ -407,7 +453,7 @@ function FamilyTree() {
     if (!graph) return;
     const person = graph.people.find((p) => p.record_id === id);
     setSelected(id);
-    setPopupOpen(true);
+    showPopup();
     if (immediateChildIds(graph, id).length === 0) {
       setNotice("No children recorded for " + (person?.person_label ?? id) + ".");
       return;
@@ -420,7 +466,7 @@ function FamilyTree() {
     if (!graph) return;
     const person = graph.people.find((p) => p.record_id === id);
     setSelected(id);
-    setPopupOpen(true);
+    showPopup();
     if (immediateParentIds(graph, id).length === 0) {
       setNotice("No parents recorded for " + (person?.person_label ?? id) + ".");
       return;
@@ -437,8 +483,13 @@ function FamilyTree() {
     setCollapsed(previous.collapsed);
     setView(previous.view);
     setSelected(previous.selected);
-    setPopupOpen(previous.popupOpen);
-    setPlacement(null);
+    if (previous.popupOpen) {
+      showPopup();
+    } else {
+      setPopupOpen(false);
+      setPopupMounted(false);
+      setPlacement(null);
+    }
     setNotice(previous.notice);
   }
 
@@ -447,8 +498,7 @@ function FamilyTree() {
     pushHistory();
     setFocus(null);
     setCollapsed(new Set());
-    setPopupOpen(false);
-    setPlacement(null);
+    dismissPopup(null);
     setNotice(null);
     setView(fullTreeView.current ?? readableView(layoutTree(graph, EMPTY_COLLAPSED)));
   }
@@ -495,7 +545,7 @@ function FamilyTree() {
     setCollapsed(nextCollapsed);
     setSelected(id);
     setSearch("");
-    setPopupOpen(true);
+    showPopup();
     setPlacement(null);
     setNotice(null);
     const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
@@ -783,15 +833,18 @@ function FamilyTree() {
                     );
                   })}
                 </svg>
-                {popupOpen && selectedPerson && (
+                {popupMounted && selectedPerson && (
                   <div ref={popupRef} className="family-popup" role="dialog" aria-modal="false"
                     aria-labelledby="family-popup-title" tabIndex={-1}
+                    aria-hidden={popupOpen ? undefined : true}
                     data-testid="family-person-details"
+                    data-visible={popupOpen && placement !== null ? "true" : "false"}
                     data-placement={placement?.placement ?? "below"}
                     style={{
                       left: placement?.left ?? 0,
                       top: placement?.top ?? 0,
                       visibility: placement ? "visible" : "hidden",
+                      maxWidth: placement?.maxWidth,
                       maxHeight: placement?.maxHeight,
                     }}
                     onDoubleClick={(event) => event.stopPropagation()}>
