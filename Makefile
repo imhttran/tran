@@ -16,8 +16,20 @@
 #   make ingest FILE=examples/other.md
 #   make ask Q="When is a late fee assessed?"
 
-# Load local .env if present
+# Load local .env if present, but never let it override a value the caller
+# supplied in the environment. `make` gives a makefile assignment precedence
+# over the environment, so .env would otherwise silently retarget a command such
+# as `DATABASE_URL=.../rag_test make web-e2e`.
+CALLER_DATABASE_URL := $(DATABASE_URL)
+CALLER_GENEALOGY_DATABASE_URL := $(GENEALOGY_DATABASE_URL)
 -include .env
+ifneq ($(strip $(CALLER_DATABASE_URL)),)
+DATABASE_URL := $(CALLER_DATABASE_URL)
+endif
+ifneq ($(strip $(CALLER_GENEALOGY_DATABASE_URL)),)
+GENEALOGY_DATABASE_URL := $(CALLER_GENEALOGY_DATABASE_URL)
+export GENEALOGY_DATABASE_URL
+endif
 DATABASE_URL ?= postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable
 export DATABASE_URL
 FILE ?= examples/loan-policy.md

@@ -145,6 +145,28 @@ The isolation mode is concluded from the configured commands, not from a direct
   with `psql`, but it does not create the database, so a fresh disposable database
   is provided by the run environment.
 
+### Real-browser E2E database selection
+
+`scripts/web-e2e.sh` migrates, seeds, and deletes rows in **both** databases, so
+its selection rules are strict. They live in `scripts/e2e-db-env.sh`:
+
+- **Caller values win.** `load_env_defaults` reads `.env` only to fill variables
+  that are not already set. `DATABASE_URL=.../rag_e2e_test make web-e2e` keeps
+  that database even when `.env` defines a different one. Isolation never works
+  by moving `.env` aside.
+- **Disposable only.** Both `DATABASE_URL` and `GENEALOGY_DATABASE_URL` must name
+  a database whose name ends in `_test` or `_disposable`.
+- **Refused before any write.** An application database (for example `rag` or
+  `tran_genealogy`) stops the run before the first migration, seed, or delete.
+- **Distinct targets.** The RAG and genealogy DSNs must not reach the same
+  database.
+
+The guard itself is covered without a database:
+
+```sh
+scripts/test-e2e-db-env.sh
+```
+
 Because the CI role can create databases, the helper works there. An environment
 whose role lacks `CREATEDB` fails with the explicit message above; the fix is to
 grant the test role `CREATEDB` on the disposable cluster, never to point the suite

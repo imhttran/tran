@@ -10,15 +10,37 @@
 # The E2E suite is operator-run verification: Node.js and browser execution are
 # outside SOP's command policy. The deterministic Rust-side contract is covered
 # by rust/acceptance/api_contract.
+#
+# Database selection: an explicit caller value always wins over .env, and both
+# DSNs must name a disposable database (`*_test` or `*_disposable`). Application
+# databases are refused before the first migration, seed, or delete. Isolation
+# never depends on moving .env aside.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-if [ -f .env ]; then set -a; . ./.env; set +a; fi
+# Caller values win; .env only fills the gaps.
+. "$ROOT/scripts/e2e-db-env.sh"
+load_env_defaults "$ROOT/.env"
 
 if [ -z "${DATABASE_URL:-}" ]; then
 	echo "web-e2e: DATABASE_URL is required (set it or provide .env)" >&2
+	exit 1
+fi
+if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
+	echo "web-e2e: GENEALOGY_DATABASE_URL is required (set it or provide .env)" >&2
+	exit 1
+fi
+# Refuse application databases before any destructive setup. Everything below
+# this point may migrate, seed, truncate, or delete rows.
+if ! require_disposable_database "DATABASE_URL (RAG)" "$DATABASE_URL"; then
+	exit 1
+fi
+if ! require_disposable_database "GENEALOGY_DATABASE_URL" "$GENEALOGY_DATABASE_URL"; then
+	exit 1
+fi
+if ! require_distinct_databases "$DATABASE_URL" "$GENEALOGY_DATABASE_URL"; then
 	exit 1
 fi
 
@@ -144,10 +166,6 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO corpus_grants (user_id, corpus, granted_by) SELECT id, '$CORPUS', 'e2e' FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
 
-if [ -z "${GENEALOGY_DATABASE_URL:-}" ]; then
-	echo "web-e2e: GENEALOGY_DATABASE_URL is required for genealogy integration tests" >&2
-	exit 1
-fi
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-f genealogy/migrations/0001_genealogy_schema_version.sql >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
