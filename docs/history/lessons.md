@@ -2,7 +2,7 @@
 
 > **Non-normative retrospective.** This records the reasoning behind decisions
 > already made. The normative sources are the
-> [requirements](../requirements/PRD.md) and the
+> [product requirements](PRD.md) and the
 > [reference](../reference/commands.md) documents; the
 > [documentation index](../README.md) lists the whole set.
 
@@ -14,9 +14,9 @@ Template project.
 It is intentionally different from the other project documents:
 
 ```text
-docs/requirements/PRD.md    -> What are we building and why?
-docs/plans/PLAN.md          -> What steps did we take and what comes next?
-docs/history/lessons.md             -> What did those steps teach us?
+docs/history/PRD.md         -> What were we building and why? (archived requirements)
+docs/plans/                 -> What steps did we take and what comes next?
+docs/history/lessons.md     -> What did those steps teach us?
 ```
 
 The goal is to preserve not just the final architecture, but the
@@ -1272,11 +1272,11 @@ README.md
    |
    +-> What is this repository and how do I run it?
 
-docs/requirements/PRD.md
+docs/history/PRD.md
    |
-   +-> What are we building and why?
+   +-> What were we building and why? (archived requirements)
 
-docs/plans/PLAN.md
+docs/plans/
    |
    +-> What stages did we build and what comes next?
 

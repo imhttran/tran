@@ -1,5 +1,11 @@
 # RAG Template --- Product Requirements Document
 
+> **Archived.** These requirements describe the product as it was scoped before the
+> family-archive work and are kept as history. Any `docs/...` path written inside this
+> document refers to the layout at the time of writing; for the current layout see
+> [`docs/README.md`](../README.md).
+
+
 ## 1. Product Summary
 
 RAG Template is a learning-oriented Retrieval-Augmented Generation (RAG)

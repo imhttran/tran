@@ -10,7 +10,7 @@
 //! [`crate::storage_pg::PgStore`]; the query embedding stays in
 //! `crate::embedding::Embedder`.
 //!
-//! Comparison rules (frozen, see `docs/plans/EVAL-CONTRACT.md`):
+//! Comparison rules (frozen, see `docs/guides/evaluation.md`):
 //!
 //! - Relevance is section-based: a retrieved chunk matches an expected document
 //!   when `source` and `section` are equal. Several chunks from one

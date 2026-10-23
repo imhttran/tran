@@ -56,6 +56,6 @@ integration suite). They are recorded here so the code and this document agree:
   [`docs/operations/page-provenance.md`](../operations/page-provenance.md).
 
 The work still **not** implemented — OCR for scanned PDFs (RAG-008) and genealogy
-entity extraction (RAG-016) — is described in
-[`docs/requirements/PRD-Phase-23b.md`](../requirements/PRD-Phase-23b.md) and
-[`docs/plans/PLAN-RAG-Phase-23b.md`](../plans/PLAN-RAG-Phase-23b.md).
+entity extraction (RAG-016) — is described in the archived
+[`docs/history/PRD-Phase-23b.md`](../history/PRD-Phase-23b.md). Its execution plan
+was archived with the other RAG task plans and remains in git history.

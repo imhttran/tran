@@ -9,7 +9,7 @@
 //! `verified`, and never writes to the genealogy database. Persistence lives in
 //! TRAN-002B; this module only produces an in-memory [`CatalogParse`].
 //!
-//! See `docs/reference/TRAN-002C-catalog-parser.md` for the design note.
+//! See `docs/plans/TRAN-002-genealogy-data-model.md` for the catalog design note.
 
 use std::collections::BTreeMap;
 

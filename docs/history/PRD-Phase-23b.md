@@ -1,5 +1,11 @@
 # PRD — Phase 23b: PDF, page provenance, OCR, and multilingual evaluation
 
+> **Archived.** These requirements describe the product as it was scoped before the
+> family-archive work and are kept as history. Any `docs/...` path written inside this
+> document refers to the layout at the time of writing; for the current layout see
+> [`docs/README.md`](../README.md).
+
+
 **Type:** Product requirements document (planning only; makes no runtime change).
 **Status:** **PROPOSED — NOT ACTIVE.** Nothing here is implemented, scheduled, or
 approved. RAG-007, RAG-008, and RAG-016 remain **frozen** until the operator

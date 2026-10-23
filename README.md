@@ -1,49 +1,67 @@
-# RAG Learning Project
+# Tran Family Archive
 
-A Rust project for learning Retrieval-Augmented Generation (RAG) from first
-principles. It chunks a document, embeds the chunks with a local Ollama server,
-stores them in PostgreSQL with pgvector, retrieves the closest chunks for a
-question, and asks a local model to answer using only those chunks. Separate
-commands score retrieval quality and run a bilingual evaluation harness.
+A private, evidence-backed family genealogy archive. It reads the family source
+documents, stores the genealogy model — people, assertions, evidence, branches,
+appointments — and presents **approved** family information to relatives through a
+Rust API and a Next.js UI. A Retrieval-Augmented Generation (RAG) foundation runs
+underneath for document search and cited answers.
 
-Four CLI commands drive it — `ingest` loads a document (PDF, Markdown, or plain
-text), `query` answers a question with cited evidence, `eval` scores retrieval,
-and `expbilingual` runs the RAG-024 bilingual evaluation arms. The Axum `api`
-binary serves the Next.js browser UI. The full list, including the `make`
-shortcuts, is in the [command reference](docs/reference/commands.md).
+The archive is built around one rule: **nothing reaches a family member until an
+independent reviewer has approved it, and a member can always withdraw what they
+shared.**
+
+## Core principles
+
+- **Approved-only presentation.** Drafts, pending and rejected submissions, owner-private
+  fields, private media, and superseded versions never reach a family page or a retrieval
+  answer. An owner restriction (decision A2) withdraws shared content immediately.
+- **Evidence-backed facts.** A genealogy assertion is presented only when it is verified
+  against original source evidence. Disputed, unverified, or unsupported lineage claims
+  are withheld rather than guessed.
+- **Authorization is technical, never genealogical.** A reviewed account-person link,
+  a role, and an explicit grant decide access. A family relationship, branch membership,
+  or the Head of Family title grants nothing by itself.
+- **Private by default.** Contact details, addresses, private photographs, and personal
+  documents stay private unless the owner explicitly shares them and a reviewer approves.
+- **Local-first.** Embedding and generation run against a local Ollama server; storage is
+  PostgreSQL with pgvector.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    doc[Document file] --> parse[Parse sections]
-    parse --> chunk[Chunk]
-    chunk --> embed[Embed with Ollama]
-    embed --> db[(PostgreSQL + pgvector)]
-    q[Question] --> qembed[Embed with Ollama]
-    qembed --> search[Top-k search]
-    db --> search
-    search --> filter[Filter by MIN_SIMILARITY]
-    filter --> ctx[Build context]
-    ctx --> answer[Answer with local model]
-    browser[Next.js UI] --> api[Axum API]
-    api --> chunk
-    api --> answer
+    src[Family source documents] --> inv[Inventory and extraction]
+    inv --> gen[(Genealogy PostgreSQL)]
+    docs[Uploaded documents] --> ingest[Ingest and chunk]
+    ingest --> rag[(RAG PostgreSQL + pgvector)]
+    gen --> api[Rust Axum API]
+    rag --> api
+    web[Next.js UI] -->|same-origin /api/*| api
+    gen --> review[Review console and branch review]
+    review --> gen
 ```
 
-Retrieval is hybrid: vector search and PostgreSQL full-text search are fused with
-reciprocal rank fusion, the top sections are deduplicated and expanded, and an
-optional answerability gate decides whether the evidence can answer at all. The
-embedder and generator are resolved through a provider registry (`EMBED_PROVIDER`
-/ `GEN_PROVIDER`); an unregistered provider fails fast at configuration load and
-only `ollama` is registered today. See the
-[architecture overview](docs/architecture/OVERVIEW.md) for the full picture.
+Two PostgreSQL databases are involved:
+
+- the **RAG database** (`DATABASE_URL`) holds documents, chunks, and embeddings;
+- the **genealogy database** (`GENEALOGY_DATABASE_URL`) holds people, assertions,
+  evidence, branches, profile revisions, review history, and grants.
+
+The family surfaces require both. The retrieval commands need only the RAG database.
+The API is the sole authorization authority; the browser never supplies a role,
+identity, visibility, or approval status.
+
+See the [architecture overview](docs/architecture/OVERVIEW.md) for the full picture,
+the [family publication contract](docs/architecture/FAMILY-PUBLICATION-CONTRACT.md) for
+what may be presented or indexed, and the
+[genealogy schema contract](docs/architecture/GENEALOGY-SCHEMA-CONTRACT.md) for the data
+model.
 
 ## Requirements
 
-- Rust, using the channel pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
-  With `rustup` installed, the pinned toolchain and components install
-  automatically when you run `cargo` in this repository.
+- Rust, using the channel pinned in [`rust-toolchain.toml`](rust-toolchain.toml). With
+  `rustup` installed, the pinned toolchain and components install automatically when you
+  run `cargo` in this repository.
 - Ollama running locally, with an embedding model and a chat model:
 
   ```bash
@@ -51,164 +69,147 @@ only `ollama` is registered today. See the
   ollama pull qwen3.8:27b-mlx   # or set OLLAMA_CHAT_MODEL to a model you have
   ```
 
-- Docker (for the bundled PostgreSQL + pgvector)
+- Docker (for the bundled PostgreSQL + pgvector, `pgvector/pgvector:pg17`).
+- Node.js 20–24 for the Next.js UI (see `web/package.json` `engines`).
 
-## Quick start
-
-Start the database and apply the migrations, then ingest a document, ask a
-question, and score retrieval:
+## Quick start: retrieval
 
 ```bash
-make db-up
-make ingest
+make db-up                      # start PostgreSQL + pgvector and apply the RAG schema
+make ingest                     # ingest examples/loan-policy.md
 make ask Q="What happens if someone misses a payment?"
-make eval
+make eval                       # score retrieval against evals/retrieval.json
 ```
 
-Every setting is read from the environment; [`.env.example`](.env.example) lists
-them all. Copy it to `.env` and load it into your shell (the binaries read the
-process environment, not `.env` directly):
+Settings come from the process environment. [`.env.example`](.env.example) lists every
+variable:
 
 ```bash
 cp .env.example .env
 set -a; source .env; set +a
 ```
 
-For running the commands directly, changing the embedding dimension, and the full
-setup details, see the [usage guide](docs/guides/usage.md).
+The [usage guide](docs/guides/usage.md) covers direct invocations and the full setup.
+
+## Quick start: family archive
+
+```bash
+export DATABASE_URL=postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable
+export GENEALOGY_DATABASE_URL=postgres://rag:rag@127.0.0.1:5434/genealogy?sslmode=disable
+
+# create the genealogy database once, then apply its migrations
+psql "$DATABASE_URL" -c "CREATE DATABASE genealogy"
+for f in genealogy/migrations/*.sql; do
+  psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
+
+cargo run --locked --bin api    # 127.0.0.1:8080
+make web-start                  # 127.0.0.1:3000
+```
+
+Identity, roles, reviewer grants, and recovery are operator procedures: see
+[operations/RBAC-OPERATIONS.md](docs/operations/RBAC-OPERATIONS.md).
 
 ## Commands
 
-| Command | What it does | Make target |
-| ------- | ------------ | ----------- |
-| `cargo run --locked --bin ingest <file>` | Chunk a file and store its embeddings (safe to re-run) | `make ingest FILE=…` |
-| `cargo run --locked --bin query "question"` | Answer a question from the stored chunks with citations | `make ask Q="…"` |
-| `cargo run --locked --bin eval` | Score retrieval against `evals/retrieval.json` | `make eval` |
-| `cargo run --locked --bin expbilingual` | Run the RAG-024 bilingual evaluation arms over a frozen split | — (run directly) |
-| `cargo run --locked --bin api` | Serve the Axum API for the Next.js UI on `127.0.0.1:8080` | — (run directly) |
+| Command                                                          | What it does                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------------ |
+| `cargo run --locked --bin ingest <file>`                         | Chunk a file and store its embeddings (safe to re-run) |
+| `cargo run --locked --bin query "question"`                      | Answer a question from stored chunks with citations    |
+| `cargo run --locked --bin eval`                                  | Score retrieval against `evals/retrieval.json`         |
+| `cargo run --locked --bin expbilingual`                          | Run the bilingual evaluation arms                      |
+| `cargo run --locked --bin api`                                   | Serve the Axum API for the Next.js UI                  |
+| `cargo run --locked --bin genealogy`                             | Genealogy ingest and eligibility adapters              |
+| `cargo run --locked --bin process_documents`                     | Claim and process queued document jobs                 |
+| `cargo run --locked --bin admin`                                 | Administrative maintenance commands                    |
+| `cargo run --locked --bin inventory [SOURCE_ROOT] <manifest>`    | Inventory the family source corpus (read-only)         |
+| `cargo run --locked --bin pdf_assessment [SOURCE_ROOT] <report>` | Assess PDF text layers (read-only)                     |
 
-Supporting `make` targets: `db-up`, `db-down`, `db-schema`, `test`, `fmt-json`,
-and the Rust/web checks. See the [command reference](docs/reference/commands.md)
-for flags and environment settings.
+The full list, flags, and `make` shortcuts are in
+[reference/commands.md](docs/reference/commands.md).
 
 ## Web UI
 
-The real browser UI lives under `web/`. The browser calls only same-origin Next.js
-`/api/*` endpoints; the Next.js server proxies them to the Rust Axum API, and the
-API calls the same ingestion, retrieval, generation, and citation-validation
-services as the CLI.
+The browser calls only same-origin Next.js `/api/*` endpoints; the Next.js server
+proxies them to the Axum API, which applies RBAC and the publication rules.
+
+| Route                   | Purpose                                                    |
+| ----------------------- | ---------------------------------------------------------- |
+| `/genealogy`            | Family tree and person selection                           |
+| `/family/[personKey]`   | Approved family profile, biography, photographs, documents |
+| `/profile`              | A member's own profile, submissions, and **Make private**  |
+| `/admin/reviews`        | Contribution review queue and decisions                    |
+| `/branch-review`        | Branch-scoped reviewer queue and proposals                 |
+| `/head-of-family`       | Head of Family evidence and appointments                   |
+| `/documents`            | Document lifecycle and publication                         |
+| `/ask`                  | Retrieval question and cited answer                        |
+| `/admin/family-members` | Member administration                                      |
 
 ```bash
-cargo build --locked --bin api
-target/debug/api               # 127.0.0.1:8080
-make web-start                 # 127.0.0.1:3000
-make web-e2e                   # real-browser Playwright verification
+make web-check     # typecheck + production build
+make web-e2e       # real-browser Playwright suite against disposable databases
 ```
 
 See [web/README.md](web/README.md) and the
-[RUST-008A browser evidence](docs/reference/rust-008a-browser-evidence.md).
+[browser evidence](docs/reference/rust-008a-browser-evidence.md).
 
-## Rust-only layout
-
-RUST-007C moved the Cargo package to the repository root and removed the Go
-implementation, `go.mod`/`go.sum`, and Go-only tooling. The Rust package now
-provides every command and the Axum API:
+## Testing
 
 ```bash
-make rust-check      # fmt, build, test, clippy, final layout, clean checkout
-make transition-evidence
+cargo build --locked
+cargo test --locked
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The frozen transition record — capability matrix, remaining limitations,
-rollback reference, pinned Go commit SHA, source repository URL, and fixture
-provenance — is
-[Rust transition evidence](docs/reference/rust-transition-evidence.md). The
-pinned Go reference (`d72fb398e8959eea83ed24be03f6df8cdeca86a2`) and the frozen
-`fixtures/parity/` outputs are preserved for audit; expected values are never
-regenerated from Rust.
+Database-backed tests need `DATABASE_URL` and `GENEALOGY_DATABASE_URL`; each genealogy
+suite creates and drops its own disposable database. See
+[reference/testing.md](docs/reference/testing.md) and
+[guides/testing.md](docs/guides/testing.md).
 
-Frozen assets (`migrations/*.sql`, `evals/`, `examples/`, `docker-compose.yml`,
-`fixtures/`) are read-only inputs.
-
-`inventory` writes the TRAN-001A source manifest. It is read-only on the
-source tree and writes only the manifest file:
-
-```text
-cargo run --locked --bin inventory [SOURCE_ROOT] MANIFEST_PATH
-```
-
-`SOURCE_ROOT` defaults to `docs/tran`. The canonical local manifest path (not
-tracked by git) is `target/inventory.json`:
+Changes are governed by Agentic SOP in this repository:
 
 ```bash
-cargo run --locked --bin inventory docs/tran target/inventory.json
+sop validate    # configured build, test, integration, and lint gates
+sop review      # review the current change
 ```
-
-The command walks the source root recursively, skips symlinks, and records every
-regular file. The manifest is a JSON object with these fields per record:
-
-- `relative_path` — path relative to the source root, `/` separated
-- `format` — `pdf`, `md`, `txt`, or `other`
-- `size_bytes` — byte length read at hash time
-- `sha256` — lowercase SHA-256 hex of the file bytes, `null` when unreadable
-- `pdf_page_count` — page count for PDFs, `null` otherwise
-- `notes` — `scanned`, `incomplete-text-layer`, `not-a-pdf: …`, or the missing/unreadable error
-
-The manifest also lists `duplicates`: groups of two or more records that share a
-SHA-256. Exit codes:
-
-- `0` — complete inventory, no missing files (duplicates do not fail the run)
-- `1` — one or more source files were missing or unreadable
-- `2` — usage error, rejected manifest path, or inventory error
-
-The command refuses a manifest under the frozen directories (`examples/`,
-`fixtures/`, `migrations/`, `evals/`) and a manifest path equal to a source file.
-
-`expbilingual` is evaluation-only: it does **not** modify production retrieval.
-It selects an arm with `ARM` (`A`, `B`, `C`, `D1`, `D2`, `E`, or `all`), reads its
-cases from `EVAL_DATASET`, pins generation (temperature 0, fixed seed, bounded
-output), and caches results by case id and configuration. Its contract is in
-[RUST-007D-bilingual-contract.md](docs/reports/rust-migration/RUST-007D-bilingual-contract.md).
 
 ## Documentation
 
-The full index — with a one-line "when to read it" for every document — lives in
-[docs/README.md](docs/README.md). The major areas:
+The full index, with a one-line "when to read it" for every document, lives in
+[docs/README.md](docs/README.md).
 
-| Area                                                 | What is here                                                                                                                                                                                                                                                    |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Requirements](docs/requirements/PRD.md)             | The canonical PRD, and the phase-23b PRD for proposed work                                                                                                                                                                                                      |
-| [Architecture](docs/architecture/OVERVIEW.md)        | The RAG loop, package responsibilities, and boundaries                                                                                                                                                                                                          |
-| [Reference](docs/reference/commands.md)              | Commands, [configuration](docs/reference/configuration.md), [capabilities](docs/reference/capabilities.md), [project structure](docs/reference/project-structure.md), [testing](docs/reference/testing.md), [experiments](docs/reference/experiments.md)        |
-| [Guides](docs/guides/usage.md)                       | Task-oriented how-tos: [usage](docs/guides/usage.md), [evaluation](docs/guides/evaluation.md), [git hooks and agent scripts](docs/guides/agent-scripts.md)                                                                                                      |
-| [Operations](docs/operations/embedding-dimension.md) | Operator-run procedures: [embedding dimension](docs/operations/embedding-dimension.md), [embedding models](docs/operations/embedding-models.md), [page provenance](docs/operations/page-provenance.md), [prompt injection](docs/operations/prompt-injection.md), [platform support](docs/operations/platform-support.md) |
-| [Plans](docs/plans/PLAN.md)                          | The [engineering and learning plan](docs/plans/PLAN.md), focused SOP-compatible task plans (RAG-*), and the [deferred bilingual backlog](docs/plans/BACKLOG-RAG-007.md)                                                                                          |
-| [History](docs/history/lessons.md)                   | Completed experiment/acceptance evidence and the non-normative [lessons-learned](docs/history/lessons.md) retrospective                                                                                                                                    |
+| Area                                              | What is here                                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [Architecture](docs/architecture/OVERVIEW.md)     | Pipeline, package responsibilities, and the publication and schema contracts   |
+| [Operations](docs/operations/RBAC-OPERATIONS.md)  | Identity, RBAC, Head of Family, embedding, and platform procedures             |
+| [Reference](docs/reference/commands.md)           | Commands, configuration, capabilities, crate, testing, experiments             |
+| [Guides](docs/guides/usage.md)                    | Task-oriented how-tos for usage, profiles, review, branch review, and testing  |
+| [Plans](docs/plans/PLAN-TRAN-USER-ONBOARDING.md)  | Recorded and active implementation plans                                       |
+| [History](docs/history/lessons.md)                | Archived requirements, experiment evidence, and retrospectives (non-normative) |
+| [Reports](docs/reports/rust-migration/README.md)  | Engineering evidence, reviews, and investigation reports (non-normative)       |
+| [Source corpus](docs/tran/Tran-Family-English.md) | The family source text edition and its audit findings                          |
 
 ## Status
 
-The ingestion → chunking → embedding → retrieval → answer loop is complete, and
-the gap-closure capabilities (RAG-006…RAG-015) are shipped and covered by tests —
-see the [capabilities reference](docs/reference/capabilities.md). PDF text-layer
-ingestion (RAG-007) and page provenance / page-aware citations (RAG-017) are also
-implemented; the [architecture overview](docs/architecture/OVERVIEW.md) records
-what ships today. The final repository is Rust-only: RUST-007C removed the Go
-implementation after the Rust port passed its parity, live-RAG, and browser
-acceptance gates. OCR for scanned PDFs (RAG-008) and genealogy entity extraction
-(RAG-016) are **not** implemented.
+Shipped and covered by tests:
 
-## Learning path
+- the retrieval loop (ingest → chunk → embed → retrieve → answer with citations),
+  hybrid search, answerability gating, and the evaluation harness;
+- private genealogy access with reviewed identity links, RBAC, the administrator
+  review console, and Head of Family eligibility;
+- branch-scoped reviewer grants and proposals;
+- approved-only family publication: the family profile endpoint and page, approved
+  photographs and documents, owner-initiated immediate privacy restriction (A2), and
+  revocation-safe document retrieval;
+- reliable document processing workers with fenced leases;
+- isolated, repeatable genealogy integration tests (one disposable database per suite).
 
-1. Generate embeddings with Ollama
-2. Measure cosine similarity
-3. Read raw embedding vectors from the Ollama `/api/embed` response
-4. Add document chunking (now tunable: `CHUNK_SIZE` / `CHUNK_OVERLAP`)
-5. Store embeddings in PostgreSQL + pgvector
-6. Retrieve top-k chunks
-7. Send retrieved context to a local Qwen model
-8. Add metadata and citations
-9. Add hybrid search and reranking (`eval` compares a lexical and an LLM reranker)
-10. Add evaluation (`eval` reports recall and precision)
-11. Add query transformation and multi-query retrieval (`QUERY_REWRITE`)
-12. Gate answers on answerability, and judge facts, groundedness, and citations
-13. Measure changes with `cargo run --locked --bin eval` instead of guessing
+Open policy gates, deliberately unimplemented: decision **D** (which content may be
+indexed), **BR-004** (cross-branch relationship authority), and Head of Family
+eligibility revalidation. The acceptance matrices record their status explicitly:
+[family publication](docs/guides/family-publication-acceptance.md) and
+[branch review](docs/guides/branch-review-acceptance.md).
+
+OCR for scanned PDFs and genealogy entity extraction are **not** implemented; the
+archived phase-23b requirements describe that proposal.
