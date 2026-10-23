@@ -904,11 +904,27 @@ export type FamilyProfileFieldView = {
   updated_at: string;
 };
 
+/// One approved, family-visible media asset. The response carries metadata only;
+/// the bytes are fetched from the person-scoped family media route, which applies
+/// the same authorization.
+export type FamilyProfileMediaView = {
+  kind: "profile_photo" | "personal_document";
+  media_id: number;
+  mime_type: string;
+  byte_size: number;
+  file_name: string;
+  width: number | null;
+  height: number | null;
+  approved_revision_number: number;
+  created_at: string;
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
   person: { person_key: string; display_name: string };
   fields: FamilyProfileFieldView[];
+  media: FamilyProfileMediaView[];
 };
 
 /// Decision A2: immediately stop an approved family-visible field from being
@@ -934,4 +950,11 @@ export function getFamilyProfile(
     `/api/family/persons/${encodeURIComponent(personKey)}/profile`,
     { cache: "no-store" },
   );
+}
+
+/// Same-origin asset URL for one approved family-visible media item. Rendered
+/// directly in an `<img>` or link, so the server-side proxy forwards the session
+/// credential and the Rust API makes the authorization decision.
+export function familyProfileMediaUrl(personKey: string, mediaId: number): string {
+  return `/api/family/persons/${encodeURIComponent(personKey)}/media/${mediaId}`;
 }

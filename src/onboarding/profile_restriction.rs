@@ -16,7 +16,7 @@ use postgres::Transaction;
 use thiserror::Error;
 
 use super::account_map::IdentityAccount;
-use super::profile_revisions::{ProfileVisibility, ALLOWED_PROFILE_FIELDS};
+use super::profile_revisions::{is_allowed_profile_field, is_media_field, ProfileVisibility};
 
 /// The result of an owner restriction request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +70,11 @@ pub fn restrict_own_field(
     field_key: &str,
 ) -> Result<RestrictionOutcome, RestrictionError> {
     let field_key = field_key.trim();
-    if field_key.is_empty() || !ALLOWED_PROFILE_FIELDS.contains(&field_key) {
+    // Decision A2 covers every approved family-visible value, including the two
+    // media fields. An owner who shared a photograph can stop sharing it exactly
+    // as they can a biography, and the family read/asset paths already honour an
+    // active restriction for any field key.
+    if field_key.is_empty() || !(is_allowed_profile_field(field_key) || is_media_field(field_key)) {
         return Err(RestrictionError::InvalidField);
     }
     let mut tx = client.transaction()?;

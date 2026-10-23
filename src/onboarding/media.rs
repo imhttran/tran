@@ -465,6 +465,41 @@ const MEDIA_COLUMNS: &str = "m.media_id, m.person_id, m.revision_id, m.media_kin
      m.mime_type, m.byte_size, m.sha256, m.file_name, m.visibility, m.width, m.height, \
      m.created_at::text, r.status, m.storage_key";
 
+/// Join every media row to its revision and to the person's current approved
+/// value for that field. Both queries below use these aliases (`m`, `r`, `v`).
+pub(crate) const FAMILY_VISIBLE_MEDIA_JOIN: &str = "\
+    JOIN onboarding_profile_revision r ON r.revision_id = m.revision_id \
+    JOIN onboarding_profile_value v \
+      ON v.person_id = m.person_id AND v.field_key = m.media_kind";
+
+/// The single definition of "this media item may be presented to the family".
+///
+/// Every clause re-establishes provenance rather than trusting a stored flag:
+/// the revision must be approved for the same person and field, its visibility
+/// must match the media row's, the media must be the person's *current approved*
+/// value (the value row points at this exact revision and number), and no owner
+/// restriction may be active for the field. A restricted, pending, rejected,
+/// owner-private, superseded, or unprovenanced row fails this predicate, so
+/// listings and direct asset reads cannot drift apart.
+pub(crate) const FAMILY_VISIBLE_MEDIA_PREDICATE: &str = "\
+    r.status = 'approved' \
+    AND r.person_id = m.person_id \
+    AND r.field_key = m.media_kind \
+    AND r.visibility = m.visibility \
+    AND m.visibility = 'family' \
+    AND v.person_id = m.person_id \
+    AND v.field_key = m.media_kind \
+    AND v.approved_revision_id = r.revision_id \
+    AND v.approved_revision_number = r.revision_number \
+    AND v.visibility = 'family' \
+    AND v.value_text = m.media_id::text \
+    AND NOT EXISTS ( \
+        SELECT 1 FROM onboarding_profile_field_restriction fr \
+         WHERE fr.person_id = m.person_id \
+           AND fr.field_key = m.media_kind \
+           AND fr.lifted_at IS NULL \
+    )";
+
 fn extension_for(asset: &MediaAsset) -> &'static str {
     extension_for_mime(&asset.mime_type)
 }
@@ -536,10 +571,24 @@ pub fn store_submission(
 
     let revision_id: i64 = tx
         .query_one(
+            // A media revision records the owner-restriction generation that is
+            // active now, exactly as text drafts do. `lock_field` above holds the
+            // same advisory lock the restriction write takes, so the value read
+            // here and the insert observe one serialization order. Without this a
+            // post-restriction media expansion could never be approved, and a
+            // pre-restriction one could never be refused.
+            //
+            // The subquery is NULL when no restriction is active, which is
+            // deliberate: a restriction created after this row makes the
+            // generation mismatch, so the approval fails closed rather than
+            // treating the submission as authorized.
             "INSERT INTO onboarding_profile_revision \
                  (person_id, field_key, prior_value_text, prior_approved_revision_number, \
-                  new_value_text, changed_by, revision_number, status, visibility) \
-             VALUES ($1, $2, $3, $4, '0', $5, $6, 'draft', $7) \
+                  new_value_text, changed_by, revision_number, status, visibility, \
+                  restriction_generation) \
+             VALUES ($1, $2, $3, $4, '0', $5, $6, 'draft', $7, \
+                     (SELECT generation FROM onboarding_profile_field_restriction \
+                       WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL)) \
              RETURNING revision_id",
             &[
                 &person_id,
@@ -672,13 +721,83 @@ pub fn read_authorized_media(
         .get(0);
     let actor_owns = changed_by == requester.identity_fingerprint;
     let owner_allowed = owner && (actor_owns || current_approved);
+    // An owner restriction (decision A2) removes the asset from the family
+    // audience even while its approved revision is still family-visible. The
+    // owner keeps access through `owner_allowed` above, so the direct asset path
+    // cannot be used to bypass a restriction.
+    let restricted: bool = tx
+        .query_one(
+            "SELECT EXISTS (\
+                SELECT 1 FROM onboarding_profile_field_restriction \
+                 WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL\
+             )",
+            &[&asset.person_id, &asset.kind.field_key()],
+        )?
+        .get(0);
     let family_visible = !owner
         && asset.status == RevisionStatus::Approved
         && asset.visibility == ProfileVisibility::Family
-        && current_approved;
+        && current_approved
+        && !restricted;
     if !owner_allowed && !family_visible {
         return Err(MediaError::NotFound);
     }
+    let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
+    tx.commit()?;
+    Ok(MediaDownload { asset, bytes })
+}
+
+/// Reads one approved family-visible media item for a linked family member.
+///
+/// This is the person-scoped family route. Authorization and data access share
+/// one transaction: the caller's reviewed link is locked `FOR SHARE`, the target
+/// person row is locked `FOR SHARE` (serializing with an owner restriction or an
+/// approval), and the asset must satisfy [`FAMILY_VISIBLE_MEDIA_PREDICATE`] for
+/// that exact person. A missing link is reported before the person is resolved,
+/// so an unlinked caller cannot learn whether a person key or media id exists.
+///
+/// The owner's own pending, rejected, or owner-private assets are deliberately
+/// not reachable here: this path answers only "what may the family see".
+pub fn read_family_media(
+    client: &mut postgres::Client,
+    storage: &MediaStorage,
+    requester: &IdentityAccount,
+    person_key: &str,
+    media_id: i64,
+) -> Result<MediaDownload, MediaError> {
+    let person_key = person_key.trim();
+    if person_key.is_empty() {
+        return Err(MediaError::NotFound);
+    }
+    let mut tx = client.transaction()?;
+    let linked = tx.query_opt(
+        "SELECT person_id FROM onboarding_person_account_link \
+          WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
+        &[&requester.account_id, &requester.identity_fingerprint],
+    )?;
+    if linked.is_none() {
+        return Err(MediaError::Unlinked);
+    }
+    let target = tx.query_opt(
+        "SELECT person_id FROM person WHERE person_key = $1 FOR SHARE",
+        &[&person_key],
+    )?;
+    let Some(target) = target else {
+        return Err(MediaError::NotFound);
+    };
+    let person_id: i64 = target.get(0);
+
+    let sql = format!(
+        "SELECT {MEDIA_COLUMNS} \
+           FROM onboarding_media_metadata m \
+           {FAMILY_VISIBLE_MEDIA_JOIN} \
+          WHERE m.media_id = $1 AND m.person_id = $2 \
+            AND {FAMILY_VISIBLE_MEDIA_PREDICATE}"
+    );
+    let row = tx
+        .query_opt(&sql, &[&media_id, &person_id])?
+        .ok_or(MediaError::NotFound)?;
+    let asset = row_to_asset(row)?;
     let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
     tx.commit()?;
     Ok(MediaDownload { asset, bytes })

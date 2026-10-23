@@ -288,15 +288,24 @@ Obligations:
 - Future multi-family isolation maps one family to one corpus. Nothing in this
   contract requires global identifiers; nothing may join across corpora.
 
-## 9a. Implemented so far (USR-006-A)
+## 9a. Implemented so far (USR-006-A/B/C)
 
-The presentation gate for profile values is implemented:
+The presentation gate for profile values and media is implemented:
 
 - `GET /api/family/persons/{person_key}/profile` returns only approved,
-  `family`-visible, non-media values. Membership (an active reviewed
-  account-person link) is checked in the same transaction as the read.
-- Proven by `tests/family_profile_presentation.rs` and
-  `web/e2e/family-profile.spec.ts`.
+  `family`-visible values, plus a `media` list of approved, family-visible,
+  unrestricted assets with their revision provenance. Membership (an active
+  reviewed account-person link) is checked in the same transaction as the
+  read.
+- `GET /api/family/persons/{person_key}/media/{media_id}` serves those bytes
+  for that person only, applying the same predicate: a pending, rejected,
+  owner-private, superseded, cross-person, unprovenanced, or restricted
+  asset is indistinguishable from a missing one. `GET /api/profile/media/{id}`
+  honours an active owner restriction for non-owners as well, so the direct
+  asset path cannot bypass it.
+- Proven by `tests/family_profile_presentation.rs`,
+  `tests/family_profile_media.rs`, `web/e2e/family-profile.spec.ts`, and
+  `web/e2e/family-profile-media.spec.ts`.
 - The endpoint contract, response states, and error mapping are documented in
   [guides/family-profile-presentation.md](../guides/family-profile-presentation.md).
 
@@ -314,7 +323,8 @@ fail-closed default below applies.
 **Decision A2 is approved and implemented (USR-006-P).**
 
 An owner may immediately restrict their own approved, family-visible profile
-value to `owner_private`. Increasing visibility still requires an independent
+value to `owner_private`, including an approved `profile_photo` or
+`personal_document`. Increasing visibility still requires an independent
 review.
 
 - The restriction is an additive, audited record
