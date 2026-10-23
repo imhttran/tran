@@ -13,7 +13,8 @@ import { SourceDialog } from "@/components/SourceDetails";
 import type { CitedFact, OpenSource } from "@/components/SourceDetails";
 import type { EvidenceRef } from "@/lib/experience-contract";
 import {
-  CARD_HEIGHT, CARD_WIDTH, layoutTree, normalizedName, parseTreeGraph, relationLabel, revealPerson,
+  CARD_HEIGHT, CARD_WIDTH, READABLE_HEIGHT, READABLE_WIDTH, layoutTree, normalizedName,
+  parseTreeGraph, relationLabel, revealPerson,
 } from "@/lib/family-tree";
 import type { TreeGraph, TreeLink } from "@/lib/family-tree";
 
@@ -104,7 +105,15 @@ function FamilyTree() {
 
   useEffect(() => {
     if (!layout) return;
-    setView({ x: 0, y: 0, width: Math.max(layout.width, 600), height: Math.max(layout.height, 370) });
+    // Open at a readable scale. A large disconnected catalog is taller than it
+    // is wide, so fitting everything at once would shrink each card to a few
+    // pixels; the user can pan or press Fit.
+    setView({
+      x: 0,
+      y: 0,
+      width: Math.min(Math.max(layout.width, 600), READABLE_WIDTH),
+      height: Math.min(Math.max(layout.height, 370), READABLE_HEIGHT),
+    });
   }, [graph]); // Only reset the camera when source data changes, not on collapse.
 
   useEffect(() => {
@@ -142,9 +151,19 @@ function FamilyTree() {
     setSearch("");
     const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
     if (positioned) {
-      setView((old) => ({ ...old,
-        x: positioned.x + CARD_WIDTH / 2 - old.width / 2,
-        y: positioned.y + CARD_HEIGHT / 2 - old.height / 2 }));
+      // Centre the person at a readable scale; keep a tighter zoom the user
+      // already chose, but never inherit a whole-canvas view that shrinks the
+      // selected card to nothing.
+      setView((old) => {
+        const width = Math.min(old.width, READABLE_WIDTH);
+        const height = Math.min(old.height, READABLE_HEIGHT);
+        return {
+          x: positioned.x + CARD_WIDTH / 2 - width / 2,
+          y: positioned.y + CARD_HEIGHT / 2 - height / 2,
+          width,
+          height,
+        };
+      });
     }
     svgRef.current?.scrollIntoView?.({ block: "nearest" });
   }
@@ -236,6 +255,13 @@ function FamilyTree() {
           {graph.truncated && (
             <p role="status" className="family-limit">
               Showing the first 500 authorized people. This is a partial graph; not all relatives are shown.
+            </p>
+          )}
+          {graph.links.length === 0 && (
+            <p className="hint" data-testid="genealogy-no-links">
+              No relationships are available yet, so every authorized person is shown on
+              their own. Relationship statements appear on each person&apos;s evidence list
+              until a reviewer confirms them.
             </p>
           )}
           {graph.people.length === 0 ? (
@@ -332,7 +358,11 @@ function FamilyTree() {
                     <h3>Relatives</h3>
                     {graph.links.filter((link) =>
                       link.from_id === selected || link.to_id === selected).length === 0 ? (
-                      <p className="hint">No stored relationships are available.</p>
+                      <p className="hint">
+                        No reviewed relationships are recorded for this person yet.
+                        Relationship statements that are still unconfirmed appear
+                        under recorded assertions with their evidence.
+                      </p>
                     ) : (
                       <ul className="family-detail-list">
                         {graph.links.filter((link) =>

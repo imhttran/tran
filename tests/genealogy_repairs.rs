@@ -10,8 +10,11 @@ mod genealogy_isolation;
 use genealogy_isolation::{base_dsn, create_isolated_target};
 use postgres::Client;
 use rag_foundation::genealogy::eligibility::{self, ReasonCode};
-use rag_foundation::genealogy::reimport::{self, ImportAssertion, ImportDocument, ImportPerson};
+use rag_foundation::genealogy::reimport::{
+    self, ImportAssertion, ImportDocument, ImportLink, ImportPerson,
+};
 use rag_foundation::genealogy::review::{self, ReviewError, ReviewRequest, ReviewStatus};
+use rag_foundation::genealogy::tree;
 
 fn import_document(sha: &str, evidence: bool) -> ImportDocument {
     ImportDocument {
@@ -27,12 +30,14 @@ fn import_document(sha: &str, evidence: bool) -> ImportDocument {
             kind: "display_name".to_string(),
             key: "display:1".to_string(),
             value_text: Some("Repair Person".to_string()),
+            object_key: None,
             evidence: if evidence {
                 vec![("repair-catalog.md".to_string(), 3)]
             } else {
                 Vec::new()
             },
         }],
+        links: Vec::new(),
     }
 }
 
@@ -365,4 +370,204 @@ fn evidence_changes_are_reconciled_and_reported_as_reopened() {
 
     drop(client);
     target.cleanup();
+}
+
+/// A resolved relationship is imported once, reaches the authorized tree, and
+/// survives a re-import without losing a review decision.
+#[test]
+fn resolved_relationship_links_import_once_and_survive_reimport() {
+    let Some(base) = base_dsn() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping relationship import test");
+        return;
+    };
+    let target = create_isolated_target(&base, "relationships");
+    target.apply_migrations();
+    let mut client = target.connect();
+
+    let document = ImportDocument {
+        relative_path: "relationship-source.md".to_string(),
+        sha256: "b".repeat(64),
+        // The review gate only verifies claims against an `original` source, so
+        // this fixture models the source document itself. Imported assertions
+        // stay `unverified` until a reviewer acts.
+        source_kind: "original".to_string(),
+        persons: vec![
+            ImportPerson {
+                person_key: "P901".to_string(),
+                display_name: "Person A".to_string(),
+            },
+            ImportPerson {
+                person_key: "P902".to_string(),
+                display_name: "Person B".to_string(),
+            },
+        ],
+        assertions: vec![ImportAssertion {
+            person_key: "P902".to_string(),
+            kind: "parent_child".to_string(),
+            key: "parent_child:1".to_string(),
+            value_text: Some("Person A".to_string()),
+            object_key: Some("P901".to_string()),
+            evidence: vec![("relationship-source.md".to_string(), 7)],
+        }],
+        links: vec![ImportLink {
+            kind: "parent_child".to_string(),
+            from_key: "P901".to_string(),
+            to_key: "P902".to_string(),
+        }],
+    };
+
+    let first = reimport::reimport_document(&mut client, &document).expect("first import");
+    assert_eq!(first.links_inserted, 1);
+
+    let second = reimport::reimport_document(&mut client, &document).expect("repeat import");
+    assert_eq!(
+        second.links_inserted, 0,
+        "re-import must not duplicate the edge"
+    );
+    assert_eq!(second.links_unchanged, 1);
+    assert_eq!(
+        second.inserted, 0,
+        "re-import must not duplicate the assertion"
+    );
+
+    let links: i64 = client
+        .query_one("SELECT count(*) FROM parent_child_link", &[])
+        .expect("count links")
+        .get(0);
+    assert_eq!(links, 1);
+
+    let (object_key, status): (Option<String>, String) = client
+        .query_one(
+            "SELECT p.person_key, a.review_status
+               FROM assertion a
+               LEFT JOIN person p ON p.person_id = a.object_person_id
+              WHERE a.assertion_key = 'parent_child:1'",
+            &[],
+        )
+        .map(|row| (row.get(0), row.get(1)))
+        .expect("assertion binding");
+    assert_eq!(object_key.as_deref(), Some("P901"));
+    assert_eq!(
+        status, "unverified",
+        "an imported relationship is never verified"
+    );
+
+    let graph = tree::load_tree(&mut client).expect("tree");
+    assert_eq!(graph.links.len(), 1);
+    assert_eq!(graph.links[0].kind, "parent_child");
+    assert_eq!(graph.links[0].from_key, "P901");
+    assert_eq!(graph.links[0].to_key, "P902");
+    assert_eq!(graph.links[0].evidence_status, "unverified");
+
+    let assertion_id: i64 = client
+        .query_one(
+            "SELECT assertion_id FROM assertion WHERE assertion_key = 'parent_child:1'",
+            &[],
+        )
+        .expect("assertion id")
+        .get(0);
+    review::review_assertion(
+        &mut client,
+        &ReviewRequest {
+            assertion_id,
+            new_status: ReviewStatus::Verified,
+            reviewer: "synthetic-reviewer",
+            evidence_ref: "relationship-source.md p.7",
+            note: None,
+        },
+    )
+    .expect("verify the relationship assertion");
+
+    let third = reimport::reimport_document(&mut client, &document).expect("third import");
+    assert_eq!(
+        third.reopened, 0,
+        "unchanged evidence must not reopen a decision"
+    );
+
+    let status: String = client
+        .query_one(
+            "SELECT review_status FROM assertion WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .expect("status")
+        .get(0);
+    assert_eq!(
+        status, "verified",
+        "re-import must preserve the review decision"
+    );
+
+    let graph = tree::load_tree(&mut client).expect("tree after review");
+    assert_eq!(graph.links.len(), 1, "the edge is still a single row");
+    assert_eq!(graph.links[0].evidence_status, "verified");
+    assert!(
+        graph.links[0]
+            .citations
+            .iter()
+            .any(|citation| citation.page == 7),
+        "a verified edge keeps its source citation"
+    );
+}
+
+/// A spouse edge is one relationship, not two rows. If the source orders the
+/// couple the other way round from an existing row, the import reuses it.
+#[test]
+fn a_reversed_spouse_edge_is_reused_not_duplicated() {
+    let Some(base) = base_dsn() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping spouse orientation test");
+        return;
+    };
+    let target = create_isolated_target(&base, "spouse-orientation");
+    target.apply_migrations();
+    let mut client = target.connect();
+
+    for (key, name) in [("P801", "Person A"), ("P802", "Person B")] {
+        client
+            .execute(
+                "INSERT INTO person (person_key, display_name) VALUES ($1, $2)",
+                &[&key, &name],
+            )
+            .expect("insert person");
+    }
+    // The pre-existing row stores the couple in the opposite orientation.
+    client
+        .execute(
+            "INSERT INTO spouse_link (person_id, spouse_id, source_order)
+             SELECT second.person_id, first.person_id, 1
+               FROM person first, person second
+              WHERE first.person_key = 'P801' AND second.person_key = 'P802'",
+            &[],
+        )
+        .expect("insert reversed spouse link");
+
+    let document = ImportDocument {
+        relative_path: "relationship-source.md".to_string(),
+        sha256: "d".repeat(64),
+        source_kind: "original".to_string(),
+        persons: vec![
+            ImportPerson {
+                person_key: "P801".to_string(),
+                display_name: "Person A".to_string(),
+            },
+            ImportPerson {
+                person_key: "P802".to_string(),
+                display_name: "Person B".to_string(),
+            },
+        ],
+        assertions: Vec::new(),
+        links: vec![ImportLink {
+            kind: "spouse".to_string(),
+            from_key: "P801".to_string(),
+            to_key: "P802".to_string(),
+        }],
+    };
+
+    let report = reimport::reimport_document(&mut client, &document).expect("import spouse link");
+    assert_eq!(report.links_inserted, 0, "the reversed row is reused");
+    assert_eq!(report.links_unchanged, 1);
+
+    let rows: i64 = client
+        .query_one("SELECT count(*) FROM spouse_link", &[])
+        .expect("count spouse links")
+        .get(0);
+    assert_eq!(rows, 1, "one couple stays one row");
 }

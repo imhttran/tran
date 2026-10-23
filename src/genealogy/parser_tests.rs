@@ -184,3 +184,130 @@ fn relationship_keywords_only_match_the_field_label() {
     assert_eq!(relationships[0].kind, AssertionKind::Spouse);
     assert_eq!(relationships[0].value_text, "Bình");
 }
+
+const SYNTHETIC_TABLE_RELATIONSHIPS: &str = "\
+| ID | Name | Description | Page |
+| --- | --- | --- | --- |
+| P001 | Nguyễn Văn An | Generation 1; Spouse: Lê Thị Bình [p. 3]; Spouse: Phạm Thị Cúc [p. 3] | 3 |
+| P002 | Lê Thị Bình | Spouse of Nguyễn Văn An [p. 4] | 4 |
+| P003 | Đỗ Văn Dũng | Child of Nguyễn Văn An and Lê Thị Bình (source family grouping) [p. 5] | 5 |
+| P004 | Vũ Thị Em | Child of Nguyễn Văn An and unnamed fourth wife [p. 6] | 6 |
+| P005 | Hoàng Văn Giang | Child of Nguyễn Văn An (LAYOUT INFERENCE) [p. 7] | 7 |
+| P006 | Bùi Thị Hoa | Spouse-column match to Nguyễn Văn An [p. 8] | 8 |
+| P007 | Ngô Văn Khoa | Eighth child of Nguyễn Văn An [p. 9] | 9 |
+| P008 | Đinh Thị Lan | Probable child of Nguyễn Văn An and Lê Thị Bình [p. 10] | 10 |
+";
+
+fn relationships_of(
+    parse: &CatalogParse,
+    index: usize,
+) -> Vec<(AssertionKind, String, Option<ReasonCode>)> {
+    parse.entries[index]
+        .assertions
+        .iter()
+        .filter(|a| matches!(a.kind, AssertionKind::ParentChild | AssertionKind::Spouse))
+        .map(|a| (a.kind, a.value_text.clone(), a.reason.clone()))
+        .collect()
+}
+
+#[test]
+fn table_row_yields_one_candidate_per_relationship() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    let spouses = relationships_of(&parse, 0);
+    assert_eq!(
+        spouses.len(),
+        2,
+        "two Spouse statements stay two candidates"
+    );
+    assert_eq!(
+        spouses,
+        vec![
+            (AssertionKind::Spouse, "Lê Thị Bình".to_string(), None),
+            (AssertionKind::Spouse, "Phạm Thị Cúc".to_string(), None),
+        ]
+    );
+}
+
+#[test]
+fn table_child_of_two_parents_is_two_parent_candidates() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    let parents = relationships_of(&parse, 2);
+    // Candidates are sorted by value so the order is deterministic.
+    assert_eq!(
+        parents,
+        vec![
+            (AssertionKind::ParentChild, "Lê Thị Bình".to_string(), None),
+            (
+                AssertionKind::ParentChild,
+                "Nguyễn Văn An".to_string(),
+                None
+            ),
+        ]
+    );
+}
+
+#[test]
+fn table_unnamed_parent_is_kept_unresolved() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    let parents = relationships_of(&parse, 3);
+    assert_eq!(parents.len(), 2);
+    assert!(parents.iter().any(|(kind, value, reason)| {
+        *kind == AssertionKind::ParentChild
+            && value.starts_with("unnamed fourth wife")
+            && *reason == Some(ReasonCode::UnclearParentage)
+    }));
+}
+
+#[test]
+fn table_layout_inference_is_unsourced() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    let parents = relationships_of(&parse, 4);
+    assert_eq!(
+        parents,
+        vec![(
+            AssertionKind::ParentChild,
+            "Nguyễn Văn An".to_string(),
+            Some(ReasonCode::UnsourcedRelationship)
+        )]
+    );
+}
+
+#[test]
+fn table_spouse_of_and_spouse_column_forms_are_recognised() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    assert_eq!(
+        relationships_of(&parse, 1),
+        vec![(AssertionKind::Spouse, "Nguyễn Văn An".to_string(), None)]
+    );
+    assert_eq!(
+        relationships_of(&parse, 5),
+        vec![(AssertionKind::Spouse, "Nguyễn Văn An".to_string(), None)]
+    );
+}
+
+#[test]
+fn a_late_birth_order_ordinal_still_states_parentage() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    assert_eq!(
+        relationships_of(&parse, 6),
+        vec![(
+            AssertionKind::ParentChild,
+            "Nguyễn Văn An".to_string(),
+            None
+        )]
+    );
+}
+
+#[test]
+fn a_hedged_parentage_stays_unresolved_for_review() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_RELATIONSHIPS);
+    let parents = relationships_of(&parse, 7);
+    assert_eq!(parents.len(), 2);
+    assert!(
+        parents
+            .iter()
+            .all(|(kind, _, reason)| *kind == AssertionKind::ParentChild
+                && *reason == Some(ReasonCode::UnsourcedRelationship)),
+        "a hedged statement is kept but marked unsourced: {parents:?}"
+    );
+}

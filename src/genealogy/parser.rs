@@ -563,7 +563,124 @@ struct RawRelationship {
     reason: Option<ReasonCode>,
 }
 
+/// One relationship target extracted from a catalog statement.
+struct Target {
+    text: String,
+    /// The statement names a person the catalog cannot identify (for example
+    /// "unnamed fourth wife"). Kept as an assertion so review can see it.
+    unresolved: bool,
+}
+
+/// Extracts relationship statements from either catalog shape.
+///
+/// The real catalog is a Markdown table whose *description* cell carries prose
+/// facts ("Child of X and Y", "Spouse: Z", "Spouse-column match to W"). The
+/// older heading shape states facts as `Label: value` lines. Both are handled;
+/// a table row never reaches the label parser, because its first colon is inside
+/// prose and would swallow the rest of the row as one value.
 fn extract_relationships(raw: &str) -> Vec<RawRelationship> {
+    let mut out = Vec::new();
+    let mut table_rows = 0usize;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if is_catalog_table_row(trimmed) {
+            table_rows += 1;
+            if let Some(description) = catalog_description_cell(trimmed) {
+                out.extend(relationships_from_description(&description));
+            }
+        }
+    }
+    if table_rows == 0 {
+        out.extend(label_relationships(raw));
+    }
+    out.sort_by(|a, b| a.value.cmp(&b.value));
+    out.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
+    out
+}
+
+/// The description cell of `| key | name | description | pages |`.
+fn catalog_description_cell(line: &str) -> Option<String> {
+    let mut cells = line.trim().split('|');
+    cells.next(); // empty before the first separator
+    cells.next(); // key
+    cells.next(); // name
+    cells.next().map(|cell| cell.trim().to_string())
+}
+
+/// Splits one description cell into relationship statements.
+///
+/// The catalog separates facts with `;`, so one row commonly states several
+/// relationships. Every statement is evaluated independently; nothing is
+/// inferred from ordering, and no target is resolved here.
+fn relationships_from_description(description: &str) -> Vec<RawRelationship> {
+    let mut out = Vec::new();
+    for clause in description.split(';') {
+        // The keyword can live inside a bracketed annotation ("(LAYOUT
+        // INFERENCE)"), so detect it before annotations are stripped.
+        let raw_lower = clause.to_ascii_lowercase();
+        let unsourced = raw_lower.contains("layout inference")
+            || raw_lower.contains("same name")
+            || raw_lower.contains("namesake")
+            || raw_lower.contains("cùng tên")
+            || raw_lower.contains("cung ten")
+            || raw_lower.contains("probable")
+            || raw_lower.contains("likely")
+            || raw_lower.contains("possibly")
+            || raw_lower.contains("presumed")
+            || raw_lower.contains("assumed")
+            || raw_lower.contains("có thể")
+            || raw_lower.contains("co the")
+            || raw_lower.contains("đoán")
+            || raw_lower.contains("suy");
+        let cleaned = strip_annotations(clause);
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = leading_rest(cleaned, "child of")
+            .or_else(|| leading_rest(cleaned, "con của"))
+            .or_else(|| leading_rest(cleaned, "con cua"))
+        {
+            for target in split_parents(rest) {
+                let reason = if target.unresolved {
+                    Some(ReasonCode::UnclearParentage)
+                } else if unsourced {
+                    Some(ReasonCode::UnsourcedRelationship)
+                } else {
+                    None
+                };
+                out.push(RawRelationship {
+                    kind: AssertionKind::ParentChild,
+                    value: target.text,
+                    reason,
+                });
+            }
+            continue;
+        }
+
+        if let Some(rest) = spouse_rest(cleaned) {
+            if let Some(target) = clean_parent(rest) {
+                let reason = if target.unresolved {
+                    Some(ReasonCode::UnclearParentage)
+                } else if unsourced {
+                    Some(ReasonCode::UnsourcedRelationship)
+                } else {
+                    None
+                };
+                out.push(RawRelationship {
+                    kind: AssertionKind::Spouse,
+                    value: target.text,
+                    reason,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The old `Label: value` shape, kept for heading-style catalogs.
+fn label_relationships(raw: &str) -> Vec<RawRelationship> {
     let mut out = Vec::new();
     for line in raw.lines() {
         let lower = line.to_lowercase();
@@ -621,7 +738,161 @@ fn extract_relationships(raw: &str) -> Vec<RawRelationship> {
             reason,
         });
     }
-    out.sort_by(|a, b| a.value.cmp(&b.value));
+    out
+}
+
+/// Returns the text after `keyword` when the keyword opens the clause. An ordinal
+/// prefix ("third child of …") is allowed; any other prefix means the clause is
+/// about something else.
+fn leading_rest<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let lower = text.to_ascii_lowercase();
+    let idx = lower.find(keyword)?;
+    let prefix = lower[..idx].trim();
+    if !prefix.is_empty()
+        && !prefix.split_whitespace().all(|word| {
+            matches!(
+                word,
+                "first"
+                    | "second"
+                    | "third"
+                    | "fourth"
+                    | "fifth"
+                    | "sixth"
+                    | "seventh"
+                    | "eighth"
+                    | "ninth"
+                    | "tenth"
+                    | "eleventh"
+                    | "twelfth"
+                    | "eldest"
+                    | "youngest"
+                    | "adopted"
+                    | "only"
+                    | "firstborn"
+                    | "first-born"
+                    | "probable"
+                    | "likely"
+                    | "possibly"
+                    | "presumed"
+                    | "assumed"
+                    | "the"
+            )
+        })
+    {
+        return None;
+    }
+    Some(
+        text[idx + keyword.len()..]
+            .trim_start_matches([':', ' '])
+            .trim(),
+    )
+}
+
+/// The text after a clause that starts with `Spouse`, however the catalog writes
+/// the separator (`Spouse:`, `Spouse of`, `Spouse-column match to`).
+fn spouse_rest(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    let after = strip_prefix_ci(trimmed, "spouse")?;
+    let mut rest = after.trim_start();
+    for prefix in [
+        "-column match to",
+        "-column match",
+        "-column",
+        "column match to",
+        "column match",
+        "column",
+        "of",
+        "to",
+        ":",
+        "-",
+    ] {
+        if let Some(next) = strip_prefix_ci(rest, prefix) {
+            rest = next.trim_start();
+        }
+    }
+    Some(rest)
+}
+
+fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    // A non-ASCII leading character means `prefix.len()` can fall inside a
+    // character; `get` returns `None` instead of panicking.
+    let head = text.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        Some(&text[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// Splits `A and B` parent lists. `and` is ASCII, so the positions stay valid
+/// for slicing the original text.
+fn split_parents(rest: &str) -> Vec<Target> {
+    let lower = rest.to_ascii_lowercase();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    while let Some(idx) = lower[start..].find(" and ") {
+        parts.push(&rest[start..start + idx]);
+        start += idx + " and ".len();
+    }
+    parts.push(&rest[start..]);
+    parts.into_iter().filter_map(clean_parent).collect()
+}
+
+/// Cleans one relationship target. A target the catalog cannot identify stays as
+/// an unresolved assertion rather than being dropped or guessed.
+fn clean_parent(raw: &str) -> Option<Target> {
+    let text = strip_annotations(raw);
+    let text = text.trim().trim_matches(|c: char| c == ',' || c == '.');
+    if text.is_empty() {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("unnamed") || lower.contains("chưa rõ") || lower.contains("chua ro") {
+        return Some(Target {
+            text: text.to_string(),
+            unresolved: true,
+        });
+    }
+    let mut name = text;
+    for qualifier in [
+        "second wife",
+        "third wife",
+        "fourth wife",
+        "first wife",
+        "wife",
+        "husband",
+        "spouse",
+    ] {
+        if let Some(rest) = strip_prefix_ci(name, qualifier) {
+            name = rest.trim_start();
+        }
+    }
+    let name = name.trim_matches(|c: char| c == ',' || c == '.').trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(Target {
+            text: name.to_string(),
+            unresolved: false,
+        })
+    }
+}
+
+/// Removes bracketed annotations (`[p. 7]`, `(1845–1929)`) from a clause.
+fn strip_annotations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut square = 0usize;
+    let mut paren = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '[' => square += 1,
+            ']' => square = square.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            _ if square == 0 && paren == 0 => out.push(ch),
+            _ => {}
+        }
+    }
     out
 }
 

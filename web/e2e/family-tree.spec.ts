@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { layoutTree, relationLabel, revealPerson } from "../src/lib/family-tree";
+import { layoutTree, relationLabel, revealPerson, READABLE_WIDTH } from "../src/lib/family-tree";
 import type { TreeGraph } from "../src/lib/family-tree";
 
 const session = { state: "signed_in", role: "viewer", display_name: "Synthetic viewer" };
@@ -266,4 +266,62 @@ test("a tree citation opens metadata-only source details", async ({ page }) => {
   await expect(dialog.locator("a")).toHaveCount(0); // No link to a nonexistent viewer.
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toBeHidden();
+});
+
+// --- A catalog without relationships still renders readable cards ----------
+
+const unlinked: TreeGraph = {
+  people: Array.from({ length: 60 }, (_, index) => p("L" + String(index).padStart(2, "0"))),
+  links: [],
+  truncated: false,
+};
+
+async function stubUnlinked(page: import("@playwright/test").Page) {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(unlinked) }));
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+  });
+}
+
+async function readViewBox(page: import("@playwright/test").Page) {
+  const value = await page.getByTestId("family-tree-canvas").getAttribute("viewBox");
+  const [x, y, width, height] = (value ?? "").split(" ").map(Number);
+  return { x, y, width, height };
+}
+
+test("an unlinked catalog wraps components into bands instead of one long row", () => {
+  const layout = layoutTree(unlinked, new Set());
+  expect(layout.people).toHaveLength(60);
+  // A single row of 60 cards would be ~15,000px wide and scale every card to
+  // less than a pixel; the bands keep the canvas bounded (max band + one card).
+  expect(layout.width).toBeLessThanOrEqual(1790);
+  expect(layout.height).toBeGreaterThan(720);
+  expect(new Set(layout.people.map((person) => person.y)).size).toBeGreaterThan(1);
+  expect(layout.people.every((person) => person.x >= 0 && person.y >= 0)).toBe(true);
+});
+
+test("every authorized person renders without a relationship edge", async ({ page }) => {
+  await stubUnlinked(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(60);
+  await expect(page.getByTestId("genealogy-no-links")).toBeVisible();
+  const view = await readViewBox(page);
+  expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(view.height).toBeLessThanOrEqual(720);
+});
+
+test("search selection reveals a readable card in an unlinked catalog", async ({ page }) => {
+  await stubUnlinked(page);
+  await page.goto("/genealogy");
+  await page.getByTestId("family-search").fill("L59");
+  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await expect(page.getByTestId("family-person-details")).toContainText("L59");
+  const view = await readViewBox(page);
+  expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
+  expect(view.height).toBeLessThanOrEqual(720);
 });
