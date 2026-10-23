@@ -84,6 +84,8 @@ function FamilyTree() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [isTouch, setIsTouch] = useState(false);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [popupOpen, setPopupOpen] = useState(false);
@@ -94,6 +96,8 @@ function FamilyTree() {
   const workspaceRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+  const helpRef = useRef<HTMLElement>(null);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
   const cardRefs = useRef(new Map<string, SVGGElement>());
   const clickTimer = useRef<number | null>(null);
   const focusedPopupFor = useRef<string | null>(null);
@@ -163,10 +167,13 @@ function FamilyTree() {
   }, [graph]); // Only reset the camera when source data changes.
 
   useEffect(() => {
-    if (!popupOpen && !expanded) return;
+    if (!helpOpen && !popupOpen && !expanded) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (popupOpen) {
+      if (helpOpen) {
+        event.preventDefault();
+        closeHelp();
+      } else if (popupOpen) {
         event.preventDefault();
         closePopup(selected);
       } else {
@@ -175,7 +182,21 @@ function FamilyTree() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [popupOpen, expanded, selected]);
+  }, [helpOpen, popupOpen, expanded, selected]);
+
+  useEffect(() => {
+    if (!helpOpen) return;
+    helpRef.current?.focus({ preventScroll: true });
+    helpRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [helpOpen]);
+
+  useEffect(() => {
+    // Touch devices get tap wording; a mouse gets click wording. This reads the
+    // pointer capability once, after hydration, so the server render is stable.
+    const coarse = typeof window !== "undefined" &&
+      window.matchMedia?.("(pointer: coarse)").matches;
+    setIsTouch(Boolean(coarse) || (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0));
+  }, []);
 
   useEffect(() => {
     if (!selected) {
@@ -307,6 +328,11 @@ function FamilyTree() {
   }); // Every camera/viewport change must reposition the popup.
 
   useEffect(() => () => cancelScheduledOpen(), []);
+
+  function closeHelp() {
+    setHelpOpen(false);
+    helpButtonRef.current?.focus({ preventScroll: true });
+  }
 
   function cancelScheduledOpen() {
     if (clickTimer.current !== null) {
@@ -582,8 +608,75 @@ function FamilyTree() {
                 aria-label={expanded ? "Exit full screen" : "Expand canvas to full screen"}>
                 {expanded ? "Exit full screen" : "Expand canvas"}
               </button>
+              <button type="button" ref={helpButtonRef} onClick={() => setHelpOpen(true)}
+                aria-expanded={helpOpen} aria-controls="family-help-panel"
+                data-testid="family-help">Help</button>
             </div>
           </div>
+          {helpOpen && (
+            <section id="family-help-panel" ref={helpRef} className="family-help"
+              role="dialog" aria-modal="false" aria-labelledby="family-help-title"
+              tabIndex={-1} data-testid="family-help-panel">
+              <div className="family-help-head">
+                <h2 id="family-help-title">Family tree help</h2>
+                <button type="button" className="family-help-close" onClick={closeHelp}
+                  data-testid="family-help-close">Close help</button>
+              </div>
+              <div className="family-help-grid">
+                <div>
+                  <h3>Person details</h3>
+                  <p>
+                    Click a person to open their details. A card you reached with Tab opens with
+                    Enter or Space.
+                  </p>
+                  <h3>Children and parents</h3>
+                  <p>
+                    Double-click a person, or choose <strong>Show children</strong>, to focus that
+                    person and their recorded children. <strong>Show parents</strong> adds the
+                    recorded parents above. On touch, tap the person and choose the button. Each
+                    step moves one generation; choose another card to continue.
+                  </p>
+                  <h3>Back</h3>
+                  <p>
+                    <strong>Back</strong> restores the previous focus, expansion state, and camera.
+                    <strong> Show entire tree</strong> returns to the whole graph.
+                  </p>
+                </div>
+                <div>
+                  <h3>Search</h3>
+                  <p>
+                    Search ignores Vietnamese accents: <em>Nguyen</em> finds <em>Nguyễn</em>, and
+                    recorded aliases match too.
+                  </p>
+                  <h3>Canvas controls</h3>
+                  <p>
+                    <strong>＋</strong> and <strong>−</strong> zoom. <strong>Fit all</strong> shows
+                    the whole graph. <strong>Focus selected</strong> centres the selected card.
+                    <strong> Expand canvas</strong> uses the full window; Escape leaves it.
+                  </p>
+                  <h3>Evidence status</h3>
+                  <p>
+                    <span className="family-key family-key-verified" /> <strong>Verified</strong>
+                    {" "}has reviewed, source-backed evidence.{" "}
+                    <span className="family-key family-key-review" /> <strong>Needs review</strong>
+                    {" "}is recorded but not confirmed.{" "}
+                    <span className="family-key family-key-unverified" /> <strong>Unverified</strong>
+                    {" "}has no reviewed evidence. Edges use the same status, and citations open the
+                    source details.
+                  </p>
+                </div>
+              </div>
+              <p className="family-help-note" data-testid="family-help-no-children">
+                <strong>“No children recorded”</strong> means the archive has no available child
+                links for that person. It does not establish that the person had no children.
+              </p>
+              <p className="family-help-note">
+                Keyboard: Tab moves between controls, Enter or Space activates a focused control, and
+                Escape closes this help or the person details. When neither is open, Escape leaves
+                expanded canvas.
+              </p>
+            </section>
+          )}
           {graph.truncated && (
             <p role="status" className="family-limit">
               Showing the first 500 authorized people. This is a partial graph; counts and relatives may be incomplete.
@@ -788,9 +881,10 @@ function FamilyTree() {
                     )}
                   </div>
                 )}
-                <p className="family-canvas-help">
-                  Select a person for details. Double-click a card, or use Show children, to focus one
-                  generation; Show parents adds the recorded parents. Drag blank space to pan; use ＋/− to zoom.
+                <p className="family-canvas-help" data-testid="family-navigation-hint">
+                  {isTouch
+                    ? "Tap a person for details, then choose Show children or Show parents."
+                    : "Click for details. Double-click to explore children. Drag empty space to pan."}
                 </p>
                 {!focus && selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
                   <button type="button" data-testid="family-collapse" onClick={() =>

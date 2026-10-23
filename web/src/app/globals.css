@@ -112,6 +112,16 @@ a { color:var(--accent); }
 .family-edge-unverified { stroke:#8b9691; stroke-dasharray:2 6; }
 .family-edge-spouse { stroke-width:2; }
 .family-focus { margin:0; padding:10px 16px; background:#eef3ec; border:1px solid #cfdbcd; border-bottom:0; font-size:14px; color:#294c43; }
+.family-help { margin:0 16px 12px; padding:14px 16px; background:#fff; border:1px solid #d8d8ce; border-radius:12px; }
+.family-help:focus { outline:3px solid #356954; outline-offset:2px; }
+.family-help-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.family-help h2 { font:600 20px Georgia, serif; margin:0; }
+.family-help h3 { font-size:14px; margin:14px 0 4px; color:#1d352c; }
+.family-help p { margin:0 0 6px; max-width:72ch; }
+.family-help-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:0 28px; }
+.family-help-close { min-height:40px; padding:8px 12px; margin:0; background:#294c43; border-radius:9px; }
+.family-help-note { margin:10px 0 0; padding:9px 11px; background:#f5f7f5; border:1px solid #dedede; border-radius:8px; font-size:14px; }
+.family-help .family-key { margin-right:4px; vertical-align:middle; }
 .family-popup { position:absolute; z-index:5; width:min(340px, calc(100% - 24px)); max-height:calc(100% - 20px); overflow:auto; background:white; border:1px solid #cbc2aa; border-radius:14px; box-shadow:0 16px 40px #0003; padding:14px; overflow-wrap:anywhere; }
 .family-popup:focus { outline:3px solid #356954; outline-offset:2px; }
 .family-popup h2 { font:600 20px Georgia, serif; margin:0 26px 4px 0; }
@@ -139,6 +149,8 @@ a { color:var(--accent); }
   .family-canvas svg { height:370px; }
   .family-popup { width:calc(100% - 20px); }
   .family-popup-action { flex:1 1 auto; }
+  .family-help { margin:0 8px 10px; padding:12px; }
+  .family-help-grid { grid-template-columns:1fr; }
   .family-catalog { columns:1; }
 }
 

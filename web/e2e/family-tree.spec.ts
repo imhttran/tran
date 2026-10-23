@@ -585,8 +585,8 @@ test("single click opens an anchored popup and Escape restores card focus", asyn
 test("double-click focuses immediate children above an unrelated graph", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  const before = await readViewBox(page);
   await expect(page.getByTestId("family-person")).toHaveCount(5);
+  const before = await readViewBox(page);
 
   await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
   await expect(page.getByTestId("family-focus")).toContainText("Person A");
@@ -644,6 +644,7 @@ test("Show children moves exactly one generation at a time", async ({ page }) =>
 test("a person with no recorded children keeps the view and says so", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
   const before = await readViewBox(page);
   await page.getByRole("button", { name: "Select Person A1", exact: true }).dblclick();
   await expect(page.getByTestId("family-popup-notice")).toContainText("No children recorded");
@@ -824,4 +825,88 @@ test("the popup stays in bounds when the canvas expands", async ({ page }) => {
   await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+});
+
+// --- Contextual help ---------------------------------------------------------
+
+test("the canvas shows the compact desktop navigation hint", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-navigation-hint")).toHaveText(
+    "Click for details. Double-click to explore children. Drag empty space to pan.",
+  );
+  await expect(page.getByTestId("family-help")).toBeVisible();
+});
+
+test("Help opens a dismissible guide with the implemented controls", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const helpButton = page.getByTestId("family-help");
+  await helpButton.focus();
+  await page.keyboard.press("Enter");
+  const panel = page.getByTestId("family-help-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toBeFocused();
+  for (const text of [
+    "Click a person to open their details",
+    "Show children",
+    "Show parents",
+    "Back",
+    "Nguyen",
+    "Fit all",
+    "Focus selected",
+    "Expand canvas",
+    "Verified",
+    "Needs review",
+    "Unverified",
+    "Tab moves between controls",
+  ]) {
+    await expect(panel).toContainText(text);
+  }
+  await expect(page.getByTestId("family-help-no-children")).toContainText("does not establish");
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(helpButton).toBeFocused();
+
+  // Dismissing does not remove the way back in.
+  await helpButton.click();
+  await expect(panel).toBeVisible();
+  await page.getByTestId("family-help-close").click();
+  await expect(panel).toBeHidden();
+});
+
+test.describe("help on a narrow screen", () => {
+  test.use({ viewport: { width: 390, height: 780 } });
+
+  test("the guide stays inside the viewport and is dismissible", async ({ page }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    await page.getByTestId("family-help").click();
+    const panel = page.getByTestId("family-help-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText("No children recorded");
+    const box = await panel.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box && viewport).toBeTruthy();
+    if (box && viewport) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    await page.getByTestId("family-help-close").click();
+    await expect(panel).toBeHidden();
+  });
+});
+
+test.describe("touch hint", () => {
+  test.use({ hasTouch: true });
+
+  test("uses tap wording instead of click and double-click", async ({ page }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    const hint = page.getByTestId("family-navigation-hint");
+    await expect(hint).toHaveText(
+      "Tap a person for details, then choose Show children or Show parents.",
+    );
+    await expect(hint).not.toContainText("Double-click");
+  });
 });
