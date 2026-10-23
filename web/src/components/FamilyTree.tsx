@@ -60,6 +60,7 @@ function FamilyTree() {
   const [detail, setDetail] = useState<PersonDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
 
@@ -117,6 +118,15 @@ function FamilyTree() {
   }, [graph]); // Only reset the camera when source data changes, not on collapse.
 
   useEffect(() => {
+    if (!expanded) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [expanded]);
+
+  useEffect(() => {
     if (!selected) {
       setDetail(null);
       return;
@@ -142,6 +152,37 @@ function FamilyTree() {
     return () => controller.abort();
   }, [selected]);
 
+  /**
+   * Centre a card at a readable scale. A tighter zoom the user already chose is
+   * kept, but a whole-canvas view is never inherited: that is what shrank the
+   * selected card to nothing.
+   */
+  function focusViewFor(positioned: { x: number; y: number }, old: View): View {
+    const width = Math.min(old.width, READABLE_WIDTH);
+    const height = Math.min(old.height, READABLE_HEIGHT);
+    return {
+      x: positioned.x + CARD_WIDTH / 2 - width / 2,
+      y: positioned.y + CARD_HEIGHT / 2 - height / 2,
+      width,
+      height,
+    };
+  }
+
+  /** Show the whole graph. A large catalog is necessarily scaled down here. */
+  function fitAll() {
+    if (!layout) return;
+    setView({ x: 0, y: 0, width: Math.max(600, layout.width),
+      height: Math.max(370, layout.height) });
+  }
+
+  /** Return to the selected person at a readable scale. */
+  function focusSelected() {
+    if (!layout || !selected) return;
+    const positioned = layout.people.find((p) => p.record_id === selected);
+    if (!positioned) return;
+    setView((old) => focusViewFor(positioned, old));
+  }
+
   function selectPerson(id: string) {
     if (!graph) return;
     // Expand only the hidden ancestor path; unrelated collapsed branches stay.
@@ -150,21 +191,7 @@ function FamilyTree() {
     setSelected(id);
     setSearch("");
     const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
-    if (positioned) {
-      // Centre the person at a readable scale; keep a tighter zoom the user
-      // already chose, but never inherit a whole-canvas view that shrinks the
-      // selected card to nothing.
-      setView((old) => {
-        const width = Math.min(old.width, READABLE_WIDTH);
-        const height = Math.min(old.height, READABLE_HEIGHT);
-        return {
-          x: positioned.x + CARD_WIDTH / 2 - width / 2,
-          y: positioned.y + CARD_HEIGHT / 2 - height / 2,
-          width,
-          height,
-        };
-      });
-    }
+    if (positioned) setView((old) => focusViewFor(positioned, old));
     svgRef.current?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -223,7 +250,8 @@ function FamilyTree() {
       {denial ? <DenialView kind={denial.kind} reason={denial.reason} /> : !graph || !layout ? (
         <p className="hint" data-testid="genealogy-loading">Loading family tree…</p>
       ) : (
-        <section className="family-workspace" data-testid="genealogy-tree">
+        <section className={"family-workspace" + (expanded ? " family-workspace-expanded" : "")}
+          data-testid="genealogy-tree" data-expanded={expanded ? "true" : "false"}>
           <div className="family-toolbar">
             <div className="family-search">
               <label htmlFor="family-person-search">Find a person</label>
@@ -246,10 +274,15 @@ function FamilyTree() {
             <div className="family-controls">
               <button type="button" onClick={() => scaleView(0.8)} aria-label="Zoom in">＋</button>
               <button type="button" onClick={() => scaleView(1.25)} aria-label="Zoom out">−</button>
-              <button type="button" onClick={() => layout &&
-                setView({ x: 0, y: 0, width: Math.max(600, layout.width),
-                  height: Math.max(370, layout.height) })}>Fit</button>
+              <button type="button" onClick={fitAll} data-testid="family-fit-all">Fit all</button>
+              <button type="button" onClick={focusSelected} disabled={!selected}
+                data-testid="family-focus-selected">Focus selected</button>
               <button type="button" onClick={() => setCollapsed(new Set())}>Expand all</button>
+              <button type="button" onClick={() => setExpanded((current) => !current)}
+                aria-pressed={expanded} data-testid="family-canvas-toggle"
+                aria-label={expanded ? "Exit full screen" : "Expand canvas to full screen"}>
+                {expanded ? "Exit full screen" : "Expand canvas"}
+              </button>
             </div>
           </div>
           {graph.truncated && (
@@ -328,7 +361,10 @@ function FamilyTree() {
                     </g>
                   ))}
                 </svg>
-                <p className="family-canvas-help">Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom.</p>
+                <p className="family-canvas-help">
+                  Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom,
+                  Fit all to see everyone, and Focus selected to return to the person.
+                </p>
                 {selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
                   <button type="button" data-testid="family-collapse" onClick={() =>
                     setCollapsed((current) => {
