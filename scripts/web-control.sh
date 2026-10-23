@@ -20,7 +20,9 @@ RUN_DIR="$WEB_DIR/.run"
 PID_FILE="$RUN_DIR/web.pid"
 LOG_FILE="$RUN_DIR/web.log"
 HOST="${WEB_HOST:-127.0.0.1}"
+# Next reads PORT when no --port flag is passed, so WEB_PORT can move the UI.
 PORT="${WEB_PORT:-3000}"
+export PORT
 URL="http://$HOST:$PORT"
 
 # zed_node_dirs lists candidate Zed node bin directories (newest first is not
@@ -173,7 +175,14 @@ cmd_start() {
 	fi
 	mkdir -p "$RUN_DIR"
 	cd "$WEB_DIR"
-	setsid sh -c 'echo $$ > "$1"; exec "$2" run dev' sh "$PID_FILE" "$NPM" > "$LOG_FILE" 2>&1 &
+	# `setsid` gives stop a process group to signal; macOS has no setsid, so fall
+	# back to a plain detached shell there.
+	# shellcheck disable=SC2016 # $1/$2 are expanded by the child shell.
+	if command -v setsid >/dev/null 2>&1; then
+		setsid sh -c 'echo $$ > "$1"; exec "$2" run dev' sh "$PID_FILE" "$NPM" > "$LOG_FILE" 2>&1 &
+	else
+		sh -c 'echo $$ > "$1"; exec "$2" run dev' sh "$PID_FILE" "$NPM" > "$LOG_FILE" 2>&1 &
+	fi
 	i=0
 	while [ "$i" -lt 60 ]; do
 		if curl -fsS -m 2 -o /dev/null "$URL/"; then

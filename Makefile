@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-schema test fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e
+.PHONY: db-up db-down db-schema test fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e genealogy-migrate genealogy-import app-restart app-update admin-setup
 # Convenience targets for the Rust-only ingest/query workflow.
 #
 #   make db-up        start PostgreSQL and apply the schema
@@ -12,28 +12,41 @@
 #   make web-stop     stop the Next.js server started by make web-start
 #   make web-status   report the server state, URL, and log path
 #
+#   make genealogy-migrate  apply genealogy migrations
+#   make genealogy-import   import CATALOG (idempotent)
+#   make app-restart        restart only the API/UI processes the scripts own
+#   make app-update         validate, migrate, import, rebuild, restart, report
+#   make admin-setup        explicitly configure an administrator from Keycloak
+#
+# app-update never runs admin-setup: administrator provisioning stays explicit.
+#
+# After pulling a merge, run:
+#   git pull --ff-only
+#   make app-update
+#
 # Override inputs on the command line, e.g.
 #   make ingest FILE=examples/other.md
 #   make ask Q="When is a late fee assessed?"
+#   make genealogy-import CATALOG=docs/tran/other-catalog.md
 
-# Load local .env if present, but never let it override a value the caller
-# supplied in the environment. `make` gives a makefile assignment precedence
-# over the environment, so .env would otherwise silently retarget a command such
-# as `DATABASE_URL=.../rag_test make web-e2e`.
-CALLER_DATABASE_URL := $(DATABASE_URL)
-CALLER_GENEALOGY_DATABASE_URL := $(GENEALOGY_DATABASE_URL)
--include .env
-ifneq ($(strip $(CALLER_DATABASE_URL)),)
-DATABASE_URL := $(CALLER_DATABASE_URL)
-endif
-ifneq ($(strip $(CALLER_GENEALOGY_DATABASE_URL)),)
-GENEALOGY_DATABASE_URL := $(CALLER_GENEALOGY_DATABASE_URL)
-export GENEALOGY_DATABASE_URL
+# Load local .env as defaults only. A makefile assignment beats the environment,
+# so including .env directly would replace a value the caller exported (for
+# example `DATABASE_URL=.../rag_test make web-e2e` or `API_URL=... make
+# app-update`). The helper writes a copy with the caller's keys removed.
+ENV_DEFAULTS := $(shell ./scripts/env-defaults.sh .env .run/make-defaults.env)
+ifneq ($(ENV_DEFAULTS),)
+-include $(ENV_DEFAULTS)
 endif
 DATABASE_URL ?= postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable
 export DATABASE_URL
+ifneq ($(strip $(GENEALOGY_DATABASE_URL)),)
+export GENEALOGY_DATABASE_URL
+endif
 FILE ?= examples/loan-policy.md
 Q ?=
+CATALOG ?= docs/tran/Tran-Family-People-Catalog.md
+ADMIN_CORPUS ?= trusted
+KEYCLOAK_USERNAME ?=
 
 # Start the database and make sure the schema is applied.
 db-up:
@@ -75,6 +88,28 @@ db-schema:
 	@for f in migrations/*.sql; do \
 		psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$$f" || exit 1; \
 	done
+
+# ---- Local application lifecycle (after a merge) ------------------------------
+# These targets update local data and processes using the code already checked
+# out. They never fetch, switch branches, stash, reset, or discard changes; run
+# `git pull --ff-only` yourself first. See docs/guides/usage.md.
+genealogy-migrate:
+	./scripts/local-app.sh migrate
+
+genealogy-import:
+	./scripts/local-app.sh import "$(CATALOG)"
+
+app-restart:
+	./scripts/local-app.sh restart
+
+app-update:
+	./scripts/local-app.sh update "$(CATALOG)"
+
+# Explicit administrator setup. Requires KEYCLOAK_URL, KEYCLOAK_REALM,
+# AUTH_ISSUER, and DATABASE_URL; it prompts for provider credentials it does not
+# receive from the environment. Never invoked by app-update.
+admin-setup:
+	./scripts/admin-setup.sh --username "$(KEYCLOAK_USERNAME)" --corpus "$(ADMIN_CORPUS)"
 
 # ---- Rust checks (the package lives at the repository root) -------------------
 # Reused by .githooks so the hooks and the Makefile never diverge.

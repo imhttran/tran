@@ -29,6 +29,19 @@ Run them with `cargo run --locked --bin <name>` or use the Makefile shortcuts.
 | `make eval` | score retrieval against `evals/retrieval.json` |
 | `make rust-check` | fmt, build, test, clippy, final-layout, and clean-checkout checks |
 | `make check` | the Rust checks plus the web typecheck/build |
+| `make genealogy-migrate` | apply the genealogy migrations |
+| `make genealogy-import` | import `CATALOG` (default `docs/tran/Tran-Family-People-Catalog.md`) |
+| `make app-restart` | restart only the API/UI processes the scripts own |
+| `make app-update` | validate, migrate, import, rebuild, restart, and report |
+| `make admin-setup` | resolve a Keycloak username and configure an administrator |
+
+`make app-update` is the post-merge local update (see
+[guides/usage.md](../guides/usage.md#update-the-local-app-after-a-merge)). It
+uses the checked-out code and never fetches, branches, stashes, or resets.
+`make admin-setup KEYCLOAK_USERNAME=…` is explicit and never runs from
+`app-update`; the configuration, manual equivalents, verification, and recovery
+steps are in
+[operations/RBAC-OPERATIONS.md](../operations/RBAC-OPERATIONS.md#keycloak-administrator-setup).
 
 ## Rust checks and acceptance
 
