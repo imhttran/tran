@@ -707,12 +707,17 @@ fn family_visible_media_in_tx(
 /// the person's current approved asset, and whose field carries no active owner
 /// restriction.
 ///
-/// The family decision is made while holding the media owner's `person` row
-/// `FOR SHARE`, and that lock is held through the file read and the commit. An
-/// owner restriction or an approval takes the same row `FOR UPDATE`, so it either
-/// commits entirely before this decision or waits until this request finishes; it
-/// can never land between authorization and the bytes. The reviewed link is taken
-/// first, matching the restriction writer's lock order and avoiding a cycle.
+/// Only the family path takes the media owner's `person` row, and it holds that
+/// `FOR SHARE` lock through the publication check, the file read, and the commit.
+/// An owner restriction or an approval takes the same row `FOR UPDATE`, so it
+/// either commits entirely before this decision or waits until this request
+/// finishes; it can never land between authorization and the bytes.
+///
+/// The owner path deliberately does **not** take the person row. Owner access
+/// does not consult family visibility or an owner restriction, and `revoke_link`
+/// locks the person before deleting the account-person link. Since this request
+/// already holds that link `FOR SHARE`, waiting for the person here would let a
+/// concurrent revocation deadlock against the download.
 pub fn read_authorized_media(
     client: &mut postgres::Client,
     storage: &MediaStorage,
@@ -720,9 +725,9 @@ pub fn read_authorized_media(
     media_id: i64,
 ) -> Result<MediaDownload, MediaError> {
     let mut tx = client.transaction()?;
-    // Lock order: reviewed link, then person. Taking the link first also means an
-    // unlinked caller is refused before the media id is looked up, so this path
-    // cannot be used to probe which ids exist.
+    // Lock order: reviewed link, then (family access only) the person row.
+    // Taking the link first also means an unlinked caller is refused before the
+    // media id is looked up, so this path cannot be used to probe which ids exist.
     let requester_person = owner_person_in_tx(&mut tx, requester)?;
     let sql = format!(
         "SELECT {MEDIA_COLUMNS}, r.changed_by \
@@ -736,18 +741,44 @@ pub fn read_authorized_media(
         .ok_or(MediaError::NotFound)?;
     let changed_by: String = row.get(14);
     let asset = row_to_asset(row)?;
-
-    // Serialize the authorization decision with every writer that can change its
-    // answer: the owner restriction, the review decision, and the person-scoped
-    // family read all take this row (the readers `FOR SHARE`, the writers
-    // `FOR UPDATE`).
-    tx.query_one(
-        "SELECT 1 FROM person WHERE person_id = $1 FOR SHARE",
-        &[&asset.person_id],
-    )?;
-
     let owner = requester_person == asset.person_id;
-    let current_approved: bool = tx
+
+    // The owner path answers only "may this account read its own asset". It is
+    // intentionally not serialized with approval or withdrawal writers: the owner
+    // is entitled to their own approved history, so a transiently stale answer
+    // can only affect the owner's own view, never another member's. A withdrawal
+    // that deletes the pending file surfaces as a missing file instead of wrong
+    // bytes.
+    let owner_allowed = owner
+        && (changed_by == requester.identity_fingerprint
+            || current_approved_media_in_tx(&mut tx, &asset)?);
+
+    let family_visible = if owner {
+        false
+    } else {
+        tx.query_one(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR SHARE",
+            &[&asset.person_id],
+        )?;
+        family_visible_media_in_tx(&mut tx, asset.person_id, media_id)?.is_some()
+    };
+    if !owner_allowed && !family_visible {
+        return Err(MediaError::NotFound);
+    }
+    let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
+    tx.commit()?;
+    Ok(MediaDownload { asset, bytes })
+}
+
+/// True when this revision is the person's current approved asset for its field.
+///
+/// Used by the owner path, which keeps access to a pending or owner-private asset
+/// that it uploaded, and to the current approved one otherwise.
+fn current_approved_media_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    asset: &MediaAsset,
+) -> Result<bool, MediaError> {
+    Ok(tx
         .query_one(
             "SELECT EXISTS (\
                 SELECT 1 FROM onboarding_profile_revision r2 \
@@ -772,23 +803,7 @@ pub fn read_authorized_media(
                 &asset.revision_id,
             ],
         )?
-        .get(0);
-    let actor_owns = changed_by == requester.identity_fingerprint;
-    let owner_allowed = owner && (actor_owns || current_approved);
-    // One definition of family eligibility, shared with the person-scoped route:
-    // current approved revision, matching provenance, `family` visibility, and no
-    // active restriction.
-    let family_visible = if owner {
-        false
-    } else {
-        family_visible_media_in_tx(&mut tx, asset.person_id, media_id)?.is_some()
-    };
-    if !owner_allowed && !family_visible {
-        return Err(MediaError::NotFound);
-    }
-    let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
-    tx.commit()?;
-    Ok(MediaDownload { asset, bytes })
+        .get(0))
 }
 
 /// Reads one approved family-visible media item for a linked family member.
