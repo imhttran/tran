@@ -13,10 +13,11 @@ import { SourceDialog } from "@/components/SourceDetails";
 import type { CitedFact, OpenSource } from "@/components/SourceDetails";
 import type { EvidenceRef } from "@/lib/experience-contract";
 import {
-  CARD_HEIGHT, CARD_WIDTH, READABLE_HEIGHT, READABLE_WIDTH, layoutTree, normalizedName,
-  parseTreeGraph, relationLabel, revealPerson,
+  CARD_HEIGHT, CARD_WIDTH, READABLE_HEIGHT, READABLE_WIDTH, focusCamera, focusedGraph,
+  immediateChildIds, immediateParentIds, layoutTree, normalizedName, parseTreeGraph,
+  popupPosition, relationLabel, revealPerson,
 } from "@/lib/family-tree";
-import type { TreeGraph, TreeLink } from "@/lib/family-tree";
+import type { Focus, PopupPlacement, TreeGraph, TreeLink } from "@/lib/family-tree";
 
 type PersonAssertion = {
   assertion_id: number;
@@ -33,6 +34,20 @@ type PersonDetail = {
 };
 type View = { x: number; y: number; width: number; height: number };
 type Denial = { kind: "denied" | "no_access"; reason: string };
+type HistoryEntry = {
+  focus: Focus | null;
+  collapsed: ReadonlySet<string>;
+  view: View;
+  selected: string | null;
+  popupOpen: boolean;
+  notice: string | null;
+};
+
+/** Long enough to swallow the second click of a double-click, short enough not to feel laggy. */
+const SINGLE_CLICK_DELAY_MS = 260;
+/** A pointer that moves more than this is a drag, never a selection. */
+const DRAG_THRESHOLD_PX = 6;
+const EMPTY_COLLAPSED: ReadonlySet<string> = new Set();
 
 function statusClass(status: string) {
   return status === "verified" ? "verified" : status === "needs_review" ? "review" : "unverified";
@@ -40,6 +55,14 @@ function statusClass(status: string) {
 function edgeClass(link: TreeLink) {
   return "family-edge family-edge-" + statusClass(link.evidence_status) +
     (link.kind === "spouse" ? " family-edge-spouse" : "");
+}
+function readableView(layout: { width: number; height: number }): View {
+  return {
+    x: 0,
+    y: 0,
+    width: Math.min(Math.max(layout.width, 600), READABLE_WIDTH),
+    height: Math.min(Math.max(layout.height, 370), READABLE_HEIGHT),
+  };
 }
 
 export default function GenealogyPage() {
@@ -61,7 +84,21 @@ function FamilyTree() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [focus, setFocus] = useState<Focus | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [popupOpen, setPopupOpen] = useState(false);
+  const [placement, setPlacement] = useState<PopupPlacement | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [frame, setFrame] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef(new Map<string, SVGGElement>());
+  const clickTimer = useRef<number | null>(null);
+  const focusedPopupFor = useRef<string | null>(null);
+  const press = useRef<{ id: string; x: number; y: number; pointerType: string } | null>(null);
+  const fullTreeView = useRef<View | null>(null);
   const dragging = useRef<{ x: number; y: number; view: View } | null>(null);
 
   useEffect(() => {
@@ -94,7 +131,14 @@ function FamilyTree() {
     return () => controller.abort();
   }, []);
 
-  const layout = useMemo(() => graph ? layoutTree(graph, collapsed) : null, [graph, collapsed]);
+  const activeGraph = useMemo(
+    () => (graph && focus ? focusedGraph(graph, focus) : graph),
+    [graph, focus],
+  );
+  const layout = useMemo(
+    () => (activeGraph ? layoutTree(activeGraph, focus ? EMPTY_COLLAPSED : collapsed) : null),
+    [activeGraph, focus, collapsed],
+  );
   const byId = useMemo(() => new Map(layout?.people.map((p) => [p.record_id, p]) ?? []), [layout]);
   const matches = useMemo(() => {
     const term = normalizedName(search.trim());
@@ -102,29 +146,36 @@ function FamilyTree() {
     return graph.people.filter((p) => (normalizedName(p.person_label).includes(term) ||
       p.aliases.some((alias) => normalizedName(alias).includes(term)))).slice(0, 25);
   }, [graph, search]);
-  const selectedPerson = graph?.people.find((p) => p.record_id === selected) ?? null;
+  const selectedPerson = activeGraph?.people.find((p) => p.record_id === selected) ?? null;
+  const focusRoot = focus ? graph?.people.find((p) => p.record_id === focus.rootId) ?? null : null;
+  const childCount = graph && selected ? immediateChildIds(graph, selected).length : 0;
+  const parentCount = graph && selected ? immediateParentIds(graph, selected).length : 0;
+  const immediateLinks = useMemo(
+    () => graph && selected
+      ? graph.links.filter((link) => link.from_id === selected || link.to_id === selected)
+      : [],
+    [graph, selected],
+  );
 
   useEffect(() => {
-    if (!layout) return;
-    // Open at a readable scale. A large disconnected catalog is taller than it
-    // is wide, so fitting everything at once would shrink each card to a few
-    // pixels; the user can pan or press Fit.
-    setView({
-      x: 0,
-      y: 0,
-      width: Math.min(Math.max(layout.width, 600), READABLE_WIDTH),
-      height: Math.min(Math.max(layout.height, 370), READABLE_HEIGHT),
-    });
-  }, [graph]); // Only reset the camera when source data changes, not on collapse.
+    if (!graph) return;
+    setView(readableView(layoutTree(graph, EMPTY_COLLAPSED)));
+  }, [graph]); // Only reset the camera when source data changes.
 
   useEffect(() => {
-    if (!expanded) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
+    if (!popupOpen && !expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (popupOpen) {
+        event.preventDefault();
+        closePopup(selected);
+      } else {
+        setExpanded(false);
+      }
     };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [expanded]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [popupOpen, expanded, selected]);
 
   useEffect(() => {
     if (!selected) {
@@ -151,6 +202,230 @@ function FamilyTree() {
     });
     return () => controller.abort();
   }, [selected]);
+
+  useEffect(() => {
+    if (!popupOpen) {
+      focusedPopupFor.current = null;
+      return;
+    }
+    // Focus once per opened person, after placement makes the popup visible.
+    // Repositioning during pan/zoom must not steal focus from its buttons.
+    if (!placement || focusedPopupFor.current === selected) return;
+    popupRef.current?.focus({ preventScroll: true });
+    focusedPopupFor.current = selected;
+  }, [popupOpen, selected, placement]);
+
+  useEffect(() => {
+    if (!popupOpen) return;
+    let start: { x: number; y: number } | null = null;
+    const onPointerDown = (event: PointerEvent) => {
+      start = { x: event.clientX, y: event.clientY };
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const began = start;
+      start = null;
+      if (!began) return;
+      // A drag is a pan, not an outside click: the popup follows the camera.
+      if (Math.hypot(event.clientX - began.x, event.clientY - began.y) > DRAG_THRESHOLD_PX) return;
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (popupRef.current?.contains(target)) return;
+      // Clicks inside the tree workspace (toolbar, canvas, catalog, legend) are
+      // camera or navigation actions, not dismissals. A click elsewhere on the
+      // page closes the popup.
+      if (workspaceRef.current?.contains(target)) return;
+      setPopupOpen(false);
+      setPlacement(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointerup", onPointerUp);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [popupOpen, selected]);
+
+  useEffect(() => {
+    if (!popupOpen) return;
+    const bump = () => setFrame((current) => current + 1);
+    window.addEventListener("resize", bump);
+    window.addEventListener("scroll", bump, true);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(bump);
+      if (canvasRef.current) observer.observe(canvasRef.current);
+      if (svgRef.current) observer.observe(svgRef.current);
+      if (popupRef.current) observer.observe(popupRef.current);
+    }
+    return () => {
+      window.removeEventListener("resize", bump);
+      window.removeEventListener("scroll", bump, true);
+      observer?.disconnect();
+    };
+  }, [popupOpen]);
+
+  // Reposition on pan, zoom, resize, and full-screen changes. A null result
+  // means the anchor left the visible canvas, so the popup closes.
+  useEffect(() => {
+    if (!popupOpen) {
+      if (placement !== null) setPlacement(null);
+      return;
+    }
+    const svg = svgRef.current;
+    const container = canvasRef.current;
+    const popup = popupRef.current;
+    if (!svg || !container || !popup || !selected || !layout) return;
+    const person = layout.people.find((p) => p.record_id === selected);
+    if (!person) {
+      setPopupOpen(false);
+      setPlacement(null);
+      return;
+    }
+    const svgBox = svg.getBoundingClientRect();
+    const containerBox = container.getBoundingClientRect();
+    const popupBox = popup.getBoundingClientRect();
+    const next = popupPosition(
+      { x: person.x, y: person.y },
+      view,
+      { left: svgBox.left, top: svgBox.top, width: svgBox.width, height: svgBox.height },
+      { left: containerBox.left, top: containerBox.top, width: containerBox.width, height: containerBox.height },
+      { width: popupBox.width, height: popupBox.height },
+    );
+    if (!next) {
+      setPopupOpen(false);
+      setPlacement(null);
+      return;
+    }
+    // Reposition without re-rendering when the computed position is unchanged.
+    setPlacement((current) => current &&
+      Math.abs(current.left - next.left) < 0.5 &&
+      Math.abs(current.top - next.top) < 0.5 &&
+      current.placement === next.placement &&
+      Math.abs(current.maxHeight - next.maxHeight) < 0.5
+      ? current
+      : next);
+  }); // Every camera/viewport change must reposition the popup.
+
+  useEffect(() => () => cancelScheduledOpen(), []);
+
+  function cancelScheduledOpen() {
+    if (clickTimer.current !== null) {
+      window.clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+  }
+
+  function openPopup(id: string) {
+    cancelScheduledOpen();
+    setSelected(id);
+    setNotice(null);
+    setPlacement(null);
+    setPopupOpen(true);
+  }
+
+  function closePopup(restoreTo: string | null) {
+    setPopupOpen(false);
+    setPlacement(null);
+    if (restoreTo) cardRefs.current.get(restoreTo)?.focus({ preventScroll: true });
+  }
+
+  function scheduleOpen(id: string, pointerType: string) {
+    cancelScheduledOpen();
+    setSelected(id);
+    setNotice(null);
+    setPlacement(null);
+    if (pointerType === "touch") {
+      // No hover or double-tap on touch: a tap opens the popup, and the visible
+      // buttons provide the generation navigation.
+      setPopupOpen(true);
+      return;
+    }
+    clickTimer.current = window.setTimeout(() => {
+      clickTimer.current = null;
+      setPopupOpen(true);
+    }, SINGLE_CLICK_DELAY_MS);
+  }
+
+  function pushHistory() {
+    setHistory((entries) => [
+      ...entries.slice(-29),
+      { focus, collapsed, view, selected, popupOpen, notice },
+    ]);
+  }
+
+  function cameraFor(next: Focus): View | null {
+    if (!graph) return null;
+    return focusCamera(layoutTree(focusedGraph(graph, next), EMPTY_COLLAPSED), next.rootId);
+  }
+
+  function applyFocus(next: Focus) {
+    if (!graph) return;
+    if (focus && focus.rootId === next.rootId && focus.showParents === next.showParents) {
+      const camera = cameraFor(next);
+      if (camera) setView(camera);
+      return;
+    }
+    pushHistory();
+    if (!focus) fullTreeView.current = view;
+    setFocus(next);
+    setCollapsed(new Set());
+    setSelected(next.rootId);
+    setPopupOpen(true);
+    setNotice(null);
+    setPlacement(null);
+    const camera = cameraFor(next);
+    if (camera) setView(camera);
+  }
+
+  function focusChildren(id: string) {
+    if (!graph) return;
+    const person = graph.people.find((p) => p.record_id === id);
+    setSelected(id);
+    setPopupOpen(true);
+    if (immediateChildIds(graph, id).length === 0) {
+      setNotice("No children recorded for " + (person?.person_label ?? id) + ".");
+      return;
+    }
+    setNotice(null);
+    applyFocus({ rootId: id, showParents: false });
+  }
+
+  function showParents(id: string) {
+    if (!graph) return;
+    const person = graph.people.find((p) => p.record_id === id);
+    setSelected(id);
+    setPopupOpen(true);
+    if (immediateParentIds(graph, id).length === 0) {
+      setNotice("No parents recorded for " + (person?.person_label ?? id) + ".");
+      return;
+    }
+    setNotice(null);
+    applyFocus({ rootId: id, showParents: true });
+  }
+
+  function goBack() {
+    if (history.length === 0) return;
+    const previous = history[history.length - 1];
+    setHistory(history.slice(0, -1));
+    setFocus(previous.focus);
+    setCollapsed(previous.collapsed);
+    setView(previous.view);
+    setSelected(previous.selected);
+    setPopupOpen(previous.popupOpen);
+    setPlacement(null);
+    setNotice(previous.notice);
+  }
+
+  function showEntireTree() {
+    if (!focus || !graph) return;
+    pushHistory();
+    setFocus(null);
+    setCollapsed(new Set());
+    setPopupOpen(false);
+    setPlacement(null);
+    setNotice(null);
+    setView(fullTreeView.current ?? readableView(layoutTree(graph, EMPTY_COLLAPSED)));
+  }
 
   /**
    * Centre a card at a readable scale. A tighter zoom the user already chose is
@@ -185,14 +460,33 @@ function FamilyTree() {
 
   function selectPerson(id: string) {
     if (!graph) return;
+    if (focus) {
+      pushHistory();
+      setFocus(null);
+    }
     // Expand only the hidden ancestor path; unrelated collapsed branches stay.
     const nextCollapsed = revealPerson(graph, collapsed, id);
     setCollapsed(nextCollapsed);
     setSelected(id);
     setSearch("");
+    setPopupOpen(true);
+    setPlacement(null);
+    setNotice(null);
     const positioned = layoutTree(graph, nextCollapsed).people.find((p) => p.record_id === id);
     if (positioned) setView((old) => focusViewFor(positioned, old));
     svgRef.current?.scrollIntoView?.({ block: "nearest" });
+  }
+
+  function handleCardPointerUp(event: ReactPointerEvent<SVGGElement>, id: string) {
+    const start = press.current;
+    press.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!start || start.id !== id) return;
+    const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (moved > DRAG_THRESHOLD_PX) return; // a drag is never a selection
+    scheduleOpen(id, start.pointerType);
   }
 
   // Facts in this authorized view that cite exactly this evidence.
@@ -250,7 +544,8 @@ function FamilyTree() {
       {denial ? <DenialView kind={denial.kind} reason={denial.reason} /> : !graph || !layout ? (
         <p className="hint" data-testid="genealogy-loading">Loading family tree…</p>
       ) : (
-        <section className={"family-workspace" + (expanded ? " family-workspace-expanded" : "")}
+        <section ref={workspaceRef}
+          className={"family-workspace" + (expanded ? " family-workspace-expanded" : "")}
           data-testid="genealogy-tree" data-expanded={expanded ? "true" : "false"}>
           <div className="family-toolbar">
             <div className="family-search">
@@ -278,6 +573,10 @@ function FamilyTree() {
               <button type="button" onClick={focusSelected} disabled={!selected}
                 data-testid="family-focus-selected">Focus selected</button>
               <button type="button" onClick={() => setCollapsed(new Set())}>Expand all</button>
+              <button type="button" onClick={goBack} disabled={history.length === 0}
+                data-testid="family-back">Back</button>
+              <button type="button" onClick={showEntireTree} disabled={!focus}
+                data-testid="family-show-entire-tree">Show entire tree</button>
               <button type="button" onClick={() => setExpanded((current) => !current)}
                 aria-pressed={expanded} data-testid="family-canvas-toggle"
                 aria-label={expanded ? "Exit full screen" : "Expand canvas to full screen"}>
@@ -287,7 +586,13 @@ function FamilyTree() {
           </div>
           {graph.truncated && (
             <p role="status" className="family-limit">
-              Showing the first 500 authorized people. This is a partial graph; not all relatives are shown.
+              Showing the first 500 authorized people. This is a partial graph; counts and relatives may be incomplete.
+            </p>
+          )}
+          {focus && (
+            <p className="family-focus" role="status" data-testid="family-focus">
+              Showing {focusRoot?.person_label ?? focus.rootId} and immediate{" "}
+              {focus.showParents ? "parents and children" : "children"}. Use Back to return.
             </p>
           )}
           {graph.links.length === 0 && (
@@ -301,7 +606,7 @@ function FamilyTree() {
             <p className="hint" data-testid="genealogy-empty">No genealogy records are available to your role.</p>
           ) : (
             <div className="family-main">
-              <div className="family-canvas">
+              <div className="family-canvas" ref={canvasRef} data-testid="family-canvas">
                 <svg ref={svgRef} role="group" aria-label="Interactive family tree"
                   data-testid="family-tree-canvas" viewBox={[
                     view.x, view.y, view.width, view.height,
@@ -332,68 +637,110 @@ function FamilyTree() {
                       </path>
                     );
                   })}
-                  {layout.people.map((person) => (
-                    <g key={person.record_id} className="family-node"
-                      role="button" tabIndex={0}
-                      aria-label={"Select " + person.person_label}
-                      aria-pressed={selected === person.record_id}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={() => setSelected(person.record_id)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault(); setSelected(person.record_id);
-                        }
-                      }}
-                      data-testid="family-person">
-                      <rect x={person.x} y={person.y} rx="11"
-                        width={CARD_WIDTH} height={CARD_HEIGHT}
-                        className={selected === person.record_id ? "family-node-selected" : ""} />
-                      <text x={person.x + 12} y={person.y + 26}
-                        className="family-node-name">
-                        {person.person_label.length > 23
-                          ? person.person_label.slice(0, 22) + "…" : person.person_label}
-                      </text>
-                      <text x={person.x + 12} y={person.y + 51}
-                        className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
-                        {person.evidence_status.replace("_", " ")}
-                      </text>
-                      <title>{person.person_label}</title>
-                    </g>
-                  ))}
+                  {layout.people.map((person) => {
+                    const isSelected = selected === person.record_id;
+                    return (
+                      <g key={person.record_id} className="family-node"
+                        ref={(node) => {
+                          if (node) cardRefs.current.set(person.record_id, node);
+                          else cardRefs.current.delete(person.record_id);
+                        }}
+                        role="button" tabIndex={0}
+                        aria-label={"Select " + person.person_label}
+                        aria-pressed={isSelected}
+                        aria-haspopup="dialog"
+                        aria-expanded={isSelected && popupOpen}
+                        onPointerDown={(event) => {
+                          event.stopPropagation();
+                          press.current = { id: person.record_id, x: event.clientX,
+                            y: event.clientY, pointerType: event.pointerType };
+                          event.currentTarget.setPointerCapture(event.pointerId);
+                        }}
+                        onPointerUp={(event) => {
+                          event.stopPropagation();
+                          handleCardPointerUp(event, person.record_id);
+                        }}
+                        onPointerCancel={() => { press.current = null; }}
+                        onDoubleClick={(event) => {
+                          event.stopPropagation();
+                          cancelScheduledOpen();
+                          focusChildren(person.record_id);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openPopup(person.record_id);
+                          }
+                        }}
+                        data-testid="family-person">
+                        <rect x={person.x} y={person.y} rx="11"
+                          width={CARD_WIDTH} height={CARD_HEIGHT}
+                          className={isSelected ? "family-node-selected" : ""} />
+                        <text x={person.x + 12} y={person.y + 26}
+                          className="family-node-name">
+                          {person.person_label.length > 23
+                            ? person.person_label.slice(0, 22) + "…" : person.person_label}
+                        </text>
+                        <text x={person.x + 12} y={person.y + 51}
+                          className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
+                          {person.evidence_status.replace("_", " ")}
+                        </text>
+                        <title>{person.person_label}</title>
+                      </g>
+                    );
+                  })}
                 </svg>
-                <p className="family-canvas-help">
-                  Select a person to inspect evidence. Drag blank space to pan; use ＋/− to zoom,
-                  Fit all to see everyone, and Focus selected to return to the person.
-                </p>
-                {selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
-                  <button type="button" data-testid="family-collapse" onClick={() =>
-                    setCollapsed((current) => {
-                      const next = new Set(current);
-                      if (next.has(selected)) next.delete(selected);
-                      else next.add(selected);
-                      return next;
-                    })}>{collapsed.has(selected) ? "Expand descendants" : "Collapse descendants"}</button>
-                )}
-              </div>
-              <aside className="family-detail" data-testid="family-person-details">
-                {selectedPerson ? (
-                  <>
-                    <h2>{selectedPerson.person_label}</h2>
+                {popupOpen && selectedPerson && (
+                  <div ref={popupRef} className="family-popup" role="dialog" aria-modal="false"
+                    aria-labelledby="family-popup-title" tabIndex={-1}
+                    data-testid="family-person-details"
+                    data-placement={placement?.placement ?? "below"}
+                    style={{
+                      left: placement?.left ?? 0,
+                      top: placement?.top ?? 0,
+                      visibility: placement ? "visible" : "hidden",
+                      maxHeight: placement?.maxHeight,
+                    }}
+                    onDoubleClick={(event) => event.stopPropagation()}>
+                    <button type="button" className="family-popup-close" aria-label="Close person details"
+                      data-testid="family-popup-close" onClick={() => closePopup(selected)}>×</button>
+                    <h2 id="family-popup-title">{selectedPerson.person_label}</h2>
                     <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
                     <EvidenceBadge status={selectedPerson.evidence_status} />
-                    <p>
-                      {/* The tree payload's record_id is the person key. */}
-                      <Link
-                        className="family-text-button"
-                        href={`/family/${encodeURIComponent(selectedPerson.record_id)}`}
-                        data-testid="open-family-profile"
-                      >
-                        View family profile
-                      </Link>
+                    <p className="meta" data-testid="family-popup-summary">
+                      {childCount} recorded {childCount === 1 ? "child" : "children"} ·{" "}
+                      {parentCount} recorded {parentCount === 1 ? "parent" : "parents"}
                     </p>
-                    <h3>Relatives</h3>
-                    {graph.links.filter((link) =>
-                      link.from_id === selected || link.to_id === selected).length === 0 ? (
+                    {notice && (
+                      <p className="family-popup-notice" role="status" data-testid="family-popup-notice">
+                        {notice}
+                      </p>
+                    )}
+                    {graph.truncated && (
+                      <p className="hint" data-testid="family-popup-truncated">
+                        This graph is partial; counts and relatives may be incomplete.
+                      </p>
+                    )}
+                    <div className="family-popup-actions">
+                      {/* The tree payload's record_id is the person key. */}
+                      <Link className="family-popup-action"
+                        href={`/family/${encodeURIComponent(selectedPerson.record_id)}`}
+                        data-testid="open-family-profile">View profile</Link>
+                      <button type="button" className="family-popup-action"
+                        onClick={() => showParents(selectedPerson.record_id)}
+                        data-testid="family-show-parents">Show parents ({parentCount})</button>
+                      <button type="button" className="family-popup-action"
+                        onClick={() => focusChildren(selectedPerson.record_id)}
+                        data-testid="family-show-children">Show children ({childCount})</button>
+                    </div>
+                    {childCount === 0 && (
+                      <p className="hint" data-testid="family-no-children">No children recorded.</p>
+                    )}
+                    {parentCount === 0 && (
+                      <p className="hint" data-testid="family-no-parents">No parents recorded.</p>
+                    )}
+                    <h3>Recorded relationships</h3>
+                    {immediateLinks.length === 0 ? (
                       <p className="hint">
                         No reviewed relationships are recorded for this person yet.
                         Relationship statements that are still unconfirmed appear
@@ -401,17 +748,17 @@ function FamilyTree() {
                       </p>
                     ) : (
                       <ul className="family-detail-list">
-                        {graph.links.filter((link) =>
-                          link.from_id === selected || link.to_id === selected).map((link, i) => {
-                          const other = graph.people.find((p) => p.record_id ===
-                            (link.from_id === selected ? link.to_id : link.from_id));
+                        {immediateLinks.map((link, index) => {
+                          const otherId = link.from_id === selected ? link.to_id : link.from_id;
+                          const other = graph.people.find((candidate) => candidate.record_id === otherId);
+                          const inView = activeGraph?.people.some((candidate) => candidate.record_id === otherId);
                           return (
-                            <li key={i} data-testid="family-relative">
+                            <li key={link.kind + ":" + otherId + ":" + index} data-testid="family-relative">
                               <strong className="family-relation" data-testid="family-relation">
                                 {selected ? relationLabel(link, selected) : ""}
                               </strong>{" "}
                               <button type="button" className="family-text-button"
-                                onClick={() => { if (other) selectPerson(other.record_id); }}>
+                                onClick={() => inView ? openPopup(otherId) : selectPerson(otherId)}>
                                 {other?.person_label ?? "Unknown"}
                               </button>
                               <p className="meta">{link.evidence_status.replace("_", " ")}</p>
@@ -439,9 +786,22 @@ function FamilyTree() {
                         ))}
                       </ul>
                     )}
-                  </>
-                ) : <p className="hint">Select a person.</p>}
-              </aside>
+                  </div>
+                )}
+                <p className="family-canvas-help">
+                  Select a person for details. Double-click a card, or use Show children, to focus one
+                  generation; Show parents adds the recorded parents. Drag blank space to pan; use ＋/− to zoom.
+                </p>
+                {!focus && selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
+                  <button type="button" data-testid="family-collapse" onClick={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current);
+                      if (next.has(selected)) next.delete(selected);
+                      else next.add(selected);
+                      return next;
+                    })}>{collapsed.has(selected) ? "Expand descendants" : "Collapse descendants"}</button>
+                )}
+              </div>
             </div>
           )}
           <p className="family-legend">
