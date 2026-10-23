@@ -42,6 +42,12 @@ pub const DEFAULT_LANGUAGE: &str = "";
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_JWKS_CACHE_TTL_SECS: i64 = 300;
 pub const DEFAULT_AUTH_CLOCK_SKEW_SECS: i64 = 60;
+/// Idle limit for a renewed browser session (30 minutes).
+pub const DEFAULT_SESSION_IDLE_SECONDS: i64 = 1_800;
+/// Absolute limit for a browser session (8 hours).
+pub const DEFAULT_SESSION_ABSOLUTE_SECONDS: i64 = 28_800;
+/// How long before token expiry the store refreshes it (60 seconds).
+pub const DEFAULT_SESSION_REFRESH_WINDOW_SECONDS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 pub const DEFAULT_PASSWORD_RESET_COOLDOWN_SECS: i64 = 300;
 
@@ -121,6 +127,25 @@ pub struct Config {
     pub password_reset: Option<ResetProvider>,
     /// Minimum time between accepted reset requests for one account.
     pub password_reset_cooldown: Duration,
+    /// AES-256-GCM key for refresh and ID tokens at rest. `None` disables
+    /// automatic renewal; the cookie-only session remains in force.
+    pub session_store_key: Option<Vec<u8>>,
+    /// Shared secret the Next.js server sends on internal session endpoints.
+    pub web_session_secret: Option<String>,
+    /// Idle limit for a stored browser session.
+    pub session_idle_seconds: i64,
+    /// Absolute limit for a stored browser session.
+    pub session_absolute_seconds: i64,
+    /// How long before expiry the stored token is refreshed.
+    pub session_refresh_window_seconds: i64,
+    /// OIDC token endpoint used for the refresh grant.
+    pub oidc_token_endpoint: Option<String>,
+    /// OIDC client id used for the refresh grant.
+    pub oidc_client_id: Option<String>,
+    /// OIDC client secret for a confidential client. Server-side only.
+    pub oidc_client_secret: Option<String>,
+    /// Optional provider revocation endpoint used on sign-out.
+    pub oidc_revocation_endpoint: Option<String>,
 }
 
 impl Config {
@@ -202,6 +227,59 @@ impl Config {
             }
         };
 
+        let session_store_key = match get("SESSION_STORE_KEY") {
+            Some(raw) => Some(decode_session_store_key(&raw)?),
+            None => None,
+        };
+        let web_session_secret = get("WEB_SESSION_SECRET")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let session_idle_seconds =
+            positive_int(&get, "SESSION_IDLE_SECONDS", DEFAULT_SESSION_IDLE_SECONDS)?;
+        let session_absolute_seconds = positive_int(
+            &get,
+            "SESSION_ABSOLUTE_SECONDS",
+            DEFAULT_SESSION_ABSOLUTE_SECONDS,
+        )?;
+        if session_idle_seconds < 120 {
+            return Err(ConfigError::Invalid(
+                "SESSION_IDLE_SECONDS must be at least 120 so active sessions are touched before they idle out"
+                    .to_string(),
+            ));
+        }
+        if session_idle_seconds > session_absolute_seconds {
+            return Err(ConfigError::Invalid(format!(
+                "SESSION_IDLE_SECONDS ({session_idle_seconds}) must not exceed \
+                 SESSION_ABSOLUTE_SECONDS ({session_absolute_seconds})"
+            )));
+        }
+        let session_refresh_window_seconds = non_negative_int(
+            &get,
+            "SESSION_REFRESH_WINDOW_SECONDS",
+            DEFAULT_SESSION_REFRESH_WINDOW_SECONDS,
+        )?;
+        let auth_audience = get("AUTH_AUDIENCE").unwrap_or_default();
+        let oidc_client_id = get("OIDC_CLIENT_ID")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                let audience = auth_audience.trim().to_string();
+                if audience.is_empty() {
+                    None
+                } else {
+                    Some(audience)
+                }
+            });
+        let oidc_token_endpoint = get("OIDC_TOKEN_ENDPOINT")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let oidc_client_secret = get("OIDC_CLIENT_SECRET")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let oidc_revocation_endpoint = get("OIDC_REVOCATION_ENDPOINT")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
             embed_model: get("OLLAMA_EMBED_MODEL")
@@ -241,7 +319,7 @@ impl Config {
             request_timeout: positive_duration(&get, "REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT)?,
             query_rewrite: bool_setting(&get, "QUERY_REWRITE", DEFAULT_QUERY_REWRITE)?,
             auth_issuer: get("AUTH_ISSUER").unwrap_or_default(),
-            auth_audience: get("AUTH_AUDIENCE").unwrap_or_default(),
+            auth_audience,
             jwks_url: get("JWKS_URL").unwrap_or_default(),
             jwks_cache_ttl_secs: non_negative_int(
                 &get,
@@ -272,6 +350,15 @@ impl Config {
                 "PASSWORD_RESET_COOLDOWN_SECS",
                 DEFAULT_PASSWORD_RESET_COOLDOWN_SECS,
             )? as u64),
+            session_store_key,
+            web_session_secret,
+            session_idle_seconds,
+            session_absolute_seconds,
+            session_refresh_window_seconds,
+            oidc_token_endpoint,
+            oidc_client_id,
+            oidc_client_secret,
+            oidc_revocation_endpoint,
         })
     }
 
@@ -355,6 +442,24 @@ fn validate_provider(variable: &str, name: &str) -> Result<(), ConfigError> {
     Err(ConfigError::Invalid(format!(
         "{variable}=\"{name}\" is not a registered provider"
     )))
+}
+
+/// Decodes `SESSION_STORE_KEY` (base64 or base64url, 32 bytes).
+///
+/// A present but malformed key is a configuration error rather than a silent
+/// fallback to unencrypted storage.
+fn decode_session_store_key(raw: &str) -> Result<Vec<u8>, ConfigError> {
+    let normalized = raw.trim().replace('+', "-").replace('/', "_");
+    let normalized = normalized.trim_end_matches('=');
+    let bytes = crate::oidc::base64url_decode(normalized).ok_or_else(|| {
+        ConfigError::Invalid("SESSION_STORE_KEY must be base64 or base64url".to_string())
+    })?;
+    if bytes.len() != 32 {
+        return Err(ConfigError::Invalid(
+            "SESSION_STORE_KEY must decode to exactly 32 bytes".to_string(),
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Returns the trimmed value of `key` through `lookup`, or `None` when it is

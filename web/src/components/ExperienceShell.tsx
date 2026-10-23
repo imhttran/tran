@@ -11,7 +11,7 @@ import type { Role, SessionResult } from "@/lib/experience-contract";
 import {
   markSessionExpired,
   onSessionExpired,
-  resetSessionExpired,
+  sessionIsExpired,
 } from "@/lib/session-expiry";
 
 // Client shell for authenticated pages. It resolves the session from the
@@ -63,7 +63,6 @@ async function readSession(): Promise<SessionResult> {
       display_name?: string;
     };
     if (body.state === "signed_in") {
-      resetSessionExpired();
       const role = body.role ?? null;
       return {
         kind: "allowed",
@@ -76,7 +75,11 @@ async function readSession(): Promise<SessionResult> {
         },
       };
     }
-    resetSessionExpired();
+    // A concurrent protected request may already have observed a 401 and
+    // cleared the cookie. Do not overwrite that expired state with anonymous.
+    if (sessionIsExpired()) {
+      return { kind: "expired", signInUrl: "/signin" };
+    }
     return { kind: "allowed", data: { state: "anonymous" } };
   } catch {
     return { kind: "denied", reason: "The session service is unreachable." };

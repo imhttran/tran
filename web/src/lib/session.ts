@@ -7,9 +7,6 @@
 // credential, or database URL toward the browser: only a role and a display
 // label survive the mapping.
 
-import { cookies } from "next/headers";
-
-import { SESSION_COOKIE } from "@/lib/proxy-cookies";
 import type {
   Role,
   SessionResult,
@@ -62,12 +59,11 @@ export function sanitizeSession(raw: unknown): SessionView | null {
   return view as unknown as SessionView;
 }
 
-// Resolves the session by asking the account endpoint. The cookie is sent
-// server-to-server; the browser never sees the call.
-export async function resolveSession(): Promise<SessionResult> {
-  const jar = await cookies();
-  const cookie = jar.get(SESSION_COOKIE)?.value;
-  if (!cookie) {
+// Resolves the account view for a verified token. The cookie is read by the
+// route handler, which also owns renewal and cookie updates. The browser never
+// sees this call or the token.
+export async function fetchSessionView(token: string): Promise<SessionResult> {
+  if (!token) {
     return { kind: "allowed", data: { state: "anonymous" } };
   }
   const api = (process.env.API_URL || "http://127.0.0.1:8080").replace(
@@ -79,9 +75,9 @@ export async function resolveSession(): Promise<SessionResult> {
   try {
     const response = await fetch(`${api}/api/account`, {
       headers: {
-        authorization: cookie.startsWith("Bearer ")
-          ? cookie
-          : `Bearer ${cookie}`,
+        authorization: token.startsWith("Bearer ")
+          ? token
+          : `Bearer ${token}`,
       },
       cache: "no-store",
     });

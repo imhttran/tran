@@ -8,6 +8,9 @@
 // The session cookie carries the verified bearer credential. It is HttpOnly so
 // browser JavaScript cannot read or forge it.
 export const SESSION_COOKIE = "rag_session";
+// Opaque server-side session identifier for automatic renewal. HttpOnly; the
+// refresh token itself never leaves the server.
+export const SID_COOKIE = "rag_sid";
 // The CSRF cookie is readable by browser JavaScript (the double-submit pattern).
 export const CSRF_COOKIE = "rag_csrf";
 // The header the browser sends with the CSRF token on state-changing requests.
@@ -21,6 +24,11 @@ export const OIDC_VERIFIER_COOKIE = "rag_oidc_verifier";
 // Hard ceiling for a browser session. The ID token's remaining lifetime always
 // wins when it is shorter; a cookie is never allowed to outlive the token.
 export const SESSION_MAX_SECONDS = 60 * 60;
+
+// The opaque session id must outlive individual ID tokens so renewal can span
+// them. The server enforces the real absolute limit; this is only a cookie
+// ceiling.
+export const SID_MAX_SECONDS = 24 * 60 * 60;
 
 // Secure cookies require HTTPS. Production must be secure; local HTTP E2E can
 // opt out explicitly without weakening a deployed environment.
@@ -67,6 +75,8 @@ type CookieAttributes = {
   maxAge: number;
 };
 
+export type { CookieAttributes };
+
 // Builds the Secure, HttpOnly, SameSite session cookie attributes. `maxAge`
 // comes from `sessionLifetimeSeconds`; the default is only for callers that do
 // not have a token yet (such as tests).
@@ -100,12 +110,41 @@ export function csrfCookie(
   };
 }
 
+// Builds the opaque renewal-session cookie. It carries no credential, only an
+// identifier the server hashes before lookup.
+export function sidCookie(
+  value: string,
+  maxAge: number = SID_MAX_SECONDS,
+): CookieAttributes {
+  const bounded = Number.isFinite(maxAge) && maxAge > 0
+    ? Math.min(Math.floor(maxAge), SID_MAX_SECONDS)
+    : 0;
+  return {
+    name: SID_COOKIE,
+    value,
+    httpOnly: true,
+    secure: cookieSecure(),
+    sameSite: "lax",
+    path: "/",
+    maxAge: bounded,
+  };
+}
+
 // Expires the browser session and its CSRF companion. Route handlers apply
 // these to the response; server components never mutate cookies.
 export function clearedSessionCookies(): CookieAttributes[] {
   return [
     {
       name: SESSION_COOKIE,
+      value: "",
+      httpOnly: true,
+      secure: cookieSecure(),
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    },
+    {
+      name: SID_COOKIE,
       value: "",
       httpOnly: true,
       secure: cookieSecure(),

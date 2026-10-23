@@ -7,6 +7,7 @@ import {
   csrfCookie,
   sessionCookie,
   sessionLifetimeSeconds,
+  sidCookie,
 } from "@/lib/proxy-cookies";
 import {
   audienceMatches,
@@ -16,6 +17,7 @@ import {
   requestOrigin,
   safeEqual,
 } from "@/lib/oidc";
+import { createStoredSession, renewalConfigured } from "@/lib/session-store";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +75,7 @@ export async function GET(request: NextRequest) {
   }
 
   let idToken: string | null = null;
+  let refreshToken: string | null = null;
   try {
     const tokenResponse = await fetch(settings.tokenEndpoint, {
       method: "POST",
@@ -83,11 +86,17 @@ export async function GET(request: NextRequest) {
     if (!tokenResponse.ok) {
       return fail(origin, "token_exchange_failed");
     }
-    const payload = (await tokenResponse.json()) as { id_token?: unknown };
+    const payload = (await tokenResponse.json()) as {
+      id_token?: unknown;
+      refresh_token?: unknown;
+    };
     if (typeof payload.id_token !== "string" || !payload.id_token) {
       return fail(origin, "missing_id_token");
     }
     idToken = payload.id_token;
+    if (typeof payload.refresh_token === "string" && payload.refresh_token) {
+      refreshToken = payload.refresh_token;
+    }
   } catch {
     return fail(origin, "provider_unavailable");
   }
@@ -130,6 +139,21 @@ export async function GET(request: NextRequest) {
   const response = NextResponse.redirect(new URL("/", origin), 303);
   response.cookies.set(sessionCookie(idToken, sessionLifetime));
   response.cookies.set(csrfCookie(randomString(32), sessionLifetime));
+  // Automatic renewal is optional. When the store is configured and the
+  // provider issued a refresh token, keep the credentials server-side behind an
+  // opaque cookie. Otherwise the cookie-only session from before renewal stays
+  // in force; there is no insecure fallback.
+  if (refreshToken && renewalConfigured()) {
+    const sessionId = randomString(32);
+    const stored = await createStoredSession(sessionId, idToken, refreshToken);
+    if (stored) {
+      response.cookies.set(sidCookie(sessionId, stored.absoluteExpiresIn));
+    } else {
+      console.warn(
+        "web: automatic session renewal is enabled but the session store did not accept the session",
+      );
+    }
+  }
   clearTransient(response);
   return response;
 }

@@ -71,6 +71,14 @@ export OIDC_AUTHORIZATION_ENDPOINT="${E2E_ISSUER}/authorize"
 export OIDC_TOKEN_ENDPOINT="${E2E_ISSUER}/token"
 export OIDC_END_SESSION_ENDPOINT="${E2E_ISSUER}/logout"
 export OIDC_COOKIE_SECURE="false"
+# Automatic browser-session renewal. The store key encrypts refresh tokens at
+# rest; the internal secret authenticates the Next.js server to the Rust API.
+export OIDC_REVOCATION_ENDPOINT="${E2E_ISSUER}/revoke"
+export WEB_SESSION_SECRET="${WEB_SESSION_SECRET:-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')}"
+export SESSION_STORE_KEY="${SESSION_STORE_KEY:-$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="))')}"
+export SESSION_IDLE_SECONDS="${SESSION_IDLE_SECONDS:-1800}"
+export SESSION_ABSOLUTE_SECONDS="${SESSION_ABSOLUTE_SECONDS:-28800}"
+export SESSION_REFRESH_WINDOW_SECONDS="${SESSION_REFRESH_WINDOW_SECONDS:-60}"
 export HOF_THIRD_BRANCH_KEY="branch-3"
 # The fake adapter proves the send gate without real email. The Rust
 # integration suite separately proves the unconfigured adapter fails closed.
@@ -142,7 +150,8 @@ echo "web-e2e: seeding test identities"
 # Base RAG schema and the FAM-002 document lifecycle metadata. These are
 # idempotent; the document views must exist before the API starts.
 for migration in 001_init 002_ingestion_metadata 003_add_language 004_page \
-	005_add_corpus 009_document_lifecycle 010_document_security_hardening; do
+	005_add_corpus 009_document_lifecycle 010_document_security_hardening \
+	011_browser_sessions; do
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "migrations/$migration.sql" >/dev/null
 done

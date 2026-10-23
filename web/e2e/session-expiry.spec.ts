@@ -8,6 +8,7 @@ import {
   sessionCookie,
   sessionLifetimeSeconds,
 } from "../src/lib/proxy-cookies";
+import { renewalCookies } from "../src/lib/session-store";
 import {
   markSessionExpired,
   noteAuthStatus,
@@ -81,10 +82,11 @@ test.describe("session cookie lifetime", () => {
     expect(csrfCookie("csrf", 60).httpOnly).toBe(false);
   });
 
-  test("clears both cookies with matching attributes", () => {
+  test("clears the session cookies with matching attributes", () => {
     const cleared = clearedSessionCookies();
     expect(cleared.map((cookie) => cookie.name)).toEqual([
       "rag_session",
+      "rag_sid",
       "rag_csrf",
     ]);
     for (const cookie of cleared) {
@@ -193,5 +195,24 @@ test.describe("browser session expiry", () => {
     await expect(page.getByTestId("account-role")).toHaveText("admin");
     await expect(page.getByTestId("session-expired")).toHaveCount(0);
     await expect(page.getByTestId("sign-out-button")).toBeVisible();
+  });
+});
+
+test.describe("renewal cookie bounds", () => {
+  test("an expired or invalid token lifetime never yields a live cookie", () => {
+    for (const lifetime of [0, -1, Number.NaN]) {
+      const cookies = renewalCookies("sid", "token", lifetime, 3600, "csrf");
+      expect(cookies.find((cookie) => cookie.name === "rag_session")?.maxAge).toBe(0);
+      expect(cookies.find((cookie) => cookie.name === "rag_csrf")?.maxAge).toBe(0);
+    }
+  });
+
+  test("a successful renewal regenerates a missing CSRF cookie", () => {
+    const cookies = renewalCookies("sid", "token", 120, 3600, null);
+    const csrf = cookies.find((cookie) => cookie.name === "rag_csrf");
+    expect(csrf?.maxAge).toBe(120);
+    expect(typeof csrf?.value).toBe("string");
+    expect((csrf?.value ?? "").length).toBeGreaterThan(0);
+    expect(cookies.find((cookie) => cookie.name === "rag_session")?.maxAge).toBe(120);
   });
 });
