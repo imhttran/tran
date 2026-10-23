@@ -72,9 +72,13 @@ retrieved passage:
 2. **Normalized fallback.** Only when no exact match exists, the lifecycle
    suffix is stripped from both sides. This form is accepted only when exactly
    one passage matches.
-3. **Ambiguity fails closed.** More than one match at either tier returns no
-   resolution. The citation is stripped by repair, never attributed to the
-   first passage.
+3. **One publication, not one chunk.** The prompt exposes source, section, and
+   page, so several chunks of the same source, section, and page are one
+   citeable publication; the first matching chunk represents it and the
+   citation resolves normally. This is the normal multi-chunk section case.
+4. **Ambiguity fails closed.** Matches that differ in exact source, section, or
+   page name more than one publication and return no resolution. The citation
+   is stripped by repair, never attributed to the first passage.
 
 Consequences:
 

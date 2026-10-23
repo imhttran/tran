@@ -151,12 +151,16 @@ pub fn parse(answer: &str) -> Vec<Citation> {
 /// Resolves `citation` to the single passage it names.
 ///
 /// Resolution is exact-source first. Only when no passage carries the exact
-/// stored source does it fall back to normalized filename matching, and only
-/// when exactly one passage matches. Zero matches, and more than one distinct
-/// match at either tier, resolve to `None`. This is what keeps two documents
-/// with the same filename from being confused, and what makes an ambiguous
-/// model citation fail closed instead of being attributed to the first
-/// passage.
+/// stored source does it fall back to normalized filename matching.
+///
+/// A citation names a *publication*, identified by what the prompt exposes:
+/// source, section, and page. Several chunks of the same source, section, and
+/// page are therefore one citeable publication, not an ambiguity; the first
+/// matching passage represents it. Passages that differ in exact source,
+/// section, or page are different publications, and the citation is ambiguous
+/// and resolves to `None`. This keeps two documents with the same filename from
+/// being confused and makes an ambiguous model citation fail closed instead of
+/// being attributed to the first passage.
 pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize> {
     let section_matches = |passage: &ContextPassage| {
         normalize_section(&passage.section) == normalize_section(&citation.section)
@@ -174,11 +178,8 @@ pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize
         })
         .map(|(index, _)| index)
         .collect();
-    match exact.len() {
-        1 => return Some(exact[0]),
-        0 => {}
-        // The exact source is itself ambiguous; do not fall back.
-        _ => return None,
+    if !exact.is_empty() {
+        return one_publication(&exact, passages);
     }
 
     let normalized: Vec<usize> = passages
@@ -191,8 +192,23 @@ pub fn resolve(citation: &Citation, passages: &[ContextPassage]) -> Option<usize
         })
         .map(|(index, _)| index)
         .collect();
-    if normalized.len() == 1 {
-        Some(normalized[0])
+    one_publication(&normalized, passages)
+}
+
+/// Returns the first matching passage when every match names the same
+/// publication (exact source, section, page); `None` when matches name more
+/// than one publication.
+fn one_publication(matches: &[usize], passages: &[ContextPassage]) -> Option<usize> {
+    let first = *matches.first()?;
+    let reference = &passages[first];
+    let same_publication = matches.iter().all(|index| {
+        let passage = &passages[*index];
+        passage.source == reference.source
+            && normalize_section(&passage.section) == normalize_section(&reference.section)
+            && passage.page == reference.page
+    });
+    if same_publication {
+        Some(first)
     } else {
         None
     }
@@ -392,6 +408,37 @@ mod tests {
         ];
         let cited = parse("[report.md - Findings]");
         // Ambiguity is not "pick the first": it is invalid.
+        assert!(!is_valid(&cited[0], &passages));
+    }
+
+    #[test]
+    fn several_chunks_of_one_section_are_one_citeable_publication() {
+        // Section expansion routinely places several chunks of the same
+        // source, section, and page into the context. The model cannot cite a
+        // chunk, so this is one publication, not an ambiguity.
+        let passages = vec![
+            passage("doc.md", "Payments", Some(2)),
+            passage("doc.md", "Payments", Some(2)),
+            passage("doc.md", "Payments", Some(2)),
+        ];
+        let cited = parse("[doc.md - Payments - p.2]");
+        assert_eq!(resolve(&cited[0], &passages), Some(0));
+        assert!(is_valid(&cited[0], &passages));
+        assert!(is_clean("[doc.md - Payments - p.2]", &passages));
+        assert_eq!(
+            repair("[doc.md - Payments - p.2]", &passages),
+            "[doc.md - Payments - p.2]"
+        );
+    }
+
+    #[test]
+    fn several_pages_of_one_section_without_a_page_stay_ambiguous() {
+        let passages = vec![
+            passage("doc.md", "Payments", Some(1)),
+            passage("doc.md", "Payments", Some(2)),
+        ];
+        let cited = parse("[doc.md - Payments]");
+        assert_eq!(resolve(&cited[0], &passages), None);
         assert!(!is_valid(&cited[0], &passages));
     }
 }
