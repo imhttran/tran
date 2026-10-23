@@ -1,96 +1,15 @@
 //! TRAN-002 provenance verification regressions.
 //!
-//! These tests use a dedicated disposable database derived from
-//! `GENEALOGY_DATABASE_URL`; they never touch the RAG database.
+//! These tests use a dedicated disposable target derived from
+//! `GENEALOGY_DATABASE_URL` through `tests/support/genealogy_isolation.rs`.
+//! They never touch the RAG database and drop only their own target.
 
-use std::fs;
-use std::str::FromStr;
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
 
-use postgres::{Client, NoTls};
+use genealogy_isolation::{base_dsn, create_isolated_target};
+use postgres::Client;
 use rag_foundation::genealogy::review::{self, ReviewError, ReviewRequest, ReviewStatus};
-
-const MIGRATIONS: [&str; 5] = [
-    "genealogy/migrations/0001_genealogy_schema_version.sql",
-    "genealogy/migrations/0002_catalog_keys.sql",
-    "genealogy/migrations/0003_assertions_evidence_and_links.sql",
-    "genealogy/migrations/0004_review_workflow.sql",
-    "genealogy/migrations/0005_source_kind.sql",
-];
-
-fn base_dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let config = postgres::Config::from_str(&dsn).ok()?;
-    let database = config.get_dbname()?;
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-    Some(dsn)
-}
-
-fn with_database(dsn: &str, database: &str) -> String {
-    let scheme_end = dsn.find("://").expect("dsn scheme") + 3;
-    let authority_end = dsn[scheme_end..]
-        .find('/')
-        .map(|index| scheme_end + index)
-        .unwrap_or(dsn.len());
-    let query = dsn[authority_end..]
-        .find('?')
-        .map(|index| &dsn[authority_end + index..])
-        .unwrap_or("");
-    format!("{}/{}{}", &dsn[..authority_end], database, query)
-}
-
-fn ensure_database(admin_dsn: &str, database: &str) {
-    let mut client = Client::connect(admin_dsn, NoTls).expect("connect to postgres");
-    let exists: i64 = client
-        .query_one(
-            "SELECT count(*) FROM pg_database WHERE datname = $1",
-            &[&database],
-        )
-        .expect("check database")
-        .get(0);
-    if exists == 0 {
-        client
-            .batch_execute(&format!("CREATE DATABASE {database};"))
-            .expect("create disposable database");
-    }
-}
-
-fn reset_schema(client: &mut Client) {
-    client
-        .batch_execute(
-            "DROP TABLE IF EXISTS
-                assertion_review_event,
-                assertion_review_baseline,
-                assertion_evidence,
-                assertion,
-                parent_child_link,
-                spouse_link,
-                catalog_entry,
-                family_branch,
-                source_evidence,
-                source_document,
-                gravesite,
-                business_name,
-                genealogy_fact_proposal_event,
-                genealogy_fact_proposal,
-                person_name_variant,
-                person,
-                genealogy_schema_version
-             CASCADE;",
-        )
-        .expect("reset disposable genealogy schema");
-}
-
-fn apply_migrations(client: &mut Client) {
-    for path in MIGRATIONS {
-        let sql = fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
-        client
-            .batch_execute(&sql)
-            .unwrap_or_else(|err| panic!("apply {path}: {err}"));
-    }
-}
 
 fn insert_source(client: &mut Client, path: &str, kind: &str, derived_from: Option<i64>) -> i64 {
     let sha = "c".repeat(64);
@@ -160,14 +79,10 @@ fn verification_requires_authoritative_linked_evidence() {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping provenance test");
         return;
     };
-    let provenance_dsn = with_database(&base, "genealogy_provenance_test");
-    let admin_dsn = with_database(&base, "postgres");
-    ensure_database(&admin_dsn, "genealogy_provenance_test");
+    let target = create_isolated_target(&base, "provenance");
+    target.apply_migrations();
 
-    let mut client =
-        Client::connect(&provenance_dsn, NoTls).expect("connect to provenance database");
-    reset_schema(&mut client);
-    apply_migrations(&mut client);
+    let mut client = target.connect();
 
     let original = insert_source(&mut client, "Family Genealogy.pdf", "original", None);
     let catalog = insert_source(
@@ -274,5 +189,6 @@ fn verification_requires_authoritative_linked_evidence() {
         .get(0);
     assert_eq!(events, 1, "verification must append one review event");
 
-    reset_schema(&mut client);
+    drop(client);
+    target.cleanup();
 }

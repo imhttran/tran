@@ -1,82 +1,19 @@
 //! Synthetic CLI integration tests for TRAN-002E.
 //!
-//! The test creates and uses a dedicated disposable database derived from
-//! `GENEALOGY_DATABASE_URL`; it never touches the RAG database.
+//! The test creates and uses a dedicated disposable target derived from
+//! `GENEALOGY_DATABASE_URL` through `tests/support/genealogy_isolation.rs`.
+//! It never touches the RAG database and drops only the target it created.
+
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
 
 use std::fs;
 use std::process::Command;
-use std::str::FromStr;
 
-use postgres::{Client, NoTls};
+use genealogy_isolation::{base_dsn, create_isolated_target};
 
 const SYNTHETIC_CATALOG: &str = "\
 1. Synthetic Alpha\n   Trang: 3\n2. Synthetic Beta\n   Trang: 4\n";
-
-fn base_dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let config = postgres::Config::from_str(&dsn).ok()?;
-    let database = config.get_dbname()?;
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-    Some(dsn)
-}
-
-fn with_database(dsn: &str, database: &str) -> String {
-    let scheme_end = dsn.find("://").expect("dsn scheme") + 3;
-    let authority_end = dsn[scheme_end..]
-        .find('/')
-        .map(|index| scheme_end + index)
-        .unwrap_or(dsn.len());
-    let query = dsn[authority_end..]
-        .find('?')
-        .map(|index| &dsn[authority_end + index..])
-        .unwrap_or("");
-    format!("{}/{}{}", &dsn[..authority_end], database, query)
-}
-
-fn ensure_database(admin_dsn: &str, database: &str) {
-    let mut client = Client::connect(admin_dsn, NoTls).expect("connect to postgres");
-    let exists: i64 = client
-        .query_one(
-            "SELECT count(*) FROM pg_database WHERE datname = $1",
-            &[&database],
-        )
-        .expect("check database")
-        .get(0);
-    if exists == 0 {
-        client
-            .batch_execute(&format!("CREATE DATABASE {database};"))
-            .expect("create disposable database");
-    }
-}
-
-fn reset_schema(client: &mut Client) {
-    client
-        .batch_execute(
-            "DROP TABLE IF EXISTS
-                assertion_review_event,
-                assertion_review_baseline,
-                assertion_evidence,
-                assertion,
-                parent_child_link,
-                spouse_link,
-                catalog_entry,
-                family_branch,
-                source_evidence,
-                source_document,
-                gravesite,
-                business_name,
-                genealogy_fact_proposal_event,
-                genealogy_fact_proposal,
-                person_name_variant,
-                person,
-                genealogy_schema_version
-             CASCADE;",
-        )
-        .expect("reset disposable genealogy schema");
-}
 
 fn run_cli(dsn: &str, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_genealogy"))
@@ -92,12 +29,11 @@ fn apply_is_idempotent_and_queries_never_invent_relationships() {
         eprintln!("GENEALOGY_DATABASE_URL is unset; skipping genealogy CLI test");
         return;
     };
-    let cli_dsn = with_database(&base, "genealogy_cli_test");
-    let admin_dsn = with_database(&base, "postgres");
-    ensure_database(&admin_dsn, "genealogy_cli_test");
+    let target = create_isolated_target(&base, "cli");
+    target.apply_migrations();
+    let cli_dsn = target.dsn.clone();
 
-    let mut client = Client::connect(&cli_dsn, NoTls).expect("connect to CLI test database");
-    reset_schema(&mut client);
+    let mut client = target.connect();
 
     let temp = tempfile::tempdir().expect("temp dir");
     let catalog = temp.path().join("catalog.md");
@@ -171,5 +107,6 @@ fn apply_is_idempotent_and_queries_never_invent_relationships() {
     let written = fs::read_to_string(report).expect("unresolved report exists");
     assert!(written.contains("\"entries\""));
 
-    reset_schema(&mut client);
+    drop(client);
+    target.cleanup();
 }
