@@ -96,6 +96,15 @@ pub struct MediaAsset {
     pub storage_key: String,
 }
 
+/// One media row as its owner sees it, with the effective family state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerMedia {
+    pub asset: MediaAsset,
+    /// True when an active owner restriction currently withholds this field from
+    /// the family even though the approved revision is `family`-visible.
+    pub restricted_from_family: bool,
+}
+
 /// An authorized media download. The caller writes these bytes to the response;
 /// the storage path is never exposed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -668,10 +677,42 @@ pub fn store_submission(
     })
 }
 
+/// Resolves the approved, family-visible, unrestricted media row for a person.
+///
+/// This is the only place the family predicate is applied, so the listing, the
+/// person-scoped asset route, and the generic asset route cannot drift apart.
+/// The caller must hold the person row `FOR SHARE` (or a stronger lock) for the
+/// duration of the transaction.
+fn family_visible_media_in_tx(
+    tx: &mut postgres::Transaction<'_>,
+    person_id: i64,
+    media_id: i64,
+) -> Result<Option<MediaAsset>, MediaError> {
+    let sql = format!(
+        "SELECT {MEDIA_COLUMNS} \
+           FROM onboarding_media_metadata m \
+           {FAMILY_VISIBLE_MEDIA_JOIN} \
+          WHERE m.media_id = $1 AND m.person_id = $2 \
+            AND {FAMILY_VISIBLE_MEDIA_PREDICATE}"
+    );
+    tx.query_opt(&sql, &[&media_id, &person_id])?
+        .map(row_to_asset)
+        .transpose()
+}
+
 /// Reads one media item for an authenticated requester.
 ///
 /// The owner sees their own pending, rejected, or approved media. Any other
-/// account sees only an approved revision whose visibility is `family`.
+/// account sees only an approved revision whose visibility is `family`, that is
+/// the person's current approved asset, and whose field carries no active owner
+/// restriction.
+///
+/// The family decision is made while holding the media owner's `person` row
+/// `FOR SHARE`, and that lock is held through the file read and the commit. An
+/// owner restriction or an approval takes the same row `FOR UPDATE`, so it either
+/// commits entirely before this decision or waits until this request finishes; it
+/// can never land between authorization and the bytes. The reviewed link is taken
+/// first, matching the restriction writer's lock order and avoiding a cycle.
 pub fn read_authorized_media(
     client: &mut postgres::Client,
     storage: &MediaStorage,
@@ -679,6 +720,10 @@ pub fn read_authorized_media(
     media_id: i64,
 ) -> Result<MediaDownload, MediaError> {
     let mut tx = client.transaction()?;
+    // Lock order: reviewed link, then person. Taking the link first also means an
+    // unlinked caller is refused before the media id is looked up, so this path
+    // cannot be used to probe which ids exist.
+    let requester_person = owner_person_in_tx(&mut tx, requester)?;
     let sql = format!(
         "SELECT {MEDIA_COLUMNS}, r.changed_by \
            FROM onboarding_media_metadata m \
@@ -691,7 +736,16 @@ pub fn read_authorized_media(
         .ok_or(MediaError::NotFound)?;
     let changed_by: String = row.get(14);
     let asset = row_to_asset(row)?;
-    let requester_person = owner_person_in_tx(&mut tx, requester)?;
+
+    // Serialize the authorization decision with every writer that can change its
+    // answer: the owner restriction, the review decision, and the person-scoped
+    // family read all take this row (the readers `FOR SHARE`, the writers
+    // `FOR UPDATE`).
+    tx.query_one(
+        "SELECT 1 FROM person WHERE person_id = $1 FOR SHARE",
+        &[&asset.person_id],
+    )?;
+
     let owner = requester_person == asset.person_id;
     let current_approved: bool = tx
         .query_one(
@@ -721,24 +775,14 @@ pub fn read_authorized_media(
         .get(0);
     let actor_owns = changed_by == requester.identity_fingerprint;
     let owner_allowed = owner && (actor_owns || current_approved);
-    // An owner restriction (decision A2) removes the asset from the family
-    // audience even while its approved revision is still family-visible. The
-    // owner keeps access through `owner_allowed` above, so the direct asset path
-    // cannot be used to bypass a restriction.
-    let restricted: bool = tx
-        .query_one(
-            "SELECT EXISTS (\
-                SELECT 1 FROM onboarding_profile_field_restriction \
-                 WHERE person_id = $1 AND field_key = $2 AND lifted_at IS NULL\
-             )",
-            &[&asset.person_id, &asset.kind.field_key()],
-        )?
-        .get(0);
-    let family_visible = !owner
-        && asset.status == RevisionStatus::Approved
-        && asset.visibility == ProfileVisibility::Family
-        && current_approved
-        && !restricted;
+    // One definition of family eligibility, shared with the person-scoped route:
+    // current approved revision, matching provenance, `family` visibility, and no
+    // active restriction.
+    let family_visible = if owner {
+        false
+    } else {
+        family_visible_media_in_tx(&mut tx, asset.person_id, media_id)?.is_some()
+    };
     if !owner_allowed && !family_visible {
         return Err(MediaError::NotFound);
     }
@@ -787,17 +831,8 @@ pub fn read_family_media(
     };
     let person_id: i64 = target.get(0);
 
-    let sql = format!(
-        "SELECT {MEDIA_COLUMNS} \
-           FROM onboarding_media_metadata m \
-           {FAMILY_VISIBLE_MEDIA_JOIN} \
-          WHERE m.media_id = $1 AND m.person_id = $2 \
-            AND {FAMILY_VISIBLE_MEDIA_PREDICATE}"
-    );
-    let row = tx
-        .query_opt(&sql, &[&media_id, &person_id])?
-        .ok_or(MediaError::NotFound)?;
-    let asset = row_to_asset(row)?;
+    let asset =
+        family_visible_media_in_tx(&mut tx, person_id, media_id)?.ok_or(MediaError::NotFound)?;
     let bytes = storage.read(asset.person_id, &asset.storage_key, extension_for(&asset))?;
     tx.commit()?;
     Ok(MediaDownload { asset, bytes })
@@ -929,11 +964,16 @@ pub fn withdraw_owned_media(
 pub fn read_owner_media(
     client: &mut postgres::Client,
     account: &IdentityAccount,
-) -> Result<Vec<MediaAsset>, MediaError> {
+) -> Result<Vec<OwnerMedia>, MediaError> {
     let mut tx = client.transaction()?;
     let person_id = owner_person_in_tx(&mut tx, account)?;
     let sql = format!(
-        "SELECT {MEDIA_COLUMNS} \
+        "SELECT {MEDIA_COLUMNS}, \
+                EXISTS (SELECT 1 FROM onboarding_profile_field_restriction fr \
+                         WHERE fr.person_id = m.person_id \
+                            AND fr.field_key = m.media_kind \
+                           AND fr.lifted_at IS NULL) \
+                  AS restricted_from_family \
            FROM onboarding_media_metadata m \
            JOIN onboarding_profile_revision r \
              ON r.revision_id = m.revision_id AND r.visibility = m.visibility \
@@ -947,10 +987,20 @@ pub fn read_owner_media(
           ORDER BY m.created_at DESC, m.media_id DESC"
     );
     let rows = tx.query(&sql, &[&person_id, &account.identity_fingerprint])?;
-    let assets = rows
+    let media = rows
         .into_iter()
-        .map(row_to_asset)
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|row| {
+            // Read by name: this is an appended expression, not part of
+            // `MEDIA_COLUMNS`, so a positional index would break if the shared
+            // column list changes.
+            let restricted_from_family: bool = row.get("restricted_from_family");
+            let asset = row_to_asset(row)?;
+            Ok(OwnerMedia {
+                asset,
+                restricted_from_family,
+            })
+        })
+        .collect::<Result<Vec<_>, MediaError>>()?;
     tx.commit()?;
-    Ok(assets)
+    Ok(media)
 }

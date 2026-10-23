@@ -1,14 +1,16 @@
-# Family profile presentation (USR-006-A)
+# Family profile presentation (USR-006-A/B/C)
 
 `GET /api/family/persons/{person_key}/profile` returns another member's
-**currently approved, family-visible** profile values.
+**currently approved, family-visible** profile values and media.
 
-The endpoint (USR-006-A) and the page that renders it (USR-006-B) are the
-implemented part of the presentation half of
+The endpoint (USR-006-A), the page that renders it (USR-006-B), and approved
+family media (USR-006-C) are the implemented presentation half of
 [`docs/architecture/FAMILY-PUBLICATION-CONTRACT.md`](../architecture/FAMILY-PUBLICATION-CONTRACT.md).
-They add no storage, no approval workflow, and no indexing. Media presentation,
-standalone story collections, privacy mutations, and RAG indexing remain
-unimplemented.
+They add no storage, no approval workflow, and no indexing. Policy decision
+**A2** (immediate owner restriction) is implemented for approved profile values
+and media. Standalone story collections, genealogy fact publication, and RAG
+indexing remain unimplemented, and decisions **D**, **BR-004**, and Head of
+Family validity stay open.
 
 ## Authorization
 
@@ -58,14 +60,44 @@ inputs are the verified identity, the active account, and the reviewed link.
   or deactivated), not found (404), and unavailable (503 or network) with a
   retry. Each failure replaces the content, so navigating between people never
   leaves a previous person's biography on screen.
-- The read is `cache: no-store`; nothing is written to browser storage, and no
-  media is requested.
+- The read is `cache: no-store`; nothing is written to browser storage.
+  Approved family media is requested only through the person-scoped asset route,
+  never from a cached URL.
 - The route keys the view by person key, so a change of `personKey` on the same
   route remounts it with an empty state rather than reusing the previous
   person's data; the in-component reset remains as defense in depth.
 - Failure text is fixed and user-facing. An unexpected status (for example a
   500) is never rendered from the response body: a proxy or server message could
   carry private data. Authorization outcomes are mapped before that point.
+
+## Family media (USR-006-C)
+
+Approved, family-visible photographs and personal documents are listed in the
+profile response's `media` array and served by
+`GET /api/family/persons/{person_key}/media/{media_id}`.
+
+- The listing and the asset route apply **one** predicate: the revision is
+  approved for the same person and field, the media is the person's current
+  approved value (revision id, revision number, and media id all agree), the
+  media and the value are `family`-visible, and no owner restriction is active.
+- Pending, rejected, owner-private, superseded, cross-person, unprovenanced, and
+  restricted assets are absent from the listing and return `404` on the asset
+  route, so the response never reveals that they exist.
+- The generic `GET /api/profile/media/{id}` path keeps its owner rule and, for
+  non-owners, applies the same family predicate. Both non-owner paths take the
+  media owner's `person` row `FOR SHARE` for the whole request, so an owner
+  restriction cannot commit between authorization and the bytes.
+- Media privacy uses the same A2 mechanism as a text value. The owner sees
+  **Make private** on an approved family-visible photograph or document; the
+  restriction commits immediately, the family loses the asset on the next
+  request, and only a new independently approved submission created under the
+  restriction restores sharing. There is no immediate Make public action, and the
+  action stays available while a replacement submission is pending.
+- The owner profile's `media` entries carry `restricted_from_family`, so
+  **My profile** can distinguish an approved family asset, an approved asset the
+  owner has restricted, and an owner-private approval.
+- Provenance is exposed as the approved revision number and date. The storage
+  key, content hash, and owning person id never leave the server.
 
 ## Response
 
@@ -84,13 +116,26 @@ inputs are the verified identity, the active account, and the reviewed link.
       "approved_revision_number": 3,
       "updated_at": "2026-10-22T12:00:00Z"
     }
+  ],
+  "media": [
+    {
+      "media_id": 42,
+      "kind": "profile_photo",
+      "mime_type": "image/png",
+      "byte_size": 2048,
+      "file_name": "portrait.png",
+      "width": 512,
+      "height": 512,
+      "approved_revision_number": 2,
+      "created_at": "2026-10-22T12:00:00Z"
+    }
   ]
 }
 ```
 
 - `state: "empty"` means the caller is authorized and the person exists, but
-  nothing is approved for the family audience. `fields` is `[]`. The response
-  does not reveal whether owner-private content exists.
+  nothing is approved for the family audience. `fields` and `media` are `[]`. The
+  response does not reveal whether owner-private content exists.
 - `person.display_name` is the shared genealogy record name, already visible in
   the family tree; it is not a private profile value.
 - `approved_revision_number` and `updated_at` are provenance. Reviewer
@@ -129,18 +174,19 @@ Always, without exception:
   backfilled revision is excluded rather than presented unprovenanced;
 - any content the caller is not authorized to see.
 
-## What is not in this slice
+## What remains unimplemented
 
-- No write path, no visibility change, no withdrawal. Policy decision **A**
-  (immediate owner restriction) remains open.
-- Genealogy fact publication is not implemented. Approved, family-visible
-  media is listed and served (USR-006-C); owner-private, pending, rejected,
-  superseded, cross-person, and restricted assets are excluded from both the
-  listing and the asset route.
-- No indexing. Policy decision **D** (indexing allow-list) remains open; this
-  endpoint creates no retrieval rows.
-- No family profile UI page. The response is designed so the family tree and
-  profile pages can consume it later.
+- Genealogy fact publication.
+- Standalone story collections.
+- RAG indexing. Policy decision **D** (indexing allow-list) remains open; these
+  endpoints create no retrieval rows.
+- Cross-branch relationship authority (**BR-004**) and Head of Family validity
+  revalidation. Both stay explicit policy gates.
+
+Implemented alongside the read path: the family profile page (USR-006-B) and the
+owner-facing **Make private** action for approved family-visible values and media
+(decision A2). A restricted value stays privately readable by its owner, and the
+historical approved revision is never rewritten.
 
 ## Verification
 
@@ -148,13 +194,23 @@ Always, without exception:
   values, owner-private and media exclusion, drafts excluded, unknown person,
   revoked link, authorized empty profile, owner-private view unchanged, and no
   retrieval rows created.
+- `tests/family_profile_media.rs` — thirteen service tests: approved photo and
+  document listed and served, pending/rejected/owner-private/superseded/
+  cross-person/unlinked exclusion, restriction withholding with owner access
+  preserved, a pre-restriction media submission refused at approval, and three
+  deterministic lock regressions (both read routes wait for the person lock; a
+  restriction cannot commit while a read holds it).
 - `web/e2e/family-profile.spec.ts` — three browser tests through the real proxy:
   published profile, empty/unknown/unauthorized distinctions, and immediate
   refusal after link revocation and account deactivation.
-- `web/e2e/family-profile-ui.spec.ts` — nine browser tests over the page,
-  covering all twelve USR-006-B cases: tree entry point, approved narrative
-  rendering, owner-private and draft exclusion, no media or contact data, empty,
-  denied, deactivated, not found, server and network failures without stale
-  content, person switching, mobile layout, and keyboard navigation.
+- `web/e2e/family-profile-ui.spec.ts` — eleven browser tests over the page's text
+  fields: tree entry point, approved narrative rendering, owner-private and draft
+  exclusion,
+  empty, denied, deactivated, not found, server and network failures without
+  stale content, person switching, mobile layout, and keyboard navigation.
+- `web/e2e/family-profile-media.spec.ts` — four browser tests: approved media
+  listed, served, and rendered; owner-private and restricted assets withheld and
+  restored by a new approval; and **Make private** for both media types, including
+  the restricted state and a replacement submission staying pending.
 - `docs/guides/family-publication-acceptance.md` — the matrix this slice
-  satisfies row 5 of, and F1.
+  satisfies row 5 of, and row 6 for media.

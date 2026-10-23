@@ -63,7 +63,7 @@ pub use link::{
 pub use media::{
     read_authorized_media, read_family_media, read_owner_media, read_review_media,
     store_submission, withdraw_owned_media, MediaAsset, MediaDownload, MediaError, MediaKind,
-    MediaStorage, DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
+    MediaStorage, OwnerMedia, DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
 pub use profile_restriction::{restrict_own_field, RestrictionError, RestrictionOutcome};

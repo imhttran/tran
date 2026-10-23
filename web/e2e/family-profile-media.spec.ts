@@ -31,6 +31,7 @@ type MediaItem = {
   mime_type: string;
   status: string;
   visibility: string;
+  restricted_from_family?: boolean;
 };
 
 type FamilyMedia = {
@@ -83,6 +84,31 @@ async function uploadPhoto(
   return { status: response.status(), body };
 }
 
+async function uploadDocument(
+  request: APIRequestContext,
+  visibility: "family" | "owner_private",
+  name: string,
+) {
+  const response = await request.post(
+    `${API_URL}/api/profile/media/personal-document`,
+    {
+      headers: auth(OWNER),
+      multipart: {
+        visibility,
+        file: {
+          name,
+          mimeType: "text/plain",
+          buffer: Buffer.from(
+            "Synthetic family letter.\n\nShared for the family archive.\n",
+          ),
+        },
+      },
+    },
+  );
+  const body = await response.json().catch(() => null);
+  return { status: response.status(), body };
+}
+
 async function approve(request: APIRequestContext, revisionId: number) {
   return api(
     request,
@@ -104,11 +130,9 @@ function familyMedia(body: unknown): FamilyMedia[] {
 
 /// Leaves the fixture in a state a fresh submission can start from: a pending
 /// photo from an interrupted run is withdrawn through the product API.
-async function withdrawPendingPhoto(request: APIRequestContext) {
+async function withdrawPending(request: APIRequestContext) {
   const owner = await api(request, OWNER, "GET", "/api/profile");
-  const media = ((owner.body?.media ?? []) as MediaItem[]).filter(
-    (item) => item.kind === "profile_photo",
-  );
+  const media = (owner.body?.media ?? []) as MediaItem[];
   for (const item of media) {
     if (item.status === "pending_review" || item.status === "draft") {
       await api(
@@ -148,7 +172,7 @@ test.describe.serial("approved-only family media", () => {
     page,
     request,
   }) => {
-    await withdrawPendingPhoto(request);
+    await withdrawPending(request);
 
     const upload = await uploadPhoto(request, "family", "family-portrait.png");
     expect(upload.status, JSON.stringify(upload.body)).toBe(200);
@@ -301,19 +325,102 @@ test.describe.serial("approved-only family media", () => {
     expect(after[0].media_id).toBe(restoredMedia.media_id);
   });
 
-  // The person is shared with the profile suites, which assert an empty family
-  // page. Leave no family-visible media behind: an active restriction is the
-  // product's own "stop sharing" state, and the next run lifts it by approving a
-  // new submission created under it.
-  test.afterAll(async ({ request }) => {
-    const profile = await familyProfile(request);
-    if (familyMedia(profile.body).length === 0) return;
-    const response = await api(
+  test("the owner makes both media types private and the family loses them", async ({
+    page,
+    request,
+  }) => {
+    await withdrawPending(request);
+
+    // A current approved family-visible asset of each kind.
+    const photoUpload = await uploadPhoto(request, "family", "share-photo.png");
+    expect(photoUpload.status, JSON.stringify(photoUpload.body)).toBe(200);
+    const photo = (photoUpload.body as { media: MediaItem }).media;
+    expect((await approve(request, photo.revision_id)).status).toBe(200);
+
+    const documentUpload = await uploadDocument(
+      request,
+      "family",
+      "share-letter.txt",
+    );
+    expect(documentUpload.status, JSON.stringify(documentUpload.body)).toBe(200);
+    const document = (documentUpload.body as { media: MediaItem }).media;
+    expect((await approve(request, document.revision_id)).status).toBe(200);
+
+    // A replacement photo is awaiting review. The Make private action belongs to
+    // the approved asset and must stay available regardless.
+    const replacement = await uploadPhoto(request, "family", "replacement.png");
+    expect(replacement.status, JSON.stringify(replacement.body)).toBe(200);
+    const pendingPhoto = (replacement.body as { media: MediaItem }).media;
+
+    await useToken(page, OWNER);
+    await page.goto("/profile");
+    await expect(page.getByTestId("profile-photo-make-private")).toBeVisible();
+    await expect(page.getByTestId("profile-document-make-private")).toBeVisible();
+    await expect(page.getByTestId("profile-photo-pending")).toBeVisible();
+    // No immediate inverse action exists.
+    await expect(page.getByTestId("profile-photo-make-public")).toHaveCount(0);
+    await expect(page.getByTestId("profile-document-make-public")).toHaveCount(0);
+
+    page.on("dialog", (dialog) => void dialog.accept());
+    await page.getByTestId("profile-photo-make-private").click();
+    await expect(page.getByTestId("profile-photo-restricted")).toBeVisible();
+    await expect(page.getByTestId("profile-photo-make-private")).toHaveCount(0);
+
+    await page.getByTestId("profile-document-make-private").click();
+    await expect(page.getByTestId("profile-document-restricted")).toBeVisible();
+    await expect(page.getByTestId("profile-document-make-private")).toHaveCount(0);
+
+    // The family loses both assets, in the listing and on the asset route.
+    expect(familyMedia((await familyProfile(request)).body)).toHaveLength(0);
+    for (const mediaId of [photo.media_id, document.media_id]) {
+      const asset = await request.get(
+        `${API_URL}/api/family/persons/${PERSON}/media/${mediaId}`,
+        { headers: auth(MEMBER) },
+      );
+      expect(asset.status()).toBe(404);
+    }
+
+    await useToken(page, MEMBER);
+    await page.goto(`/family/${PERSON}`);
+    await expect(page.getByTestId("family-profile-photos")).toHaveCount(0);
+    await expect(page.getByTestId("family-profile-documents")).toHaveCount(0);
+    await expect(
+      page.getByTestId(`family-profile-photo-${photo.media_id}`),
+    ).toHaveCount(0);
+
+    // Leave no pending submission behind for the next run.
+    const withdrawn = await api(
       request,
       OWNER,
-      "POST",
-      "/api/profile/fields/profile_photo/restrict",
+      "DELETE",
+      `/api/profile/media/${pendingPhoto.media_id}`,
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(withdrawn.status).toBe(200);
+  });
+
+  // The person is shared with the profile suites, which assert an empty family
+  // page. Leave no family-visible media behind for either media field: an active
+  // restriction is the product's own "stop sharing" state, and the next run
+  // lifts it by approving a new submission created under it.
+  test.afterAll(async ({ request }) => {
+    const owner = await api(request, OWNER, "GET", "/api/profile");
+    const media = (owner.body?.media ?? []) as MediaItem[];
+    for (const fieldKey of ["profile_photo", "personal_document"] as const) {
+      const approved = media.find(
+        (item) =>
+          item.kind === fieldKey &&
+          item.status === "approved" &&
+          item.visibility === "family" &&
+          !item.restricted_from_family,
+      );
+      if (!approved) continue;
+      const response = await api(
+        request,
+        OWNER,
+        "POST",
+        `/api/profile/fields/${fieldKey}/restrict`,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+    }
   });
 });

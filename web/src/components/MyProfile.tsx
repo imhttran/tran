@@ -919,6 +919,32 @@ function ProfileMediaSection({
     }
   }
 
+  /// Decision A2 for media: the owner can stop sharing an approved, family-visible
+  /// photograph or document immediately. There is deliberately no inverse action —
+  /// sharing it again requires a new independently approved submission.
+  async function makePrivate() {
+    if (!approved || approved.visibility !== "family") return;
+    if (approved.restricted_from_family) return;
+    const label = kind === "photo" ? "photograph" : "document";
+    if (
+      !window.confirm(
+        `Make this ${label} private? It will immediately stop appearing on family profile pages. Sharing it again requires a new independently approved submission.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await restrictProfileField(fieldKey);
+      onChanged();
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section
       className="profile-media-card"
@@ -960,6 +986,29 @@ function ProfileMediaSection({
             </div>
           )}
           <StatusChip status={current.status} />
+          {current.status === "approved" && current.visibility === "family" ? (
+            current.restricted_from_family ? (
+              <p className="meta" data-testid={`profile-${kind}-restricted`}>
+                Private — hidden from family pages since you restricted it.
+              </p>
+            ) : (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => void makePrivate()}
+                disabled={busy}
+                data-testid={`profile-${kind}-make-private`}
+              >
+                Make private
+              </button>
+            )
+          ) : null}
+          {current.status === "approved" &&
+          current.visibility === "owner_private" ? (
+            <p className="meta" data-testid={`profile-${kind}-owner-private`}>
+              Private — not shared with the family.
+            </p>
+          ) : null}
           {current.status === "pending_review" ? (
             <button
               type="button"
