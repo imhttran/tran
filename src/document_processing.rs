@@ -4,12 +4,17 @@
 //! the approved version, processed through the existing ingestion service, and
 //! published only in a final transaction that links the chunks and marks the
 //! version ready. Failed jobs are retryable; stale approval, scope, fingerprint,
-//! or removal checks fail closed.
+//! or removal checks fail closed. Every worker write is fenced on the attempt
+//! number, so two attempts with the same worker name cannot own one job.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, GenericClient};
+use postgres::{Client, GenericClient, NoTls};
 use thiserror::Error;
 
 use crate::config::Config;
@@ -18,8 +23,11 @@ use crate::document_lifecycle::{self, DocumentStorage};
 use crate::embedding::Embedder;
 use crate::fingerprint::ChunkerConfig;
 use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineError;
 use crate::service::IngestService;
+use crate::storage::StoredChunk;
 use crate::storage_pg::PgStore;
+use crate::transaction::{ReplaceError, SourceReplacementFence, SourceReplacer};
 
 /// One claimed processing job.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +63,8 @@ pub enum ProcessingError {
     Storage,
     #[error("document processing failed: {0}")]
     Ingest(String),
+    #[error("the processing lease of {0} seconds is invalid")]
+    InvalidLease(i64),
     #[error("document processing database operation failed: {0}")]
     Database(String),
 }
@@ -94,6 +104,165 @@ fn audit<C: GenericClient>(
     Ok(())
 }
 
+/// Locks the version row and revalidates the approval binding. Returns
+/// `StaleApproval` when the version is not approved, is removed, no longer
+/// matches its approved fingerprint, scope, or version number, or is not a
+/// family access version.
+fn revalidate_approval<C: GenericClient>(
+    client: &mut C,
+    version_id: i64,
+) -> Result<(), ProcessingError> {
+    let row = client
+        .query_opt(
+            "SELECT review_status, (removed_at IS NOT NULL), content_sha256,
+                    approved_sha256, approved_scope, access_scope,
+                    approved_version_number, version_number
+               FROM document_version WHERE version_id = $1 FOR UPDATE",
+            &[&version_id],
+        )?
+        .ok_or(ProcessingError::NotFound)?;
+    let review: String = row.get(0);
+    let removed: bool = row.get(1);
+    let content: String = row.get(2);
+    let approved: Option<String> = row.get(3);
+    let approved_scope: Option<String> = row.get(4);
+    let access_scope: Option<String> = row.get(5);
+    let approved_version: Option<i32> = row.get(6);
+    let version_number: i32 = row.get(7);
+    if review != "approved"
+        || removed
+        || approved.as_deref() != Some(content.as_str())
+        || approved_scope != access_scope
+        || approved_version != Some(version_number)
+        || access_scope.as_deref() != Some("family")
+    {
+        return Err(ProcessingError::StaleApproval);
+    }
+    Ok(())
+}
+
+/// Validated lease timing for one worker run.
+///
+/// The heartbeat interval is strictly shorter than the lease so a healthy
+/// attempt renews before another worker may reclaim it. A lease shorter than
+/// three seconds cannot be heartbeated safely and is rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseConfig {
+    lease_seconds: i64,
+    heartbeat: Duration,
+}
+
+impl LeaseConfig {
+    /// Validates a configured lease duration.
+    pub fn new(lease_seconds: i64) -> Result<Self, ProcessingError> {
+        if lease_seconds < 3 {
+            return Err(ProcessingError::InvalidLease(lease_seconds));
+        }
+        let heartbeat = Duration::from_secs((lease_seconds / 3).max(1) as u64);
+        Ok(Self {
+            lease_seconds,
+            heartbeat,
+        })
+    }
+
+    /// The lease duration in seconds.
+    pub fn lease_seconds(self) -> i64 {
+        self.lease_seconds
+    }
+
+    /// The renewal interval.
+    pub fn heartbeat(self) -> Duration {
+        self.heartbeat
+    }
+}
+
+/// Renews a claim while the owning attempt is still working.
+///
+/// The heartbeat owns an independent database connection because the worker's
+/// main connection is busy inside ingestion/embedding. It stops as soon as the
+/// attempt finalizes, loses the fence, or renews unsuccessfully; `Drop` always
+/// joins the thread so no renewal outlives the job.
+struct LeaseHeartbeat {
+    stop: Option<mpsc::Sender<()>>,
+    lost: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LeaseHeartbeat {
+    fn start(
+        database_url: &str,
+        job: ClaimedJob,
+        lease: LeaseConfig,
+    ) -> Result<Self, ProcessingError> {
+        let mut client = Client::connect(database_url, NoTls).map_err(|err| {
+            ProcessingError::Database(format!("lease heartbeat connection failed: {err}"))
+        })?;
+        let (stop, wait) = mpsc::channel();
+        let lost = Arc::new(AtomicBool::new(false));
+        let lost_worker = Arc::clone(&lost);
+        let interval = lease.heartbeat();
+        let lease_seconds = lease.lease_seconds();
+        let handle = thread::spawn(move || loop {
+            match wait.recv_timeout(interval) {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {
+                    if renew_lease(&mut client, &job, lease_seconds).is_err() {
+                        lost_worker.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            stop: Some(stop),
+            lost,
+            handle: Some(handle),
+        })
+    }
+
+    /// Reports whether renewal failed or the fence was lost.
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// Signals the thread and waits for it to exit.
+    fn stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for LeaseHeartbeat {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Verifies that this attempt still owns the job, without locking it.
+///
+/// This is the cheap precheck before storage and embedding. It is only an
+/// optimization: [`PgStore::replace_source_fenced`] performs the authoritative
+/// ownership check inside the replacement transaction.
+fn verify_claim(client: &mut Client, job: &ClaimedJob) -> Result<(), ProcessingError> {
+    let owned = client
+        .query_opt(
+            "SELECT 1 FROM document_processing_job
+              WHERE job_id = $1 AND status = 'processing'
+                AND claimed_by = $2 AND attempts = $3",
+            &[&job.job_id, &job.claimed_by, &job.attempts],
+        )?
+        .is_some();
+    if owned {
+        Ok(())
+    } else {
+        Err(ProcessingError::ClaimLost)
+    }
+}
+
 /// Claims the oldest runnable job. A queued job, or a `processing` job whose
 /// lease expired, may be claimed. Concurrent workers cannot claim the same row.
 pub fn claim_next_job(
@@ -102,6 +271,7 @@ pub fn claim_next_job(
     corpus: Option<&str>,
     lease_seconds: i64,
 ) -> Result<Option<ClaimedJob>, ProcessingError> {
+    LeaseConfig::new(lease_seconds)?;
     let mut tx = client.transaction()?;
     let worker_owned = worker.to_string();
     let corpus_owned = corpus.map(str::to_string);
@@ -158,6 +328,32 @@ pub fn claim_next_job(
     Ok(Some(job))
 }
 
+/// Extends the lease of a claimed job. The update is fenced on job id, the
+/// `processing` status, the claiming worker, and the attempt number. A zero-row
+/// update returns `ClaimLost`.
+pub fn renew_lease(
+    client: &mut Client,
+    job: &ClaimedJob,
+    lease_seconds: i64,
+) -> Result<(), ProcessingError> {
+    LeaseConfig::new(lease_seconds)?;
+    let lease = lease_seconds as f64;
+    let mut tx = client.transaction()?;
+    let updated = tx.execute(
+        "UPDATE document_processing_job
+            SET lease_expires_at = now() + make_interval(secs => $4), updated_at = now()
+          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $2
+            AND attempts = $3",
+        &[&job.job_id, &job.claimed_by, &job.attempts, &lease],
+    )?;
+    if updated == 0 {
+        tx.rollback()?;
+        return Err(ProcessingError::ClaimLost);
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 struct ProcessableVersion {
     version_id: i64,
     corpus: String,
@@ -174,41 +370,23 @@ fn load_processable(
     client: &mut Client,
     version_id: i64,
 ) -> Result<ProcessableVersion, ProcessingError> {
+    revalidate_approval(client, version_id)?;
     let row = client
         .query_opt(
             "SELECT version_id, corpus, source, document_key, version_number, origin,
-                    content_sha256, storage_key, original_filename, review_status,
-                    (removed_at IS NOT NULL), approved_sha256, approved_scope,
-                    access_scope, approved_version_number, processing_status
-               FROM document_version WHERE version_id = $1 FOR UPDATE",
+                    content_sha256, storage_key, original_filename
+               FROM document_version WHERE version_id = $1",
             &[&version_id],
         )?
         .ok_or(ProcessingError::NotFound)?;
-    let review_status: String = row.get(9);
-    let removed: bool = row.get(10);
-    let content_sha256: String = row.get(6);
-    let approved_sha256: Option<String> = row.get(11);
-    let approved_scope: Option<String> = row.get(12);
-    let access_scope: Option<String> = row.get(13);
-    let approved_version_number: Option<i32> = row.get(14);
-    let version_number: i32 = row.get(4);
-    if review_status != "approved"
-        || removed
-        || approved_sha256.as_deref() != Some(content_sha256.as_str())
-        || approved_scope != access_scope
-        || approved_version_number != Some(version_number)
-        || access_scope.as_deref() != Some("family")
-    {
-        return Err(ProcessingError::StaleApproval);
-    }
     Ok(ProcessableVersion {
         version_id: row.get(0),
         corpus: row.get(1),
         source: row.get(2),
         document_key: row.get(3),
-        version_number,
+        version_number: row.get(4),
         origin: row.get(5),
-        content_sha256,
+        content_sha256: row.get(6),
         storage_key: row.get(7),
         original_filename: row.get(8),
     })
@@ -249,8 +427,9 @@ fn fail_job(
         "UPDATE document_processing_job
             SET status = 'failed', last_error = $2, lease_expires_at = NULL,
                 updated_at = now(), finished_at = now()
-          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $3",
-        &[&job.job_id, &error, &job.claimed_by],
+          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $3
+            AND attempts = $4",
+        &[&job.job_id, &error, &job.claimed_by, &job.attempts],
     )?;
     if updated == 0 {
         tx.rollback()?;
@@ -284,39 +463,35 @@ fn fail_job(
     })
 }
 
-fn publish_ready<C: GenericClient>(
+/// Publishes a processed version. The version is revalidated through the shared
+/// approval helper and the job update is fenced on the attempt number. A lost
+/// claim rolls back the whole transaction and returns `ClaimLost`.
+fn mark_job_ready<C: GenericClient>(
     client: &mut C,
     version: &ProcessableVersion,
     job: &ClaimedJob,
     actor: &str,
+    detail: serde_json::Value,
 ) -> Result<(), ProcessingError> {
-    // Recheck the approval binding and removal state immediately before the
-    // publication transaction. A stale job never publishes.
-    let row = client
-        .query_opt(
-            "SELECT review_status, (removed_at IS NOT NULL), content_sha256,
-                    approved_sha256, approved_scope, access_scope,
-                    approved_version_number, version_number
-               FROM document_version WHERE version_id = $1 FOR UPDATE",
-            &[&version.version_id],
-        )?
-        .ok_or(ProcessingError::NotFound)?;
-    let review: String = row.get(0);
-    let removed: bool = row.get(1);
-    let content: String = row.get(2);
-    let approved: Option<String> = row.get(3);
-    let approved_scope: Option<String> = row.get(4);
-    let access_scope: Option<String> = row.get(5);
-    let approved_version: Option<i32> = row.get(6);
-    let version_number: i32 = row.get(7);
-    if review != "approved"
-        || removed
-        || approved.as_deref() != Some(content.as_str())
-        || approved_scope != access_scope
-        || approved_version != Some(version_number)
-        || access_scope.as_deref() != Some("family")
-    {
-        return Err(ProcessingError::StaleApproval);
+    revalidate_approval(client, version.version_id)?;
+    // Claim ownership is verified first. Until this fenced update succeeds, no
+    // version, chunk, or supersession row is touched, so a stale attempt cannot
+    // make any progress even before the caller rolls back.
+    //
+    // Publication is authorized by claim ownership and the attempt number, not
+    // by the lease clock: a lease can expire while a long embedding run is still
+    // healthy, and reclaiming the job increments `attempts`, so a stolen job is
+    // rejected here.
+    let updated = client.execute(
+        "UPDATE document_processing_job
+            SET status = 'ready', updated_at = now(), finished_at = now(),
+                last_error = NULL, lease_expires_at = NULL
+          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $2
+            AND attempts = $3",
+        &[&job.job_id, &job.claimed_by, &job.attempts],
+    )?;
+    if updated == 0 {
+        return Err(ProcessingError::ClaimLost);
     }
     client.execute(
         "UPDATE documents SET document_version_id = $1
@@ -342,39 +517,64 @@ fn publish_ready<C: GenericClient>(
           WHERE version_id = $1",
         &[&version.version_id],
     )?;
-    // Publication is authorized by claim ownership, not by the lease clock: a
-    // lease can expire while a long embedding run is still healthy, and
-    // reclaiming the job changes `claimed_by`, so a stolen job is already
-    // rejected here.
-    let updated = client.execute(
-        "UPDATE document_processing_job
-            SET status = 'ready', updated_at = now(), finished_at = now(),
-                last_error = NULL, lease_expires_at = NULL
-          WHERE job_id = $1 AND status = 'processing' AND claimed_by = $2",
-        &[&job.job_id, &job.claimed_by],
-    )?;
-    if updated == 0 {
-        return Err(ProcessingError::ClaimLost);
-    }
     audit(
         client,
         version.version_id,
         job.job_id,
         "processing_ready",
         actor,
-        serde_json::json!({ "chunks_source": version.source }),
+        detail,
     )?;
     Ok(())
 }
 
+fn publish_ready<C: GenericClient>(
+    client: &mut C,
+    version: &ProcessableVersion,
+    job: &ClaimedJob,
+    actor: &str,
+) -> Result<(), ProcessingError> {
+    mark_job_ready(
+        client,
+        version,
+        job,
+        actor,
+        serde_json::json!({ "chunks_source": version.source }),
+    )
+}
+
+/// Ingestion writer that replaces source chunks only while the attempt still
+/// owns the processing job.
+///
+/// The pipeline calls this after embedding, so the job-row lock is held only for
+/// the short delete/insert transaction, never across embedding.
+struct FencedSourceReplacer<'a> {
+    store: &'a PgStore,
+    fence: SourceReplacementFence<'a>,
+}
+
+impl SourceReplacer for FencedSourceReplacer<'_> {
+    fn replace_source(
+        &self,
+        corpus: &Corpus,
+        source: &str,
+        chunks: &[StoredChunk],
+    ) -> Result<(), ReplaceError> {
+        self.store
+            .replace_source_fenced(corpus, source, chunks, &self.fence)
+    }
+}
+
 /// Processes one claimed job. The ingestion service writes chunks under the
 /// version-specific source; publication is a separate final transaction.
+#[allow(clippy::too_many_arguments)]
 pub fn process_job<E: Embedder>(
     client: &mut Client,
     store: &PgStore,
     embedder: &E,
     storage: &DocumentStorage,
     config: &Config,
+    lease_seconds: i64,
     job: &ClaimedJob,
     worker: &str,
 ) -> Result<JobOutcome, ProcessingError> {
@@ -390,108 +590,170 @@ pub fn process_job<E: Embedder>(
         }
     };
 
-    if version.origin == "legacy_import" {
-        let mut tx = client.transaction()?;
-        tx.execute(
-            "UPDATE document_version SET processing_status = 'ready', updated_at = now()
-              WHERE version_id = $1",
-            &[&version.version_id],
-        )?;
-        tx.execute(
-            "UPDATE document_processing_job
-                SET status = 'ready', updated_at = now(), finished_at = now()
-              WHERE job_id = $1",
-            &[&job.job_id],
-        )?;
-        audit(
-            &mut tx,
-            version.version_id,
-            job.job_id,
-            "processing_ready",
-            worker,
-            serde_json::json!({ "origin": "legacy_import" }),
-        )?;
-        tx.commit()?;
-        return Ok(JobOutcome {
-            job_id: job.job_id,
-            version_id: version.version_id,
-            status: "ready",
-            error: None,
-        });
+    match verify_claim(client, job) {
+        Ok(()) => {}
+        Err(ProcessingError::ClaimLost) => {
+            return Ok(JobOutcome {
+                job_id: job.job_id,
+                version_id: version.version_id,
+                status: "stale",
+                error: Some("claim lost".to_string()),
+            });
+        }
+        // A database failure is not a lost claim; report it instead of masking
+        // it as a stale attempt.
+        Err(err) => return Err(err),
     }
 
-    let Some(storage_key) = version.storage_key.as_deref() else {
-        return fail_job(client, job, "original unavailable");
-    };
-    let bytes = match storage.get(storage_key) {
-        Ok(bytes) => bytes,
-        Err(_) => return fail_job(client, job, "original unavailable"),
-    };
-    if document_lifecycle::sha256_hex(&bytes) != version.content_sha256 {
-        return fail_job(client, job, "original fingerprint mismatch");
-    }
-    let path = temp_path(extension_for(&version.original_filename));
-    if std::fs::write(&path, &bytes).is_err() {
-        return fail_job(client, job, "staging failed");
-    }
-    let corpus = match Corpus::new(version.corpus.clone()) {
-        Ok(corpus) => corpus,
-        Err(_) => {
-            let _ = std::fs::remove_file(&path);
-            return fail_job(client, job, "invalid corpus");
-        }
-    };
-    let pipeline_config = PipelineConfig::new(
-        config.language.clone(),
-        ChunkerConfig::new(config.chunk_size as usize, config.chunk_overlap as usize),
-        config.embed_model.clone(),
-        corpus,
-    );
-    let service = IngestService::new(embedder, store, store, pipeline_config);
-    let outcome = service.ingest_source(&path, &version.source, &version.content_sha256);
-    let _ = std::fs::remove_file(&path);
-    match outcome {
-        Ok(crate::pipeline::IngestOutcome::Replaced { .. })
-        | Ok(crate::pipeline::IngestOutcome::Unchanged { .. }) => {
-            let mut tx = client.transaction()?;
-            match publish_ready(&mut tx, &version, job, worker) {
-                Ok(()) => {
-                    tx.commit()?;
-                    Ok(JobOutcome {
-                        job_id: job.job_id,
-                        version_id: version.version_id,
-                        status: "ready",
-                        error: None,
-                    })
-                }
-                Err(ProcessingError::ClaimLost) => {
-                    tx.rollback()?;
-                    Ok(JobOutcome {
-                        job_id: job.job_id,
-                        version_id: version.version_id,
-                        status: "stale",
-                        error: Some("claim lost".to_string()),
-                    })
-                }
-                Err(ProcessingError::StaleApproval) => {
-                    tx.rollback()?;
-                    fail_job(client, job, "stale approval")
-                }
-                Err(_) => {
-                    tx.rollback()?;
-                    fail_job(client, job, "publication failed")
-                }
+    if version.origin == "legacy_import" {
+        let mut tx = client.transaction()?;
+        match mark_job_ready(
+            &mut tx,
+            &version,
+            job,
+            worker,
+            serde_json::json!({ "origin": "legacy_import" }),
+        ) {
+            Ok(()) => {
+                tx.commit()?;
+                Ok(JobOutcome {
+                    job_id: job.job_id,
+                    version_id: version.version_id,
+                    status: "ready",
+                    error: None,
+                })
+            }
+            Err(ProcessingError::ClaimLost) => {
+                tx.rollback()?;
+                Ok(JobOutcome {
+                    job_id: job.job_id,
+                    version_id: version.version_id,
+                    status: "stale",
+                    error: Some("claim lost".to_string()),
+                })
+            }
+            Err(ProcessingError::StaleApproval) => {
+                tx.rollback()?;
+                fail_job(client, job, "stale approval")
+            }
+            Err(_) => {
+                tx.rollback()?;
+                fail_job(client, job, "publication failed")
             }
         }
-        Ok(crate::pipeline::IngestOutcome::Rejected(_)) => {
-            fail_job(client, job, "extraction rejected")
+    } else {
+        let lease = LeaseConfig::new(lease_seconds)?;
+        let mut heartbeat = match LeaseHeartbeat::start(&config.database_url, job.clone(), lease) {
+            Ok(heartbeat) => heartbeat,
+            Err(err) => {
+                eprintln!(
+                    "lease heartbeat unavailable for version {}: {err}",
+                    version.version_id
+                );
+                return fail_job(client, job, "lease heartbeat unavailable");
+            }
+        };
+        let Some(storage_key) = version.storage_key.as_deref() else {
+            heartbeat.stop();
+            return fail_job(client, job, "original unavailable");
+        };
+        let bytes = match storage.get(storage_key) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                heartbeat.stop();
+                return fail_job(client, job, "original unavailable");
+            }
+        };
+        if document_lifecycle::sha256_hex(&bytes) != version.content_sha256 {
+            heartbeat.stop();
+            return fail_job(client, job, "original fingerprint mismatch");
         }
-        Err(err) => {
-            eprintln!(
-                "document processing failed for version {}: {err}",
-                version.version_id
-            );
-            fail_job(client, job, "ingestion failed")
+        let path = temp_path(extension_for(&version.original_filename));
+        if std::fs::write(&path, &bytes).is_err() {
+            heartbeat.stop();
+            return fail_job(client, job, "staging failed");
+        }
+        let corpus = match Corpus::new(version.corpus.clone()) {
+            Ok(corpus) => corpus,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                heartbeat.stop();
+                return fail_job(client, job, "invalid corpus");
+            }
+        };
+        let pipeline_config = PipelineConfig::new(
+            config.language.clone(),
+            ChunkerConfig::new(config.chunk_size as usize, config.chunk_overlap as usize),
+            config.embed_model.clone(),
+            corpus,
+        );
+        let fence = SourceReplacementFence {
+            job_id: job.job_id,
+            claimed_by: &job.claimed_by,
+            attempts: job.attempts,
+        };
+        let replacer = FencedSourceReplacer { store, fence };
+        let service = IngestService::new(embedder, store, &replacer, pipeline_config);
+        let outcome = service.ingest_source(&path, &version.source, &version.content_sha256);
+        let _ = std::fs::remove_file(&path);
+        // Stop renewal before any terminal write. If renewal failed or another
+        // attempt reclaimed the job, this attempt must not publish or fail it.
+        heartbeat.stop();
+        if heartbeat.lost() {
+            // Renewal failed or the fence was taken over. `fail_job` is itself
+            // fenced: it reports `stale` when another attempt owns the row and
+            // marks a genuinely owned attempt failed, never the newer one.
+            return fail_job(client, job, "lease renewal lost");
+        }
+        match outcome {
+            Err(PipelineError::Replace(ReplaceError::ClaimLost)) => Ok(JobOutcome {
+                job_id: job.job_id,
+                version_id: version.version_id,
+                status: "stale",
+                error: Some("claim lost".to_string()),
+            }),
+            Ok(crate::pipeline::IngestOutcome::Replaced { .. })
+            | Ok(crate::pipeline::IngestOutcome::Unchanged { .. }) => {
+                let mut tx = client.transaction()?;
+                match publish_ready(&mut tx, &version, job, worker) {
+                    Ok(()) => {
+                        tx.commit()?;
+                        Ok(JobOutcome {
+                            job_id: job.job_id,
+                            version_id: version.version_id,
+                            status: "ready",
+                            error: None,
+                        })
+                    }
+                    Err(ProcessingError::ClaimLost) => {
+                        tx.rollback()?;
+                        Ok(JobOutcome {
+                            job_id: job.job_id,
+                            version_id: version.version_id,
+                            status: "stale",
+                            error: Some("claim lost".to_string()),
+                        })
+                    }
+                    Err(ProcessingError::StaleApproval) => {
+                        tx.rollback()?;
+                        fail_job(client, job, "stale approval")
+                    }
+                    Err(_) => {
+                        tx.rollback()?;
+                        fail_job(client, job, "publication failed")
+                    }
+                }
+            }
+            Ok(crate::pipeline::IngestOutcome::Rejected(_)) => {
+                fail_job(client, job, "extraction rejected")
+            }
+            Err(err) => {
+                eprintln!(
+                    "document processing failed for version {}: {err}",
+                    version.version_id
+                );
+                fail_job(client, job, "ingestion failed")
+            }
         }
     }
 }
@@ -509,13 +771,21 @@ pub fn run_due_jobs<E: Embedder>(
     corpus: Option<&str>,
     lease_seconds: i64,
 ) -> Result<Vec<JobOutcome>, ProcessingError> {
+    LeaseConfig::new(lease_seconds)?;
     let mut outcomes = Vec::new();
     for _ in 0..max_jobs {
         let Some(job) = claim_next_job(client, worker, corpus, lease_seconds)? else {
             break;
         };
         outcomes.push(process_job(
-            client, store, embedder, storage, config, &job, worker,
+            client,
+            store,
+            embedder,
+            storage,
+            config,
+            lease_seconds,
+            &job,
+            worker,
         )?);
     }
     Ok(outcomes)

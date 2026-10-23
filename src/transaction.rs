@@ -35,6 +35,24 @@ pub enum ReplaceError {
     /// A test-only injected failure, used to prove rollback.
     #[error("injected replacement failure: {0}")]
     Injected(String),
+    /// The processing attempt no longer owns the job; nothing was replaced.
+    #[error("the processing claim was lost before source replacement")]
+    ClaimLost,
+}
+
+/// The processing attempt that must still own the job when a worker replaces
+/// source chunks.
+///
+/// It mirrors the fence used by publication and failure handling: job id, the
+/// claiming worker, and the incrementing attempt number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceReplacementFence<'a> {
+    /// The processing job.
+    pub job_id: i64,
+    /// The worker that claimed the attempt.
+    pub claimed_by: &'a str,
+    /// The attempt number that must still own the job.
+    pub attempts: i32,
 }
 
 /// The transactional replacement port.
