@@ -74,6 +74,211 @@ export function relationLabel(link: TreeLink, selectedId: string): "Parent" | "C
   return link.from_id === selectedId ? "Child" : "Parent";
 }
 
+/** The person-centred view: one person, their immediate children, and optionally
+ * their immediate parents. Spouses and co-parents are included only when they
+ * belong to that immediate family. */
+export type Focus = { rootId: string; showParents: boolean };
+
+/** A screen-space rectangle, as returned by getBoundingClientRect(). */
+export type Box = { left: number; top: number; width: number; height: number };
+
+export type PopupPlacement = {
+  left: number;
+  top: number;
+  placement: "above" | "below" | "left" | "right";
+  maxHeight: number;
+};
+
+/** Recorded children of `id`, in stable first-seen order, de-duplicated by ID. */
+export function immediateChildIds(graph: TreeGraph, id: string): string[] {
+  const seen = new Set<string>();
+  const children: string[] = [];
+  for (const link of graph.links) {
+    if (link.kind !== "parent_child" || link.from_id !== id) continue;
+    if (seen.has(link.to_id)) continue;
+    seen.add(link.to_id);
+    children.push(link.to_id);
+  }
+  return children;
+}
+
+/** Recorded parents of `id`, in stable first-seen order, de-duplicated by ID. */
+export function immediateParentIds(graph: TreeGraph, id: string): string[] {
+  const seen = new Set<string>();
+  const parents: string[] = [];
+  for (const link of graph.links) {
+    if (link.kind !== "parent_child" || link.to_id !== id) continue;
+    if (seen.has(link.from_id)) continue;
+    seen.add(link.from_id);
+    parents.push(link.from_id);
+  }
+  return parents;
+}
+
+/**
+ * The authorized subgraph for a focused view.
+ *
+ * It contains the root, the root's recorded children, and, when requested, the
+ * root's recorded parents. A recorded spouse is included when the spouse is the
+ * root's spouse or a co-parent of an included child. Nothing is inferred, and
+ * only links whose endpoints are both included are kept. Namesakes stay apart
+ * because the graph is keyed by stable person IDs.
+ */
+export function focusedGraph(graph: TreeGraph, focus: Focus): TreeGraph {
+  const known = new Set(graph.people.map((person) => person.record_id));
+  if (!known.has(focus.rootId)) {
+    return { people: [], links: [], truncated: graph.truncated };
+  }
+  const children = new Set(immediateChildIds(graph, focus.rootId));
+  const include = new Set<string>([focus.rootId, ...children]);
+  if (focus.showParents) {
+    for (const parent of immediateParentIds(graph, focus.rootId)) include.add(parent);
+  }
+  // The root's recorded spouses.
+  for (const link of graph.links) {
+    if (link.kind !== "spouse") continue;
+    if (link.from_id === focus.rootId) include.add(link.to_id);
+    if (link.to_id === focus.rootId) include.add(link.from_id);
+  }
+  // Other recorded parents of the included children (co-parents).
+  for (const link of graph.links) {
+    if (link.kind !== "parent_child") continue;
+    if (children.has(link.to_id)) include.add(link.from_id);
+  }
+  for (const id of [...include]) if (!known.has(id)) include.delete(id);
+
+  const links: TreeLink[] = [];
+  const seen = new Set<string>();
+  for (const link of graph.links) {
+    if (!include.has(link.from_id) || !include.has(link.to_id)) continue;
+    let relevant: boolean;
+    if (link.kind === "spouse") {
+      relevant = true;
+    } else {
+      relevant = link.from_id === focus.rootId ||
+        (focus.showParents && link.to_id === focus.rootId) ||
+        children.has(link.to_id);
+    }
+    if (!relevant) continue;
+    const key = link.kind === "spouse"
+      ? "spouse:" + [link.from_id, link.to_id].sort().join(":")
+      : "parent_child:" + link.from_id + ":" + link.to_id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push(link);
+  }
+  return {
+    people: graph.people.filter((person) => include.has(person.record_id)),
+    links,
+    truncated: graph.truncated,
+  };
+}
+
+/**
+ * Camera for a focused layout: readable scale, root centred horizontally, and
+ * the top of the layout visible so parents above the root are not cut off.
+ */
+export function focusCamera(layout: TreeLayout, rootId: string): { x: number; y: number; width: number; height: number } {
+  const width = Math.min(Math.max(layout.width, 600), READABLE_WIDTH);
+  const height = Math.min(Math.max(layout.height, 370), READABLE_HEIGHT);
+  const root = layout.people.find((person) => person.record_id === rootId);
+  if (!root) return { x: 0, y: 0, width, height };
+  return { x: root.x + CARD_WIDTH / 2 - width / 2, y: 0, width, height };
+}
+
+/**
+ * Place a popup next to a card, in coordinates relative to `container`.
+ *
+ * The SVG viewBox is mapped with its default `xMidYMid meet`, so letterboxing
+ * is part of the calculation. Returns `null` when the card has left the visible
+ * canvas, which the caller treats as "close the popup". The result is clamped
+ * inside the canvas, and `maxHeight` keeps a long popup scrollable instead of
+ * escaping the canvas.
+ */
+export function popupPosition(
+  card: { x: number; y: number },
+  view: { x: number; y: number; width: number; height: number },
+  svg: Box,
+  container: Box,
+  popup: { width: number; height: number },
+  gap = 10,
+  padding = 10,
+): PopupPlacement | null {
+  if (view.width <= 0 || view.height <= 0 || svg.width <= 0 || svg.height <= 0) return null;
+  const scale = Math.min(svg.width / view.width, svg.height / view.height);
+  if (scale <= 0) return null;
+  const contentWidth = view.width * scale;
+  const contentHeight = view.height * scale;
+  const originX = svg.left + (svg.width - contentWidth) / 2;
+  const originY = svg.top + (svg.height - contentHeight) / 2;
+
+  const left = originX + (card.x - view.x) * scale;
+  const top = originY + (card.y - view.y) * scale;
+  const right = left + CARD_WIDTH * scale;
+  const bottom = top + CARD_HEIGHT * scale;
+  // The anchor must be inside the drawn graph. The popup itself may use the
+  // letterboxed canvas around the SVG, but never leaves the canvas container.
+  if (
+    right < originX ||
+    left > originX + contentWidth ||
+    bottom < originY ||
+    top > originY + contentHeight
+  )
+    return null;
+
+  const clipLeft = container.left;
+  const clipTop = container.top;
+  const clipRight = container.left + container.width;
+  const clipBottom = container.top + container.height;
+  if (clipRight <= clipLeft || clipBottom <= clipTop) return null;
+
+  const maxWidth = Math.max(0, clipRight - clipLeft - padding * 2);
+  const maxHeight = Math.max(0, clipBottom - clipTop - padding * 2);
+  if (maxWidth <= 0 || maxHeight <= 0) return null;
+  const width = Math.min(popup.width, maxWidth);
+  const height = Math.min(popup.height, maxHeight);
+  const centreX = (left + right) / 2 - width / 2;
+  // Side popups start at the card's top (clamped), so a tall popup still fits
+  // beside a card near the top of the canvas.
+  const sideTop = Math.max(clipTop + padding,
+    Math.min(top, clipBottom - padding - height));
+
+  // Prefer a side placement: in a parent-focused view the children sit below the
+  // card, so a popup underneath would hide the generation the user just opened.
+  const candidates: { placement: "right" | "left" | "below" | "above"; left: number; top: number }[] = [
+    { placement: "right", left: right + gap, top: sideTop },
+    { placement: "left", left: left - gap - width, top: sideTop },
+    { placement: "below", left: centreX, top: bottom + gap },
+    { placement: "above", left: centreX, top: top - gap - height },
+  ];
+  for (const candidate of candidates) {
+    const fitsHorizontally = candidate.left >= clipLeft + padding &&
+      candidate.left + width <= clipRight - padding;
+    const fitsVertically = candidate.top >= clipTop + padding &&
+      candidate.top + height <= clipBottom - padding;
+    if (fitsHorizontally && fitsVertically) {
+      return {
+        left: candidate.left - container.left,
+        top: candidate.top - container.top,
+        placement: candidate.placement,
+        maxHeight,
+      };
+    }
+  }
+
+  // Nothing fits whole: fall back to below, clamped into the visible canvas.
+  const topPos = Math.max(clipTop + padding,
+    Math.min(bottom + gap, clipBottom - padding - height));
+  const leftPos = Math.max(clipLeft + padding,
+    Math.min(centreX, clipRight - padding - width));
+  return {
+    left: leftPos - container.left,
+    top: topPos - container.top,
+    placement: "below",
+    maxHeight,
+  };
+}
+
 /**
  * Collapse set that makes `targetId` visible while keeping every unrelated
  * collapsed branch. layoutTree hides anything below a collapsed node, so every

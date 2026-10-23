@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  layoutTree, relationLabel, revealPerson, READABLE_HEIGHT, READABLE_WIDTH,
+  focusedGraph, immediateChildIds, immediateParentIds, layoutTree, popupPosition,
+  relationLabel, revealPerson, READABLE_HEIGHT, READABLE_WIDTH,
 } from "../src/lib/family-tree";
 import type { TreeGraph } from "../src/lib/family-tree";
 
@@ -50,6 +51,8 @@ test("graph, citations, disconnected records, and uncertain edges stay distinct"
   await expect(page.locator("[data-testid=family-relationship][data-status=verified]")).toHaveCount(1);
   await expect(page.locator("[data-testid=family-relationship][data-status=needs_review]")).toHaveCount(1);
   await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
+  await page.getByRole("button", { name: "Select Nguyễn Văn A", exact: true }).click();
+  await expect(page.getByTestId("family-person-details")).toBeVisible();
   await expect(page.getByTestId("family-assertions")).toContainText("synthetic p.3");
 });
 
@@ -220,10 +223,13 @@ async function stubBranches(page: import("@playwright/test").Page) {
 
 async function collapse(page: import("@playwright/test").Page, id: string) {
   await page.getByRole("button", { name: "Select Person " + id, exact: true }).click();
+  // The single click opens the popup; dismiss it so it cannot cover the button.
+  await expect(page.getByTestId("family-person-details")).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.getByTestId("family-collapse").click();
 }
 
-test("the details panel labels parents and children from the selection", async ({ page }) => {
+test("the popup lists recorded parents and children from the selection", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await page.getByRole("button", { name: "Select Person A", exact: true }).click();
@@ -448,4 +454,459 @@ test("search selection reveals a readable card in an unlinked catalog", async ({
   const view = await readViewBox(page);
   expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
   expect(view.height).toBeLessThanOrEqual(720);
+});
+
+// --- Person-centred focus, popup placement, and popup behaviour -------------
+
+const family: TreeGraph = {
+  people: [p("GP1"), p("GP2"), p("P1"), p("P2"), p("C1"), p("C2"), p("X")],
+  links: [
+    pc("GP1", "P1"),
+    pc("GP2", "P1"),
+    { ...pc("P1", "P2"), kind: "spouse" as const },
+    pc("P1", "C1"),
+    pc("P2", "C1"),
+    pc("P1", "C2"),
+  ],
+  truncated: false,
+};
+
+test("recorded children and parents are exact, unique, and ID-keyed", () => {
+  expect(immediateChildIds(family, "P1").sort()).toEqual(["C1", "C2"]);
+  expect(immediateParentIds(family, "P1").sort()).toEqual(["GP1", "GP2"]);
+  expect(immediateChildIds(family, "X")).toEqual([]);
+  expect(immediateParentIds(family, "X")).toEqual([]);
+});
+
+test("the focused graph keeps only the immediate family", () => {
+  const childrenOnly = focusedGraph(family, { rootId: "P1", showParents: false });
+  expect(childrenOnly.people.map((person) => person.record_id).sort())
+    .toEqual(["C1", "C2", "P1", "P2"]);
+  expect(childrenOnly.links.map((link) => link.kind + ":" + link.from_id + ":" + link.to_id).sort())
+    .toEqual(["parent_child:P1:C1", "parent_child:P1:C2", "parent_child:P2:C1", "spouse:P1:P2"]);
+
+  const withParents = focusedGraph(family, { rootId: "P1", showParents: true });
+  expect(withParents.people.map((person) => person.record_id).sort())
+    .toEqual(["C1", "C2", "GP1", "GP2", "P1", "P2"]);
+  expect(withParents.people.some((person) => person.record_id === "X")).toBe(false);
+});
+
+test("focused traversal terminates on cycles and never duplicates cards", () => {
+  const cyclic: TreeGraph = {
+    people: [p("A"), p("B"), p("C")],
+    links: [pc("A", "B"), pc("B", "A"), pc("B", "C")],
+    truncated: false,
+  };
+  const focused = focusedGraph(cyclic, { rootId: "B", showParents: true });
+  expect(focused.people.map((person) => person.record_id).sort()).toEqual(["A", "B", "C"]);
+  expect(new Set(focused.people.map((person) => person.record_id)).size).toBe(3);
+  expect(focused.links).toHaveLength(3);
+
+  const missing = focusedGraph(cyclic, { rootId: "missing", showParents: true });
+  expect(missing.people).toEqual([]);
+  expect(missing.links).toEqual([]);
+});
+
+test("a focused graph keeps the truncation disclosure", () => {
+  const truncated: TreeGraph = { ...family, truncated: true };
+  expect(focusedGraph(truncated, { rootId: "P1", showParents: false }).truncated).toBe(true);
+});
+
+test("the popup sits below the card, above when needed, and stays inside", () => {
+  const container = { left: 0, top: 0, width: 800, height: 500 };
+  const svg = { left: 0, top: 0, width: 800, height: 500 };
+  const view = { x: 0, y: 0, width: 800, height: 500 };
+
+  const beside = popupPosition({ x: 100, y: 100 }, view, svg, container, { width: 300, height: 200 });
+  expect(beside?.placement).toBe("right");
+  expect(beside?.left).toBeCloseTo(300, 0);
+  expect(beside?.top).toBeCloseTo(100, 0);
+
+  // A narrow canvas has no room beside the card, so it goes above it.
+  const narrow = { left: 0, top: 0, width: 400, height: 500 };
+  const above = popupPosition({ x: 100, y: 400 }, { x: 0, y: 0, width: 400, height: 500 },
+    narrow, narrow, { width: 300, height: 200 });
+  expect(above?.placement).toBe("above");
+  expect(above?.top).toBeCloseTo(190, 0);
+
+  const clamped = popupPosition({ x: 0, y: 0 }, { x: 0, y: 0, width: 400, height: 500 },
+    narrow, narrow, { width: 300, height: 200 });
+  expect(clamped?.left).toBe(10);
+
+  const huge = popupPosition({ x: 100, y: 100 }, view, svg, container, { width: 5000, height: 5000 });
+  expect(huge?.maxHeight).toBeLessThanOrEqual(480);
+  expect(huge?.left).toBeGreaterThanOrEqual(10);
+});
+
+test("the popup placement accounts for letterboxing and hides off-screen anchors", () => {
+  const placement = popupPosition(
+    { x: 0, y: 0 },
+    { x: 0, y: 0, width: 1000, height: 500 },
+    { left: 0, top: 0, width: 900, height: 400 },
+    { left: 0, top: 0, width: 900, height: 400 },
+    { width: 300, height: 200 },
+  );
+  // scale = min(900/1000, 400/500) = 0.8; the content starts at x = 50, so the
+  // card's right edge is 50 + 190*0.8 and the popup starts 10px further right.
+  expect(placement?.left).toBe(212);
+
+  const offScreen = popupPosition(
+    { x: 900, y: 100 },
+    { x: 0, y: 0, width: 800, height: 500 },
+    { left: 0, top: 0, width: 800, height: 500 },
+    { left: 0, top: 0, width: 800, height: 500 },
+    { width: 300, height: 200 },
+  );
+  expect(offScreen).toBeNull();
+});
+
+test("single click opens an anchored popup and Escape restores card focus", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  await card.click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  await expect(popup).toContainText("Person A");
+  const canvas = await page.getByTestId("family-canvas").boundingBox();
+  const box = await popup.boundingBox();
+  expect(canvas && box).toBeTruthy();
+  if (canvas && box) {
+    expect(box.x).toBeGreaterThanOrEqual(canvas.x - 1);
+    expect(box.y).toBeGreaterThanOrEqual(canvas.y - 1);
+    expect(box.x + box.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+  }
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await expect(card).toBeFocused();
+});
+
+test("double-click focuses immediate children above an unrelated graph", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
+  const before = await readViewBox(page);
+
+  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await expect(page.getByTestId("family-focus")).toContainText("Person A");
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Select Person R", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Select Person B", exact: true })).toHaveCount(0);
+
+  const root = await page.getByRole("button", { name: "Select Person A", exact: true }).boundingBox();
+  const child = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  expect(root && child && root.y < child.y).toBe(true);
+  expect(child && child.width).toBeGreaterThanOrEqual(100);
+
+  await page.getByTestId("family-back").click();
+  await expect(page.getByTestId("family-focus")).toHaveCount(0);
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
+  expect(await readViewBox(page)).toEqual(before);
+});
+
+test("Show parents reveals recorded parents above the person", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A1", exact: true }).click();
+  await expect(page.getByTestId("family-show-parents")).toHaveText("Show parents (1)");
+  await page.getByTestId("family-show-parents").click();
+  await expect(page.getByTestId("family-focus")).toContainText("parents and children");
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Select Person R", exact: true })).toHaveCount(0);
+
+  const parent = await page.getByRole("button", { name: "Select Person A", exact: true }).boundingBox();
+  const person = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  expect(parent && person && parent.y < person.y).toBe(true);
+});
+
+test("Show children moves exactly one generation at a time", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person R", exact: true }).click();
+  await expect(page.getByTestId("family-show-children")).toHaveText("Show children (2)");
+  await page.getByTestId("family-show-children").click();
+  await expect(page.getByTestId("family-focus")).toContainText("Person R");
+  await expect(page.getByTestId("family-person")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await expect(
+    page.getByTestId("family-person-details").getByRole("heading", { level: 2 }),
+  ).toHaveText("Person A");
+  await page.getByTestId("family-show-children").click();
+  await expect(page.getByTestId("family-focus")).toContainText("Person A");
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toBeVisible();
+});
+
+test("a person with no recorded children keeps the view and says so", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
+  const before = await readViewBox(page);
+  await page.getByRole("button", { name: "Select Person A1", exact: true }).dblclick();
+  await expect(page.getByTestId("family-popup-notice")).toContainText("No children recorded");
+  await expect(page.getByTestId("family-focus")).toHaveCount(0);
+  expect(await readViewBox(page)).toEqual(before);
+});
+
+test("Back restores focus, expansion state, and the camera", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await collapse(page, "B");
+  await expect(page.getByTestId("family-person")).toHaveCount(4);
+  const before = await readViewBox(page);
+
+  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await page.getByTestId("family-back").click();
+  await expect(page.getByTestId("family-person")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "Select Person B1", exact: true })).toHaveCount(0);
+  expect(await readViewBox(page)).toEqual(before);
+});
+
+test("Show entire tree returns to the full graph", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await page.getByTestId("family-show-entire-tree").click();
+  await expect(page.getByTestId("family-focus")).toHaveCount(0);
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
+});
+
+test("search leaves a focused view and reveals the requested person", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await page.getByTestId("family-search").fill("B1");
+  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await expect(page.getByTestId("family-focus")).toHaveCount(0);
+  await expect(page.getByTestId("family-person")).toHaveCount(5);
+  await expect(page.getByTestId("family-person-details")).toContainText("Person B1");
+});
+
+test("the popup follows a pan and closes when its anchor leaves the canvas", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  const canvas = await page.getByTestId("family-tree-canvas").boundingBox();
+  expect(canvas).toBeTruthy();
+  if (!canvas) return;
+  const before = await popup.boundingBox();
+
+  await page.mouse.move(canvas.x + 30, canvas.y + canvas.height - 30);
+  await page.mouse.down();
+  await page.mouse.move(canvas.x + 130, canvas.y + canvas.height - 130, { steps: 6 });
+  await page.mouse.up();
+  await expect(popup).toBeVisible();
+  const after = await popup.boundingBox();
+  expect(after && before && after.x !== before.x).toBe(true);
+
+  await page.mouse.move(canvas.x + 30, canvas.y + canvas.height - 30);
+  await page.mouse.down();
+  await page.mouse.move(canvas.x + 30 + canvas.width * 3, canvas.y + canvas.height - 30, { steps: 12 });
+  await page.mouse.up();
+  await expect(popup).toBeHidden();
+});
+
+test("dragging a card is not a click and does not open the popup", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  const box = await card.boundingBox();
+  expect(box).toBeTruthy();
+  if (!box) return;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 40, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(SINGLE_CLICK_DELAY_WAIT_MS);
+  await expect(page.getByTestId("family-person-details")).toHaveCount(0);
+});
+
+test("keyboard opens, navigates, and dismisses the popup", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  await card.focus();
+  await page.keyboard.press("Enter");
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  await expect(popup).toBeFocused();
+
+  await page.getByTestId("family-show-children").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("family-focus")).toContainText("Person A");
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await expect(page.getByRole("button", { name: "Select Person A", exact: true })).toBeFocused();
+});
+
+test("a truncated graph discloses that relatives and counts may be incomplete", async ({ page }) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ ...branchGraph, truncated: true }) }));
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+  });
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await expect(page.getByTestId("family-popup-truncated")).toContainText("partial");
+  await expect(page.getByTestId("family-show-children")).toHaveText("Show children (1)");
+  await expect(page.getByRole("status").filter({ hasText: "counts and relatives may be incomplete" }))
+    .toBeVisible();
+});
+
+test("the popup closes when the click is outside the tree workspace", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await expect(page.getByTestId("family-person-details")).toBeVisible();
+  await page.getByRole("heading", { name: "Family tree", level: 1 }).click();
+  await expect(page.getByTestId("family-person-details")).toBeHidden();
+});
+
+test.describe("touch", () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 780 } });
+
+  test("a tap opens the popup and the visible buttons navigate", async ({ page }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    await page.getByRole("button", { name: "Select Person A", exact: true }).tap();
+    const popup = page.getByTestId("family-person-details");
+    await expect(popup).toBeVisible();
+    await page.getByTestId("family-show-children").tap();
+    await expect(page.getByTestId("family-focus")).toContainText("Person A");
+    await expect(page.getByTestId("family-person")).toHaveCount(2);
+  });
+});
+
+const SINGLE_CLICK_DELAY_WAIT_MS = 500;
+
+test("the popup keeps the family profile link", async ({ page }) => {
+  await stubAuthorized(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Nguyễn Văn A", exact: true }).click();
+  await expect(page.getByTestId("open-family-profile")).toHaveAttribute("href", "/family/root");
+});
+
+test("the popup stays in bounds when the canvas expands", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+
+  await page.getByTestId("family-canvas-toggle").click();
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await expect(popup).toBeVisible();
+  const canvas = await page.getByTestId("family-canvas").boundingBox();
+  const box = await popup.boundingBox();
+  expect(canvas && box).toBeTruthy();
+  if (canvas && box) {
+    expect(box.x).toBeGreaterThanOrEqual(canvas.x - 1);
+    expect(box.x + box.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+});
+
+// --- Contextual help ---------------------------------------------------------
+
+test("the canvas shows the compact desktop navigation hint", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-navigation-hint")).toHaveText(
+    "Click for details. Double-click to explore children. Drag empty space to pan.",
+  );
+  await expect(page.getByTestId("family-help")).toBeVisible();
+});
+
+test("Help opens a dismissible guide with the implemented controls", async ({ page }) => {
+  await stubBranches(page);
+  await page.goto("/genealogy");
+  const helpButton = page.getByTestId("family-help");
+  await helpButton.focus();
+  await page.keyboard.press("Enter");
+  const panel = page.getByTestId("family-help-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toBeFocused();
+  for (const text of [
+    "Click a person to open their details",
+    "Show children",
+    "Show parents",
+    "Back",
+    "Nguyen",
+    "Fit all",
+    "Focus selected",
+    "Expand canvas",
+    "Verified",
+    "Needs review",
+    "Unverified",
+    "Tab moves between controls",
+  ]) {
+    await expect(panel).toContainText(text);
+  }
+  await expect(page.getByTestId("family-help-no-children")).toContainText("does not establish");
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(helpButton).toBeFocused();
+
+  // Dismissing does not remove the way back in.
+  await helpButton.click();
+  await expect(panel).toBeVisible();
+  await page.getByTestId("family-help-close").click();
+  await expect(panel).toBeHidden();
+});
+
+test.describe("help on a narrow screen", () => {
+  test.use({ viewport: { width: 390, height: 780 } });
+
+  test("the guide stays inside the viewport and is dismissible", async ({ page }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    await page.getByTestId("family-help").click();
+    const panel = page.getByTestId("family-help-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText("No children recorded");
+    const box = await panel.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box && viewport).toBeTruthy();
+    if (box && viewport) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    await page.getByTestId("family-help-close").click();
+    await expect(panel).toBeHidden();
+  });
+});
+
+test.describe("touch hint", () => {
+  test.use({ hasTouch: true });
+
+  test("uses tap wording instead of click and double-click", async ({ page }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    const hint = page.getByTestId("family-navigation-hint");
+    await expect(hint).toHaveText(
+      "Tap a person for details, then choose Show children or Show parents.",
+    );
+    await expect(hint).not.toContainText("Double-click");
+  });
 });
