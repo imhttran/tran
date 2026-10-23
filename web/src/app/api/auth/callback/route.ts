@@ -6,6 +6,7 @@ import {
   OIDC_VERIFIER_COOKIE,
   csrfCookie,
   sessionCookie,
+  sessionLifetimeSeconds,
 } from "@/lib/proxy-cookies";
 import {
   audienceMatches,
@@ -104,6 +105,13 @@ export async function GET(request: NextRequest) {
     return fail(origin, "invalid_id_token");
   }
 
+  // The browser session may never outlive the accepted token. A token that
+  // expires within the same second yields no session at all.
+  const sessionLifetime = sessionLifetimeSeconds(claims.exp, now);
+  if (sessionLifetime <= 0) {
+    return fail(origin, "invalid_id_token");
+  }
+
   // Delegate signature verification and database-backed role/grant resolution
   // to Rust. A failure never becomes an anonymous session.
   const api = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
@@ -120,8 +128,8 @@ export async function GET(request: NextRequest) {
   }
 
   const response = NextResponse.redirect(new URL("/", origin), 303);
-  response.cookies.set(sessionCookie(idToken));
-  response.cookies.set(csrfCookie(randomString(32)));
+  response.cookies.set(sessionCookie(idToken, sessionLifetime));
+  response.cookies.set(csrfCookie(randomString(32), sessionLifetime));
   clearTransient(response);
   return response;
 }

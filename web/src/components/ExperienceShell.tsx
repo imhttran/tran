@@ -8,6 +8,11 @@ import type { ReactNode } from "react";
 import { AccountMenu } from "@/components/AccountMenu";
 import { canUpload } from "@/lib/experience-contract";
 import type { Role, SessionResult } from "@/lib/experience-contract";
+import {
+  markSessionExpired,
+  onSessionExpired,
+  resetSessionExpired,
+} from "@/lib/session-expiry";
 
 // Client shell for authenticated pages. It resolves the session from the
 // same-origin session endpoint (the server never sends a token, subject, email,
@@ -37,6 +42,7 @@ async function readSession(): Promise<SessionResult> {
   try {
     const response = await fetch("/api/auth/session", { cache: "no-store" });
     if (response.status === 401) {
+      markSessionExpired();
       return { kind: "expired", signInUrl: "/signin" };
     }
     if (response.status === 403) {
@@ -57,6 +63,7 @@ async function readSession(): Promise<SessionResult> {
       display_name?: string;
     };
     if (body.state === "signed_in") {
+      resetSessionExpired();
       const role = body.role ?? null;
       return {
         kind: "allowed",
@@ -69,6 +76,7 @@ async function readSession(): Promise<SessionResult> {
         },
       };
     }
+    resetSessionExpired();
     return { kind: "allowed", data: { state: "anonymous" } };
   } catch {
     return { kind: "denied", reason: "The session service is unreachable." };
@@ -90,11 +98,20 @@ export function ExperienceShell({ children }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // A protected call may report 401 before or after the initial session read.
+    // This subscription is the single place that turns that into the expired
+    // shell state, so concurrent failures do not reload or redirect.
+    const unsubscribe = onSessionExpired(() => {
+      if (!cancelled) {
+        setSession({ kind: "expired", signInUrl: "/signin" });
+      }
+    });
     readSession().then((result) => {
       if (!cancelled) setSession(result);
     });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

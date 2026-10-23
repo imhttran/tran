@@ -2,6 +2,11 @@
 // rewrite proxies `/api/*` to the Rust Axum API. `API_URL` stays server-side.
 
 import type { Role } from "./experience-contract";
+import {
+  SESSION_EXPIRED_MESSAGE,
+  noteAuthStatus,
+  sessionIsExpired,
+} from "./session-expiry";
 
 export type HealthResponse = {
   status: "ok" | "degraded";
@@ -78,6 +83,20 @@ function csrfToken(): string | null {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Once this page has observed an expired session, stop issuing protected
+  // requests. This ends polling and retry loops instead of replaying an expired
+  // credential. The public health probe still works.
+  if (path !== "/api/health" && sessionIsExpired()) {
+    throw new ApiRequestError(
+      401,
+      {
+        ok: false,
+        error: "expired",
+        message: SESSION_EXPIRED_MESSAGE,
+      },
+      SESSION_EXPIRED_MESSAGE,
+    );
+  }
   const method = (init?.method || "GET").toUpperCase();
   const headers = new Headers(init?.headers);
   if (method !== "GET" && method !== "HEAD") {
@@ -96,6 +115,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       `Could not reach the local API (${error instanceof Error ? error.message : "network error"}).`,
     );
   }
+  // Only an authentication rejection expires the browser session; 403, 5xx, and
+  // network failures keep their existing behavior.
+  noteAuthStatus(response.status);
   const text = await response.text();
   let body: unknown = null;
   if (text) {

@@ -18,10 +18,10 @@ export function AccountMenu({ session, signingOut, onSignIn, onSignOut }: Props)
     return (
       <nav className="account-menu" data-testid="account-menu" data-state="expired">
         <p className="hint" data-testid="session-expired">
-          Your session expired. Sign in again to continue.
+          Session expired. Sign in again.
         </p>
         <button type="button" onClick={onSignIn} data-testid="sign-in-button">
-          Sign in
+          Sign in again
         </button>
       </nav>
     );
