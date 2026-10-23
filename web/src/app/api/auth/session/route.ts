@@ -5,6 +5,7 @@
 
 import { NextResponse } from "next/server";
 
+import { clearedSessionCookies } from "@/lib/proxy-cookies";
 import { resolveSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -19,10 +20,17 @@ export async function GET() {
     });
   }
   if (result.kind === "expired") {
-    return NextResponse.json(
+    // The token inside the cookie was rejected. Clear the stale browser session
+    // on this legal cookie-modifying response so the next request is anonymous
+    // rather than repeatedly forwarding an expired credential.
+    const response = NextResponse.json(
       { error: "expired" },
       { status: 401, headers: { "cache-control": "no-store" } },
     );
+    for (const cookie of clearedSessionCookies()) {
+      response.cookies.set(cookie);
+    }
+    return response;
   }
   return NextResponse.json(
     { state: "anonymous" },

@@ -23,7 +23,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
-import { CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE } from "../../../lib/proxy-cookies";
+import {
+  CSRF_COOKIE,
+  CSRF_HEADER,
+  SESSION_COOKIE,
+  clearedSessionCookies,
+} from "../../../lib/proxy-cookies";
 
 const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 
@@ -187,10 +192,22 @@ async function proxy(
   responseHeaders.set("cache-control", "no-store");
 
   const payload = await upstream.arrayBuffer();
-  return new NextResponse(payload.byteLength > 0 ? payload : null, {
+  const response = new NextResponse(payload.byteLength > 0 ? payload : null, {
     status: upstream.status,
     headers: responseHeaders,
   });
+
+  // An authentication rejection of a browser session means the token in the
+  // HttpOnly cookie is no longer usable. Clear the stale session and CSRF
+  // cookies on the same response while preserving the API's 401 body and status
+  // for every caller. A bearer-token client (no session cookie) is untouched.
+  if (upstream.status === 401 && readCookie(request, SESSION_COOKIE)) {
+    for (const cookie of clearedSessionCookies()) {
+      response.cookies.set(cookie);
+    }
+  }
+
+  return response;
 }
 
 export const GET = proxy;
