@@ -20,9 +20,9 @@ use image::{DynamicImage, ImageFormat};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
     link_reviewed, read_authorized_media, read_family_media, read_family_profile, resolve_account,
-    restrict_own_field, review_revision, store_submission, withdraw_owned_media, FamilyProfile,
-    FamilyProfileError, IdentityAccount, LinkDecision, MediaAsset, MediaDownload, MediaError,
-    MediaKind, MediaStorage, ProfileVisibility, ReviewDecision, RevisionError,
+    restrict_own_field, review_revision, revoke_link, store_submission, withdraw_owned_media,
+    FamilyProfile, FamilyProfileError, IdentityAccount, LinkDecision, MediaAsset, MediaDownload,
+    MediaError, MediaKind, MediaStorage, ProfileVisibility, ReviewDecision, RevisionError,
 };
 use tempfile::TempDir;
 
@@ -919,4 +919,202 @@ fn a_restriction_cannot_commit_while_a_family_read_holds_the_person_lock() {
         .any_media(&owner, photo.media_id)
         .expect("owner keeps access");
     assert_eq!(owner_read.bytes, expected);
+}
+
+fn link_id_for(db: &mut TestDb, person_id: i64, account_id: i64) -> i64 {
+    db.genealogy
+        .query_one(
+            "SELECT link_id FROM onboarding_person_account_link \
+              WHERE person_id = $1 AND account_id = $2",
+            &[&person_id, &account_id],
+        )
+        .expect("reviewed link id")
+        .get(0)
+}
+
+/// Owner access must never wait for the person row. `revoke_link` locks the
+/// person before deleting the account-person link, and the download already holds
+/// that link, so waiting for the person here would deadlock with a revocation.
+#[test]
+fn an_owner_download_does_not_wait_on_the_person_lock() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, _person_key, _viewer) = scene(&mut db, "owner-lock");
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "owner.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    let expected = db
+        .any_media(&owner, photo.media_id)
+        .expect("owner read")
+        .bytes;
+
+    // A restriction writer holds the person row for update.
+    let mut control = Client::connect(&db.genealogy_dsn, NoTls).expect("control connection");
+    let mut guard = control.transaction().expect("control transaction");
+    guard
+        .query_one(
+            "SELECT 1 FROM person WHERE person_id = $1 FOR UPDATE",
+            &[&person],
+        )
+        .expect("hold the person row");
+
+    let (result_tx, result_rx) = mpsc::channel();
+    let dsn = db.genealogy_dsn.clone();
+    let storage = db.storage.clone();
+    let owner_account = owner.clone();
+    let media_id = photo.media_id;
+    let handle = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("owner read connection");
+        let _ = result_tx.send(read_authorized_media(
+            &mut client,
+            &storage,
+            &owner_account,
+            media_id,
+        ));
+    });
+
+    // Bounded wait: a download that needed the person row would block here. The
+    // alternative (`pg_blocking_pids`) cannot prove the negative "never waits",
+    // so a generous timeout is the assertion; it is far above the few
+    // milliseconds this read needs even on a loaded host.
+    let received = result_rx.recv_timeout(Duration::from_secs(30));
+    guard.commit().expect("release the person row");
+    let _ = handle.join();
+
+    let download = match received {
+        Ok(Ok(download)) => download,
+        Ok(Err(err)) => panic!("owner download failed: {err}"),
+        Err(_) => panic!("an owner download waited on the person lock"),
+    };
+    assert_eq!(download.bytes, expected);
+    assert_eq!(download.asset.sha256, photo.sha256);
+}
+
+/// A revocation (person, then link) must complete while a download holds the
+/// link, rather than deadlocking against it.
+#[test]
+fn owner_download_and_link_revocation_do_not_deadlock() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, _person_key, _viewer) = scene(&mut db, "revoke-order");
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "revoke.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    let link_id = link_id_for(&mut db, person, owner.account_id);
+
+    // This is the owner download's complete lock footprint: the reviewed link.
+    let mut control = Client::connect(&db.genealogy_dsn, NoTls).expect("control connection");
+    let mut guard = control.transaction().expect("control transaction");
+    guard
+        .query_one(
+            "SELECT 1 FROM onboarding_person_account_link WHERE link_id = $1 FOR SHARE",
+            &[&link_id],
+        )
+        .expect("hold the reviewed link");
+
+    let dsn = db.genealogy_dsn.clone();
+    let (pid_tx, pid_rx) = mpsc::channel::<i32>();
+    let handle = thread::spawn(move || {
+        let mut client = Client::connect(&dsn, NoTls).expect("revocation connection");
+        let pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .expect("revocation backend id")
+            .get(0);
+        pid_tx.send(pid).expect("report revocation backend id");
+        revoke_link(&mut client, link_id, "synthetic-admin")
+    });
+
+    let pid = pid_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("revocation backend id");
+    // The revocation has the person row and is waiting on the link only.
+    wait_until_blocked(&mut db, pid);
+    guard.commit().expect("release the reviewed link");
+
+    handle
+        .join()
+        .expect("revocation thread")
+        .expect("the revocation completes without a deadlock");
+    assert_eq!(
+        db.any_media(&owner, photo.media_id),
+        Err(MediaError::Unlinked)
+    );
+}
+
+#[test]
+fn a_revoked_owner_link_prevents_further_downloads() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, person, person_key, viewer) = scene(&mut db, "revoked");
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "revoked.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    assert!(db.any_media(&owner, photo.media_id).is_ok());
+
+    let link_id = link_id_for(&mut db, person, owner.account_id);
+    revoke_link(&mut db.genealogy, link_id, "synthetic-admin").expect("revoke the owner link");
+
+    assert_eq!(
+        db.any_media(&owner, photo.media_id),
+        Err(MediaError::Unlinked)
+    );
+    // Revoking the owner's link does not affect another member's own link.
+    assert!(db
+        .family_media(&viewer, &person_key, photo.media_id)
+        .is_ok());
+}
+
+#[test]
+fn an_owner_reads_approved_and_owner_private_media_while_linked() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let (owner, _person, _person_key, _viewer) = scene(&mut db, "owner-reads");
+    let photo = db.upload(
+        &owner,
+        MediaKind::Photo,
+        "shared.png",
+        &png_bytes(),
+        ProfileVisibility::Family,
+    );
+    db.approve(photo.revision_id);
+    let document = db.upload(
+        &owner,
+        MediaKind::PersonalDocument,
+        "private.txt",
+        &document_bytes(),
+        ProfileVisibility::OwnerPrivate,
+    );
+    db.approve(document.revision_id);
+
+    let photo_read = db
+        .any_media(&owner, photo.media_id)
+        .expect("approved family media");
+    assert_eq!(photo_read.asset.visibility, ProfileVisibility::Family);
+    let document_read = db
+        .any_media(&owner, document.media_id)
+        .expect("approved owner-private media");
+    assert_eq!(
+        document_read.asset.visibility,
+        ProfileVisibility::OwnerPrivate
+    );
+    assert_eq!(document_read.bytes, document_bytes());
 }
