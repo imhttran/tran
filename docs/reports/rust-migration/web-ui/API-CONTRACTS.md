@@ -1,7 +1,7 @@
 # UI-001 — Screens and API contracts
 
 Status: prototype contract (UI-001), implemented by RUST-008A with documented
-differences in [`docs/reference/rust-008a-browser-evidence.md`](../../reference/rust-008a-browser-evidence.md).
+differences in [`docs/reference/rust-008a-browser-evidence.md`](../../../reference/rust-008a-browser-evidence.md).
 The UI is no longer mock-only.
 
 Records the schemas the UI-002 prototype was built against. Every response is now
