@@ -738,12 +738,18 @@ fn add_evidence(
 pub fn withdraw_document_evidence(
     client: &mut Client,
     document_version_id: i64,
+    document_ref: &str,
 ) -> Result<u64, GenealogyError> {
+    // Evidence written before migration 0024 has no version id, so the source
+    // reference is matched as well. The id is filled in while withdrawing, so a
+    // later removal is a pure id lookup.
     let updated = client.execute(
         "UPDATE assertion_evidence
-            SET withdrawn_at = now()
-          WHERE document_version_id = $1 AND withdrawn_at IS NULL",
-        &[&document_version_id],
+            SET withdrawn_at = now(),
+                document_version_id = COALESCE(document_version_id, $1)
+          WHERE withdrawn_at IS NULL
+            AND (document_version_id = $1 OR document_ref = $2)",
+        &[&document_version_id, &document_ref],
     )?;
     Ok(updated)
 }

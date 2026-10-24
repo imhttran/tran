@@ -6411,6 +6411,7 @@ async fn remove_document_submission(
                 "the authenticated account may not remove this document",
             ));
         }
+        let source = version.source.clone();
         document_lifecycle::remove(&mut client, version_id, &corpus, &actor)
             .map_err(lifecycle_error)
             .and_then(|removed| {
@@ -6424,8 +6425,11 @@ async fn remove_document_submission(
                         "the document was removed, but its evidence could not be withdrawn; retry the removal",
                     )
                 })?;
-                let withdrawn =
-                    document_extraction::withdraw_document_evidence(&mut genealogy, version_id)
+                let withdrawn = document_extraction::withdraw_document_evidence(
+                    &mut genealogy,
+                    version_id,
+                    &source,
+                )
                         .map_err(|err| {
                             eprintln!(
                                 "api: evidence withdrawal failed for version {version_id}: {err}"
