@@ -250,6 +250,9 @@ impl DocumentVersion {
 pub enum LifecycleError {
     #[error("invalid {0}: {1}")]
     Invalid(&'static str, String),
+    /// The original cannot yield any section the pipeline could index.
+    #[error("the document cannot be indexed: {0}")]
+    NotIndexable(String),
     #[error("unknown document version")]
     NotFound,
     #[error("the document version is not in a state that permits this action")]
@@ -376,6 +379,47 @@ fn mime_for(extension: &str) -> &'static str {
         "md" | "markdown" => "text/markdown",
         _ => "text/plain",
     }
+}
+
+/// Rejects an original the ingestion pipeline could never index.
+///
+/// The Markdown loader treats only `## ` as a section boundary and drops the
+/// block before the first one, so an H1-only file yields no chunks and fails
+/// later in processing as a bare "extraction rejected". Rejecting it at
+/// submission keeps a doomed version out of the review queue and tells the
+/// operator what to change. PDFs are left to processing, which reports a
+/// scanned or incomplete text layer there.
+fn ensure_indexable(extension: &str, bytes: &[u8]) -> Result<(), LifecycleError> {
+    if extension == "pdf" {
+        return Ok(());
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| LifecycleError::NotIndexable("the file is not valid UTF-8".to_string()))?;
+    match extension {
+        "md" | "markdown" => {
+            let sections = crate::loader::markdown::load_markdown(text);
+            // `chunk_sections` skips a section whose content has no words, so a
+            // heading with an empty body would still produce no chunks.
+            let indexable = sections
+                .iter()
+                .any(|section| section.content.split_whitespace().next().is_some());
+            if !indexable {
+                return Err(LifecycleError::NotIndexable(
+                    "Markdown needs at least one '## ' heading with text under it; \
+                     a .txt file is indexed as a single passage without one"
+                        .to_string(),
+                ));
+            }
+        }
+        _ => {
+            if text.trim().is_empty() {
+                return Err(LifecycleError::NotIndexable(
+                    "the file has no readable text".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn slug(value: &str) -> String {
@@ -513,6 +557,7 @@ pub fn create_submission(
         return Err(LifecycleError::Invalid("file", "too large".to_string()));
     }
     let extension = extension_for(input.original_filename)?;
+    ensure_indexable(extension, input.bytes)?;
     let title = input.title.trim();
     if title.is_empty() {
         return Err(LifecycleError::Invalid("title", "empty".to_string()));
@@ -1289,4 +1334,53 @@ pub fn promote_legacy(
     let version = fetch_version(&mut tx, version_id, corpus)?;
     tx.commit()?;
     Ok(version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_without_an_h2_section_is_not_indexable() {
+        assert!(matches!(
+            ensure_indexable("md", b"# Title\n\nLoose prose."),
+            Err(LifecycleError::NotIndexable(_))
+        ));
+        assert!(matches!(
+            ensure_indexable("markdown", b"Loose prose only."),
+            Err(LifecycleError::NotIndexable(_))
+        ));
+        // A heading with no body still yields no chunk.
+        assert!(matches!(
+            ensure_indexable("md", b"## Empty\n\n   \n"),
+            Err(LifecycleError::NotIndexable(_))
+        ));
+    }
+
+    #[test]
+    fn markdown_with_an_h2_section_and_text_is_indexable() {
+        assert!(ensure_indexable("md", b"# Title\n\nintro\n\n## Body\n\nA paragraph.").is_ok());
+        assert!(ensure_indexable("markdown", b"## Body\n\nA paragraph.").is_ok());
+    }
+
+    #[test]
+    fn plain_text_must_not_be_empty() {
+        assert!(ensure_indexable("txt", b"   \n\t\n").is_err());
+        assert!(ensure_indexable("txt", b"A plain note.").is_ok());
+    }
+
+    #[test]
+    fn invalid_utf8_is_rejected() {
+        assert!(matches!(
+            ensure_indexable("md", &[0xff, 0xfe]),
+            Err(LifecycleError::NotIndexable(_))
+        ));
+    }
+
+    #[test]
+    fn pdf_indexability_is_decided_at_processing() {
+        // A PDF needs its text layer extracted; a scanned one is reported as an
+        // incomplete extraction during processing.
+        assert!(ensure_indexable("pdf", b"%PDF-1.4").is_ok());
+    }
 }

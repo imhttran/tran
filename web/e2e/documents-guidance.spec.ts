@@ -80,12 +80,19 @@ test.describe("family documents first-use guidance", () => {
     await expect(guidance).toContainText("parents, grandparents, and other relatives");
     await expect(guidance).toContainText("Letters, biographies, and historical records");
     await expect(guidance).toContainText("Vietnamese and English");
-    await expect(guidance).toContainText("No special writing format is required");
+    await expect(guidance).toContainText("No special writing style is required");
 
     await expect(guidance).toContainText(".md");
     await expect(guidance).toContainText(".markdown");
     await expect(guidance).toContainText(".txt");
     await expect(guidance).toContainText(".pdf");
+    // Markdown is section-based on the server; the guidance must say so.
+    await expect(page.getByTestId("markdown-sections-note")).toContainText(
+      "single passage",
+    );
+    await expect(page.getByTestId("markdown-sections-note")).toContainText(
+      "heading",
+    );
     // The advertised limit comes from the same constant the form uses.
     await expect(guidance).toContainText(documentUploadLimitLabel());
     await expect(guidance).toContainText("OCR");

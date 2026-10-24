@@ -262,11 +262,19 @@ fn api_contract_upload_status_query_health_and_refusal() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"], "file_too_large");
 
-    // A whitespace-only Markdown file is accepted as a pending submission but
-    // processing rejects it and publishes nothing.
+    // A whitespace-only text file could never be indexed, so it is refused at
+    // submission instead of entering the review queue and failing there.
     let whitespace = fixture("empty.txt");
-    let empty_version = submit_and_fail(&client, &base, &whitespace);
-    assert_eq!(db_count_by_version(&dsn, empty_version), 0);
+    let (status, body) = upload(&client, &base, &whitespace);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "not_indexable");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no readable text"),
+        "the refusal must explain itself: {body}"
+    );
 
     // Incomplete PDF: accepted for review, rejected by processing, never
     // published.

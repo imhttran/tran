@@ -744,8 +744,18 @@ pub fn process_job<E: Embedder>(
                     }
                 }
             }
-            Ok(crate::pipeline::IngestOutcome::Rejected(_)) => {
-                fail_job(client, job, "extraction rejected")
+            Ok(crate::pipeline::IngestOutcome::Rejected(rejection)) => {
+                // Surface why it was rejected: the job row is the operator's only
+                // view of a failed processing attempt.
+                let detail = match &rejection {
+                    crate::ingest::IngestRejection::NoChunks { .. } => {
+                        ("extraction rejected: no indexable sections \
+                         (Markdown needs a '## ' heading with text)")
+                            .to_string()
+                    }
+                    other => format!("extraction rejected: {other}"),
+                };
+                fail_job(client, job, &detail)
             }
             Err(err) => {
                 eprintln!(

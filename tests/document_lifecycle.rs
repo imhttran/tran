@@ -258,7 +258,7 @@ fn lifecycle_is_additive_quarantined_and_approved_only() {
     // A new submission starts pending and writes no chunks.
     let root = tempfile::tempdir().expect("temp document root");
     let storage = DocumentStorage::new(root.path());
-    let bytes = b"# Synthetic family document\n\nA synthetic paragraph.";
+    let bytes = b"## Synthetic family document\n\nA synthetic paragraph.";
     let submission = create_submission(
         &mut client,
         &storage,
@@ -278,6 +278,38 @@ fn lifecycle_is_additive_quarantined_and_approved_only() {
     )
     .expect("create submission");
     assert_eq!(submission.review_status, "pending_review");
+
+    // A Markdown original the pipeline could never index is refused at
+    // submission, before it can enter the review queue. The loader only treats
+    // "## " as a section boundary, so an H1-only file would yield no chunks and
+    // fail later as an opaque "extraction rejected".
+    let before: i64 = client
+        .query_one("SELECT count(*) FROM document_version", &[])
+        .expect("count versions")
+        .get(0);
+    let flat = create_submission(
+        &mut client,
+        &storage,
+        NewSubmission {
+            actor: "editor-subject",
+            corpus: "family-docs",
+            title: "Flat note",
+            description: None,
+            category: Category::Story,
+            access_scope: AccessScope::Family,
+            owner_subject: Some("editor-subject"),
+            owner_issuer: Some("synthetic-issuer"),
+            original_filename: "flat.md",
+            bytes: b"# Flat note\n\nA paragraph with no section heading.",
+            document_key: None,
+        },
+    );
+    assert!(matches!(flat, Err(LifecycleError::NotIndexable(_))));
+    let after: i64 = client
+        .query_one("SELECT count(*) FROM document_version", &[])
+        .expect("count versions")
+        .get(0);
+    assert_eq!(after, before, "a rejected original must create no version");
     assert_eq!(submission.processing_status, "unprocessed");
     let (_, original) = read_original(&mut client, &storage, submission.version_id, "family-docs")
         .expect("read original");

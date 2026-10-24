@@ -5453,6 +5453,11 @@ fn open_rag(config: &Config) -> Result<postgres::Client, Response> {
 fn lifecycle_error(err: document_lifecycle::LifecycleError) -> Response {
     eprintln!("api: document lifecycle failed: {err}");
     match err {
+        document_lifecycle::LifecycleError::NotIndexable(detail) => error(
+            StatusCode::BAD_REQUEST,
+            "not_indexable",
+            format!("the document cannot be indexed: {detail}"),
+        ),
         document_lifecycle::LifecycleError::Invalid(_, _) => error(
             StatusCode::BAD_REQUEST,
             "invalid_document",
