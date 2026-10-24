@@ -614,8 +614,18 @@ fn a_reordered_reference_needs_confirmation_and_becomes_an_alias() {
         .expect("P300 in the tree");
     assert!(node.aliases.iter().any(|alias| alias == "Binh Van Tran"));
 
+    // Evidence written before version ids were recorded is still withdrawn by
+    // its document reference.
+    client
+        .execute(
+            "UPDATE assertion_evidence SET document_version_id = NULL
+              WHERE document_version_id = 12",
+            &[],
+        )
+        .expect("simulate legacy evidence");
     // Withdrawing the document takes its evidence out of current answers.
-    let withdrawn = withdraw_document_evidence(&mut client, 12).expect("withdraw");
+    let withdrawn = withdraw_document_evidence(&mut client, 12, "synthetic/english-order.md")
+        .expect("withdraw");
     assert!(withdrawn >= 1);
     let stored = lookup_person(&mut client, "P300")
         .expect("person")
