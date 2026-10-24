@@ -25,9 +25,16 @@ const graph = {
 const person = {
   record_id: "root",
   person_label: "Nguyễn Văn A",
-  assertions: [{ assertion_id: 101, kind: "birth", key: "date",
-    value_text: "1901", review_status: "verified",
-    evidence: [{ evidence_id: "e-2", citation: "synthetic p.3" }] }],
+  assertions: [
+    { assertion_id: 101, kind: "birth", key: "date",
+      value_text: "1901", review_status: "verified",
+      evidence: [{ evidence_id: "e-2", citation: "synthetic p.3" }] },
+    // An explicit http(s) link is clickable; an executable scheme is not.
+    { assertion_id: 102, kind: "social_link", key: "link",
+      value_text: "https://example.test/a", review_status: "unverified", evidence: [] },
+    { assertion_id: 103, kind: "social_link", key: "link-js",
+      value_text: "javascript:alert(1)", review_status: "unverified", evidence: [] },
+  ],
 };
 
 async function stubAuthorized(page: import("@playwright/test").Page) {
@@ -54,6 +61,19 @@ test("graph, citations, disconnected records, and uncertain edges stay distinct"
   await page.getByRole("button", { name: "Select Nguyễn Văn A", exact: true }).click();
   await expect(page.getByTestId("family-person-details")).toBeVisible();
   await expect(page.getByTestId("family-assertions")).toContainText("synthetic p.3");
+  // A recorded social URL is a link; an executable scheme stays text.
+  await expect(page.getByTestId("family-social-link")).toHaveCount(1);
+  await expect(page.getByTestId("family-social-link")).toHaveAttribute(
+    "href",
+    "https://example.test/a",
+  );
+  await expect(page.getByTestId("family-social-link")).toHaveAttribute(
+    "rel",
+    "noopener noreferrer",
+  );
+  await expect(page.getByTestId("family-assertions")).toContainText(
+    "javascript:alert(1)",
+  );
 });
 
 test("Vietnamese name search reveals the requested person", async ({ page }) => {

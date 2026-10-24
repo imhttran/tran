@@ -41,5 +41,6 @@ Also known as: [Other names, if known]
 Relationship: Son of Nguyễn Văn Bình and Trần Thị Lan.
 Story: [Describe a memory, experience, or important event.]
 Date and place: [Include what you know; approximate dates are fine.]
+Instagram: https://www.instagram.com/example/
 Source: [Who shared this, or which document supports it.]
 Uncertainty: [Explain anything that is not confirmed.]`;

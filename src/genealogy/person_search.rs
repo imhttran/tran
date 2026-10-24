@@ -417,6 +417,28 @@ pub fn rank(people: &[PersonNames], query_name: &str) -> Vec<Candidate> {
     candidates
 }
 
+/// The strongest match tier and every person tied at it.
+///
+/// A caller that must not merge identities (for example document extraction)
+/// uses this to decide between one confirmed candidate, several candidates, and
+/// no candidate at all.
+pub fn top_tier(candidates: &[Candidate]) -> Vec<&Candidate> {
+    let Some(best) = candidates.first().map(Candidate::rank) else {
+        return Vec::new();
+    };
+    candidates
+        .iter()
+        .filter(|candidate| candidate.rank() == best)
+        .collect()
+}
+
+/// True when a candidate only matched a subset of the recorded name tokens.
+///
+/// A weak match is a lead for a human, never proof of identity.
+pub fn is_weak(candidate: &Candidate) -> bool {
+    candidate.match_kind == Some(MatchKind::Partial)
+}
+
 /// Reads every cataloged person with their recorded spellings and the same
 /// evidence status the tree read assigns.
 pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {

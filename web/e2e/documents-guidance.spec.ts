@@ -93,6 +93,13 @@ test.describe("family documents first-use guidance", () => {
     await expect(page.getByTestId("markdown-sections-note")).toContainText(
       "heading",
     );
+    // Extraction is reviewed separately and never verifies a fact.
+    await expect(page.getByTestId("guidance-records")).toContainText(
+      "searchable name",
+    );
+    await expect(page.getByTestId("guidance-records")).toContainText(
+      "not a link",
+    );
     // The advertised limit comes from the same constant the form uses.
     await expect(guidance).toContainText(documentUploadLimitLabel());
     await expect(guidance).toContainText("OCR");

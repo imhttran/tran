@@ -19,6 +19,21 @@ import {
 } from "@/lib/family-tree";
 import type { Focus, PopupPlacement, TreeGraph, TreeLink } from "@/lib/family-tree";
 
+// Only an explicit http(s) URL becomes a link. An alias, a bare handle, or an
+// executable scheme stays plain text.
+function safeHref(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 type PersonAssertion = {
   assertion_id: number;
   kind: string;
@@ -922,7 +937,24 @@ function FamilyTree() {
                         {detail.assertions.map((assertion) => (
                           <li key={assertion.assertion_id}>
                             <strong>{assertion.kind.replace("_", " ")}</strong>
-                            {assertion.value_text && <p>{assertion.value_text}</p>}
+                            {assertion.kind === "social_link" &&
+                            assertion.value_text &&
+                            safeHref(assertion.value_text) ? (
+                              <p>
+                                <a
+                                  href={safeHref(assertion.value_text)!}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  data-testid="family-social-link"
+                                >
+                                  {assertion.value_text}
+                                </a>
+                              </p>
+                            ) : (
+                              assertion.value_text && (
+                                <p>{assertion.value_text}</p>
+                              )
+                            )}
                             <span className="meta">{assertion.review_status.replace("_", " ")}</span>
                             <EvidenceList evidence={assertion.evidence} onOpen={openCitation} />
                           </li>

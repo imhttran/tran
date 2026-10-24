@@ -894,6 +894,107 @@ export function listDocumentSubmissions(): Promise<DocumentSubmissionList> {
   return request<DocumentSubmissionList>("/api/documents/submissions");
 }
 
+// Reviewed document-to-genealogy extraction. Draft proposals are admin-only;
+// applying one writes unverified genealogy assertions and never verifies them.
+export type ExtractionCandidate = {
+  person_key: string;
+  display_name: string;
+  evidence_status: string;
+  match_kind: string;
+  matched_name: string;
+};
+
+export type ExtractionProposal = {
+  proposal_id: number;
+  ordinal: number;
+  kind: "person" | "parent_child" | "spouse" | "alias" | "social_link";
+  subject_name: string;
+  target_name: string | null;
+  resolution: "matched" | "ambiguous" | "unresolved" | "create";
+  resolved_person_key: string | null;
+  candidates: ExtractionCandidate[];
+  value_text: string | null;
+  support_text: string;
+  status: "proposed" | "approved" | "rejected" | "applied";
+  decided_by: string | null;
+  applied_result: unknown;
+};
+
+export type DocumentExtraction = {
+  ok: true;
+  extraction: {
+    extraction_id: number;
+    document_version_id: number;
+    document_source: string;
+    content_sha256: string;
+    status: "draft" | "applied" | "superseded";
+    created_by: string;
+    created_at: string;
+    applied_by: string | null;
+    applied_at: string | null;
+  };
+  proposals: ExtractionProposal[];
+};
+
+export type ExtractionApplyResult = {
+  ok: true;
+  extraction_id: number;
+  already_applied: boolean;
+  applied: Array<{ proposal_id: number; kind: string; result: unknown }>;
+};
+
+export async function getDocumentExtraction(
+  versionId: number,
+): Promise<DocumentExtraction | null> {
+  try {
+    return await request<DocumentExtraction>(
+      `/api/genealogy/documents/${versionId}/extraction`,
+    );
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export function extractDocumentRecords(
+  versionId: number,
+): Promise<DocumentExtraction> {
+  return request<DocumentExtraction>(
+    `/api/genealogy/documents/${versionId}/extraction`,
+    { method: "POST" },
+  );
+}
+
+export function decideExtractionProposal(
+  proposalId: number,
+  body: {
+    decision: "approve" | "reject";
+    person_key?: string;
+    create_person?: boolean;
+    value_text?: string;
+  },
+): Promise<DocumentExtraction> {
+  return request<DocumentExtraction>(
+    `/api/genealogy/document-proposals/${proposalId}/decision`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function applyDocumentExtraction(
+  versionId: number,
+): Promise<ExtractionApplyResult> {
+  return request<ExtractionApplyResult>(
+    `/api/genealogy/documents/${versionId}/apply`,
+    { method: "POST" },
+  );
+}
+
 export function reviewDocument(
   versionId: number,
   body: { approve: boolean; note?: string; scope?: string },

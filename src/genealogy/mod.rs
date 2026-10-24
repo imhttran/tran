@@ -6,6 +6,8 @@
 
 pub mod appointments;
 pub mod branch_review;
+pub mod document_card;
+pub mod document_extraction;
 pub mod eligibility;
 pub mod label;
 pub mod migrate;
