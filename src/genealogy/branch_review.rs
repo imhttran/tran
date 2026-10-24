@@ -193,7 +193,8 @@ pub fn person_evidence(
         "SELECT DISTINCT se.source_evidence_id, ae.document_ref, ae.page, se.locator, \
                 a.assertion_kind, a.assertion_key \
            FROM assertion a \
-           JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id \
+           JOIN assertion_evidence ae
+             ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL \
            JOIN source_evidence se ON se.source_evidence_id = ae.source_evidence_id \
           WHERE a.person_id = $1 \
           ORDER BY se.source_evidence_id, a.assertion_kind, a.assertion_key",

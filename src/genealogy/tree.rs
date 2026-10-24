@@ -150,7 +150,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                  ) THEN 'verified'
                  ELSE 'unverified'
                END AS evidence_status,
-               evidence.document_ref, evidence.page
+               evidence.document_ref, evidence.page, evidence.locator, evidence.excerpt
           FROM links l
           LEFT JOIN LATERAL (
             SELECT DISTINCT ae.document_ref, ae.page, ae.locator, ae.excerpt
