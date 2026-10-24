@@ -860,15 +860,30 @@ pub fn apply(
                      ON CONFLICT (parent_id, child_id) DO NOTHING",
                     &[&parent_id, &child_id],
                 )?;
+                let parent_name: String = tx
+                    .query_one(
+                        "SELECT COALESCE(NULLIF(BTRIM(display_name), ''), 'Unnamed person')
+                           FROM person WHERE person_id = $1",
+                        &[&parent_id],
+                    )?
+                    .get(0);
                 let assertion_id = ensure_assertion(
                     &mut tx,
                     child_id,
                     "parent_child",
                     &stable_key("parent_child", &parent_key),
-                    &parent_key,
+                    &parent_name,
                     Some(parent_id),
                     &document_ref,
                     &proposal.support_text,
+                )?;
+                // Repair a row written by an earlier extraction that stored the
+                // raw key as the value. Never touch a reviewed value.
+                tx.execute(
+                    "UPDATE assertion SET value_text = $3
+                      WHERE assertion_id = $1 AND review_status = 'unverified'
+                        AND value_text = $2",
+                    &[&assertion_id, &parent_key, &parent_name],
                 )?;
                 applied.push(AppliedProposal {
                     proposal_id: proposal.proposal_id,
@@ -911,15 +926,28 @@ pub fn apply(
                      ON CONFLICT (person_id, spouse_id, source_order) DO NOTHING",
                     &[&first_id, &second_id],
                 )?;
+                let spouse_name: String = tx
+                    .query_one(
+                        "SELECT COALESCE(NULLIF(BTRIM(display_name), ''), 'Unnamed person')
+                           FROM person WHERE person_id = $1",
+                        &[&second_id],
+                    )?
+                    .get(0);
                 let assertion_id = ensure_assertion(
                     &mut tx,
                     first_id,
                     "spouse",
                     &stable_key("spouse", &second_key),
-                    &second_key,
+                    &spouse_name,
                     Some(second_id),
                     &document_ref,
                     &proposal.support_text,
+                )?;
+                tx.execute(
+                    "UPDATE assertion SET value_text = $3
+                      WHERE assertion_id = $1 AND review_status = 'unverified'
+                        AND value_text = $2",
+                    &[&assertion_id, &second_key, &spouse_name],
                 )?;
                 applied.push(AppliedProposal {
                     proposal_id: proposal.proposal_id,

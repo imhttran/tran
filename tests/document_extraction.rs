@@ -212,6 +212,21 @@ fn extraction_proposes_reviewed_records_and_apply_is_idempotent() {
         ),
         2
     );
+    // The applied parent link names the parent, not an internal key.
+    let parent_values: Vec<String> = client
+        .query(
+            "SELECT value_text FROM assertion WHERE person_id = $1 AND assertion_kind = 'parent_child' ORDER BY value_text",
+            &[&created_id],
+        )
+        .expect("parent assertions")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        parent_values,
+        vec!["Hoang Van Tran".to_string(), "Lan Thi Nguyen".to_string()]
+    );
+
     assert_eq!(
         count(
             &mut client,
