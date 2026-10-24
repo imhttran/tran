@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { DenialView } from "@/components/DenialView";
+import { DocumentUploadGuidance } from "@/components/DocumentUploadGuidance";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
@@ -20,6 +21,7 @@ import {
   type DocumentJob,
   type DocumentSubmission,
 } from "@/lib/api";
+import { DOCUMENT_UPLOAD_ACCEPT } from "@/lib/document-upload";
 import { canAdmin, canUpload, type Role } from "@/lib/experience-contract";
 
 const CATEGORIES = [
@@ -89,7 +91,7 @@ function DocumentsContent({ role }: { role: Role | null }) {
       form.append("scope", scope);
       const result = await submitDocument(form);
       setMessage(
-        `Submission ${result.version_id} recorded as ${result.review_status}. It is outside retrieval until an administrator approves and processes it.`,
+        `Submission ${result.version_id} recorded for review. An administrator will review it, and it becomes available to Ask the archive only after processing succeeds.`,
       );
       setFile(null);
       setTitle("");
@@ -132,10 +134,12 @@ function DocumentsContent({ role }: { role: Role | null }) {
       <PageTitle title="Family documents" />
       <PageHeader
         title="Family documents"
-        subtitle="Uploads are submissions. They stay outside retrieval until an administrator approves them and processing succeeds."
+        subtitle="Upload family stories, letters, and records. An administrator reviews each submission before it can appear in Ask the archive."
       />
       {error ? <p className="insufficient" role="alert" data-testid="documents-error">{error}</p> : null}
       {message ? <p className="form-status ok" data-testid="documents-message">{message}</p> : null}
+
+      <DocumentUploadGuidance />
 
       <section className="status-panel" data-testid="document-upload">
         <h2>Submit a document</h2>
@@ -145,7 +149,7 @@ function DocumentsContent({ role }: { role: Role | null }) {
             <input
               data-testid="document-file"
               type="file"
-              accept=".md,.markdown,.txt,.pdf"
+              accept={DOCUMENT_UPLOAD_ACCEPT}
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             />
           </label>
