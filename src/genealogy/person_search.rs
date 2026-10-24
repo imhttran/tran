@@ -439,6 +439,17 @@ pub fn is_weak(candidate: &Candidate) -> bool {
     candidate.match_kind == Some(MatchKind::Partial)
 }
 
+/// True when the folded query equals a recorded spelling exactly.
+///
+/// Anything else — a reordered name, a dropped middle name, a partial token
+/// match — is a candidate for a human, never a confirmed identity.
+pub fn is_exact_name(candidate: &Candidate) -> bool {
+    matches!(
+        candidate.match_kind,
+        Some(MatchKind::Exact | MatchKind::Alias)
+    )
+}
+
 /// Reads every cataloged person with their recorded spellings and the same
 /// evidence status the tree read assigns.
 pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {

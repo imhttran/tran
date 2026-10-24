@@ -206,7 +206,8 @@ for migration in \
 	0020_branch_review_proposals \
 	0021_profile_field_restriction \
 	0022_profile_revision_restriction_generation \
-	0023_document_extraction; do
+	0023_document_extraction \
+	0024_document_evidence_provenance; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done

@@ -381,8 +381,9 @@ pub fn citations_for_assertions(
     }
     let rows = client
         .query(
-            "SELECT document_ref, page FROM assertion_evidence \
-              WHERE assertion_id = ANY($1) ORDER BY document_ref, page",
+            "SELECT document_ref, page, locator, excerpt FROM assertion_evidence \
+              WHERE assertion_id = ANY($1) AND withdrawn_at IS NULL \
+              ORDER BY document_ref, page, locator",
             &[&assertion_ids],
         )
         .map_err(GenealogyError::Query)?;
@@ -391,6 +392,8 @@ pub fn citations_for_assertions(
         .map(|row| Citation {
             document_ref: row.get(0),
             page: row.get(1),
+            locator: row.get(2),
+            excerpt: row.get(3),
         })
         .collect())
 }

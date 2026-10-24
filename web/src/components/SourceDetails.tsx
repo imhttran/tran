@@ -44,7 +44,13 @@ export function SourceDialog({ source, onClose }: {
           <dl>
             <dt>Citation</dt><dd>{source.evidence.citation}</dd>
             {source.evidence.document_ref && <><dt>Document</dt><dd>{source.evidence.document_ref}</dd></>}
-            {source.evidence.page != null && <><dt>Page</dt><dd>{source.evidence.page}</dd></>}
+            {source.evidence.locator && <><dt>Location</dt><dd>{source.evidence.locator}</dd></>}
+            {source.evidence.page != null && !source.evidence.locator && (
+              <><dt>Page</dt><dd>{source.evidence.page}</dd></>
+            )}
+            {source.evidence.excerpt && (
+              <><dt>Supporting text</dt><dd>{source.evidence.excerpt}</dd></>
+            )}
           </dl>
           {source.citedFor.length > 0 && (
             <>

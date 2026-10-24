@@ -35,6 +35,9 @@ export type EvidenceRef = {
   // Present on genealogy citations; absent when only a citation label exists.
   document_ref?: string;
   page?: number;
+  // A text document has no real page: its line, and the exact supporting text.
+  locator?: string | null;
+  excerpt?: string | null;
 };
 
 export type SearchHit = {
@@ -99,6 +102,8 @@ const ALLOWED_FIELDS = new Set<string>([
   "citation",
   "document_ref",
   "page",
+  "locator",
+  "excerpt",
   "evidence_status",
   "catalog",
   "reason",

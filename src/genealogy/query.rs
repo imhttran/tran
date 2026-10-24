@@ -16,6 +16,25 @@ pub struct Citation {
     pub document_ref: String,
     /// The 1-based page number.
     pub page: i32,
+    /// A finer location inside the source, for example `line 4`.
+    pub locator: Option<String>,
+    /// The exact supporting text, when the source keeps one.
+    pub excerpt: Option<String>,
+}
+
+impl Citation {
+    /// The human-readable citation label.
+    ///
+    /// A text document has no real page, so its line is shown instead of a
+    /// page number that would imply one.
+    pub fn label(&self) -> String {
+        match self.locator.as_deref() {
+            Some(locator) if !locator.trim().is_empty() => {
+                format!("{} — {locator}", self.document_ref)
+            }
+            _ => format!("{} p.{}", self.document_ref, self.page),
+        }
+    }
 }
 
 /// One assertion with its status and citations.
@@ -64,8 +83,9 @@ pub struct RelationshipDetail {
 fn load_citations(client: &mut Client, assertion_id: i64) -> Result<Vec<Citation>, GenealogyError> {
     let rows = client
         .query(
-            "SELECT document_ref, page FROM assertion_evidence
-              WHERE assertion_id = $1 ORDER BY document_ref, page",
+            "SELECT document_ref, page, locator, excerpt FROM assertion_evidence
+              WHERE assertion_id = $1 AND withdrawn_at IS NULL
+              ORDER BY document_ref, page, locator",
             &[&assertion_id],
         )
         .map_err(GenealogyError::Query)?;
@@ -74,6 +94,8 @@ fn load_citations(client: &mut Client, assertion_id: i64) -> Result<Vec<Citation
         .map(|row| Citation {
             document_ref: row.get(0),
             page: row.get(1),
+            locator: row.get(2),
+            excerpt: row.get(3),
         })
         .collect())
 }
@@ -85,9 +107,10 @@ fn assertion_rows(
     let rows = client
         .query(
             "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, ae.document_ref, ae.page
+                    a.review_status, ae.document_ref, ae.page, ae.locator, ae.excerpt
                FROM assertion a
-               LEFT JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
+               LEFT JOIN assertion_evidence ae
+                 ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
               WHERE a.person_id = $1
               ORDER BY a.assertion_kind, a.assertion_key, ae.document_ref, ae.page",
             &[&person_id],
@@ -106,8 +129,15 @@ fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyErro
         let assertion_id: i64 = row.try_get(0)?;
         let document_ref: Option<String> = row.try_get(5)?;
         let page: Option<i32> = row.try_get(6)?;
+        let locator: Option<String> = row.try_get(7)?;
+        let excerpt: Option<String> = row.try_get(8)?;
         let citation = match (document_ref, page) {
-            (Some(document_ref), Some(page)) => Some(Citation { document_ref, page }),
+            (Some(document_ref), Some(page)) => Some(Citation {
+                document_ref,
+                page,
+                locator,
+                excerpt,
+            }),
             _ => None,
         };
 
@@ -301,9 +331,10 @@ pub fn unresolved_assertions(client: &mut Client) -> Result<Vec<AssertionRow>, G
     let rows = client
         .query(
             "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, ae.document_ref, ae.page
+                    a.review_status, ae.document_ref, ae.page, ae.locator, ae.excerpt
                FROM assertion a
-               LEFT JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
+               LEFT JOIN assertion_evidence ae
+                 ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
               WHERE a.review_status IN ('unverified', 'needs_review', 'disputed')
               ORDER BY a.assertion_id, ae.document_ref, ae.page",
             &[],

@@ -10,9 +10,12 @@ mod genealogy_isolation;
 
 use genealogy_isolation::{base_dsn, create_isolated_target};
 use rag_foundation::genealogy::document_extraction::{
-    apply, decide, detail, extract, DecisionInput, ExtractionError, ExtractionInput,
+    apply, decide, detail, extract, withdraw_document_evidence, DecisionInput, ExtractionError,
+    ExtractionInput,
 };
 use rag_foundation::genealogy::person_search;
+use rag_foundation::genealogy::query::lookup_person;
+use rag_foundation::genealogy::tree::load_tree;
 
 const CARD: &str = "\
 Person: Minh An Tran
@@ -226,6 +229,25 @@ fn extraction_proposes_reviewed_records_and_apply_is_idempotent() {
         parent_values,
         vec!["Hoang Van Tran".to_string(), "Lan Thi Nguyen".to_string()]
     );
+
+    // A text document cites its line, not an invented PDF page.
+    let stored = lookup_person(&mut client, &created_key)
+        .expect("person")
+        .expect("exists");
+    let parent_assertion = stored
+        .assertions
+        .iter()
+        .find(|assertion| assertion.kind == "parent_child")
+        .expect("parent assertion");
+    assert_eq!(parent_assertion.citations.len(), 1);
+    let citation = &parent_assertion.citations[0];
+    assert_eq!(citation.locator.as_deref(), Some("line 3"));
+    assert!(citation.label().contains("line 3"));
+    assert!(citation
+        .excerpt
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Relationship:"));
 
     assert_eq!(
         count(
@@ -491,6 +513,225 @@ fn a_later_approval_can_still_be_applied_without_duplicates() {
     let third = apply(&mut client, 11, &sha, "reviewer").expect("third apply");
     assert!(third.already_applied);
     assert_eq!(third.applied.len(), 2);
+
+    drop(client);
+    target.cleanup();
+}
+
+#[test]
+fn a_reordered_reference_needs_confirmation_and_becomes_an_alias() {
+    let Some(base) = base_dsn() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping reordered reference test");
+        return;
+    };
+    let target = create_isolated_target(&base, "doc_extract_reordered");
+    target.apply_migrations();
+    let mut client = target.connect();
+    insert_person(&mut client, "P300", "Tran Van Binh");
+
+    let sha = "e".repeat(64);
+    let extracted = extract(
+        &mut client,
+        ExtractionInput {
+            document_version_id: 12,
+            corpus: "family-docs",
+            document_source: "synthetic/english-order.md",
+            content_sha256: &sha,
+            text: "Person: Binh Van Tran\n",
+            actor: "admin-subject",
+        },
+    )
+    .expect("extract");
+    let person = proposal(&extracted, "person", "Binh Van Tran");
+    // The English name order is a candidate, not proof of identity.
+    assert_eq!(person.resolution, "ambiguous");
+    assert_eq!(person.candidates.len(), 1);
+    assert_eq!(person.candidates[0].match_kind, "reordered");
+
+    // Approving an unconfirmed reordered match is refused.
+    assert!(matches!(
+        decide(
+            &mut client,
+            DecisionInput {
+                proposal_id: person.proposal_id,
+                decision: "approve",
+                person_key: None,
+                create_person: false,
+                value_text: None,
+                actor: "reviewer",
+            },
+        ),
+        Err(ExtractionError::Invalid(_))
+    ));
+
+    // The reviewer confirms the identity explicitly.
+    decide(
+        &mut client,
+        DecisionInput {
+            proposal_id: person.proposal_id,
+            decision: "approve",
+            person_key: Some("P300"),
+            create_person: false,
+            value_text: None,
+            actor: "reviewer",
+        },
+    )
+    .expect("confirm identity");
+    let report = apply(&mut client, 12, &sha, "reviewer").expect("apply");
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(
+        report.applied[0].result["alias_recorded"],
+        serde_json::json!("Binh Van Tran")
+    );
+
+    // The confirmed spelling is now a recorded alias on the same person.
+    assert_eq!(
+        count(
+            &mut client,
+            "SELECT count(*) FROM assertion a JOIN person p ON p.person_id = a.person_id
+              WHERE p.person_key = 'P300' AND a.assertion_kind = 'name_variant'
+                AND a.value_text = 'Binh Van Tran'",
+            &[]
+        ),
+        1
+    );
+    let catalog = person_search::load_catalog(&mut client)
+        .expect("catalog")
+        .people;
+    let ranked = person_search::rank(&catalog, "Binh Van Tran");
+    assert_eq!(
+        ranked
+            .first()
+            .map(|candidate| candidate.person_key.as_str()),
+        Some("P300")
+    );
+    // The tree read now exposes the same alias, so its search can match it.
+    let graph = load_tree(&mut client).expect("tree");
+    let node = graph
+        .people
+        .iter()
+        .find(|person| person.person_key == "P300")
+        .expect("P300 in the tree");
+    assert!(node.aliases.iter().any(|alias| alias == "Binh Van Tran"));
+
+    // Withdrawing the document takes its evidence out of current answers.
+    let withdrawn = withdraw_document_evidence(&mut client, 12).expect("withdraw");
+    assert!(withdrawn >= 1);
+    let stored = lookup_person(&mut client, "P300")
+        .expect("person")
+        .expect("exists");
+    assert!(
+        stored
+            .assertions
+            .iter()
+            .all(|assertion| assertion.citations.is_empty()),
+        "withdrawn evidence must not be cited"
+    );
+
+    drop(client);
+    target.cleanup();
+}
+
+#[test]
+fn a_verified_assertion_is_not_rewritten_by_a_later_apply() {
+    let Some(base) = base_dsn() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping verified preservation test");
+        return;
+    };
+    let target = create_isolated_target(&base, "doc_extract_verified");
+    target.apply_migrations();
+    let mut client = target.connect();
+    insert_person(&mut client, "P100", "Hoang Van Tran");
+    insert_person(&mut client, "P200", "Lan Thi Nguyen");
+
+    let text = "Person: Minh An Tran\nRelationship: Son of Hoang Van Tran and Lan Thi Nguyen.\n";
+    let approve_all =
+        |client: &mut postgres::Client,
+         detail: &rag_foundation::genealogy::document_extraction::ExtractionDetail| {
+            for proposal in &detail.proposals {
+                let person_key =
+                    if proposal.kind == "person" && proposal.subject_name == "Minh An Tran" {
+                        None
+                    } else {
+                        proposal.resolved_person_key.as_deref()
+                    };
+                decide(
+                    client,
+                    DecisionInput {
+                        proposal_id: proposal.proposal_id,
+                        decision: "approve",
+                        person_key,
+                        create_person: proposal.kind == "person"
+                            && proposal.subject_name == "Minh An Tran",
+                        value_text: None,
+                        actor: "reviewer",
+                    },
+                )
+                .expect("approve");
+            }
+        };
+
+    let first_sha = "f".repeat(64);
+    let first = extract(
+        &mut client,
+        ExtractionInput {
+            document_version_id: 13,
+            corpus: "family-docs",
+            document_source: "synthetic/verified.md",
+            content_sha256: &first_sha,
+            text,
+            actor: "admin-subject",
+        },
+    )
+    .expect("extract");
+    approve_all(&mut client, &first);
+    apply(&mut client, 13, &first_sha, "reviewer").expect("apply");
+
+    // A reviewer verifies one parent link, and it is stored with the raw key
+    // (the shape a later repair would otherwise rewrite).
+    let child_id: i64 = client
+        .query_one(
+            "SELECT person_id FROM person WHERE display_name = 'Minh An Tran'",
+            &[],
+        )
+        .expect("child")
+        .get(0);
+    client
+        .execute(
+            "UPDATE assertion
+                SET value_text = 'P100', review_status = 'verified',
+                    reviewed_by = 'reviewer', reviewed_at = now()
+              WHERE person_id = $1 AND assertion_kind = 'parent_child' AND value_text = 'Hoang Van Tran'",
+            &[&child_id],
+        )
+        .expect("verify parent link");
+
+    // A new extraction applies the same facts again.
+    let second_sha = "g".repeat(64);
+    let second = extract(
+        &mut client,
+        ExtractionInput {
+            document_version_id: 14,
+            corpus: "family-docs",
+            document_source: "synthetic/verified.md",
+            content_sha256: &second_sha,
+            text,
+            actor: "admin-subject",
+        },
+    )
+    .expect("second extract");
+    approve_all(&mut client, &second);
+    apply(&mut client, 14, &second_sha, "reviewer").expect("second apply");
+
+    let row = client
+        .query_one(
+            "SELECT value_text, review_status FROM assertion
+              WHERE person_id = $1 AND assertion_kind = 'parent_child' AND value_text = 'P100'",
+            &[&child_id],
+        )
+        .expect("verified parent link");
+    assert_eq!(row.get::<_, String>(0), "P100");
+    assert_eq!(row.get::<_, String>(1), "verified");
 
     drop(client);
     target.cleanup();

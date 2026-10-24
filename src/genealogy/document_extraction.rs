@@ -84,6 +84,8 @@ pub struct ProposalRow {
     pub candidates: Vec<CandidateSummary>,
     pub value_text: Option<String>,
     pub support_text: String,
+    /// The 1-based line in the document that the proposal quotes.
+    pub support_line: i32,
     pub status: String,
     pub decided_by: Option<String>,
     pub applied_result: Option<serde_json::Value>,
@@ -228,12 +230,13 @@ fn match_reference(
         .collect();
     match top.as_slice() {
         [] => (Resolution::Unresolved, None, candidates),
-        [only] if !person_search::is_weak(only) => (
+        [only] if person_search::is_exact_name(only) => (
             Resolution::Matched,
             Some(only.person_key.clone()),
             candidates,
         ),
-        // Several people tied, or the only lead is weak: a human decides.
+        // Several people tied, or the only lead is a reordered/partial name:
+        // a reviewer confirms the identity explicitly.
         _ => (Resolution::Ambiguous, None, candidates),
     }
 }
@@ -248,13 +251,14 @@ struct Draft {
     candidates: Vec<CandidateSummary>,
     value_text: Option<String>,
     support_text: String,
+    support_line: usize,
 }
 
 fn build_drafts(card: &CardDraft, catalog: &[person_search::PersonNames]) -> Vec<Draft> {
     let mut drafts: Vec<Draft> = Vec::new();
     let mut seen_people: Vec<String> = Vec::new();
 
-    let mut push_person = |name: &str, support: &str, drafts: &mut Vec<Draft>| {
+    let mut push_person = |name: &str, support: &str, line: usize, drafts: &mut Vec<Draft>| {
         if seen_people.iter().any(|seen| seen == name) {
             return;
         }
@@ -269,12 +273,23 @@ fn build_drafts(card: &CardDraft, catalog: &[person_search::PersonNames]) -> Vec
             candidates,
             value_text: None,
             support_text: support.to_string(),
+            support_line: line,
         });
     };
 
-    push_person(&card.subject, &card.subject_support, &mut drafts);
+    push_person(
+        &card.subject,
+        &card.subject_support,
+        card.subject_line,
+        &mut drafts,
+    );
     for relationship in &card.relationships {
-        push_person(&relationship.target, &relationship.support, &mut drafts);
+        push_person(
+            &relationship.target,
+            &relationship.support,
+            relationship.line,
+            &mut drafts,
+        );
     }
 
     for relationship in &card.relationships {
@@ -290,6 +305,7 @@ fn build_drafts(card: &CardDraft, catalog: &[person_search::PersonNames]) -> Vec
             candidates: Vec::new(),
             value_text: None,
             support_text: relationship.support.clone(),
+            support_line: relationship.line,
         });
     }
 
@@ -303,6 +319,7 @@ fn build_drafts(card: &CardDraft, catalog: &[person_search::PersonNames]) -> Vec
             candidates: Vec::new(),
             value_text: Some(alias.name.clone()),
             support_text: alias.support.clone(),
+            support_line: alias.line,
         });
     }
 
@@ -316,6 +333,7 @@ fn build_drafts(card: &CardDraft, catalog: &[person_search::PersonNames]) -> Vec
             candidates: Vec::new(),
             value_text: Some(social.url.clone()),
             support_text: social.support.clone(),
+            support_line: social.line,
         });
     }
 
@@ -358,7 +376,7 @@ fn load_proposals(
     let sql = format!(
         "SELECT proposal_id, ordinal, kind, subject_name, target_name, resolution,
                 resolved_person_key, candidates_json::text, value_text, support_text,
-                status, decided_by, applied_result::text
+                support_line, status, decided_by, applied_result::text
            FROM document_proposal
           WHERE extraction_id = $1
           ORDER BY ordinal{}",
@@ -369,7 +387,7 @@ fn load_proposals(
         .into_iter()
         .map(|row| {
             let candidates_json: String = row.get(7);
-            let applied_json: Option<String> = row.get(12);
+            let applied_json: Option<String> = row.get(13);
             ProposalRow {
                 proposal_id: row.get(0),
                 ordinal: row.get(1),
@@ -381,8 +399,9 @@ fn load_proposals(
                 candidates: serde_json::from_str(&candidates_json).unwrap_or_default(),
                 value_text: row.get(8),
                 support_text: row.get(9),
-                status: row.get(10),
-                decided_by: row.get(11),
+                support_line: row.get(10),
+                status: row.get(11),
+                decided_by: row.get(12),
                 applied_result: applied_json.and_then(|value| serde_json::from_str(&value).ok()),
             }
         })
@@ -454,8 +473,8 @@ pub fn extract(
         tx.execute(
             "INSERT INTO document_proposal
                  (extraction_id, ordinal, kind, subject_name, target_name, resolution,
-                  resolved_person_key, candidates_json, value_text, support_text)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, $10)",
+                  resolved_person_key, candidates_json, value_text, support_text, support_line)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, $10, $11)",
             &[
                 &extraction_id,
                 &((index + 1) as i32),
@@ -468,6 +487,7 @@ pub fn extract(
                     .map_err(|err| ExtractionError::Invalid(err.to_string()))?,
                 &draft.value_text,
                 &draft.support_text,
+                &(draft.support_line as i32),
             ],
         )?;
     }
@@ -638,22 +658,94 @@ pub fn decide(
         .ok_or(ExtractionError::NotFound)
 }
 
+/// Records a reviewed reference spelling as a searchable alias.
+///
+/// `None` means the alias was already recorded, so a repeat apply is a no-op.
+#[allow(clippy::too_many_arguments)]
+fn ensure_alias(
+    tx: &mut Transaction<'_>,
+    person_id: i64,
+    alias: &str,
+    document_ref: &str,
+    support: &str,
+    support_line: i32,
+    document_version_id: i64,
+) -> Result<Option<i64>, GenealogyError> {
+    let existing: Option<i64> = tx
+        .query_opt(
+            "SELECT assertion_id FROM assertion
+              WHERE person_id = $1 AND assertion_kind = 'name_variant'
+                AND lower(value_text) = lower($2)
+              LIMIT 1",
+            &[&person_id, &alias],
+        )?
+        .map(|row| row.get(0));
+    if existing.is_some() {
+        return Ok(None);
+    }
+    let assertion_id = ensure_assertion(
+        tx,
+        person_id,
+        "name_variant",
+        &stable_key("variant", &alias.to_lowercase()),
+        alias,
+        None,
+        document_ref,
+        support,
+        support_line,
+        document_version_id,
+    )?;
+    Ok(Some(assertion_id))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn add_evidence(
     tx: &mut Transaction<'_>,
     assertion_id: i64,
     document_ref: &str,
     support: &str,
+    support_line: i32,
+    document_version_id: i64,
 ) -> Result<(), GenealogyError> {
-    // The evidence table requires a page; an uploaded text document has none, so
-    // page 1 is the convention here and the exact line is kept in `excerpt`.
+    // `page` is still required by the schema, but a text document has no real
+    // page. The line number is what the reader sees, and the document version
+    // lets a withdrawal take this evidence out of current answers.
+    let locator = format!("line {support_line}");
     tx.execute(
         "INSERT INTO assertion_evidence
-             (assertion_id, document_ref, page, locator, excerpt)
-         VALUES ($1, $2, 1, 'document text', $3)
-         ON CONFLICT (assertion_id, document_ref, page) DO NOTHING",
-        &[&assertion_id, &document_ref, &support],
+             (assertion_id, document_ref, page, locator, excerpt, document_version_id)
+         VALUES ($1, $2, 1, $3, $4, $5)
+         ON CONFLICT (assertion_id, document_ref, page) DO UPDATE
+            SET locator = EXCLUDED.locator,
+                excerpt = EXCLUDED.excerpt,
+                document_version_id = EXCLUDED.document_version_id,
+                withdrawn_at = NULL",
+        &[
+            &assertion_id,
+            &document_ref,
+            &locator,
+            &support,
+            &document_version_id,
+        ],
     )?;
     Ok(())
+}
+
+/// Withdraws every evidence row produced by one document version.
+///
+/// The rows stay for the audit trail; reads filter them out, so a withdrawn
+/// document immediately stops supporting current answers.
+pub fn withdraw_document_evidence(
+    client: &mut Client,
+    document_version_id: i64,
+) -> Result<u64, GenealogyError> {
+    let updated = client.execute(
+        "UPDATE assertion_evidence
+            SET withdrawn_at = now()
+          WHERE document_version_id = $1 AND withdrawn_at IS NULL",
+        &[&document_version_id],
+    )?;
+    Ok(updated)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -666,6 +758,8 @@ fn ensure_assertion(
     object_person_id: Option<i64>,
     document_ref: &str,
     support: &str,
+    support_line: i32,
+    document_version_id: i64,
 ) -> Result<i64, GenealogyError> {
     let existing = tx.query_opt(
         "SELECT assertion_id FROM assertion
@@ -685,7 +779,14 @@ fn ensure_assertion(
             )?
             .get(0),
     };
-    add_evidence(tx, assertion_id, document_ref, support)?;
+    add_evidence(
+        tx,
+        assertion_id,
+        document_ref,
+        support,
+        support_line,
+        document_version_id,
+    )?;
     Ok(assertion_id)
 }
 
@@ -821,9 +922,38 @@ pub fn apply(
                             None,
                             &document_ref,
                             &proposal.support_text,
+                            proposal.support_line,
+                            document_version_id,
                         )?;
                         (person_id, true)
                     }
+                };
+                // A confirmed reference that is spelled differently from the
+                // recorded name (for example the English name order) becomes a
+                // searchable alias, so the identity is explicit next time.
+                let display: Option<String> = tx
+                    .query_opt(
+                        "SELECT NULLIF(BTRIM(display_name), '')
+                           FROM person WHERE person_id = $1",
+                        &[&person_id],
+                    )?
+                    .and_then(|row| row.get::<_, Option<String>>(0));
+                let alias_recorded = match display.as_deref() {
+                    Some(display)
+                        if person_search::fold(display)
+                            != person_search::fold(&proposal.subject_name) =>
+                    {
+                        ensure_alias(
+                            &mut tx,
+                            person_id,
+                            &proposal.subject_name,
+                            &document_ref,
+                            &proposal.support_text,
+                            proposal.support_line,
+                            document_version_id,
+                        )?
+                    }
+                    _ => None,
                 };
                 applied.push(AppliedProposal {
                     proposal_id: proposal.proposal_id,
@@ -832,6 +962,12 @@ pub fn apply(
                         "person_key": key,
                         "person_id": person_id,
                         "created": created,
+                        "alias_recorded": if alias_recorded.is_some() {
+                            Some(proposal.subject_name.clone())
+                        } else {
+                            None
+                        },
+                        "alias_assertion_id": alias_recorded,
                     }),
                 });
             }
@@ -876,6 +1012,8 @@ pub fn apply(
                     Some(parent_id),
                     &document_ref,
                     &proposal.support_text,
+                    proposal.support_line,
+                    document_version_id,
                 )?;
                 // Repair a row written by an earlier extraction that stored the
                 // raw key as the value. Never touch a reviewed value.
@@ -942,6 +1080,8 @@ pub fn apply(
                     Some(second_id),
                     &document_ref,
                     &proposal.support_text,
+                    proposal.support_line,
+                    document_version_id,
                 )?;
                 tx.execute(
                     "UPDATE assertion SET value_text = $3
@@ -978,6 +1118,8 @@ pub fn apply(
                     None,
                     &document_ref,
                     &proposal.support_text,
+                    proposal.support_line,
+                    document_version_id,
                 )?;
                 applied.push(AppliedProposal {
                     proposal_id: proposal.proposal_id,
@@ -1009,6 +1151,8 @@ pub fn apply(
                     None,
                     &document_ref,
                     &proposal.support_text,
+                    proposal.support_line,
+                    document_version_id,
                 )?;
                 applied.push(AppliedProposal {
                     proposal_id: proposal.proposal_id,
