@@ -24,9 +24,7 @@ function serviceAvailability(ok: boolean | null): Availability {
 
 export default function Page() {
   return (
-    <ExperienceShell>
-      {(role) => <HomeContent role={role} />}
-    </ExperienceShell>
+    <ExperienceShell>{(role) => <HomeContent role={role} />}</ExperienceShell>
   );
 }
 
@@ -82,7 +80,11 @@ function HomeContent({ role }: { role: Role | null }) {
           text: `${error.message} Pages: ${error.body.incomplete_pages.join(", ")}`,
         });
       } else {
-        setStatus({ kind: "error", text: error instanceof Error ? error.message : "The submission failed." });
+        setStatus({
+          kind: "error",
+          text:
+            error instanceof Error ? error.message : "The submission failed.",
+        });
       }
     } finally {
       setBusy(false);
@@ -97,14 +99,30 @@ function HomeContent({ role }: { role: Role | null }) {
         subtitle="Submit documents for review, ask the archive, and explore the family tree."
       />
       {healthError ? (
-        <p className="form-status error" role="alert" data-testid="health-error">
+        <p
+          className="form-status error"
+          role="alert"
+          data-testid="health-error"
+        >
           {healthError}
         </p>
       ) : null}
       <SystemStatus
-        api={healthError ? "down" : serviceAvailability(health ? health.status === "ok" : null)}
-        database={healthError ? "down" : serviceAvailability(health ? health.database === "ok" : null)}
-        model={healthError ? "down" : serviceAvailability(health ? health.model === "ok" : null)}
+        api={
+          healthError
+            ? "down"
+            : serviceAvailability(health ? health.status === "ok" : null)
+        }
+        database={
+          healthError
+            ? "down"
+            : serviceAvailability(health ? health.database === "ok" : null)
+        }
+        model={
+          healthError
+            ? "down"
+            : serviceAvailability(health ? health.model === "ok" : null)
+        }
       />
       {canUpload(role) ? (
         <section className="card" data-testid="upload-controls">
@@ -113,6 +131,10 @@ function HomeContent({ role }: { role: Role | null }) {
             Browser uploads are submissions. They remain outside retrieval until
             an administrator reviews, approves, and processes them. The trusted
             local operator CLI remains a separate publication boundary.
+          </p>
+          <p className="hint" data-testid="upload-format-hint">
+            Markdown needs at least one &quot;## &quot; heading with text
+            beneath it. Plain text and PDFs are indexed as they are.
           </p>
           <input
             data-testid="file-input"
