@@ -40,8 +40,8 @@ use crate::document_lifecycle::{
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
-    appointments, branch_review, person_search, query as genealogy_query, resolve_genealogy_dsn,
-    tree as genealogy_tree, GenealogyError,
+    appointments, branch_review, document_extraction, person_search, query as genealogy_query,
+    resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -331,6 +331,18 @@ impl AppState {
             )
             .route("/api/genealogy/nominations/{id}", post(decide_nomination))
             .route("/api/genealogy/appointments/{id}", post(end_head_of_family))
+            .route(
+                "/api/genealogy/documents/{version}/extraction",
+                get(read_document_extraction).post(extract_document_records),
+            )
+            .route(
+                "/api/genealogy/documents/{version}/apply",
+                post(apply_document_extraction),
+            )
+            .route(
+                "/api/genealogy/document-proposals/{id}/decision",
+                post(decide_document_proposal),
+            )
             .route(
                 "/api/admin/family-members/candidates",
                 get(family_member_candidates),
@@ -3678,6 +3690,317 @@ async fn genealogy_relationship(
             )
         }
     }
+}
+
+// --- reviewed document extraction -----------------------------------------
+
+#[derive(Deserialize)]
+struct ExtractionDecisionRequest {
+    decision: String,
+    #[serde(default)]
+    person_key: Option<String>,
+    #[serde(default)]
+    create_person: bool,
+    #[serde(default)]
+    value_text: Option<String>,
+}
+
+fn extraction_error(err: document_extraction::ExtractionError) -> Response {
+    eprintln!("api: document extraction failed: {err}");
+    match err {
+        document_extraction::ExtractionError::NoRecords => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no_records",
+            "the document states no family record to extract",
+        ),
+        document_extraction::ExtractionError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "no_extraction",
+            "no extraction exists for this document version",
+        ),
+        document_extraction::ExtractionError::Stale => error(
+            StatusCode::CONFLICT,
+            "stale_extraction",
+            "the document changed or was withdrawn; extract it again",
+        ),
+        document_extraction::ExtractionError::Decided => error(
+            StatusCode::CONFLICT,
+            "already_decided",
+            "that proposal already has a decision",
+        ),
+        document_extraction::ExtractionError::UnresolvedPerson(name) => error(
+            StatusCode::CONFLICT,
+            "unresolved_person",
+            format!("resolve the person reference first: {name}"),
+        ),
+        document_extraction::ExtractionError::Invalid(message) => {
+            error(StatusCode::BAD_REQUEST, "invalid_extraction", message)
+        }
+        document_extraction::ExtractionError::Genealogy(err) => genealogy_error(err),
+    }
+}
+
+/// Only an approved, processed, family-visible text document can be extracted.
+/// An admin-only document stays out of genealogy extraction entirely.
+#[allow(clippy::result_large_err)]
+fn ensure_extractable(version: &document_lifecycle::DocumentVersion) -> Result<(), Response> {
+    if !version.is_approved() || !version.is_ready() || version.is_removed() {
+        return Err(error(
+            StatusCode::CONFLICT,
+            "not_extractable",
+            "only an approved, processed document can be extracted",
+        ));
+    }
+    if version.access_scope.as_deref() != Some("family") {
+        return Err(error(
+            StatusCode::CONFLICT,
+            "not_extractable",
+            "only a family-visible document can be extracted",
+        ));
+    }
+    let extension = version
+        .original_filename
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "md" | "markdown" | "txt") {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_extractable",
+            "extraction reads text documents (.md, .markdown, .txt)",
+        ));
+    }
+    Ok(())
+}
+
+fn extraction_json(detail: &document_extraction::ExtractionDetail) -> serde_json::Value {
+    let proposals: Vec<serde_json::Value> = detail
+        .proposals
+        .iter()
+        .map(|proposal| {
+            serde_json::json!({
+                "proposal_id": proposal.proposal_id,
+                "ordinal": proposal.ordinal,
+                "kind": proposal.kind,
+                "subject_name": proposal.subject_name,
+                "target_name": proposal.target_name,
+                "resolution": proposal.resolution,
+                "resolved_person_key": proposal.resolved_person_key,
+                "candidates": proposal.candidates,
+                "value_text": proposal.value_text,
+                "support_text": proposal.support_text,
+                "status": proposal.status,
+                "decided_by": proposal.decided_by,
+                "applied_result": proposal.applied_result,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "ok": true,
+        "extraction": {
+            "extraction_id": detail.extraction.extraction_id,
+            "document_version_id": detail.extraction.document_version_id,
+            "document_source": detail.extraction.document_source,
+            "content_sha256": detail.extraction.content_sha256,
+            "status": detail.extraction.status,
+            "created_by": detail.extraction.created_by,
+            "created_at": detail.extraction.created_at,
+            "applied_by": detail.extraction.applied_by,
+            "applied_at": detail.extraction.applied_at,
+        },
+        "proposals": proposals,
+    })
+}
+
+#[allow(clippy::result_large_err)]
+async fn read_document_extraction(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        document_extraction::detail(&mut client, version_id)
+            .map_err(|err| extraction_error(document_extraction::ExtractionError::Genealogy(err)))
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(detail))) => Json(extraction_json(&detail)).into_response(),
+        Ok(Ok(None)) => error(
+            StatusCode::NOT_FOUND,
+            "no_extraction",
+            "no extraction exists for this document version",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: extraction read task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "extraction_failed",
+                "the extraction request failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn extract_document_records(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut rag = open_rag(&config)?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        let (version, bytes) =
+            document_lifecycle::read_original(&mut rag, &storage, version_id, &corpus)
+                .map_err(lifecycle_error)?;
+        ensure_extractable(&version)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_extractable",
+                "the document text is not valid UTF-8",
+            )
+        })?;
+        let mut genealogy = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        document_extraction::extract(
+            &mut genealogy,
+            document_extraction::ExtractionInput {
+                document_version_id: version.version_id,
+                corpus: &corpus,
+                document_source: &version.source,
+                content_sha256: &version.content_sha256,
+                text: &text,
+                actor: &actor,
+            },
+        )
+        .map_err(extraction_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(detail)) => Json(extraction_json(&detail)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: extraction task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "extraction_failed",
+                "the extraction request failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn decide_document_proposal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(proposal_id): Path<i64>,
+    Json(request): Json<ExtractionDecisionRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        document_extraction::decide(
+            &mut client,
+            document_extraction::DecisionInput {
+                proposal_id,
+                decision: &request.decision,
+                person_key: request.person_key.as_deref(),
+                create_person: request.create_person,
+                value_text: request.value_text.as_deref(),
+                actor: &actor,
+            },
+        )
+        .map_err(extraction_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(detail)) => Json(extraction_json(&detail)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: extraction decision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "extraction_failed",
+                "the extraction decision failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn apply_document_extraction(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut rag = open_rag(&config)?;
+        let version = document_lifecycle::get_version(&mut rag, version_id, &corpus)
+            .map_err(lifecycle_error)?;
+        ensure_extractable(&version)?;
+        let mut genealogy = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        document_extraction::apply(
+            &mut genealogy,
+            version.version_id,
+            &version.content_sha256,
+            &actor,
+        )
+        .map_err(extraction_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => Json(serde_json::json!({
+            "ok": true,
+            "extraction_id": report.extraction_id,
+            "already_applied": report.already_applied,
+            "applied": report.applied,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: extraction apply task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "extraction_failed",
+                "the extraction apply failed",
+            )
+        }
+    }
+}
+
+fn genealogy_unavailable(message: String) -> Response {
+    eprintln!("api: genealogy unavailable: {message}");
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "genealogy_unavailable",
+        "the genealogy store is unavailable",
+    )
 }
 
 async fn list_nominations(State(state): State<AppState>, headers: HeaderMap) -> Response {

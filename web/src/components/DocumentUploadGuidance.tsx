@@ -127,6 +127,23 @@ export function DocumentUploadGuidance() {
         </div>
       </details>
 
+      <h3>Names, links, and extracted records</h3>
+      <p data-testid="guidance-records">
+        <strong>Also known as</strong> is a searchable name for the person, not a
+        link. A social field becomes a link only when you paste a full web
+        address that starts with <code>http</code> or <code>https</code>; a
+        handle on its own is never turned into a link, and the archive does not
+        claim the account belongs to anyone.
+      </p>
+      <p>
+        An administrator can extract family records from the text. That produces
+        draft proposals for a person, relationships, aliases, and links. Each
+        proposal is reviewed and approved separately, and nothing appears in the
+        family tree until the approved proposals are applied. Applying them adds
+        <strong> unverified</strong> records, so a separate evidence review is
+        still required.
+      </p>
+
       <h3>Tips</h3>
       <ul>
         <li>Use full names when possible.</li>

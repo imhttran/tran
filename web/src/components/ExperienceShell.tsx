@@ -111,6 +111,11 @@ const NAV_ITEMS: NavItem[] = [
 const UPLOAD_ITEM: NavItem = { href: "/", label: "Add documents", icon: "upload" };
 const ADMIN_ITEMS: NavItem[] = [
   { href: "/admin/reviews", label: "Reviews", icon: "admin-reviews" },
+  {
+    href: "/admin/document-extraction",
+    label: "Extractions",
+    icon: "documents",
+  },
   { href: "/admin/family-members", label: "Bulk onboard", icon: "bulk-onboard" },
 ];
 

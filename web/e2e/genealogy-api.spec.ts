@@ -182,6 +182,24 @@ test.describe.serial("genealogy API integration", () => {
     }
   });
 
+  test("a viewer cannot extract or apply document records", async ({
+    request,
+  }) => {
+    test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
+
+    for (const path of [
+      "/api/genealogy/documents/1/extraction",
+      "/api/genealogy/documents/1/apply",
+      "/api/genealogy/document-proposals/1/decision",
+    ]) {
+      const response = await request.post(`${API_URL}${path}`, {
+        headers: auth(VIEWER_TOKEN!),
+        data: { decision: "approve" },
+      });
+      expect(response.status(), `${path} must be admin-only`).toBe(403);
+    }
+  });
+
   test("viewer cannot nominate and anonymous reads are denied", async ({
     request,
   }) => {
