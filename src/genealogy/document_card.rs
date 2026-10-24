@@ -42,6 +42,8 @@ pub struct RelationshipDraft {
     pub target: String,
     /// The exact source line, trimmed.
     pub support: String,
+    /// The 1-based line number of the supporting text.
+    pub line: usize,
 }
 
 /// One stated alias.
@@ -49,6 +51,8 @@ pub struct RelationshipDraft {
 pub struct AliasDraft {
     pub name: String,
     pub support: String,
+    /// The 1-based line number of the supporting text.
+    pub line: usize,
 }
 
 /// One explicitly stated social-profile URL.
@@ -58,6 +62,8 @@ pub struct SocialDraft {
     pub label: String,
     pub url: String,
     pub support: String,
+    /// The 1-based line number of the supporting text.
+    pub line: usize,
 }
 
 /// Everything one card states about one person.
@@ -66,6 +72,8 @@ pub struct CardDraft {
     pub subject: String,
     /// The exact source line that named the subject.
     pub subject_support: String,
+    /// The 1-based line number that named the subject.
+    pub subject_line: usize,
     pub aliases: Vec<AliasDraft>,
     pub relationships: Vec<RelationshipDraft>,
     pub socials: Vec<SocialDraft>,
@@ -332,11 +340,13 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
     let text: String = text.chars().take(MAX_CARD_CHARS).collect();
     let mut subject: Option<String> = None;
     let mut subject_support = String::new();
+    let mut subject_line = 0usize;
     let mut aliases: Vec<AliasDraft> = Vec::new();
     let mut relationships: Vec<RelationshipDraft> = Vec::new();
     let mut socials: Vec<SocialDraft> = Vec::new();
 
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
         let Some((label, value)) = field(line) else {
             continue;
         };
@@ -346,6 +356,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                 subject = clean_name(&value);
                 if subject.is_some() {
                     subject_support = support.clone();
+                    subject_line = line_number;
                 }
             }
             continue;
@@ -357,6 +368,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                         aliases.push(AliasDraft {
                             name,
                             support: support.clone(),
+                            line: line_number,
                         });
                     }
                 }
@@ -370,6 +382,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                         label: label.clone(),
                         url,
                         support: support.clone(),
+                        line: line_number,
                     });
                 }
             }
@@ -382,6 +395,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                         kind: RelationshipKind::Spouse,
                         target,
                         support: support.clone(),
+                        line: line_number,
                     });
                 }
             }
@@ -394,6 +408,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                         kind: RelationshipKind::ParentChild,
                         target,
                         support: support.clone(),
+                        line: line_number,
                     });
                 }
             }
@@ -407,6 +422,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                             kind: RelationshipKind::ParentChild,
                             target,
                             support: support.clone(),
+                            line: line_number,
                         });
                     }
                 }
@@ -417,6 +433,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
                             kind: RelationshipKind::Spouse,
                             target,
                             support: support.clone(),
+                            line: line_number,
                         });
                     }
                 }
@@ -440,6 +457,7 @@ pub fn parse_card(text: &str) -> Option<CardDraft> {
     Some(CardDraft {
         subject,
         subject_support,
+        subject_line,
         aliases,
         relationships,
         socials,

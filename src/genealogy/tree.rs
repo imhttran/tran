@@ -55,8 +55,18 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                     THEN 'verified'
                   ELSE 'unverified'
                 END AS evidence_status,
-                (SELECT COALESCE(ARRAY_AGG(v.name_variant ORDER BY v.name_variant), ARRAY[]::text[])
-                   FROM person_name_variant v WHERE v.person_id = p.person_id) AS aliases
+                (SELECT COALESCE(ARRAY_AGG(DISTINCT name ORDER BY name), ARRAY[]::text[])
+                   FROM (
+                     SELECT a.value_text AS name
+                       FROM assertion a
+                      WHERE a.person_id = p.person_id
+                        AND a.assertion_kind = 'name_variant'
+                        AND a.value_text IS NOT NULL
+                     UNION
+                     SELECT v.name_variant
+                       FROM person_name_variant v
+                      WHERE v.person_id = p.person_id
+                   ) recorded_names) AS aliases
            FROM person p
            LEFT JOIN assertion a ON a.person_id = p.person_id
           GROUP BY p.person_id
@@ -143,9 +153,10 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                evidence.document_ref, evidence.page
           FROM links l
           LEFT JOIN LATERAL (
-            SELECT DISTINCT ae.document_ref, ae.page
+            SELECT DISTINCT ae.document_ref, ae.page, ae.locator, ae.excerpt
               FROM assertion a
-              JOIN assertion_evidence ae ON ae.assertion_id = a.assertion_id
+              JOIN assertion_evidence ae
+                ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
              WHERE a.assertion_kind = l.kind
                AND (
                  (a.person_id = l.from_id
@@ -156,7 +167,8 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                )
                AND a.review_status = 'verified'
           ) evidence ON true
-         ORDER BY l.kind, l.from_key, l.to_key, evidence.document_ref, evidence.page",
+         ORDER BY l.kind, l.from_key, l.to_key, evidence.document_ref, evidence.page,
+                  evidence.locator",
         &[&keys],
     )?;
 
@@ -168,10 +180,15 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
         let status: String = row.try_get(3)?;
         let document_ref: Option<String> = row.try_get(4)?;
         let page: Option<i32> = row.try_get(5)?;
+        let locator: Option<String> = row.try_get(6)?;
+        let excerpt: Option<String> = row.try_get(7)?;
         let citation = match (document_ref, page) {
-            (Some(document_ref), Some(page)) if status == "verified" => {
-                Some(Citation { document_ref, page })
-            }
+            (Some(document_ref), Some(page)) if status == "verified" => Some(Citation {
+                document_ref,
+                page,
+                locator,
+                excerpt,
+            }),
             _ => None,
         };
         if let Some(last) = links.last_mut() {

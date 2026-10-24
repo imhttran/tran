@@ -391,6 +391,8 @@ pub fn citations_for_assertions(
         .map(|row| Citation {
             document_ref: row.get(0),
             page: row.get(1),
+            locator: row.get(2),
+            excerpt: row.get(3),
         })
         .collect())
 }

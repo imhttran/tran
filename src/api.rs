@@ -3417,10 +3417,17 @@ fn evidence_json(citations: &[genealogy_query::Citation]) -> Vec<serde_json::Val
         .iter()
         .map(|citation| {
             serde_json::json!({
-                "evidence_id": format!("{}#{}", citation.document_ref, citation.page),
-                "citation": format!("{} p.{}", citation.document_ref, citation.page),
+                "evidence_id": format!(
+                    "{}#{}#{}",
+                    citation.document_ref,
+                    citation.page,
+                    citation.locator.as_deref().unwrap_or("")
+                ),
+                "citation": citation.label(),
                 "document_ref": citation.document_ref,
                 "page": citation.page,
+                "locator": citation.locator,
+                "excerpt": citation.excerpt,
             })
         })
         .collect()
@@ -6406,12 +6413,38 @@ async fn remove_document_submission(
         }
         document_lifecycle::remove(&mut client, version_id, &corpus, &actor)
             .map_err(lifecycle_error)
+            .and_then(|removed| {
+                // Take this version's evidence out of current answers. The rows
+                // stay for the audit trail; reads filter them out.
+                let mut genealogy = open_genealogy(&config).map_err(|message| {
+                    eprintln!("api: genealogy unavailable for evidence withdrawal: {message}");
+                    error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "evidence_withdrawal_failed",
+                        "the document was removed, but its evidence could not be withdrawn; retry the removal",
+                    )
+                })?;
+                let withdrawn =
+                    document_extraction::withdraw_document_evidence(&mut genealogy, version_id)
+                        .map_err(|err| {
+                            eprintln!(
+                                "api: evidence withdrawal failed for version {version_id}: {err}"
+                            );
+                            error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "evidence_withdrawal_failed",
+                                "the document was removed, but its evidence could not be withdrawn; retry the removal",
+                            )
+                        })?;
+                Ok((removed, withdrawn))
+            })
     })
     .await;
     match result {
-        Ok(Ok(version)) => Json(serde_json::json!({
+        Ok(Ok((version, withdrawn))) => Json(serde_json::json!({
             "ok": true,
             "submission": version,
+            "evidence_withdrawn": withdrawn,
         }))
         .into_response(),
         Ok(Err(response)) => response,
