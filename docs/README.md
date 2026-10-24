@@ -78,6 +78,7 @@ the `PLAN-TRAN-*` plans.
 | Document                                                                           | Read it when                                                      |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | [reference/commands.md](reference/commands.md)                                     | You want the command and `make`-target list.                      |
+| [reference/brand.md](reference/brand.md)                                           | You are changing visual identity, tokens, type, icons, or motion. |
 | [reference/configuration.md](reference/configuration.md)                           | You need to know what an environment setting does or its default. |
 | [reference/capabilities.md](reference/capabilities.md)                             | You want the shipped capabilities and where they live.            |
 | [reference/rust-crate.md](reference/rust-crate.md)                                 | You want the crate's module and API reference.                    |

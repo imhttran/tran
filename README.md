@@ -177,7 +177,9 @@ sop review      # review the current change
 ## Documentation
 
 The full index, with a one-line "when to read it" for every document, lives in
-[docs/README.md](docs/README.md).
+[docs/README.md](docs/README.md). Visual identity, design tokens, typography,
+iconography, and motion are defined in
+[docs/reference/brand.md](docs/reference/brand.md).
 
 | Area                                              | What is here                                                                   |
 | ------------------------------------------------- | ------------------------------------------------------------------------------ |
