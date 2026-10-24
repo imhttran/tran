@@ -23,19 +23,95 @@ type Props = {
   children: (role: Role | null, session: SessionResult | null) => ReactNode;
 };
 
+// One line-icon set, drawn with currentColor, so states come from CSS color and
+// opacity rather than separate assets. 1.5px stroke matches regular text weight.
+type NavIconName =
+  | "profile"
+  | "tree"
+  | "ask"
+  | "head"
+  | "review"
+  | "documents"
+  | "upload"
+  | "admin-reviews"
+  | "bulk-onboard";
+
+function NavIcon({ name }: { name: NavIconName }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {name === "profile" && (
+        <>
+          <circle cx="12" cy="8" r="3.5" />
+          <path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" />
+        </>
+      )}
+      {name === "tree" && (
+        <>
+          <circle cx="12" cy="5" r="2.5" />
+          <circle cx="6" cy="19" r="2.5" />
+          <circle cx="18" cy="19" r="2.5" />
+          <path d="M12 7.5v4M12 11.5 6 16.5M12 11.5l6 5" />
+        </>
+      )}
+      {name === "ask" && (
+        <>
+          <circle cx="11" cy="11" r="6" />
+          <path d="m16 16 4 4" />
+        </>
+      )}
+      {name === "head" && (
+        <path d="m12 3 2.4 5 5.6.8-4 4 1 5.6-5-2.7-5 2.7 1-5.6-4-4 5.6-.8z" />
+      )}
+      {name === "review" && (
+        <>
+          <path d="M12 4v16M7 20h10M5 8h14" />
+          <path d="M5 8 3 13a3 3 0 0 0 6 0L7 8M19 8l-2 5a3 3 0 0 0 6 0l-2-5" />
+        </>
+      )}
+      {name === "documents" && (
+        <>
+          <path d="M7 3h7l4 4v14H7z" />
+          <path d="M14 3v4h4" />
+        </>
+      )}
+      {name === "upload" && <path d="M12 5v14M5 12h14" />}
+      {name === "admin-reviews" && <path d="m5 12 4 4 10-10" />}
+      {name === "bulk-onboard" && (
+        <>
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
+          <path d="M16 5.5a3 3 0 0 1 0 5.5M17 15c2.3.4 4 2.3 4 5" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 // Only implemented routes. "Add documents" is the existing direct-upload page.
-const NAV_ITEMS = [
-  { href: "/profile", label: "My profile", icon: "☺" },
-  { href: "/genealogy", label: "Family tree", icon: "♧" },
-  { href: "/ask", label: "Ask the archive", icon: "?" },
-  { href: "/head-of-family", label: "Head of Family", icon: "◈" },
-  { href: "/branch-review", label: "Branch review", icon: "⚖" },
-  { href: "/documents", label: "Documents", icon: "▤" },
+type NavItem = { href: string; label: string; icon: NavIconName };
+const NAV_ITEMS: NavItem[] = [
+  { href: "/profile", label: "My profile", icon: "profile" },
+  { href: "/genealogy", label: "Family tree", icon: "tree" },
+  { href: "/ask", label: "Ask the archive", icon: "ask" },
+  { href: "/head-of-family", label: "Head of Family", icon: "head" },
+  { href: "/branch-review", label: "Branch review", icon: "review" },
+  { href: "/documents", label: "Documents", icon: "documents" },
 ];
-const UPLOAD_ITEM = { href: "/", label: "Add documents", icon: "＋" };
-const ADMIN_ITEMS = [
-  { href: "/admin/reviews", label: "Reviews", icon: "✓" },
-  { href: "/admin/family-members", label: "Bulk onboard", icon: "✦" },
+const UPLOAD_ITEM: NavItem = { href: "/", label: "Add documents", icon: "upload" };
+const ADMIN_ITEMS: NavItem[] = [
+  { href: "/admin/reviews", label: "Reviews", icon: "admin-reviews" },
+  { href: "/admin/family-members", label: "Bulk onboard", icon: "bulk-onboard" },
 ];
 
 async function readSession(): Promise<SessionResult> {
@@ -171,7 +247,8 @@ export function ExperienceShell({ children }: Props) {
               aria-current={pathname === item.href ? "page" : undefined}
               onClick={() => setMenuOpen(false)}
             >
-              <span aria-hidden="true">{item.icon}</span> {item.label}
+              <NavIcon name={item.icon} />
+              <span>{item.label}</span>
             </Link>
           ))}
         </nav>
