@@ -2,7 +2,10 @@ import { test, expect } from "@playwright/test";
 
 // Real genealogy API integration against the disposable genealogy database. The
 // synthetic person is seeded by scripts/seed-genealogy-e2e.sql. No UI mocking.
-const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
+const API_URL = (process.env.API_URL || "http://127.0.0.1:8080").replace(
+  /\/+$/,
+  "",
+);
 const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN;
 const VIEWER_TOKEN = process.env.E2E_VIEWER_TOKEN;
 // A different admin approves: a nominator cannot approve their own nomination.
@@ -14,14 +17,21 @@ test.describe.serial("genealogy API integration", () => {
   test("admin reads synthetic records, nominates, a second admin approves, and revokes", async ({
     request,
   }) => {
-    test.skip(!ADMIN_TOKEN || !APPROVER_TOKEN, "admin tokens not provided by the harness");
+    test.skip(
+      !ADMIN_TOKEN || !APPROVER_TOKEN,
+      "admin tokens not provided by the harness",
+    );
 
     const records = await request.get(`${API_URL}/api/genealogy/records`, {
       headers: auth(ADMIN_TOKEN!),
     });
     expect(records.status()).toBe(200);
     const recordBody = (await records.json()) as {
-      records: Array<{ record_id: string; person_label: string; evidence_status: string }>;
+      records: Array<{
+        record_id: string;
+        person_label: string;
+        evidence_status: string;
+      }>;
     };
     const synthetic = recordBody.records.find(
       (record) => record.record_id === "synthetic-e2e-person",
@@ -34,44 +44,63 @@ test.describe.serial("genealogy API integration", () => {
     });
     expect(tree.status()).toBe(200);
     const treeBody = (await tree.json()) as {
-      people: Array<{ record_id: string; person_label: string;
-        evidence_status: string; aliases: string[] }>;
+      people: Array<{
+        record_id: string;
+        person_label: string;
+        evidence_status: string;
+        aliases: string[];
+      }>;
       links: Array<{
-        from_id: string; to_id: string; kind: string;
+        from_id: string;
+        to_id: string;
+        kind: string;
         evidence_status: string;
         evidence: Array<{ evidence_id: string; citation: string }>;
       }>;
       truncated: boolean;
     };
-    expect(treeBody.people.some((p) => p.record_id === "synthetic-e2e-person")).toBeTruthy();
+    expect(
+      treeBody.people.some((p) => p.record_id === "synthetic-e2e-person"),
+    ).toBeTruthy();
     expect(treeBody.people.every((p) => Array.isArray(p.aliases))).toBeTruthy();
     expect(Array.isArray(treeBody.links)).toBeTruthy();
     expect(typeof treeBody.truncated).toBe("boolean");
     // A spouse link is unordered for matching reviewed assertions.
     // Verified reverse evidence plus a forward dispute is NOT verified.
-    const disputedPair = treeBody.links.find((link) =>
-      link.kind === "spouse" &&
-      link.from_id === "synthetic-spouse-a" &&
-      link.to_id === "synthetic-spouse-b");
+    const disputedPair = treeBody.links.find(
+      (link) =>
+        link.kind === "spouse" &&
+        link.from_id === "synthetic-spouse-a" &&
+        link.to_id === "synthetic-spouse-b",
+    );
     expect(disputedPair?.evidence_status).toBe("needs_review");
     expect(disputedPair?.evidence).toEqual([]);
 
     // Reverse-only verified evidence must still support an undirected spouse edge.
-    const verifiedPair = treeBody.links.find((link) =>
-      link.kind === "spouse" &&
-      link.from_id === "synthetic-spouse-c" &&
-      link.to_id === "synthetic-spouse-d");
+    const verifiedPair = treeBody.links.find(
+      (link) =>
+        link.kind === "spouse" &&
+        link.from_id === "synthetic-spouse-c" &&
+        link.to_id === "synthetic-spouse-d",
+    );
     expect(verifiedPair?.evidence_status).toBe("verified");
-    expect(verifiedPair?.evidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ citation: "synthetic/e2e.pdf p.1" }),
-    ]));
+    expect(verifiedPair?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ citation: "synthetic/e2e.pdf p.1" }),
+      ]),
+    );
 
-    const nomination = await request.post(`${API_URL}/api/genealogy/nominations`, {
-      headers: auth(ADMIN_TOKEN!),
-      data: { record_id: "synthetic-e2e-person" },
-    });
+    const nomination = await request.post(
+      `${API_URL}/api/genealogy/nominations`,
+      {
+        headers: auth(ADMIN_TOKEN!),
+        data: { record_id: "synthetic-e2e-person" },
+      },
+    );
     expect(nomination.status()).toBe(200);
-    const nominationBody = (await nomination.json()) as { nomination_id: number };
+    const nominationBody = (await nomination.json()) as {
+      nomination_id: number;
+    };
 
     const selfApproval = await request.post(
       `${API_URL}/api/genealogy/nominations/${nominationBody.nomination_id}`,
@@ -103,7 +132,10 @@ test.describe.serial("genealogy API integration", () => {
 
     const revoked = await request.post(
       `${API_URL}/api/genealogy/appointments/${approvalBody.appointment_id}`,
-      { headers: auth(ADMIN_TOKEN!), data: { reason: "synthetic test revocation" } },
+      {
+        headers: auth(ADMIN_TOKEN!),
+        data: { reason: "synthetic test revocation" },
+      },
     );
     expect(revoked.status()).toBe(200);
 
@@ -119,33 +151,146 @@ test.describe.serial("genealogy API integration", () => {
   }) => {
     test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
     const base = process.env.E2E_BASE_URL || "http://127.0.0.1:3000";
-    type Person = { assertions: Array<{ evidence: Array<{ document_ref?: string; page?: number }> }> };
+    type Person = {
+      assertions: Array<{
+        evidence: Array<{ document_ref?: string; page?: number }>;
+      }>;
+    };
     const reads = [
-      request.get(`${API_URL}/api/genealogy/person/synthetic-e2e-person`, { headers: auth(VIEWER_TOKEN!) }),
-      request.get(`${base}/api/genealogy/person/synthetic-e2e-person`,
-        { headers: { cookie: `rag_session=${VIEWER_TOKEN}` } }),
+      request.get(`${API_URL}/api/genealogy/person/synthetic-e2e-person`, {
+        headers: auth(VIEWER_TOKEN!),
+      }),
+      request.get(`${base}/api/genealogy/person/synthetic-e2e-person`, {
+        headers: { cookie: `rag_session=${VIEWER_TOKEN}` },
+      }),
     ];
     for (const response of await Promise.all(reads)) {
       expect(response.status()).toBe(200);
-      const evidence = ((await response.json()) as Person).assertions.flatMap((a) => a.evidence);
-      expect(evidence).toContainEqual(expect.objectContaining({ document_ref: "synthetic/e2e.pdf", page: 1 }));
+      const evidence = ((await response.json()) as Person).assertions.flatMap(
+        (a) => a.evidence,
+      );
+      expect(evidence).toContainEqual(
+        expect.objectContaining({ document_ref: "synthetic/e2e.pdf", page: 1 }),
+      );
     }
     // The same source metadata stays denied without a session on either path.
     for (const url of [API_URL, base]) {
-      const anonymous = await request.get(`${url}/api/genealogy/person/synthetic-e2e-person`);
+      const anonymous = await request.get(
+        `${url}/api/genealogy/person/synthetic-e2e-person`,
+      );
       expect(anonymous.status()).toBe(401);
     }
   });
 
-  test("viewer cannot nominate and anonymous reads are denied", async ({ request }) => {
+  test("viewer cannot nominate and anonymous reads are denied", async ({
+    request,
+  }) => {
     test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
-    const nomination = await request.post(`${API_URL}/api/genealogy/nominations`, {
-      headers: auth(VIEWER_TOKEN!),
-      data: { record_id: "synthetic-e2e-person" },
-    });
+    const nomination = await request.post(
+      `${API_URL}/api/genealogy/nominations`,
+      {
+        headers: auth(VIEWER_TOKEN!),
+        data: { record_id: "synthetic-e2e-person" },
+      },
+    );
     expect(nomination.status()).toBe(403);
 
     const anonymous = await request.get(`${API_URL}/api/genealogy/records`);
+    expect(anonymous.status()).toBe(401);
+  });
+
+  test("a name question is answered from the genealogy store, not document retrieval", async ({
+    request,
+  }) => {
+    test.skip(!VIEWER_TOKEN, "E2E_VIEWER_TOKEN not provided by the harness");
+
+    // The seeded catalog names this person "Synthetic Partner B". The answer
+    // must come from stored assertions only, with citations and review status.
+    const answer = await request.post(`${API_URL}/api/query`, {
+      headers: auth(VIEWER_TOKEN!),
+      data: { question: "Who is Synthetic Partner B" },
+    });
+    expect(answer.status()).toBe(200);
+    const body = (await answer.json()) as {
+      answer: string;
+      insufficient: boolean;
+      sources: unknown[];
+      person: {
+        outcome: string;
+        catalog: string;
+        match: string | null;
+        candidates: unknown[];
+        selected: {
+          person_key: string;
+          display_name: string;
+          evidence_status: string;
+          profile_url: string;
+          name_only: boolean;
+          assertions: Array<{
+            kind: string;
+            review_status: string;
+            evidence: Array<{ citation: string }>;
+          }>;
+        } | null;
+      };
+    };
+    expect(body.insufficient).toBe(false);
+    expect(body.sources).toEqual([]);
+    expect(body.person.outcome).toBe("found");
+    expect(body.person.catalog).toBe("available");
+    expect(body.person.match).toBe("exact");
+    expect(body.person.candidates).toEqual([]);
+    expect(body.person.selected?.person_key).toBe("synthetic-spouse-b");
+    expect(body.person.selected?.evidence_status).toBe("verified");
+    expect(body.person.selected?.profile_url).toBe(
+      "/family/synthetic-spouse-b",
+    );
+    expect(body.person.selected?.name_only).toBe(false);
+    const assertions = body.person.selected?.assertions ?? [];
+    expect(assertions.length).toBeGreaterThan(0);
+    expect(
+      assertions.every((assertion) => assertion.review_status === "verified"),
+    ).toBe(true);
+    expect(
+      assertions.some((assertion) =>
+        assertion.evidence.some((evidence) =>
+          evidence.citation.includes("synthetic/e2e.pdf"),
+        ),
+      ),
+    ).toBe(true);
+
+    // Selecting a stable person key answers exactly that person and never
+    // changes a record.
+    const selected = await request.post(`${API_URL}/api/query`, {
+      headers: auth(VIEWER_TOKEN!),
+      data: {
+        question: "Who is Synthetic Partner B",
+        person_key: "synthetic-spouse-b",
+      },
+    });
+    expect(selected.status()).toBe(200);
+    const selectedBody = (await selected.json()) as typeof body;
+    expect(selectedBody.person.selected?.person_key).toBe("synthetic-spouse-b");
+    // The selected answer carries the same stored assertions.
+    expect(
+      (selectedBody.person.selected?.assertions ?? []).length,
+    ).toBeGreaterThan(0);
+
+    // An unknown name is reported as no match, not as missing evidence.
+    const none = await request.post(`${API_URL}/api/query`, {
+      headers: auth(VIEWER_TOKEN!),
+      data: { question: "Who is Quang Vinh" },
+    });
+    expect(none.status()).toBe(200);
+    const noneBody = (await none.json()) as typeof body;
+    expect(noneBody.person.outcome).toBe("none");
+    expect(noneBody.person.catalog).toBe("available");
+    expect(noneBody.person.selected).toBeNull();
+
+    // Anonymous callers never receive a candidate, a count, or evidence.
+    const anonymous = await request.post(`${API_URL}/api/query`, {
+      data: { question: "Who is Synthetic Partner B" },
+    });
     expect(anonymous.status()).toBe(401);
   });
 });

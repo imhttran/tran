@@ -649,3 +649,38 @@ textarea:focus-visible {
   }
   .family-controls button { flex: 0 0 auto; }
 }
+
+/* Ask the archive: a person answer built only from stored assertions. */
+.person-answer h2 { margin: 0 0 8px; }
+.person-assertion-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.person-answer .meta { margin: 6px 0; }
+.badge.evidence-disputed { background: #fdecea; color: var(--err); }
+.person-candidates {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: grid;
+  gap: 10px;
+}
+.person-candidate {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.person-candidate p { margin: 4px 0; }
+.person-candidate button { margin-top: 8px; }
+.person-assertions { list-style: none; padding: 0; margin: 12px 0 0; }
+.person-assertions li { border-top: 1px solid var(--line); padding: 12px 0; }
+.person-assertions li p { margin: 6px 0; }
+.person-assertions .evidence-links { margin: 4px 0 0; }
+.person-profile-link {
+  display: inline-block;
+  margin-top: 12px;
+  font-weight: 600;
+}

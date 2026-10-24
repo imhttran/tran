@@ -40,7 +40,7 @@ use crate::document_lifecycle::{
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
-    appointments, branch_review, query as genealogy_query, resolve_genealogy_dsn,
+    appointments, branch_review, person_search, query as genealogy_query, resolve_genealogy_dsn,
     tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
@@ -3028,6 +3028,36 @@ struct QueryRequest {
     question: String,
     #[serde(default)]
     top_k: Option<usize>,
+    /// An explicit answer to a "several possible matches" step. When present,
+    /// the named person is answered directly instead of ranking the question
+    /// again.
+    #[serde(default)]
+    person_key: Option<String>,
+}
+
+/// What the person path should resolve for this request.
+enum PersonPlan {
+    /// The question names a person; resolve the name deterministically.
+    Named(person_search::PersonQuestion),
+    /// The caller answered a selection step with a stable person key. The
+    /// question is kept so the answer can still report the asked name.
+    Selected {
+        key: String,
+        question: Option<person_search::PersonQuestion>,
+    },
+}
+
+/// Builds the deterministic person question, or `None` when the question is
+/// not about a named person and the document path keeps ownership of it.
+fn person_plan(request: &QueryRequest, question: &str) -> Option<PersonPlan> {
+    let extracted = person_search::extract_person_question(question);
+    match request.person_key.as_deref().map(str::trim) {
+        Some(key) if !key.is_empty() => Some(PersonPlan::Selected {
+            key: key.to_string(),
+            question: extracted,
+        }),
+        _ => extracted.map(PersonPlan::Named),
+    }
 }
 
 async fn query(
@@ -3063,6 +3093,14 @@ async fn query(
                 "invalid_top_k",
                 "top_k must be between 1 and 50",
             );
+        }
+    }
+    // A named-person question is answered deterministically from the
+    // authorized genealogy store. Anything else keeps the document path below,
+    // including a person question when the genealogy store is not configured.
+    if let Some(plan) = person_plan(&request, &question) {
+        if let Some(response) = person_answer(&state, plan).await {
+            return response;
         }
     }
     let config = state.config.clone();
@@ -3130,6 +3168,207 @@ async fn query(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_failed",
                 "the query task failed",
+            )
+        }
+    }
+}
+
+// --- person questions ------------------------------------------------------
+
+/// Answers a person question from the authorized genealogy store, or returns
+/// `None` so the caller falls back to the document path.
+///
+/// Authorization already happened in the caller. A genealogy configuration or
+/// connection failure is not a query failure: the document path still owns the
+/// request, and the failure is logged without credentials or source text.
+async fn person_answer(state: &AppState, plan: PersonPlan) -> Option<Response> {
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config)?;
+        let outcome = match &plan {
+            PersonPlan::Named(question) => {
+                person_search::resolve(&mut client, Some(question), None)
+            }
+            PersonPlan::Selected { key, question } => {
+                person_search::resolve(&mut client, question.as_ref(), Some(key))
+            }
+        };
+        outcome.map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(person_search::PersonResult::NotPersonQuestion)) => None,
+        Ok(Ok(outcome)) => {
+            let (answer, insufficient, person) = person_payload(&outcome);
+            Some(
+                Json(serde_json::json!({
+                    "answer": answer,
+                    "insufficient": insufficient,
+                    // A person answer cites stored assertions, never document
+                    // chunks, so the document source list stays empty.
+                    "sources": [],
+                    "person": person,
+                }))
+                .into_response(),
+            )
+        }
+        Ok(Err(message)) => {
+            eprintln!("api: person lookup unavailable: {message}");
+            None
+        }
+        Err(err) => {
+            eprintln!("api: person lookup task failed: {err}");
+            None
+        }
+    }
+}
+
+fn candidate_json(candidate: &person_search::Candidate) -> serde_json::Value {
+    serde_json::json!({
+        "person_key": candidate.person_key,
+        "display_name": candidate.display_name,
+        "generation": candidate.generation,
+        "evidence_status": candidate.evidence_status,
+        "match": candidate.match_kind.map(person_search::MatchKind::as_str),
+        "matched_name": candidate.matched_name,
+        "profile_url": format!("/family/{}", candidate.person_key),
+        "recorded_parents": candidate
+            .recorded_parents
+            .iter()
+            .map(|parent| serde_json::json!({
+                "person_key": parent.person_key,
+                "display_name": parent.display_name,
+                "evidence_status": parent.evidence_status,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Renders a person outcome as answer text plus the additive `person` payload.
+///
+/// The text states only what the stored records support. It never turns an
+/// unverified assertion into a fact and never invents a biography.
+fn person_payload(result: &person_search::PersonResult) -> (String, bool, serde_json::Value) {
+    match result {
+        person_search::PersonResult::NotPersonQuestion => {
+            (String::new(), true, serde_json::json!(null))
+        }
+        person_search::PersonResult::NoMatch {
+            query_name,
+            catalog_empty,
+            catalog_truncated,
+        } => {
+            let answer = if *catalog_empty {
+                "The family record catalog has no imported people yet, so a person question \
+                 cannot be answered. An operator must import the family catalog first."
+                    .to_string()
+            } else {
+                format!(
+                    "No person matching \"{query_name}\" is recorded in the family archive. \
+                     A missing person record is separate from whether the archive's documents \
+                     mention that name."
+                )
+            };
+            (
+                answer,
+                true,
+                serde_json::json!({
+                    "outcome": "none",
+                    "catalog": if *catalog_empty { "empty" } else { "available" },
+                    "query_name": query_name,
+                    "match": serde_json::Value::Null,
+                    "truncated": catalog_truncated,
+                    "candidates": [],
+                    "candidates_truncated": false,
+                    "selected": serde_json::Value::Null,
+                }),
+            )
+        }
+        person_search::PersonResult::Ambiguous {
+            query_name,
+            candidates,
+            more,
+            catalog_truncated,
+        } => {
+            let answer = format!(
+                "\"{query_name}\" matches several people in the archive. Choose the person you \
+                 mean; the archive never merges people who share a name."
+            );
+            (
+                answer,
+                true,
+                serde_json::json!({
+                    "outcome": "ambiguous",
+                    "catalog": "available",
+                    "query_name": query_name,
+                    "match": serde_json::Value::Null,
+                    "truncated": catalog_truncated,
+                    "candidates": candidates.iter().map(candidate_json).collect::<Vec<_>>(),
+                    "candidates_truncated": more,
+                    "selected": serde_json::Value::Null,
+                }),
+            )
+        }
+        person_search::PersonResult::Found {
+            query_name,
+            candidate,
+            detail,
+            name_only,
+            catalog_truncated,
+        } => {
+            let answer = if *name_only {
+                format!(
+                    "The archive records a person named {}. Only the name is stored, so no \
+                     further detail can be given.",
+                    candidate.display_name
+                )
+            } else {
+                format!(
+                    "These are the assertions the archive stores for {}. Each item keeps its \
+                     recorded review status and source citation; an unverified assertion is not \
+                     a confirmed fact.",
+                    candidate.display_name
+                )
+            };
+            let assertions: Vec<serde_json::Value> = detail
+                .assertions
+                .iter()
+                .map(|assertion| {
+                    serde_json::json!({
+                        "assertion_id": assertion.assertion_id,
+                        "kind": assertion.kind,
+                        "key": assertion.key,
+                        "value_text": assertion.value_text,
+                        "review_status": assertion.review_status,
+                        "evidence": evidence_json(&assertion.citations),
+                    })
+                })
+                .collect();
+            let selected = serde_json::json!({
+                "person_key": candidate.person_key,
+                "display_name": candidate.display_name,
+                "generation": candidate.generation,
+                "evidence_status": candidate.evidence_status,
+                "match": candidate.match_kind.map(person_search::MatchKind::as_str),
+                "matched_name": candidate.matched_name,
+                "profile_url": format!("/family/{}", candidate.person_key),
+                "name_only": name_only,
+                "assertions": assertions,
+            });
+            (
+                answer,
+                false,
+                serde_json::json!({
+                    "outcome": if *name_only { "name_only" } else { "found" },
+                    "catalog": "available",
+                    "query_name": query_name,
+                    "match": candidate.match_kind.map(person_search::MatchKind::as_str),
+                    "truncated": catalog_truncated,
+                    "candidates": [],
+                    "candidates_truncated": false,
+                    "selected": selected,
+                }),
             )
         }
     }

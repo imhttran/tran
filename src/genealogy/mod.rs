@@ -10,6 +10,7 @@ pub mod eligibility;
 pub mod label;
 pub mod migrate;
 pub mod parser;
+pub mod person_search;
 pub mod query;
 pub mod reimport;
 pub mod relationships;
