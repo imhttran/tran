@@ -704,18 +704,22 @@ test("the popup follows a pan and closes when its anchor leaves the canvas", asy
   expect(canvas).toBeTruthy();
   if (!canvas) return;
   const before = await popup.boundingBox();
+  // The canvas is taller than the viewport; start the drag inside both, on the
+  // blank letterbox to the left of the cards.
+  const startX = canvas.x + 20;
+  const startY = canvas.y + 20;
 
-  await page.mouse.move(canvas.x + 30, canvas.y + canvas.height - 30);
+  await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(canvas.x + 130, canvas.y + canvas.height - 130, { steps: 6 });
+  await page.mouse.move(startX + 100, startY + 100, { steps: 6 });
   await page.mouse.up();
   await expect(popup).toBeVisible();
   const after = await popup.boundingBox();
   expect(after && before && after.x !== before.x).toBe(true);
 
-  await page.mouse.move(canvas.x + 30, canvas.y + canvas.height - 30);
+  await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(canvas.x + 30 + canvas.width * 3, canvas.y + canvas.height - 30, { steps: 12 });
+  await page.mouse.move(canvas.x + canvas.width - 20, startY + 100, { steps: 12 });
   await page.mouse.up();
   await expect(popup).toBeHidden();
 });

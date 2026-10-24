@@ -58,6 +58,7 @@ export function AccountMenu({ session, signingOut, onSignIn, onSignOut }: Props)
       </span>
       <button
         type="button"
+        className="button-secondary"
         onClick={onSignOut}
         disabled={signingOut}
         data-testid="sign-out-button"

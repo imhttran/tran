@@ -658,9 +658,6 @@ function FamilyTree() {
                 aria-label={expanded ? "Exit full screen" : "Expand canvas to full screen"}>
                 {expanded ? "Exit full screen" : "Expand canvas"}
               </button>
-              <button type="button" ref={helpButtonRef} onClick={() => setHelpOpen(true)}
-                aria-expanded={helpOpen} aria-controls="family-help-panel"
-                data-testid="family-help">Help</button>
             </div>
           </div>
           {helpOpen && (
@@ -934,11 +931,17 @@ function FamilyTree() {
                     )}
                   </div>
                 )}
-                <p className="family-canvas-help" data-testid="family-navigation-hint">
-                  {isTouch
-                    ? "Tap a person for details, then choose Show children or Show parents."
-                    : "Click for details. Double-click to explore children. Drag empty space to pan."}
-                </p>
+                <div className="family-canvas-footer">
+                  <p className="family-canvas-help" data-testid="family-navigation-hint">
+                    {isTouch
+                      ? "Tap a person for details, then choose Show children or Show parents."
+                      : "Click for details. Double-click to explore children. Drag empty space to pan."}
+                  </p>
+                  <button type="button" ref={helpButtonRef} onClick={() => setHelpOpen(true)}
+                    className="button-secondary family-help-button"
+                    aria-expanded={helpOpen} aria-controls="family-help-panel"
+                    data-testid="family-help">Help</button>
+                </div>
                 {!focus && selected && layout.people.some((p) => p.record_id === selected && p.childCount > 0) && (
                   <button type="button" data-testid="family-collapse" onClick={() =>
                     setCollapsed((current) => {
