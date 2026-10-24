@@ -406,7 +406,7 @@ fn ensure_indexable(extension: &str, bytes: &[u8]) -> Result<(), LifecycleError>
             if !indexable {
                 return Err(LifecycleError::NotIndexable(
                     "Markdown needs at least one '## ' heading with text under it; \
-                     the archive does not index a block before the first heading"
+                     a .txt file is indexed as a single passage without one"
                         .to_string(),
                 ));
             }

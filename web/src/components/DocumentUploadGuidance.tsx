@@ -76,13 +76,18 @@ export function DocumentUploadGuidance() {
         <li>Notes about parents, grandparents, and other relatives.</li>
         <li>Letters, biographies, and historical records.</li>
         <li>Vietnamese and English are both welcome.</li>
-        <li>No special writing format is required.</li>
+        <li>No special writing style is required.</li>
       </ul>
 
       <p>
         You can upload Markdown (<code>.md</code>, <code>.markdown</code>), plain
         text (<code>.txt</code>), or PDF (<code>.pdf</code>) files. Each file can
         be up to {documentUploadLimitLabel()}.
+      </p>
+      <p data-testid="markdown-sections-note">
+        Markdown is read section by section, so give each story a{" "}
+        <code>## </code> heading first, as the example below does. Plain text is
+        read as a single passage and needs no heading.
       </p>
       <p>
         A scanned PDF must contain readable text. If your PDF was scanned, apply

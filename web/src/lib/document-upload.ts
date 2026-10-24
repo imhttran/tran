@@ -29,8 +29,14 @@ export function documentUploadLimitLabel(
 /**
  * Fictional example used by the first-use guidance. The Copy button copies
  * exactly this text. It is intentionally synthetic and clearly labelled.
+ *
+ * It opens with a `## ` heading because the Markdown loader only treats that as
+ * a section boundary (src/section.rs), so a heading-less `.md` has nothing to
+ * index. The same text works unchanged as `.txt`, which is read as one passage.
  */
-export const EXAMPLE_FAMILY_STORY = `Person: Nguyễn Văn An
+export const EXAMPLE_FAMILY_STORY = `## Family story
+
+Person: Nguyễn Văn An
 Also known as: [Other names, if known]
 Relationship: Son of Nguyễn Văn Bình and Trần Thị Lan.
 Story: [Describe a memory, experience, or important event.]
