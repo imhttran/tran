@@ -1,7 +1,7 @@
 // Same-origin API client. The browser only calls the Next.js server, whose
 // rewrite proxies `/api/*` to the Rust Axum API. `API_URL` stays server-side.
 
-import type { Role } from "./experience-contract";
+import type { EvidenceRef, Role } from "./experience-contract";
 import {
   SESSION_EXPIRED_MESSAGE,
   noteAuthStatus,
@@ -46,10 +46,68 @@ export type StatusResponse = {
   sections: SourceSection[];
 };
 
+// A name question that the API answered from the genealogy store instead of
+// document retrieval. `match` describes how the asked name was matched, so the
+// view can say that an accent-folded or reordered name is a candidate, not
+// proof of identity.
+export type PersonMatchKind = "exact" | "alias" | "reordered" | "partial";
+
+export type PersonEvidenceStatus = "verified" | "needs_review" | "unverified";
+
+export type PersonRecordedParent = {
+  person_key: string;
+  display_name: string;
+  evidence_status: PersonEvidenceStatus;
+};
+
+export type PersonCandidate = {
+  person_key: string;
+  display_name: string;
+  generation: number | null;
+  evidence_status: PersonEvidenceStatus;
+  match: PersonMatchKind | null;
+  matched_name: string | null;
+  profile_url: string;
+  recorded_parents: PersonRecordedParent[];
+};
+
+export type PersonAssertion = {
+  assertion_id: number;
+  kind: string;
+  key: string;
+  value_text: string | null;
+  review_status: string;
+  evidence: EvidenceRef[];
+};
+
+export type PersonSelection = {
+  person_key: string;
+  display_name: string;
+  generation: number | null;
+  evidence_status: PersonEvidenceStatus;
+  match: PersonMatchKind | null;
+  matched_name: string | null;
+  profile_url: string;
+  name_only: boolean;
+  assertions: PersonAssertion[];
+};
+
+export type PersonAnswer = {
+  outcome: "found" | "name_only" | "ambiguous" | "none";
+  catalog: "available" | "empty";
+  query_name: string;
+  match: PersonMatchKind | null;
+  truncated: boolean;
+  candidates: PersonCandidate[];
+  candidates_truncated: boolean;
+  selected: PersonSelection | null;
+};
+
 export type QueryResponse = {
   answer: string;
   insufficient: boolean;
   sources: Source[];
+  person?: PersonAnswer | null;
 };
 
 export type ApiErrorBody = {
@@ -160,11 +218,18 @@ export function getStatus(source: string): Promise<StatusResponse> {
   );
 }
 
-export function askQuestion(question: string): Promise<QueryResponse> {
+export function askQuestion(
+  question: string,
+  personKey?: string,
+): Promise<QueryResponse> {
+  const body: { question: string; person_key?: string } = { question };
+  if (personKey) {
+    body.person_key = personKey;
+  }
   return request<QueryResponse>("/api/query", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -548,10 +613,7 @@ export type BranchGrantsResponse = {
 };
 
 export type BranchProposalStatus =
-  | "pending_review"
-  | "approved"
-  | "rejected"
-  | "needs_changes";
+  "pending_review" | "approved" | "rejected" | "needs_changes";
 
 // The console sends canonical statuses only; the API still accepts the
 // `pending` alias for other callers.
@@ -634,7 +696,9 @@ export function getBranchQueue(params: {
   if (params.branch) search.set("branch", params.branch);
   if (params.cursor) search.set("cursor", String(params.cursor));
   if (params.limit) search.set("limit", String(params.limit));
-  return request<BranchQueueResponse>(`/api/branch-review/submissions?${search}`);
+  return request<BranchQueueResponse>(
+    `/api/branch-review/submissions?${search}`,
+  );
 }
 
 export function getBranchProposal(
@@ -683,7 +747,11 @@ export type FamilyMember = {
   roles: Role[];
   status: MemberStatus;
   created_at: string;
-  linked_person: { link_id: number; person_key: string; username: string | null } | null;
+  linked_person: {
+    link_id: number;
+    person_key: string;
+    username: string | null;
+  } | null;
 };
 
 export type FamilyMembersPage = {
@@ -711,9 +779,12 @@ export function listFamilyMembers(
   if (filter.role) params.set("role", filter.role);
   if (after) params.set("after", String(after));
   const query = params.toString();
-  return request<FamilyMembersPage>(`/api/admin/family-members${query ? `?${query}` : ""}`, {
-    cache: "no-store",
-  });
+  return request<FamilyMembersPage>(
+    `/api/admin/family-members${query ? `?${query}` : ""}`,
+    {
+      cache: "no-store",
+    },
+  );
 }
 
 function postJson<T>(path: string, body: unknown): Promise<T> {
@@ -729,7 +800,12 @@ export function changeMemberRole(
   role: Role,
   revoke: boolean,
 ): Promise<{ ok: true }> {
-  return postJson("/api/admin/roles", { issuer: member.issuer, subject: member.subject, role, revoke });
+  return postJson("/api/admin/roles", {
+    issuer: member.issuer,
+    subject: member.subject,
+    role,
+    revoke,
+  });
 }
 
 export function deactivateMember(member: AccountRef): Promise<{ ok: true }> {
@@ -805,7 +881,9 @@ export type DocumentSubmissionList = {
   submissions: DocumentSubmission[];
 };
 
-export function submitDocument(form: FormData): Promise<DocumentSubmissionResult> {
+export function submitDocument(
+  form: FormData,
+): Promise<DocumentSubmissionResult> {
   return request<DocumentSubmissionResult>("/api/documents/submissions", {
     method: "POST",
     body: form,
@@ -855,7 +933,12 @@ export function removeDocument(
 
 export function processDocument(
   versionId: number,
-): Promise<{ ok: true; job_id?: number; processing_status?: string; promoted?: boolean }> {
+): Promise<{
+  ok: true;
+  job_id?: number;
+  processing_status?: string;
+  promoted?: boolean;
+}> {
   return request(`/api/documents/submissions/${versionId}/process`, {
     method: "POST",
   });
@@ -900,7 +983,12 @@ export type DocumentJob = {
 
 export function runDocumentJobs(): Promise<{
   ok: true;
-  processed: Array<{ job_id: number; version_id: number; status: string; error: string | null }>;
+  processed: Array<{
+    job_id: number;
+    version_id: number;
+    status: string;
+    error: string | null;
+  }>;
 }> {
   return request("/api/documents/jobs/run", { method: "POST" });
 }
@@ -980,6 +1068,9 @@ export function getFamilyProfile(
 /// Same-origin asset URL for one approved family-visible media item. Rendered
 /// directly in an `<img>` or link, so the server-side proxy forwards the session
 /// credential and the Rust API makes the authorization decision.
-export function familyProfileMediaUrl(personKey: string, mediaId: number): string {
+export function familyProfileMediaUrl(
+  personKey: string,
+  mediaId: number,
+): string {
   return `/api/family/persons/${encodeURIComponent(personKey)}/media/${mediaId}`;
 }

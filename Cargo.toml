@@ -73,6 +73,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 postgres = "0.19"
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
+# Vietnamese and other Latin names are compared after Unicode decomposition so
+# that `Hân` and `Han` (and `Đ/đ`) are the same search key. Already present in
+# the lock file through `stringprep`; declared here because the question path
+# uses it directly.
+unicode-normalization = "0.1"
 # HTTP API (RUST-008A): Axum serves the browser-facing contract; Tokio provides
 # the runtime. Blocking database/Ollama work runs through spawn_blocking so it
 # never occupies an async executor thread.

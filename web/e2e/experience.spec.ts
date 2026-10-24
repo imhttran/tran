@@ -401,3 +401,220 @@ test.describe("ask the archive", () => {
     });
   }
 });
+
+// Name questions are answered from the genealogy store, not document
+// retrieval. These stubs pin the rendering of each deterministic outcome; Rust
+// still decides which outcome applies.
+test.describe("ask the archive: person questions", () => {
+  const CITATION = {
+    evidence_id: "synthetic-catalog.md#3",
+    citation: "synthetic-catalog.md p.3",
+    document_ref: "synthetic-catalog.md",
+    page: 3,
+  };
+
+  function personPayload(person: unknown) {
+    return { answer: "Stored assertions only.", insufficient: false, sources: [], person };
+  }
+
+  const FOUND = personPayload({
+    outcome: "found",
+    catalog: "available",
+    query_name: "Han Duc Tran",
+    match: "reordered",
+    truncated: false,
+    candidates: [],
+    candidates_truncated: false,
+    selected: {
+      person_key: "P013",
+      display_name: "Trần Đức Hân",
+      generation: 3,
+      evidence_status: "verified",
+      match: "reordered",
+      matched_name: "Trần Đức Hân",
+      profile_url: "/family/P013",
+      name_only: false,
+      assertions: [
+        {
+          assertion_id: 1,
+          kind: "display_name",
+          key: "display:p013",
+          value_text: "Trần Đức Hân",
+          review_status: "verified",
+          evidence: [CITATION],
+        },
+        {
+          assertion_id: 2,
+          kind: "branch",
+          key: "branch:third",
+          value_text: "Third branch",
+          review_status: "unverified",
+          evidence: [],
+        },
+      ],
+    },
+  });
+
+  async function askName(page: Page, body: unknown, question = "Who is Han Duc Tran") {
+    await signIn(page, "viewer");
+    await page.route("**/api/query", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }),
+    );
+    await page.goto("/ask");
+    await page.getByTestId("question-input").fill(question);
+    await page.getByTestId("ask-button").click();
+  }
+
+  test("an accent-folded, reordered name renders stored assertions with citations", async ({ page }) => {
+    await askName(page, FOUND);
+    const card = page.getByTestId("person-found");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Trần Đức Hân");
+    await expect(card).toContainText("Recorded generation: 3");
+    await expect(card).toContainText("different order");
+    await expect(page.getByTestId("person-assertions")).toContainText("Recorded name");
+    await expect(page.getByTestId("person-assertions")).toContainText("Verified");
+    await expect(page.getByTestId("person-assertions")).toContainText("Third branch");
+    await expect(page.getByTestId("person-assertions")).toContainText("Unverified");
+    await expect(page.getByTestId("person-assertions")).toContainText(
+      "not a confirmed fact",
+    );
+    await expect(page.getByTestId("person-profile-link")).toHaveAttribute("href", "/family/P013");
+    // The document path's refusal is not shown for a person answer.
+    await expect(page.getByTestId("insufficient")).toHaveCount(0);
+    await expect(page.getByTestId("answer")).toHaveCount(0);
+
+    // A stored citation opens the metadata-only dialog.
+    await page.getByTestId("citation-button").first().click();
+    await expect(page.getByTestId("source-details")).toBeVisible();
+    await expect(page.getByTestId("source-details")).toContainText("synthetic-catalog.md p.3");
+    await assertNoSensitive(page);
+  });
+
+  test("namesakes require a choice and the selection answers that person", async ({ page }) => {
+    const ambiguous = personPayload({
+      outcome: "ambiguous",
+      catalog: "available",
+      query_name: "Le Thanh Phong",
+      match: null,
+      truncated: false,
+      candidates: [
+        {
+          person_key: "P022",
+          display_name: "Lê Thanh Phong",
+          generation: 4,
+          evidence_status: "needs_review",
+          match: "exact",
+          matched_name: "Lê Thanh Phong",
+          profile_url: "/family/P022",
+          recorded_parents: [
+            { person_key: "P101", display_name: "Trần Thị Lan", evidence_status: "needs_review" },
+          ],
+        },
+        {
+          person_key: "P023",
+          display_name: "Lê Thanh Phong",
+          generation: 4,
+          evidence_status: "unverified",
+          match: "exact",
+          matched_name: "Lê Thanh Phong",
+          profile_url: "/family/P023",
+          recorded_parents: [
+            { person_key: "P100", display_name: "Nguyễn Thị Mai", evidence_status: "unverified" },
+          ],
+        },
+      ],
+      candidates_truncated: false,
+      selected: null,
+    });
+    const selected = personPayload({
+      outcome: "name_only",
+      catalog: "available",
+      query_name: "Le Thanh Phong",
+      match: "exact",
+      truncated: false,
+      candidates: [],
+      candidates_truncated: false,
+      selected: {
+        person_key: "P022",
+        display_name: "Lê Thanh Phong",
+        generation: 4,
+        evidence_status: "needs_review",
+        match: "exact",
+        matched_name: "Lê Thanh Phong",
+        profile_url: "/family/P022",
+        name_only: true,
+        assertions: [],
+      },
+    });
+
+    await signIn(page, "viewer");
+    let sawSelection = false;
+    await page.route("**/api/query", async (route) => {
+      const request = route.request().postDataJSON() as { person_key?: string };
+      if (request.person_key === "P022") {
+        await route.fulfill({ status: 200, contentType: "application/json",
+          body: JSON.stringify(selected) });
+        return;
+      }
+      sawSelection = true;
+      await route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(ambiguous) });
+    });
+    await page.goto("/ask");
+    await page.getByTestId("question-input").fill("Who is Le Thanh Phong");
+    await page.getByTestId("ask-button").click();
+
+    await expect(page.getByTestId("person-ambiguous")).toBeVisible();
+    await expect(page.getByTestId("person-candidate")).toHaveCount(2);
+    await expect(page.getByTestId("person-ambiguous")).toContainText("Trần Thị Lan");
+    await expect(page.getByTestId("person-ambiguous")).toContainText("Nguyễn Thị Mai");
+
+    await page.getByTestId("person-candidate").first().click();
+    await expect(page.getByTestId("person-found")).toBeVisible();
+    await expect(page.getByTestId("person-name-only")).toBeVisible();
+    await expect(page.getByTestId("person-profile-link")).toHaveAttribute("href", "/family/P022");
+    expect(sawSelection).toBe(true);
+    await assertNoSensitive(page);
+  });
+
+  test("an unknown name says no matching person instead of insufficient evidence", async ({ page }) => {
+    await askName(
+      page,
+      personPayload({
+        outcome: "none",
+        catalog: "available",
+        query_name: "Quang Vinh",
+        match: null,
+        truncated: false,
+        candidates: [],
+        candidates_truncated: false,
+        selected: null,
+      }),
+      "Who is Quang Vinh",
+    );
+    await expect(page.getByTestId("person-none")).toBeVisible();
+    await expect(page.getByTestId("person-none")).toContainText("No person matching");
+    await expect(page.getByTestId("insufficient")).toHaveCount(0);
+  });
+
+  test("an unimported catalog is reported as an operator condition", async ({ page }) => {
+    await askName(
+      page,
+      personPayload({
+        outcome: "none",
+        catalog: "empty",
+        query_name: "Han Duc Tran",
+        match: null,
+        truncated: false,
+        candidates: [],
+        candidates_truncated: false,
+        selected: null,
+      }),
+    );
+    await expect(page.getByTestId("person-catalog-empty")).toBeVisible();
+    await expect(page.getByTestId("person-catalog-empty")).toContainText(
+      "has not been imported",
+    );
+  });
+});
