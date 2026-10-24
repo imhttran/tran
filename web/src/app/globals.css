@@ -684,3 +684,35 @@ textarea:focus-visible {
   margin-top: 12px;
   font-weight: 600;
 }
+
+/* First-use guidance on the family documents upload page. */
+.documents-guidance ul { margin: 0 0 10px; padding-left: 20px; display: grid; gap: 4px; }
+.documents-guidance h3 { font-size: .95rem; margin: 16px 0 6px; }
+.documents-guidance code {
+  font: .85em ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.documents-guidance details { margin: 14px 0 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+.documents-guidance summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.documents-guidance summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.documents-guidance pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 0;
+  font: .88rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.documents-guidance .example-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.documents-guidance .example-actions button { margin: 0; }
+.documents-guidance .example-actions p { margin: 0; }
+.documents-guidance .documents-workflow { margin: 6px 0 10px; font-weight: 600; color: var(--accent); }
+@media (max-width: 420px) {
+  .documents-guidance { padding: 16px; }
+  .documents-guidance pre { font-size: .8rem; padding: 10px; }
+  .documents-guidance .example-actions { flex-direction: column; align-items: flex-start; gap: 6px; }
+}
