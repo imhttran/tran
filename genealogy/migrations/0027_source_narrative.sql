@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS source_narrative_passage (
 
 CREATE INDEX IF NOT EXISTS source_narrative_passage_slot_idx
     ON source_narrative_passage (slot_key);
+
+-- A slot holds at most one unreviewed revision. The importer refreshes that row
+-- in place, which keeps the update unambiguous when a slot has already been
+-- approved once and a later revision is pending.
+CREATE UNIQUE INDEX IF NOT EXISTS source_narrative_passage_pending_slot_key
+    ON source_narrative_passage (slot_key)
+    WHERE review_status = 'pending';
 CREATE INDEX IF NOT EXISTS source_narrative_passage_source_idx
     ON source_narrative_passage (source_document_id, page_start, ordinal);
 CREATE INDEX IF NOT EXISTS source_narrative_passage_queue_idx

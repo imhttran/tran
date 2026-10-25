@@ -54,7 +54,7 @@ Links come from three signals, in this order:
 
 | Signal | Result |
 | --- | --- |
-| An explicit person key in the text (for example `P007` when that is the person key) | `resolved` / `explicit_id` |
+| An explicit person key in the text or heading (for example `ce-0007-…`, matched as a token sequence) | `resolved` / `explicit_id` |
 | A section heading naming exactly one catalog person | `resolved` / `section_heading` |
 | A full-name mention in the body | `ambiguous` / `name_mention` |
 
@@ -93,7 +93,11 @@ cargo run --locked --bin genealogy -- narrative import \
 
 - Imported passages start `pending`, visibility `admin_only`.
 - A second unchanged import creates no passages and no links.
-- A changed paragraph in a `pending` passage updates that row in place.
+- A changed paragraph in a `pending` passage updates that row in place, moves its
+  revision key to the new content, and **re-derives its person links**. A link
+  decision applies to the wording it was made against, so it does not survive a
+  text change; the audit events that recorded it remain.
+- A slot holds at most one pending revision (partial unique index).
 - A changed paragraph in an `approved` or `rejected` passage adds a new
   `pending` revision and leaves the reviewed wording untouched.
 
@@ -194,7 +198,9 @@ fields, and the unauthorized response.
   revisions.
 - **Explicit identifiers match the person key.** The people-catalog row labels
   (`P007`) are not carried into `person_key`, so an identifier in a narrative is
-  only useful when it matches the stored key.
+  only useful when it matches the stored key (for example `ce-0007-…`). A
+  hyphenated key is matched as a token sequence in the body or the section
+  heading.
 - **Mentions are numerous.** A long section can mention many relatives; the dry
   run reports the candidate count so the reviewer can judge the workload.
 - **No RAG indexing.** Passages are not embedded and are not available to Ask the

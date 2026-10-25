@@ -453,3 +453,108 @@ fn review_events_are_append_only() {
     );
     assert!(tampered.is_err(), "review events cannot be rewritten");
 }
+
+#[test]
+fn refreshing_pending_text_re_derives_person_links() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative relink test");
+        return;
+    };
+    let mut client = target.connect();
+    let (_one, _two) = seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+
+    // A reviewer confirms the body mention while the passage is pending.
+    narrative::review_link(
+        &mut client,
+        first_id,
+        "synthetic-two",
+        true,
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("confirm link");
+
+    // The source is corrected and no longer names that person.
+    let corrected = TEXT.replace(
+        "Second paragraph mentioning Synthetic Ancestor Two by name.",
+        "Second paragraph with no additional names.",
+    );
+    let report = import(&mut client, &corrected, &"c".repeat(64));
+    assert_eq!(
+        report.updated, 1,
+        "the pending passage is refreshed in place"
+    );
+
+    let surviving: i64 = client
+        .query_one(
+            "SELECT count(*) FROM source_narrative_link l
+               JOIN person pe ON pe.person_id = l.person_id
+              WHERE l.passage_id = $1 AND pe.person_key = 'synthetic-two'",
+            &[&first_id],
+        )
+        .expect("links")
+        .get(0);
+    assert_eq!(
+        surviving, 0,
+        "a decision about the old wording does not survive the new text"
+    );
+}
+
+#[test]
+fn a_pending_revision_key_follows_its_body() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative revision key test");
+        return;
+    };
+    let mut client = target.connect();
+    let (_one, _two) = seed_people(&mut client);
+
+    // A is published, then the source passes through B and C.
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+    narrative::review_passage(
+        &mut client,
+        first_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve A");
+
+    let b = TEXT.replace("First paragraph about the ancestor.", "Body B.");
+    import(&mut client, &b, &"b".repeat(64));
+    let c = TEXT.replace("First paragraph about the ancestor.", "Body C.");
+    import(&mut client, &c, &"c".repeat(64));
+
+    let pending: i64 = client
+        .query_one(
+            "SELECT passage_id FROM source_narrative_passage
+              WHERE review_status = 'pending' LIMIT 1",
+            &[],
+        )
+        .expect("pending revision")
+        .get(0);
+    narrative::review_passage(
+        &mut client,
+        pending,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve C");
+
+    // Importing B again must not collide with a stale B-derived key.
+    let report = import(&mut client, &b, &"b".repeat(64));
+    assert_eq!(report.revisions, 1, "B becomes a new pending revision");
+    let total: i64 = client
+        .query_one("SELECT count(*) FROM source_narrative_passage", &[])
+        .expect("count")
+        .get(0);
+    // The page-8 slot holds A, C, and the new B revision; the page-11 slot
+    // still holds its single row.
+    assert_eq!(total, 4, "three page-8 revisions and one page-11 passage");
+}

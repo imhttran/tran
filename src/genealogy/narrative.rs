@@ -331,10 +331,20 @@ impl MatchKind {
 pub fn propose_links(passage: &ExtractedPassage, people: &[LinkablePerson]) -> Vec<ProposedLink> {
     let mut proposed: BTreeMap<i64, ProposedLink> = BTreeMap::new();
     let body_tokens = tokens(&passage.body);
+    let title_tokens = passage
+        .section_title
+        .as_deref()
+        .map(tokens)
+        .unwrap_or_default();
 
     // 1. Explicit catalog identifiers in the heading or body.
+    //
+    // A catalog key contains hyphens (`ce-0001-0123…`), so it must be matched as
+    // a token sequence rather than as one token.
     for person in people {
-        if contains_token(&body_tokens, &person.person_key.to_lowercase()) {
+        if matches_key(&body_tokens, &person.person_key)
+            || matches_key(&title_tokens, &person.person_key)
+        {
             proposed.insert(
                 person.person_id,
                 ProposedLink {
@@ -450,8 +460,9 @@ fn contains_sequence(haystack: &[String], needle: &[String]) -> bool {
         .any(|window| window == needle)
 }
 
-fn contains_token(haystack: &[String], needle: &str) -> bool {
-    haystack.iter().any(|token| token == needle)
+fn matches_key(tokens_in_text: &[String], key: &str) -> bool {
+    let key_tokens = tokens(key);
+    !key_tokens.is_empty() && contains_sequence(tokens_in_text, &key_tokens)
 }
 
 // ---------------------------------------------------------------------------
@@ -556,23 +567,41 @@ pub fn import_narrative(
             }
             ImportDecision::Update => {
                 report.updated += 1;
-                tx.query_one(
-                    "UPDATE source_narrative_passage
-                        SET body = $2, content_sha256 = $3, page_end = $4,
-                            ordinal = $5, section_title = $6, updated_at = now()
-                      WHERE slot_key = $1 AND review_status = 'pending'
-                      RETURNING passage_id",
-                    &[
-                        &passage.slot_key,
-                        &passage.body,
-                        &passage.content_sha256,
-                        &passage.page_end,
-                        &ordinal,
-                        &passage.section_title,
-                    ],
+                // The text changed, so the revision key must follow it: a key
+                // derived from an earlier body would collide if that body came
+                // back later. The slot's first row keeps the base key.
+                let id: i64 = tx
+                    .query_one(
+                        "UPDATE source_narrative_passage
+                            SET body = $2, content_sha256 = $3, page_end = $4,
+                                ordinal = $5, section_title = $6,
+                                passage_key = CASE
+                                    WHEN passage_key = slot_key THEN slot_key
+                                    ELSE slot_key || ':' || left($3, 16)
+                                END,
+                                updated_at = now()
+                          WHERE slot_key = $1 AND review_status = 'pending'
+                          RETURNING passage_id",
+                        &[
+                            &passage.slot_key,
+                            &passage.body,
+                            &passage.content_sha256,
+                            &passage.page_end,
+                            &ordinal,
+                            &passage.section_title,
+                        ],
+                    )
+                    .map_err(GenealogyError::Query)?
+                    .get(0);
+                // Link decisions were made about the previous wording, so they
+                // are re-derived from the replacement text below. The audit
+                // events that recorded them are append-only and remain.
+                tx.execute(
+                    "DELETE FROM source_narrative_link WHERE passage_id = $1",
+                    &[&id],
                 )
-                .map_err(GenealogyError::Query)?
-                .get(0)
+                .map_err(GenealogyError::Query)?;
+                id
             }
             ImportDecision::Insert | ImportDecision::Revision => {
                 if decision == ImportDecision::Insert {
@@ -1100,6 +1129,29 @@ Another section.
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].person_key, "P002");
         assert_eq!(links[0].status, LinkStatus::Resolved);
+        assert_eq!(links[0].match_kind, MatchKind::ExplicitId);
+    }
+
+    #[test]
+    fn a_hyphenated_catalog_key_is_matched_as_a_sequence() {
+        let mut passage = parse().passages[0].clone();
+        passage.section_title = None;
+        passage.body = "Recorded as ce-0007-0123456789abcdef in the catalog.".to_string();
+        let people = vec![person(7, "ce-0007-0123456789abcdef", "Trần Tối Lạc", &[])];
+        let links = propose_links(&passage, &people);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].match_kind, MatchKind::ExplicitId);
+        assert_eq!(links[0].status, LinkStatus::Resolved);
+    }
+
+    #[test]
+    fn a_catalog_key_in_the_heading_is_matched_too() {
+        let mut passage = parse().passages[0].clone();
+        passage.section_title = Some("Đời thứ 11: ce-0007-0123456789abcdef".to_string());
+        passage.body = "No name here.".to_string();
+        let people = vec![person(7, "ce-0007-0123456789abcdef", "Trần Tối Lạc", &[])];
+        let links = propose_links(&passage, &people);
+        assert_eq!(links.len(), 1);
         assert_eq!(links[0].match_kind, MatchKind::ExplicitId);
     }
 
