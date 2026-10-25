@@ -118,6 +118,9 @@ pub struct CitationView {
     pub locator: Option<String>,
     pub excerpt: Option<String>,
     pub label: String,
+    /// Set when the source document was removed. The row is only shown in the
+    /// authorized history view; current reads drop the assertion entirely.
+    pub withdrawn: bool,
 }
 
 impl From<&Citation> for CitationView {
@@ -128,6 +131,7 @@ impl From<&Citation> for CitationView {
             locator: citation.locator.clone(),
             excerpt: citation.excerpt.clone(),
             label: citation.label(),
+            withdrawn: false,
         }
     }
 }
@@ -238,6 +242,14 @@ pub struct DecisionRow {
     pub reverses_decision_id: Option<i64>,
     pub supersedes_decision_id: Option<i64>,
     pub items: Vec<PreviewItem>,
+    /// True when this decision is still active but a current assertion it made
+    /// authoritative lost every supporting citation to a withdrawn source.
+    ///
+    /// The decision, its items, and every row stay; the reviewer must decide
+    /// whether to reverse it or designate another source.
+    pub needs_attention: bool,
+    /// The current assertions that no longer have live evidence.
+    pub unsupported_assertions: Vec<AssertionView>,
 }
 
 /// The result of an apply or a reversal.
@@ -266,6 +278,10 @@ pub enum AuthorityError {
     NotFound,
     #[error("the document version no longer matches the reviewed content")]
     Stale,
+    /// The reviewed document was removed, so its evidence is withdrawn and it
+    /// can no longer support a decision.
+    #[error("the source document was removed; its evidence is withdrawn")]
+    Withdrawn,
     #[error("{0}")]
     Invalid(String),
     #[error("this change requires explicit acknowledgement of {0} conflict(s)")]
@@ -322,7 +338,7 @@ struct RawAssertion {
     key: String,
     value_text: Option<String>,
     review_status: String,
-    citations: Vec<Citation>,
+    citations: Vec<CitationView>,
 }
 
 impl RawAssertion {
@@ -335,7 +351,7 @@ impl RawAssertion {
             key: self.key.clone(),
             value_text: self.value_text.clone(),
             review_status: self.review_status.clone(),
-            citations: self.citations.iter().map(CitationView::from).collect(),
+            citations: self.citations.clone(),
         }
     }
 }
@@ -353,7 +369,7 @@ fn load_raw<C: GenericClient>(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let assertion_id: i64 = row.try_get(0)?;
-        let citations = load_citations(client, assertion_id)?;
+        let citations = load_citations(client, assertion_id, false)?;
         out.push(RawAssertion {
             assertion_id,
             person_id: row.try_get(1)?,
@@ -372,20 +388,29 @@ fn load_raw<C: GenericClient>(
 fn load_citations<C: GenericClient>(
     client: &mut C,
     assertion_id: i64,
-) -> Result<Vec<Citation>, AuthorityError> {
+    include_withdrawn: bool,
+) -> Result<Vec<CitationView>, AuthorityError> {
     let rows = client.query(
-        "SELECT document_ref, page, locator, excerpt FROM assertion_evidence
-          WHERE assertion_id = $1 AND withdrawn_at IS NULL
-          ORDER BY document_ref, page, locator",
-        &[&assertion_id],
+        "SELECT document_ref, page, locator, excerpt, withdrawn_at IS NOT NULL
+           FROM assertion_evidence
+          WHERE assertion_id = $1
+            AND ($2 OR withdrawn_at IS NULL)
+          ORDER BY withdrawn_at IS NOT NULL, document_ref, page, locator",
+        &[&assertion_id, &include_withdrawn],
     )?;
     Ok(rows
         .iter()
-        .map(|row| Citation {
-            document_ref: row.get(0),
-            page: row.get(1),
-            locator: row.get(2),
-            excerpt: row.get(3),
+        .map(|row| {
+            let citation = Citation {
+                document_ref: row.get(0),
+                page: row.get(1),
+                locator: row.get(2),
+                excerpt: row.get(3),
+            };
+            CitationView {
+                withdrawn: row.get(4),
+                ..CitationView::from(&citation)
+            }
         })
         .collect())
 }
@@ -486,9 +511,13 @@ fn compute_preview<C: GenericClient>(
 
     let all_incoming = load_incoming(client, version_id)?;
     if all_incoming.is_empty() {
-        return Err(AuthorityError::Invalid(
-            "this document version supports no genealogy assertion".to_string(),
-        ));
+        return Err(if extraction_withdrawn(client, version_id)? {
+            AuthorityError::Withdrawn
+        } else {
+            AuthorityError::Invalid(
+                "this document version supports no genealogy assertion".to_string(),
+            )
+        });
     }
 
     let (incoming, _scope_person_id, person_key) = match scope {
@@ -919,15 +948,47 @@ pub fn apply(client: &mut Client, input: ApplyInput<'_>) -> Result<DecisionRepor
 
 /// Takes a transaction-scoped advisory lock per document version, so a second
 /// reviewer cannot interleave a preview-then-apply sequence for the same source.
+/// Takes the transaction-scoped lock the authority workflow uses for one source
+/// version.
+///
+/// Document withdrawal takes this same lock, so a withdrawal and an authority
+/// apply on one source are serialized: the evidence cannot disappear between a
+/// preview being validated and the decision committing, and the decision cannot
+/// land between the withdrawal's own reads and its write.
+pub fn lock_source<C: GenericClient>(
+    client: &mut C,
+    version_id: i64,
+) -> Result<(), postgres::Error> {
+    let key = format!("authority-source:{version_id}");
+    client.execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&key])?;
+    Ok(())
+}
+
 fn lock_target<C: GenericClient>(
     client: &mut C,
     version_id: i64,
     _scope: &str,
     _person_key: Option<&str>,
 ) -> Result<(), AuthorityError> {
-    let key = format!("authority-source:{version_id}");
-    client.execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&key])?;
+    lock_source(client, version_id)?;
     Ok(())
+}
+
+/// True when this document version produced evidence and every row of it has
+/// been withdrawn.
+fn extraction_withdrawn<C: GenericClient>(
+    client: &mut C,
+    version_id: i64,
+) -> Result<bool, AuthorityError> {
+    let row = client.query_one(
+        "SELECT count(*) AS total,
+                count(*) FILTER (WHERE withdrawn_at IS NULL) AS live
+           FROM assertion_evidence WHERE document_version_id = $1",
+        &[&version_id],
+    )?;
+    let total: i64 = row.get(0);
+    let live: i64 = row.get(1);
+    Ok(total > 0 && live == 0)
 }
 
 /// Every assertion a preview would write.
@@ -1136,22 +1197,10 @@ pub fn reverse(
             "SELECT scope, document_version_id, document_ref, content_sha256,
                     scope_person_id, preview_hash
                FROM authority_decision
-              WHERE decision_id = $1
-              FOR UPDATE",
+              WHERE decision_id = $1",
             &[&input.decision_id],
         )?
         .ok_or(AuthorityError::NotFound)?;
-    let status: String = tx
-        .query_one(
-            "SELECT status FROM authority_decision WHERE decision_id = $1",
-            &[&input.decision_id],
-        )?
-        .get(0);
-    if status != "active" {
-        return Err(AuthorityError::Invalid(
-            "only the active decision can be reversed".to_string(),
-        ));
-    }
     let scope: String = row.get(0);
     let version_id: i64 = row.get(1);
     let document_ref: String = row.get(2);
@@ -1197,11 +1246,26 @@ pub fn reverse(
         }
         ids.into_iter().collect()
     };
+    // Assertion rows are locked before the decision row, which is the order the
+    // apply path uses. Holding the same advisory lock as an apply on this source
+    // already excludes the common case; this keeps the cross-source case from
+    // deadlocking.
     tx.query(
         "SELECT assertion_id FROM assertion
           WHERE assertion_id = ANY($1::bigint[]) ORDER BY assertion_id FOR UPDATE",
         &[&touched],
     )?;
+    let status: String = tx
+        .query_one(
+            "SELECT status FROM authority_decision WHERE decision_id = $1 FOR UPDATE",
+            &[&input.decision_id],
+        )?
+        .get(0);
+    if status != "active" {
+        return Err(AuthorityError::Invalid(
+            "only the active decision can be reversed".to_string(),
+        ));
+    }
 
     let reversal_hash = preview_hash(&[
         "authority-reversal-v1".to_string(),
@@ -1321,12 +1385,22 @@ pub fn list_decisions(
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
         let decision_id: i64 = row.get(0);
+        let status: String = row.get(3);
         let items = load_decision_items(client, decision_id)?;
+        // An active decision needs attention when a current assertion it made
+        // authoritative lost every citation to a withdrawn source. The decision
+        // is preserved; the reviewer chooses between reversing it and
+        // designating another source.
+        let unsupported_assertions = if status == "active" {
+            unsupported_assertions(client, decision_id)?
+        } else {
+            Vec::new()
+        };
         out.push(DecisionRow {
             decision_id,
             scope: row.get(1),
             kind: row.get(2),
-            status: row.get(3),
+            status,
             document_version_id: row.get(4),
             document_ref: row.get(5),
             content_sha256: row.get(6),
@@ -1337,8 +1411,36 @@ pub fn list_decisions(
             retired_at: row.get(11),
             reverses_decision_id: row.get(12),
             supersedes_decision_id: row.get(13),
+            needs_attention: !unsupported_assertions.is_empty(),
+            unsupported_assertions,
             items,
         });
+    }
+    Ok(out)
+}
+
+/// The current assertions of one decision that lost all live evidence.
+fn unsupported_assertions(
+    client: &mut Client,
+    decision_id: i64,
+) -> Result<Vec<AssertionView>, AuthorityError> {
+    let unsupported = super::current::ASSERTION_UNSUPPORTED;
+    let sql = format!(
+        "SELECT a.assertion_id
+           FROM authority_decision_item i
+           JOIN assertion a ON a.assertion_id = i.assertion_id
+          WHERE i.decision_id = $1
+            AND a.superseded_at IS NULL
+            AND ({unsupported})
+          ORDER BY a.assertion_id"
+    );
+    let rows = client.query(&sql, &[&decision_id])?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let assertion_id: i64 = row.get(0);
+        if let Some(view) = load_assertion_view(client, assertion_id)? {
+            out.push(view);
+        }
     }
     Ok(out)
 }
@@ -1398,7 +1500,7 @@ fn load_assertion_view(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let citations = load_citations(client, assertion_id)?;
+    let citations = load_citations(client, assertion_id, true)?;
     Ok(Some(AssertionView {
         assertion_id: row.try_get(0)?,
         person_key: row.try_get(2)?,
@@ -1407,19 +1509,23 @@ fn load_assertion_view(
         key: row.try_get(5)?,
         value_text: row.try_get(6)?,
         review_status: row.try_get(7)?,
-        citations: citations.iter().map(CitationView::from).collect(),
+        citations,
     }))
 }
 
-/// True when the assertion is the current one for its slot.
+/// True when the assertion is the current one for its slot: not superseded and
+/// still supported by at least one live citation.
+///
+/// This is the same definition every current-state read uses; the authorized
+/// history view shows the superseded and unsupported rows this returns `false`
+/// for.
 pub fn is_current<C: GenericClient>(
     client: &mut C,
     assertion_id: i64,
 ) -> Result<bool, AuthorityError> {
-    let row = client.query_opt(
-        "SELECT superseded_at IS NULL FROM assertion WHERE assertion_id = $1",
-        &[&assertion_id],
-    )?;
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!("SELECT ({current}) FROM assertion a WHERE a.assertion_id = $1");
+    let row = client.query_opt(&sql, &[&assertion_id])?;
     Ok(row.map(|row| row.get(0)).unwrap_or(false))
 }
 

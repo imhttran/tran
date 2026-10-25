@@ -263,24 +263,29 @@ fn verified_evidence<C: GenericClient>(
     kind: &str,
     key: Option<&str>,
 ) -> Result<Option<CandidateEvidence>, GenealogyError> {
+    let current = super::current::CURRENT_ASSERTION;
     let row = match key {
         Some(key) => client
             .query_opt(
-                "SELECT assertion_id, value_text FROM assertion
-                  WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3
-                    AND review_status = 'verified'
-                    AND superseded_at IS NULL
-                  ORDER BY assertion_id LIMIT 1",
+                &format!(
+                    "SELECT a.assertion_id, a.value_text FROM assertion a
+                      WHERE a.person_id = $1 AND a.assertion_kind = $2 AND a.assertion_key = $3
+                        AND a.review_status = 'verified'
+                        AND ({current})
+                      ORDER BY a.assertion_id LIMIT 1"
+                ),
                 &[&person_id, &kind, &key],
             )
             .map_err(GenealogyError::Query)?,
         None => client
             .query_opt(
-                "SELECT assertion_id, value_text FROM assertion
-                  WHERE person_id = $1 AND assertion_kind = $2
-                    AND review_status = 'verified'
-                    AND superseded_at IS NULL
-                  ORDER BY assertion_id LIMIT 1",
+                &format!(
+                    "SELECT a.assertion_id, a.value_text FROM assertion a
+                      WHERE a.person_id = $1 AND a.assertion_kind = $2
+                        AND a.review_status = 'verified'
+                        AND ({current})
+                      ORDER BY a.assertion_id LIMIT 1"
+                ),
                 &[&person_id, &kind],
             )
             .map_err(GenealogyError::Query)?,

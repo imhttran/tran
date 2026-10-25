@@ -69,7 +69,8 @@ pub struct TreeGraph {
 /// link alone never produces a verified relationship. No genealogy DB fallback
 /// or RAG query is involved; callers must authorize before opening this DB.
 pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
-    let rows = client.query(
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
         "SELECT p.person_key,
                 COALESCE(NULLIF(BTRIM(p.display_name), ''), 'Unnamed person'),
                 CASE
@@ -86,7 +87,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                       WHERE a.person_id = p.person_id
                         AND a.assertion_kind = 'name_variant'
                         AND a.value_text IS NOT NULL
-                        AND a.superseded_at IS NULL
+                        AND ({current})
                      UNION
                      SELECT v.name_variant
                        FROM person_name_variant v
@@ -94,12 +95,12 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                    ) recorded_names) AS aliases
            FROM person p
            LEFT JOIN assertion a
-             ON a.person_id = p.person_id AND a.superseded_at IS NULL
+             ON a.person_id = p.person_id AND ({current})
           GROUP BY p.person_id
           ORDER BY p.person_key
-          LIMIT $1",
-        &[&(MAX_TREE_PEOPLE + 1)],
-    )?;
+          LIMIT $1"
+    );
+    let rows = client.query(&sql, &[&(MAX_TREE_PEOPLE + 1)])?;
     let truncated = rows.len() as i64 > MAX_TREE_PEOPLE;
     let mut people: Vec<TreePerson> = rows
         .iter()
@@ -141,7 +142,8 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
     // both orientations count. Source metadata is returned only for verified,
     // non-conflicting edges.
     let rows = client.query(
-        "WITH links AS (
+        &format!(
+            "WITH links AS (
             SELECT 'parent_child'::text AS kind,
                    parent.person_key AS from_key, child.person_key AS to_key,
                    pcl.parent_id AS from_id, pcl.child_id AS to_id
@@ -173,7 +175,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status IN ('needs_review', 'disputed')
-                      AND a.superseded_at IS NULL
+                      AND ({current})
                  ) THEN 'needs_review'
                  WHEN EXISTS (
                    SELECT 1 FROM assertion a
@@ -186,9 +188,21 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status = 'verified'
-                      AND a.superseded_at IS NULL
+                      AND ({current})
                  ) THEN 'verified'
-                 ELSE 'unverified'
+                 WHEN EXISTS (
+                   SELECT 1 FROM assertion a
+                    WHERE a.assertion_kind = l.kind
+                      AND (
+                        (a.person_id = l.from_id
+                         AND (a.object_person_id = l.to_id OR a.value_text = l.to_key))
+                        OR
+                        (a.person_id = l.to_id
+                         AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
+                      )
+                      AND ({current})
+                 ) THEN 'unverified'
+                 ELSE ''
                END AS evidence_status,
                evidence.document_ref, evidence.page, evidence.locator, evidence.excerpt
           FROM links l
@@ -206,10 +220,11 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                   AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                )
                AND a.review_status = 'verified'
-               AND a.superseded_at IS NULL
+               AND ({current})
           ) evidence ON true
          ORDER BY l.kind, l.from_key, l.to_key, evidence.document_ref, evidence.page,
-                  evidence.locator",
+                  evidence.locator"
+        ),
         &[&keys],
     )?;
 
@@ -219,6 +234,12 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
         let from_key: String = row.try_get(1)?;
         let to_key: String = row.try_get(2)?;
         let status: String = row.try_get(3)?;
+        // An edge is drawn only when a current, supported assertion backs it.
+        // When the only assertion was superseded or its source was withdrawn,
+        // the tree agrees with the person detail and shows no relationship.
+        if status.is_empty() {
+            continue;
+        }
         let document_ref: Option<String> = row.try_get(4)?;
         let page: Option<i32> = row.try_get(5)?;
         let locator: Option<String> = row.try_get(6)?;
@@ -264,17 +285,20 @@ fn load_verified_dates(
     client: &mut Client,
     keys: &[String],
 ) -> Result<LifespanByPerson, GenealogyError> {
+    let current = super::current::CURRENT_ASSERTION;
     let rows = client.query(
-        "SELECT p.person_key, a.assertion_kind, a.value_date_start, a.value_date_end,
+        &format!(
+            "SELECT p.person_key, a.assertion_kind, a.value_date_start, a.value_date_end,
                 a.value_date_precision, a.value_date_qualifier
            FROM assertion a
            JOIN person p ON p.person_id = a.person_id
           WHERE p.person_key = ANY($1)
             AND a.assertion_kind IN ('birth_date', 'death_date')
             AND a.review_status = 'verified'
-            AND a.superseded_at IS NULL
+            AND ({current})
             AND a.value_date_start IS NOT NULL
-          ORDER BY p.person_key, a.assertion_kind, a.value_date_start, a.assertion_id",
+          ORDER BY p.person_key, a.assertion_kind, a.value_date_start, a.assertion_id"
+        ),
         &[&keys.to_vec()],
     )?;
 

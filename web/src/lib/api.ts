@@ -1015,6 +1015,8 @@ export type AuthorityCitation = {
   locator: string | null;
   excerpt: string | null;
   label: string;
+  // Present only in the authorized history view: the source was removed.
+  withdrawn?: boolean;
 };
 
 export type AuthorityAssertion = {
@@ -1067,6 +1069,11 @@ export type AuthorityDecision = {
   reverses_decision_id: number | null;
   supersedes_decision_id: number | null;
   items: AuthorityItem[];
+  // True when this active decision made an assertion authoritative and every
+  // citation for it has since been withdrawn. The decision stays; the reviewer
+  // must reverse it or designate another source.
+  needs_attention: boolean;
+  unsupported_assertions: AuthorityAssertion[];
 };
 
 export type AuthorityScopeBody = {

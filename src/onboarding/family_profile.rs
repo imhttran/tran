@@ -270,18 +270,19 @@ fn verified_dates(
     tx: &mut Transaction<'_>,
     person_id: i64,
 ) -> Result<Vec<FamilyProfileDate>, FamilyProfileError> {
-    let rows = tx.query(
-        "SELECT assertion_kind, value_text, value_date_start, value_date_end,
-                value_date_precision, value_date_qualifier
-           FROM assertion
-          WHERE person_id = $1
-            AND assertion_kind IN ('birth_date', 'death_date')
-            AND review_status = 'verified'
-            AND superseded_at IS NULL
-            AND value_date_start IS NOT NULL
-          ORDER BY assertion_kind, value_date_start, assertion_id",
-        &[&person_id],
-    )?;
+    let current = crate::genealogy::current::CURRENT_ASSERTION;
+    let sql = format!(
+        "SELECT a.assertion_kind, a.value_text, a.value_date_start, a.value_date_end,
+                a.value_date_precision, a.value_date_qualifier
+           FROM assertion a
+          WHERE a.person_id = $1
+            AND a.assertion_kind IN ('birth_date', 'death_date')
+            AND a.review_status = 'verified'
+            AND ({current})
+            AND a.value_date_start IS NOT NULL
+          ORDER BY a.assertion_kind, a.value_date_start, a.assertion_id"
+    );
+    let rows = tx.query(&sql, &[&person_id])?;
 
     let mut by_kind: std::collections::BTreeMap<String, Vec<FamilyProfileDate>> =
         std::collections::BTreeMap::new();

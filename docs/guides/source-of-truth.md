@@ -71,6 +71,44 @@ The person answer and the assertion list label a current version as
 **Authoritative** and name the decision and its reason. That label is separate
 from the review status: an authoritative assertion may still be `Unverified`.
 
+An assertion whose source document was removed is not current, so it disappears
+from these views rather than showing an empty citation list. Historical evidence
+— superseded or withdrawn — is available only in the authorized decision history,
+where each withdrawn citation is labelled.
+
+## Removing a source document
+
+Removing a reviewed document withdraws its evidence. The rows stay for the audit
+trail; current reads stop using them.
+
+A decision stays safe because an assertion is **current** only when it is both
+unsuperseded and still has at least one live citation. One SQL fragment
+(`genealogy::current::CURRENT_ASSERTION`) defines that, so the tree, name search,
+archive person answers, person detail, the family profile, and the Head of Family
+eligibility input all agree.
+
+When the authoritative source is removed:
+
+- the assertions it supplied leave every current view; an edge whose only
+  assertion was withdrawn is not drawn;
+- the assertion that the decision replaced is **not** restored;
+- `review_status` does not change, so a verified claim keeps that status while it
+  is no longer presented as current;
+- the decision, its items, and its event trail are preserved;
+- the decision is marked **Needs attention** in the console, listing each current
+  assertion that lost its citations.
+
+The remedy is a new decision: reverse the affected decision to restore the
+previous version, or designate another reviewed source. Neither is automatic,
+which is the point: a withdrawal is not an approval.
+
+Withdrawal and the authority workflow take the same per-source advisory lock, and
+both lock the affected assertion rows before writing. A withdrawal therefore
+cannot land between preview validation and the decision committing, and an apply
+cannot land in the middle of a withdrawal. If the source was already withdrawn
+when a preview is requested, the request is refused with
+`authority_source_withdrawn` and nothing is written.
+
 ## Reversing a decision
 
 Only the active decision can be reversed. Reversal is a *new* decision: it
