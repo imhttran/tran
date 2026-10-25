@@ -24,3 +24,9 @@ AUDIT.md*
 
 # Local API process state (pid and log files) written by scripts/local-app.sh.
 /.run/
+
+# Local agent skill installs (editor tooling, not part of the application).
+# Keeping them out of the ignored set made every SOP diff carry ~2.4 MB of
+# vendored skill assets, which overflowed the model context in AP-101.
+/.agents/
+/skills-lock.json
