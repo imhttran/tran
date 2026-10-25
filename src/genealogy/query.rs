@@ -51,6 +51,22 @@ pub struct AssertionDate {
     pub qualifier: DateQualifier,
 }
 
+/// The authority decision that made this assertion the current one.
+///
+/// Authoritative is not verified: the decision changes which stored version the
+/// current views read, never the assertion's review status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionAuthority {
+    /// The decision that made this assertion current.
+    pub decision_id: i64,
+    /// The reviewer who applied the decision.
+    pub actor: String,
+    /// The reviewer's recorded reason.
+    pub reason: String,
+    /// When the decision was applied.
+    pub created_at: String,
+}
+
 /// One assertion with its status and citations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertionRow {
@@ -68,6 +84,8 @@ pub struct AssertionRow {
     pub date: Option<AssertionDate>,
     /// The evidence citations.
     pub citations: Vec<Citation>,
+    /// The authority decision that made this assertion current, when one did.
+    pub authority: Option<AssertionAuthority>,
 }
 
 /// One person and their assertions.
@@ -116,23 +134,41 @@ fn load_citations(client: &mut Client, assertion_id: i64) -> Result<Vec<Citation
         .collect())
 }
 
+/// The columns every current-state assertion read returns, plus the active
+/// authority decision that made the row current.
+const ASSERTION_SELECT: &str = "a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
+        a.review_status, a.value_date_start, a.value_date_end,
+        a.value_date_precision, a.value_date_qualifier,
+        ae.document_ref, ae.page, ae.locator, ae.excerpt,
+        auth.decision_id, auth.actor, auth.reason, auth.created_at";
+
+/// Only a current assertion is read. A superseded row keeps its value, its
+/// citations, and its review history, and stays available through the
+/// authorized authority history view.
+const ASSERTION_FROM: &str = "FROM assertion a
+  LEFT JOIN assertion_evidence ae
+    ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
+  LEFT JOIN LATERAL (
+    SELECT d.decision_id, d.actor, d.reason, d.created_at::text AS created_at
+      FROM authority_decision_item i
+      JOIN authority_decision d ON d.decision_id = i.decision_id
+     WHERE i.assertion_id = a.assertion_id AND d.status = 'active'
+     ORDER BY d.decision_id DESC
+     LIMIT 1
+  ) auth ON true";
+
 fn assertion_rows(
     client: &mut Client,
     person_id: i64,
 ) -> Result<Vec<AssertionRow>, GenealogyError> {
+    let sql = format!(
+        "SELECT {ASSERTION_SELECT}
+           {ASSERTION_FROM}
+          WHERE a.person_id = $1 AND a.superseded_at IS NULL
+          ORDER BY a.assertion_kind, a.assertion_key, ae.document_ref, ae.page"
+    );
     let rows = client
-        .query(
-            "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, a.value_date_start, a.value_date_end,
-                    a.value_date_precision, a.value_date_qualifier,
-                    ae.document_ref, ae.page, ae.locator, ae.excerpt
-               FROM assertion a
-               LEFT JOIN assertion_evidence ae
-                 ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
-              WHERE a.person_id = $1
-              ORDER BY a.assertion_kind, a.assertion_key, ae.document_ref, ae.page",
-            &[&person_id],
-        )
+        .query(&sql, &[&person_id])
         .map_err(GenealogyError::Query)?;
     group_assertion_rows(&rows)
 }
@@ -158,6 +194,15 @@ fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyErro
             }),
             _ => None,
         };
+        let authority = match row.try_get::<_, Option<i64>>(13)? {
+            Some(decision_id) => Some(AssertionAuthority {
+                decision_id,
+                actor: row.try_get(14)?,
+                reason: row.try_get(15)?,
+                created_at: row.try_get(16)?,
+            }),
+            None => None,
+        };
 
         match out.last_mut() {
             Some(last) if last.assertion_id == assertion_id => {
@@ -174,6 +219,7 @@ fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyErro
                     review_status: row.try_get(4)?,
                     date: stored_date(row)?,
                     citations: citation.into_iter().collect(),
+                    authority,
                 });
             }
         }
@@ -271,6 +317,7 @@ pub fn lookup_relationship(
                JOIN person o ON o.person_id = a.object_person_id
               WHERE p.person_key = $1 AND o.person_key = $2
                 AND a.review_status = 'verified'
+                AND a.superseded_at IS NULL
               LIMIT 1",
             &[&from_person_key, &to_person_key],
         )
@@ -371,19 +418,13 @@ pub fn list_records(
 /// `unverified`, `needs_review`, or `disputed` state are returned with their
 /// evidence citations.
 pub fn unresolved_assertions(client: &mut Client) -> Result<Vec<AssertionRow>, GenealogyError> {
-    let rows = client
-        .query(
-            "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, a.value_date_start, a.value_date_end,
-                    a.value_date_precision, a.value_date_qualifier,
-                    ae.document_ref, ae.page, ae.locator, ae.excerpt
-               FROM assertion a
-               LEFT JOIN assertion_evidence ae
-                 ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
-              WHERE a.review_status IN ('unverified', 'needs_review', 'disputed')
-              ORDER BY a.assertion_id, ae.document_ref, ae.page",
-            &[],
-        )
-        .map_err(GenealogyError::Query)?;
+    let sql = format!(
+        "SELECT {ASSERTION_SELECT}
+           {ASSERTION_FROM}
+          WHERE a.review_status IN ('unverified', 'needs_review', 'disputed')
+            AND a.superseded_at IS NULL
+          ORDER BY a.assertion_id, ae.document_ref, ae.page"
+    );
+    let rows = client.query(&sql, &[]).map_err(GenealogyError::Query)?;
     group_assertion_rows(&rows)
 }

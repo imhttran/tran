@@ -76,6 +76,15 @@ This PR deliberately adds no automatic RAG indexing. The USR-006 contract is:
 4. Re-check the approved revision/version at publication time and remove the
    previously published item when a new revision supersedes it.
 
+## Source-of-truth decisions
+
+Document and assertion review decides what the archive may keep. A separate
+decision decides which reviewed version is _current_ when two sources disagree.
+Administrators make that decision at `/admin/source-of-truth` or with the
+`authority-*` CLI commands; [source-of-truth.md](source-of-truth.md) documents the
+scopes, the preview, the stale-review guard, and the audited reversal. A
+designation never verifies a claim and never deletes the replaced version.
+
 ## Tests
 
 - Rust: `tests/onboarding_profile_revisions.rs` covers queue filtering,

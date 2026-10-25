@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rag_foundation::config::Config;
+use rag_foundation::genealogy::authority::{self, ApplyInput, ReverseInput, ScopeSpec};
 use rag_foundation::genealogy::migrate::{self, MIGRATIONS_DIR};
 use rag_foundation::genealogy::parser::{self, AssertionKind, Evidence, ParseOutcome};
 use rag_foundation::genealogy::query;
@@ -48,6 +49,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 .ok_or("usage: relationship <from-key> <to-key>")?,
         ),
         Some("review") => review_cmd(&args[1..]),
+        Some("authority-preview") => authority_preview_cmd(&args[1..]),
+        Some("authority-apply") => authority_apply_cmd(&args[1..]),
+        Some("authority-reverse") => authority_reverse_cmd(&args[1..]),
+        Some("authority-history") => authority_history_cmd(args.get(1).map(String::as_str)),
         _ => Err(
             "usage: genealogy <migrate|import|unresolved|person|relationship|review> ...".into(),
         ),
@@ -70,6 +75,14 @@ fn guarded_client() -> Result<
     let pool = create_pool(&dsn).map_err(|err| err.to_string())?;
     let conn = pool.get().map_err(|err| err.to_string())?;
     Ok((cfg, conn))
+}
+
+/// A single guarded connection for the authority commands, which take a
+/// `postgres::Client` because they accept both a client and a transaction.
+fn guarded_raw_client() -> Result<postgres::Client, String> {
+    let cfg = config()?;
+    let dsn = resolve_genealogy_dsn(&cfg).map_err(|err| err.to_string())?;
+    postgres::Client::connect(&dsn, postgres::NoTls).map_err(|err| err.to_string())
 }
 
 fn migrate_cmd() -> Result<(), String> {
@@ -344,6 +357,233 @@ fn relationship_cmd(from: &str, to: &str) -> Result<(), String> {
         relationship.relationship_kind,
         relationship.status,
         relationship.citations.len()
+    );
+    Ok(())
+}
+
+// --- authoritative source decisions ---------------------------------------
+
+/// The hash recorded for a document version, so an operator does not have to
+/// copy it out of the extraction screen.
+fn stored_sha(conn: &mut postgres::Client, version_id: i64) -> Result<String, String> {
+    conn.query_opt(
+        "SELECT content_sha256 FROM document_extraction
+          WHERE document_version_id = $1 ORDER BY extraction_id DESC LIMIT 1",
+        &[&version_id],
+    )
+    .map_err(|err| err.to_string())?
+    .map(|row| row.get(0))
+    .ok_or_else(|| format!("no reviewed extraction exists for document version {version_id}"))
+}
+
+struct AuthorityOptions {
+    version_id: i64,
+    scope: String,
+    person_key: Option<String>,
+    assertion_ids: Vec<i64>,
+    remove_assertion_ids: Vec<i64>,
+    sha: Option<String>,
+    reason: String,
+    actor: String,
+    preview_hash: String,
+    confirm: bool,
+    acknowledge_conflicts: bool,
+}
+
+fn parse_ids(value: &str) -> Result<Vec<i64>, String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.parse::<i64>()
+                .map_err(|_| format!("not an assertion id: {item}"))
+        })
+        .collect()
+}
+
+fn parse_authority_options(args: &[String]) -> Result<AuthorityOptions, String> {
+    let version = args
+        .first()
+        .ok_or("usage: authority-preview <document-version-id> [options]")?;
+    let mut options = AuthorityOptions {
+        version_id: version
+            .parse()
+            .map_err(|_| "document version id must be an integer".to_string())?,
+        scope: "document".to_string(),
+        person_key: None,
+        assertion_ids: Vec::new(),
+        remove_assertion_ids: Vec::new(),
+        sha: None,
+        reason: String::new(),
+        actor: String::new(),
+        preview_hash: String::new(),
+        confirm: false,
+        acknowledge_conflicts: false,
+    };
+    let mut index = 1;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = |offset: usize| -> Result<&str, String> {
+            args.get(index + offset)
+                .map(String::as_str)
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match flag {
+            "--scope" => {
+                options.scope = value(1)?.to_string();
+                index += 2;
+            }
+            "--person" => {
+                options.person_key = Some(value(1)?.to_string());
+                index += 2;
+            }
+            "--assertions" => {
+                options.assertion_ids = parse_ids(value(1)?)?;
+                index += 2;
+            }
+            "--remove" => {
+                options.remove_assertion_ids = parse_ids(value(1)?)?;
+                index += 2;
+            }
+            "--sha" => {
+                options.sha = Some(value(1)?.to_string());
+                index += 2;
+            }
+            "--reason" => {
+                options.reason = value(1)?.to_string();
+                index += 2;
+            }
+            "--actor" => {
+                options.actor = value(1)?.to_string();
+                index += 2;
+            }
+            "--preview-hash" => {
+                options.preview_hash = value(1)?.to_string();
+                index += 2;
+            }
+            "--confirm" => {
+                options.confirm = true;
+                index += 1;
+            }
+            "--acknowledge-conflicts" => {
+                options.acknowledge_conflicts = true;
+                index += 1;
+            }
+            other => return Err(format!("unknown authority option: {other}")),
+        }
+    }
+    Ok(options)
+}
+
+fn authority_preview_cmd(args: &[String]) -> Result<(), String> {
+    let options = parse_authority_options(args)?;
+    let mut conn = guarded_raw_client()?;
+    let sha = match options.sha {
+        Some(sha) => sha,
+        None => stored_sha(&mut conn, options.version_id)?,
+    };
+    let spec = ScopeSpec {
+        scope: &options.scope,
+        person_key: options.person_key.as_deref(),
+        assertion_ids: &options.assertion_ids,
+        remove_assertion_ids: &options.remove_assertion_ids,
+    };
+    let preview = authority::preview(&mut conn, options.version_id, &sha, &spec)
+        .map_err(|err| err.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&preview).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn authority_apply_cmd(args: &[String]) -> Result<(), String> {
+    let options = parse_authority_options(args)?;
+    let mut conn = guarded_raw_client()?;
+    let sha = match options.sha {
+        Some(sha) => sha,
+        None => stored_sha(&mut conn, options.version_id)?,
+    };
+    let spec = ScopeSpec {
+        scope: &options.scope,
+        person_key: options.person_key.as_deref(),
+        assertion_ids: &options.assertion_ids,
+        remove_assertion_ids: &options.remove_assertion_ids,
+    };
+    let report = authority::apply(
+        &mut conn,
+        ApplyInput {
+            document_version_id: options.version_id,
+            content_sha256: &sha,
+            spec,
+            reason: &options.reason,
+            actor: &options.actor,
+            preview_hash: &options.preview_hash,
+            confirm: options.confirm,
+            acknowledge_conflicts: options.acknowledge_conflicts,
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "decision={} status={} applied={} superseded={} removed={}",
+        report.decision_id, report.status, report.applied, report.superseded, report.removed
+    );
+    Ok(())
+}
+
+fn authority_reverse_cmd(args: &[String]) -> Result<(), String> {
+    let decision_id = args
+        .first()
+        .ok_or("usage: authority-reverse <decision-id> --reason R --actor A")?
+        .parse::<i64>()
+        .map_err(|_| "decision id must be an integer".to_string())?;
+    let mut reason = String::new();
+    let mut actor = String::new();
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--reason" => {
+                reason = args
+                    .get(index + 1)
+                    .ok_or("--reason requires a value")?
+                    .clone();
+                index += 2;
+            }
+            "--actor" => {
+                actor = args
+                    .get(index + 1)
+                    .ok_or("--actor requires a value")?
+                    .clone();
+                index += 2;
+            }
+            other => return Err(format!("unknown reversal option: {other}")),
+        }
+    }
+    let mut conn = guarded_raw_client()?;
+    let report = authority::reverse(
+        &mut conn,
+        ReverseInput {
+            decision_id,
+            reason: &reason,
+            actor: &actor,
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "decision={} status={} restored={} superseded={}",
+        report.decision_id, report.status, report.applied, report.superseded
+    );
+    Ok(())
+}
+
+fn authority_history_cmd(person_key: Option<&str>) -> Result<(), String> {
+    let mut conn = guarded_raw_client()?;
+    let decisions =
+        authority::list_decisions(&mut conn, person_key).map_err(|err| err.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&decisions).map_err(|err| err.to_string())?
     );
     Ok(())
 }

@@ -86,13 +86,15 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                       WHERE a.person_id = p.person_id
                         AND a.assertion_kind = 'name_variant'
                         AND a.value_text IS NOT NULL
+                        AND a.superseded_at IS NULL
                      UNION
                      SELECT v.name_variant
                        FROM person_name_variant v
                       WHERE v.person_id = p.person_id
                    ) recorded_names) AS aliases
            FROM person p
-           LEFT JOIN assertion a ON a.person_id = p.person_id
+           LEFT JOIN assertion a
+             ON a.person_id = p.person_id AND a.superseded_at IS NULL
           GROUP BY p.person_id
           ORDER BY p.person_key
           LIMIT $1",
@@ -171,6 +173,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status IN ('needs_review', 'disputed')
+                      AND a.superseded_at IS NULL
                  ) THEN 'needs_review'
                  WHEN EXISTS (
                    SELECT 1 FROM assertion a
@@ -183,6 +186,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                          AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                       )
                       AND a.review_status = 'verified'
+                      AND a.superseded_at IS NULL
                  ) THEN 'verified'
                  ELSE 'unverified'
                END AS evidence_status,
@@ -202,6 +206,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                   AND (a.object_person_id = l.from_id OR a.value_text = l.from_key))
                )
                AND a.review_status = 'verified'
+               AND a.superseded_at IS NULL
           ) evidence ON true
          ORDER BY l.kind, l.from_key, l.to_key, evidence.document_ref, evidence.page,
                   evidence.locator",
@@ -267,6 +272,7 @@ fn load_verified_dates(
           WHERE p.person_key = ANY($1)
             AND a.assertion_kind IN ('birth_date', 'death_date')
             AND a.review_status = 'verified'
+            AND a.superseded_at IS NULL
             AND a.value_date_start IS NOT NULL
           ORDER BY p.person_key, a.assertion_kind, a.value_date_start, a.assertion_id",
         &[&keys.to_vec()],

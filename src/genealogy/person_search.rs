@@ -462,7 +462,8 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                      FROM assertion a
                     WHERE a.person_id = p.person_id
                       AND a.assertion_kind = 'name_variant'
-                      AND a.value_text IS NOT NULL),
+                      AND a.value_text IS NOT NULL
+                      AND a.superseded_at IS NULL),
                   ARRAY[]::text[]
                 ) AS aliases,
                 CASE
@@ -473,7 +474,8 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                   ELSE 'unverified'
                 END AS evidence_status
            FROM person p
-           LEFT JOIN assertion a ON a.person_id = p.person_id
+           LEFT JOIN assertion a
+             ON a.person_id = p.person_id AND a.superseded_at IS NULL
           GROUP BY p.person_id
           ORDER BY p.person_key
           LIMIT $1",
@@ -524,6 +526,7 @@ pub fn recorded_parents(
                                OR a.value_text = parent.person_key))
                        )
                        AND a.review_status IN ('needs_review', 'disputed')
+                       AND a.superseded_at IS NULL
                   ) THEN 'needs_review'
                   WHEN EXISTS (
                     SELECT 1 FROM assertion a
@@ -538,6 +541,7 @@ pub fn recorded_parents(
                                OR a.value_text = parent.person_key))
                        )
                        AND a.review_status = 'verified'
+                       AND a.superseded_at IS NULL
                   ) THEN 'verified'
                   ELSE 'unverified'
                 END AS evidence_status
