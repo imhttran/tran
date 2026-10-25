@@ -12,6 +12,7 @@ pub mod dates;
 pub mod document_card;
 pub mod document_extraction;
 pub mod eligibility;
+pub mod inventory;
 pub mod label;
 pub mod migrate;
 pub mod narrative;
