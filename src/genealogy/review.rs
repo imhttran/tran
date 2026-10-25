@@ -240,6 +240,10 @@ fn format_blocked(violations: &[Violation]) -> String {
 /// `source_evidence` to an `original` source document whose derivation lineage
 /// is empty and whose page/locator is explicit. A null link, a derivative
 /// catalog/transcription, or a missing locator never satisfies the rule.
+///
+/// Withdrawn evidence is ignored: removing the source document removes its
+/// support, so a claim cannot be verified on a document the archive no longer
+/// publishes.
 fn provenance_gap(
     tx: &mut Transaction<'_>,
     assertion_id: i64,
@@ -251,7 +255,7 @@ fn provenance_gap(
                FROM assertion_evidence ae
                LEFT JOIN source_evidence se ON se.source_evidence_id = ae.source_evidence_id
                LEFT JOIN source_document sd ON sd.source_document_id = se.source_document_id
-              WHERE ae.assertion_id = $1",
+              WHERE ae.assertion_id = $1 AND ae.withdrawn_at IS NULL",
             &[&assertion_id],
         )
         .map_err(|err| ReviewError::Db(err.to_string()))?;
@@ -322,7 +326,8 @@ pub(crate) fn review_in_transaction(
 
     let evidence_count: i64 = tx
         .query_one(
-            "SELECT count(*) FROM assertion_evidence WHERE assertion_id = $1",
+            "SELECT count(*) FROM assertion_evidence
+              WHERE assertion_id = $1 AND withdrawn_at IS NULL",
             &[&request.assertion_id],
         )
         .map_err(|err| ReviewError::Db(err.to_string()))?

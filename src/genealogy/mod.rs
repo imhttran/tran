@@ -7,6 +7,7 @@
 pub mod appointments;
 pub mod authority;
 pub mod branch_review;
+pub mod current;
 pub mod dates;
 pub mod document_card;
 pub mod document_extraction;

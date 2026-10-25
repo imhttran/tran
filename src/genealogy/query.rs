@@ -161,10 +161,11 @@ fn assertion_rows(
     client: &mut Client,
     person_id: i64,
 ) -> Result<Vec<AssertionRow>, GenealogyError> {
+    let current = super::current::CURRENT_ASSERTION;
     let sql = format!(
         "SELECT {ASSERTION_SELECT}
            {ASSERTION_FROM}
-          WHERE a.person_id = $1 AND a.superseded_at IS NULL
+          WHERE a.person_id = $1 AND ({current})
           ORDER BY a.assertion_kind, a.assertion_key, ae.document_ref, ae.page"
     );
     let rows = client
@@ -309,18 +310,19 @@ pub fn lookup_relationship(
         .unwrap_or_else(|| "unknown".to_string());
 
     // Find any verified assertion that names the relationship.
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
+        "SELECT a.assertion_id
+           FROM assertion a
+           JOIN person p ON p.person_id = a.person_id
+           JOIN person o ON o.person_id = a.object_person_id
+          WHERE p.person_key = $1 AND o.person_key = $2
+            AND a.review_status = 'verified'
+            AND ({current})
+          LIMIT 1"
+    );
     let assertion = client
-        .query_opt(
-            "SELECT a.assertion_id
-               FROM assertion a
-               JOIN person p ON p.person_id = a.person_id
-               JOIN person o ON o.person_id = a.object_person_id
-              WHERE p.person_key = $1 AND o.person_key = $2
-                AND a.review_status = 'verified'
-                AND a.superseded_at IS NULL
-              LIMIT 1",
-            &[&from_person_key, &to_person_key],
-        )
+        .query_opt(&sql, &[&from_person_key, &to_person_key])
         .map_err(GenealogyError::Query)?;
 
     match assertion {

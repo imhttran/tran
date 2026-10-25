@@ -11,8 +11,16 @@ use genealogy_isolation::{base_dsn, create_isolated_target, IsolatedTarget};
 use rag_foundation::genealogy::authority::{
     self, ApplyInput, AuthorityError, ReverseInput, ScopeSpec,
 };
+use rag_foundation::genealogy::document_extraction::withdraw_document_evidence;
+use rag_foundation::genealogy::eligibility::{self, KIND_BRANCH};
+use rag_foundation::genealogy::person_search::{self, rank};
 use rag_foundation::genealogy::query::{lookup_person, unresolved_assertions};
+use rag_foundation::genealogy::review::{
+    review_assertion, ReviewError, ReviewRequest, ReviewStatus,
+};
 use rag_foundation::genealogy::tree::load_tree;
+use std::sync::mpsc;
+use std::time::Duration;
 
 const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -112,7 +120,12 @@ fn insert_assertion(
     assertion_id
 }
 
-fn is_current(client: &mut postgres::Client, assertion_id: i64) -> bool {
+/// True when no authority decision superseded the assertion.
+///
+/// This is intentionally narrower than "current": an assertion can be
+/// unsuperseded and still stop being current because its only source was
+/// withdrawn. Tests assert both facts separately.
+fn is_not_superseded(client: &mut postgres::Client, assertion_id: i64) -> bool {
     client
         .query_one(
             "SELECT superseded_at IS NULL FROM assertion WHERE assertion_id = $1",
@@ -130,6 +143,58 @@ fn review_status(client: &mut postgres::Client, assertion_id: i64) -> String {
         )
         .expect("read review status")
         .get(0)
+}
+
+/// Inserts a parent-child link plus the child's assertion naming the parent.
+fn insert_parent_link(
+    client: &mut postgres::Client,
+    parent_id: i64,
+    parent_name: &str,
+    child_id: i64,
+    version_id: i64,
+    document_ref: &str,
+    review_status: &str,
+) -> i64 {
+    client
+        .execute(
+            "INSERT INTO parent_child_link (parent_id, child_id) VALUES ($1, $2)
+             ON CONFLICT (parent_id, child_id) DO NOTHING",
+            &[&parent_id, &child_id],
+        )
+        .expect("insert synthetic parent link");
+    let assertion_id = insert_assertion(
+        client,
+        child_id,
+        "parent_child",
+        &format!("parent_child:{parent_id}"),
+        parent_name,
+        version_id,
+        document_ref,
+        4,
+        review_status,
+    );
+    client
+        .execute(
+            "UPDATE assertion SET object_person_id = $2 WHERE assertion_id = $1",
+            &[&assertion_id, &parent_id],
+        )
+        .expect("bind the parent object");
+    assertion_id
+}
+
+/// Sets the structured date columns the tree projection reads.
+fn set_birth_date(client: &mut postgres::Client, assertion_id: i64, start: &str) {
+    client
+        .execute(
+            "UPDATE assertion SET value_date_start = $2, value_date_precision = 'year',
+                    value_date_qualifier = 'exact' WHERE assertion_id = $1",
+            &[&assertion_id, &start],
+        )
+        .expect("set structured date");
+}
+
+fn withdraw(client: &mut postgres::Client, version_id: i64, document_ref: &str) -> u64 {
+    withdraw_document_evidence(client, version_id, document_ref).expect("withdraw evidence")
 }
 
 #[test]
@@ -193,8 +258,8 @@ fn document_scope_replaces_the_current_value_and_preserves_history() {
         },
     );
     assert!(matches!(refused, Err(AuthorityError::Conflicts(1))));
-    assert!(is_current(&mut client, previous));
-    assert!(is_current(&mut client, incoming));
+    assert!(is_not_superseded(&mut client, previous));
+    assert!(is_not_superseded(&mut client, incoming));
 
     let report = authority::apply(
         &mut client,
@@ -214,7 +279,7 @@ fn document_scope_replaces_the_current_value_and_preserves_history() {
     assert_eq!(report.superseded, 1);
 
     // The superseded row keeps its value, its review status, and its citation.
-    assert!(!is_current(&mut client, previous));
+    assert!(!is_not_superseded(&mut client, previous));
     assert_eq!(review_status(&mut client, previous), "verified");
     let kept = client
         .query_one(
@@ -232,7 +297,7 @@ fn document_scope_replaces_the_current_value_and_preserves_history() {
     assert_eq!(kept_evidence, 1);
 
     // Authoritative is not verified: the override never promotes the claim.
-    assert!(is_current(&mut client, incoming));
+    assert!(is_not_superseded(&mut client, incoming));
     assert_eq!(review_status(&mut client, incoming), "unverified");
 
     // Current views read the new value only, and label it as authoritative.
@@ -412,11 +477,11 @@ fn person_and_assertion_scopes_limit_the_effect() {
     )
     .expect("person apply");
     assert_eq!(report.applied, 1);
-    assert!(!is_current(&mut client, old_first));
-    assert!(is_current(&mut client, new_first));
+    assert!(!is_not_superseded(&mut client, old_first));
+    assert!(is_not_superseded(&mut client, new_first));
     // The other person is untouched by a person-scoped decision.
-    assert!(is_current(&mut client, old_second));
-    assert!(is_current(&mut client, new_second));
+    assert!(is_not_superseded(&mut client, old_second));
+    assert!(is_not_superseded(&mut client, new_second));
 
     // An assertion scope selects exactly the named assertions.
     let selected = [new_second];
@@ -443,8 +508,8 @@ fn person_and_assertion_scopes_limit_the_effect() {
         },
     )
     .expect("assertion apply");
-    assert!(!is_current(&mut client, old_second));
-    assert!(is_current(&mut client, new_second));
+    assert!(!is_not_superseded(&mut client, old_second));
+    assert!(is_not_superseded(&mut client, new_second));
 
     // Namesakes stay separate: the two people keep their own values.
     assert_eq!(
@@ -539,9 +604,9 @@ fn omission_is_not_deletion_unless_the_reviewer_confirms_it() {
         },
     )
     .expect("apply without removal");
-    assert!(is_current(&mut client, first_alias));
-    assert!(is_current(&mut client, second_alias));
-    assert!(is_current(&mut client, incoming));
+    assert!(is_not_superseded(&mut client, first_alias));
+    assert!(is_not_superseded(&mut client, second_alias));
+    assert!(is_not_superseded(&mut client, incoming));
 
     // Naming one removal turns it into an explicit removal.
     let remove = [first_alias];
@@ -575,8 +640,8 @@ fn omission_is_not_deletion_unless_the_reviewer_confirms_it() {
         },
     )
     .expect("apply removal");
-    assert!(!is_current(&mut client, first_alias));
-    assert!(is_current(&mut client, second_alias));
+    assert!(!is_not_superseded(&mut client, first_alias));
+    assert!(is_not_superseded(&mut client, second_alias));
 
     // The removed row is still readable in the authorized history.
     let decisions = authority::list_decisions(&mut client, Some("P300")).expect("history");
@@ -648,8 +713,8 @@ fn reversal_restores_the_previous_version_and_keeps_both_records() {
         },
     )
     .expect("apply");
-    assert!(!is_current(&mut client, previous));
-    assert!(is_current(&mut client, incoming));
+    assert!(!is_not_superseded(&mut client, previous));
+    assert!(is_not_superseded(&mut client, incoming));
 
     let reversal = authority::reverse(
         &mut client,
@@ -660,8 +725,8 @@ fn reversal_restores_the_previous_version_and_keeps_both_records() {
         },
     )
     .expect("reverse");
-    assert!(is_current(&mut client, previous));
-    assert!(!is_current(&mut client, incoming));
+    assert!(is_not_superseded(&mut client, previous));
+    assert!(!is_not_superseded(&mut client, incoming));
 
     // Nothing was deleted: both decisions and both assertions remain readable.
     let history = authority::list_decisions(&mut client, Some("P400")).expect("history");
@@ -762,7 +827,7 @@ fn a_second_decision_on_the_same_target_supersedes_the_first() {
         },
     )
     .expect("first apply");
-    assert!(is_current(&mut client, first));
+    assert!(is_not_superseded(&mut client, first));
 
     let preview =
         authority::preview(&mut client, 61, SHA_B, &person_scope).expect("second preview");
@@ -787,8 +852,8 @@ fn a_second_decision_on_the_same_target_supersedes_the_first() {
         },
     )
     .expect("second apply");
-    assert!(!is_current(&mut client, first));
-    assert!(is_current(&mut client, second));
+    assert!(!is_not_superseded(&mut client, first));
+    assert!(is_not_superseded(&mut client, second));
 
     let history = authority::list_decisions(&mut client, Some("P700")).expect("history");
     let first_row = history
@@ -817,8 +882,8 @@ fn a_second_decision_on_the_same_target_supersedes_the_first() {
         },
     )
     .expect("reverse the second decision");
-    assert!(is_current(&mut client, first));
-    assert!(!is_current(&mut client, second));
+    assert!(is_not_superseded(&mut client, first));
+    assert!(!is_not_superseded(&mut client, second));
     target.cleanup();
 }
 
@@ -1007,5 +1072,645 @@ fn the_tree_read_uses_the_authoritative_value() {
         node.birth.as_ref().map(|date| date.start.as_str()),
         Some("1881")
     );
+    target.cleanup();
+}
+
+#[test]
+fn a_withdrawn_source_cannot_verify_an_assertion() {
+    let Some((target, mut client)) = setup("authority_withdraw_verify") else {
+        return;
+    };
+    let person = insert_person(&mut client, "P850", "Phan Văn Hùng");
+    insert_extraction(&mut client, 95, "synthetic/doc-o.md", SHA_C);
+    let withdrawn_source = insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:o",
+        "Phan Văn Hùng",
+        95,
+        "synthetic/doc-o.md",
+        1,
+        "unverified",
+    );
+    let live_source = insert_assertion(
+        &mut client,
+        person,
+        "name_variant",
+        "variant:hung",
+        "hung.phan",
+        900,
+        "synthetic/catalog.md",
+        2,
+        "unverified",
+    );
+    assert_eq!(withdraw(&mut client, 95, "synthetic/doc-o.md"), 1);
+
+    // The withdrawn document no longer counts as support, so the verification
+    // gate refuses rather than accepting a claim the archive stopped publishing.
+    let refused = review_assertion(
+        &mut client,
+        &ReviewRequest {
+            assertion_id: withdrawn_source,
+            new_status: ReviewStatus::Verified,
+            reviewer: "reviewer-14",
+            evidence_ref: "synthetic/doc-o.md",
+            note: None,
+        },
+    );
+    assert!(matches!(refused, Err(ReviewError::NoEvidence(id)) if id == withdrawn_source));
+    assert_eq!(review_status(&mut client, withdrawn_source), "unverified");
+    // The row is untouched: the reviewer's attempt wrote no review event.
+    let events: i64 = client
+        .query_one(
+            "SELECT count(*) FROM assertion_review_event WHERE assertion_id = $1",
+            &[&withdrawn_source],
+        )
+        .expect("count review events")
+        .get(0);
+    assert_eq!(events, 0);
+    // The unrelated assertion is not affected by another source's withdrawal.
+    assert_eq!(review_status(&mut client, live_source), "unverified");
+    target.cleanup();
+}
+
+// --- document withdrawal ---------------------------------------------------
+//
+// A removed document stops supporting answers and badges. The authority
+// decision, its items, and every assertion row stay; nothing is deleted and no
+// review status changes. These tests check the four withdrawal positions:
+// before an apply, during an apply, after an apply, and around a reversal.
+
+#[test]
+fn withdrawal_before_apply_is_refused_and_writes_nothing() {
+    let Some((target, mut client)) = setup("authority_withdraw_before") else {
+        return;
+    };
+    let person = insert_person(&mut client, "P800", "Ngô Thị Bích");
+    insert_extraction(&mut client, 90, "synthetic/doc-j.md", SHA_A);
+    insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:j",
+        "Ngô Thị Bích",
+        90,
+        "synthetic/doc-j.md",
+        1,
+        "unverified",
+    );
+
+    let spec = ScopeSpec::document();
+    let preview = authority::preview(&mut client, 90, SHA_A, &spec).expect("preview");
+    assert_eq!(preview.items.len(), 1);
+
+    // The reviewer removes the source between the preview and the apply.
+    assert_eq!(withdraw(&mut client, 90, "synthetic/doc-j.md"), 1);
+
+    assert!(matches!(
+        authority::preview(&mut client, 90, SHA_A, &ScopeSpec::document()),
+        Err(AuthorityError::Withdrawn)
+    ));
+    let refused = authority::apply(
+        &mut client,
+        ApplyInput {
+            document_version_id: 90,
+            content_sha256: SHA_A,
+            spec: ScopeSpec::document(),
+            reason: "Should never be written",
+            actor: "reviewer-9",
+            preview_hash: &preview.preview_hash,
+            confirm: true,
+            acknowledge_conflicts: true,
+        },
+    );
+    assert!(matches!(refused, Err(AuthorityError::Withdrawn)));
+
+    // Nothing was written: no decision, no item, no event.
+    let decisions: i64 = client
+        .query_one("SELECT count(*) FROM authority_decision", &[])
+        .expect("count decisions")
+        .get(0);
+    assert_eq!(decisions, 0);
+    target.cleanup();
+}
+
+#[test]
+fn withdrawal_and_apply_share_one_source_lock() {
+    let Some((target, mut client)) = setup("authority_withdraw_lock") else {
+        return;
+    };
+    let person = insert_person(&mut client, "P810", "Lý Văn Tài");
+    insert_extraction(&mut client, 91, "synthetic/doc-k.md", SHA_B);
+    insert_assertion(
+        &mut client,
+        person,
+        "name_variant",
+        "variant:tai",
+        "tai.ly",
+        91,
+        "synthetic/doc-k.md",
+        2,
+        "unverified",
+    );
+    let preview =
+        authority::preview(&mut client, 91, SHA_B, &ScopeSpec::document()).expect("preview");
+
+    // Hold the source lock the way an in-flight apply or withdrawal does.
+    let mut gate =
+        postgres::Client::connect(&target.dsn, postgres::NoTls).expect("second connection");
+    gate.batch_execute("BEGIN")
+        .expect("begin the gate transaction");
+    gate.batch_execute("SELECT pg_advisory_xact_lock(hashtext('authority-source:91'))")
+        .expect("take the source lock");
+
+    // An apply on the same source must wait for that lock instead of reading a
+    // half-changed state.
+    let (tx, rx) = mpsc::channel();
+    let dsn = target.dsn.clone();
+    let hash = preview.preview_hash.clone();
+    let handle = std::thread::spawn(move || {
+        let mut worker =
+            postgres::Client::connect(&dsn, postgres::NoTls).expect("apply connection");
+        let result = authority::apply(
+            &mut worker,
+            ApplyInput {
+                document_version_id: 91,
+                content_sha256: SHA_B,
+                spec: ScopeSpec::document(),
+                reason: "Applied after the lock is released",
+                actor: "reviewer-10",
+                preview_hash: &hash,
+                confirm: true,
+                acknowledge_conflicts: true,
+            },
+        );
+        let _ = tx.send(result.map(|report| report.decision_id));
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        rx.try_recv().is_err(),
+        "apply must block while another transaction holds the source lock"
+    );
+    gate.batch_execute("COMMIT")
+        .expect("release the source lock");
+    let applied = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("apply completes after the lock is released")
+        .expect("apply succeeds");
+    handle.join().expect("apply thread");
+    assert!(applied > 0);
+
+    // The withdrawal takes the same lock, so it cannot land in the middle of an
+    // apply either.
+    gate.batch_execute("BEGIN")
+        .expect("begin the second gate transaction");
+    gate.batch_execute("SELECT pg_advisory_xact_lock(hashtext('authority-source:91'))")
+        .expect("take the source lock again");
+    let (wtx, wrx) = mpsc::channel();
+    let wdsn = target.dsn.clone();
+    let withdrawal = std::thread::spawn(move || {
+        let mut worker =
+            postgres::Client::connect(&wdsn, postgres::NoTls).expect("withdrawal connection");
+        let result = withdraw_document_evidence(&mut worker, 91, "synthetic/doc-k.md");
+        let _ = wtx.send(result);
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        wrx.try_recv().is_err(),
+        "withdrawal must block while another transaction holds the source lock"
+    );
+    gate.batch_execute("COMMIT")
+        .expect("release the source lock");
+    let withdrawn = wrx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("withdrawal completes after the lock is released")
+        .expect("withdrawal succeeds");
+    withdrawal.join().expect("withdrawal thread");
+    assert_eq!(withdrawn, 1);
+
+    target.cleanup();
+}
+
+#[test]
+fn withdrawal_after_apply_stops_every_current_view_and_flags_the_decision() {
+    let Some((target, mut client)) = setup("authority_withdraw_after") else {
+        return;
+    };
+    let person = insert_person(&mut client, "P820", "Đặng Thị Hoa");
+    let parent = insert_person(&mut client, "P821", "Đặng Văn Lộc");
+    insert_extraction(&mut client, 92, "synthetic/doc-l.md", SHA_C);
+
+    // A previously reviewed display name from the catalog, not from this upload.
+    let catalog_name = insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:catalog",
+        "Đặng Thị Hoa",
+        900,
+        "synthetic/catalog.md",
+        1,
+        "verified",
+    );
+    // Everything the uploaded document supports.
+    let alias = insert_assertion(
+        &mut client,
+        person,
+        "name_variant",
+        "variant:hoa",
+        "hoaarchive",
+        92,
+        "synthetic/doc-l.md",
+        2,
+        "unverified",
+    );
+    let birth = insert_assertion(
+        &mut client,
+        person,
+        "birth_date",
+        "date:1899",
+        "1899",
+        92,
+        "synthetic/doc-l.md",
+        3,
+        "verified",
+    );
+    set_birth_date(&mut client, birth, "1899");
+    let branch_claim = insert_assertion(
+        &mut client,
+        person,
+        KIND_BRANCH,
+        "branch:three",
+        "third",
+        92,
+        "synthetic/doc-l.md",
+        5,
+        "verified",
+    );
+    let link = insert_parent_link(
+        &mut client,
+        parent,
+        "Đặng Văn Lộc",
+        person,
+        92,
+        "synthetic/doc-l.md",
+        "verified",
+    );
+    // The document also replaces the display name.
+    let display = insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:upload",
+        "Dang Thi Hoa",
+        92,
+        "synthetic/doc-l.md",
+        1,
+        "unverified",
+    );
+
+    let preview =
+        authority::preview(&mut client, 92, SHA_C, &ScopeSpec::document()).expect("preview");
+    let decision = authority::apply(
+        &mut client,
+        ApplyInput {
+            document_version_id: 92,
+            content_sha256: SHA_C,
+            spec: ScopeSpec::document(),
+            reason: "The uploaded document is current",
+            actor: "reviewer-11",
+            preview_hash: &preview.preview_hash,
+            confirm: true,
+            acknowledge_conflicts: true,
+        },
+    )
+    .expect("apply");
+    assert!(authority::is_current(&mut client, alias).expect("current check"));
+    assert!(!authority::is_current(&mut client, catalog_name).expect("current check"));
+    assert_eq!(review_status(&mut client, catalog_name), "verified");
+
+    // Before the withdrawal every current path agrees the document is live.
+    let tree = load_tree(&mut client).expect("tree before");
+    let node = tree
+        .people
+        .iter()
+        .find(|node| node.person_key == "P820")
+        .expect("person in tree");
+    assert!(node.aliases.contains(&"hoaarchive".to_string()));
+    assert_eq!(
+        node.birth.as_ref().map(|date| date.start.as_str()),
+        Some("1899")
+    );
+    assert!(tree
+        .links
+        .iter()
+        .any(|edge| edge.from_key == "P821" && edge.to_key == "P820"));
+    let catalog = person_search::load_catalog(&mut client).expect("catalog before");
+    assert!(!rank(&catalog.people, "hoaarchive").is_empty());
+    assert!(eligibility::load_input(&mut client, "P820", "three")
+        .expect("eligibility before")
+        .branch
+        .is_some());
+
+    // The source document is removed.
+    assert_eq!(withdraw(&mut client, 92, "synthetic/doc-l.md"), 5);
+
+    // Person detail: none of the uploaded assertions survive as current.
+    let detail = lookup_person(&mut client, "P820")
+        .expect("person detail")
+        .expect("person exists");
+    let kinds: Vec<&str> = detail
+        .assertions
+        .iter()
+        .map(|assertion| assertion.kind.as_str())
+        .collect();
+    assert!(!kinds.contains(&"name_variant"));
+    assert!(!kinds.contains(&"birth_date"));
+    assert!(!kinds.contains(&"parent_child"));
+    assert!(!kinds.contains(&KIND_BRANCH));
+    assert!(!kinds.contains(&"display_name"));
+
+    // Tree: alias, date, and edge all disappear.
+    let tree = load_tree(&mut client).expect("tree after");
+    let node = tree
+        .people
+        .iter()
+        .find(|node| node.person_key == "P820")
+        .expect("person in tree");
+    assert!(node.aliases.is_empty());
+    assert!(node.birth.is_none());
+    assert!(
+        !tree
+            .links
+            .iter()
+            .any(|edge| edge.from_key == "P821" && edge.to_key == "P820"),
+        "an edge without live evidence must not be drawn"
+    );
+    assert_eq!(node.evidence_status, "unverified");
+
+    // Search: the alias is no longer a way to find the person.
+    let catalog = person_search::load_catalog(&mut client).expect("catalog after");
+    assert!(rank(&catalog.people, "hoaarchive").is_empty());
+
+    // Eligibility: the withdrawn branch claim is not eligible evidence.
+    assert!(eligibility::load_input(&mut client, "P820", "three")
+        .expect("eligibility after")
+        .branch
+        .is_none());
+
+    // Review status is unchanged and nothing was restored or deleted.
+    assert_eq!(review_status(&mut client, alias), "unverified");
+    assert_eq!(review_status(&mut client, birth), "verified");
+    assert_eq!(review_status(&mut client, link), "verified");
+    assert_eq!(review_status(&mut client, branch_claim), "verified");
+    assert!(!is_not_superseded(&mut client, catalog_name));
+    let still_stored: i64 = client
+        .query_one(
+            "SELECT count(*) FROM assertion_evidence
+              WHERE assertion_id = $1 AND withdrawn_at IS NOT NULL",
+            &[&alias],
+        )
+        .expect("count withdrawn evidence")
+        .get(0);
+    assert_eq!(still_stored, 1);
+
+    // The decision is preserved, still active, and reported as needing
+    // attention with the assertions that lost their support.
+    let decisions = authority::list_decisions(&mut client, None).expect("history");
+    let row = decisions
+        .iter()
+        .find(|row| row.decision_id == decision.decision_id)
+        .expect("decision is kept");
+    assert_eq!(row.status, "active");
+    assert!(row.needs_attention);
+    let flagged: Vec<i64> = row
+        .unsupported_assertions
+        .iter()
+        .map(|assertion| assertion.assertion_id)
+        .collect();
+    assert!(flagged.contains(&alias));
+    assert!(flagged.contains(&display));
+    // The history view labels the withdrawn citation instead of hiding it.
+    let alias_view = row
+        .unsupported_assertions
+        .iter()
+        .find(|assertion| assertion.assertion_id == alias)
+        .expect("alias is flagged");
+    assert!(!alias_view.citations.is_empty());
+    assert!(alias_view
+        .citations
+        .iter()
+        .all(|citation| citation.withdrawn));
+
+    target.cleanup();
+}
+
+#[test]
+fn reversal_after_withdrawal_restores_the_previous_version() {
+    let Some((target, mut client)) = setup("authority_withdraw_reverse") else {
+        return;
+    };
+    let person = insert_person(&mut client, "P830", "Trịnh Văn Quang");
+    insert_extraction(&mut client, 93, "synthetic/doc-m.md", SHA_A);
+    let previous = insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:old",
+        "Trịnh Văn Quang",
+        901,
+        "synthetic/older.md",
+        1,
+        "verified",
+    );
+    insert_assertion(
+        &mut client,
+        person,
+        "display_name",
+        "display:new",
+        "Trinh Van Quang",
+        93,
+        "synthetic/doc-m.md",
+        1,
+        "unverified",
+    );
+
+    let preview =
+        authority::preview(&mut client, 93, SHA_A, &ScopeSpec::document()).expect("preview");
+    let decision = authority::apply(
+        &mut client,
+        ApplyInput {
+            document_version_id: 93,
+            content_sha256: SHA_A,
+            spec: ScopeSpec::document(),
+            reason: "Newer source",
+            actor: "reviewer-12",
+            preview_hash: &preview.preview_hash,
+            confirm: true,
+            acknowledge_conflicts: true,
+        },
+    )
+    .expect("apply");
+    assert_eq!(withdraw(&mut client, 93, "synthetic/doc-m.md"), 1);
+    assert!(!authority::is_current(&mut client, previous).expect("current check"));
+
+    let decided = authority::list_decisions(&mut client, None).expect("history");
+    assert!(
+        decided
+            .iter()
+            .find(|row| row.decision_id == decision.decision_id)
+            .expect("decision kept")
+            .needs_attention
+    );
+
+    let reversal = authority::reverse(
+        &mut client,
+        ReverseInput {
+            decision_id: decision.decision_id,
+            reason: "The newer source was withdrawn",
+            actor: "reviewer-12",
+        },
+    )
+    .expect("reverse");
+    // The previous version had its own live evidence, so it is current again.
+    assert!(authority::is_current(&mut client, previous).expect("current check"));
+    assert_eq!(review_status(&mut client, previous), "verified");
+    let detail = lookup_person(&mut client, "P830")
+        .expect("person detail")
+        .expect("person exists");
+    assert_eq!(
+        detail
+            .assertions
+            .iter()
+            .filter(|assertion| assertion.kind == "display_name")
+            .map(|assertion| assertion.value_text.clone().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["Trịnh Văn Quang".to_string()]
+    );
+    // The reversal is the active decision and it does not need attention, while
+    // the reversed decision keeps its history.
+    let history = authority::list_decisions(&mut client, None).expect("history");
+    let reversal_row = history
+        .iter()
+        .find(|row| row.decision_id == reversal.decision_id)
+        .expect("reversal kept");
+    assert_eq!(reversal_row.status, "active");
+    assert!(!reversal_row.needs_attention);
+    let reversed_row = history
+        .iter()
+        .find(|row| row.decision_id == decision.decision_id)
+        .expect("reversed decision kept");
+    assert_eq!(reversed_row.status, "reversed");
+    target.cleanup();
+}
+
+#[test]
+fn current_views_agree_on_aliases_dates_and_relationships_after_withdrawal() {
+    let Some((target, mut client)) = setup("authority_withdraw_agree") else {
+        return;
+    };
+    let child = insert_person(&mut client, "P840", "Mai Thị Lan");
+    let parent = insert_person(&mut client, "P841", "Mai Văn Sơn");
+    insert_extraction(&mut client, 94, "synthetic/doc-n.md", SHA_B);
+    let alias = insert_assertion(
+        &mut client,
+        child,
+        "name_variant",
+        "variant:lan",
+        "lanarchive",
+        94,
+        "synthetic/doc-n.md",
+        1,
+        "unverified",
+    );
+    let birth = insert_assertion(
+        &mut client,
+        child,
+        "birth_date",
+        "date:1902",
+        "1902",
+        94,
+        "synthetic/doc-n.md",
+        2,
+        "verified",
+    );
+    set_birth_date(&mut client, birth, "1902");
+    insert_parent_link(
+        &mut client,
+        parent,
+        "Mai Văn Sơn",
+        child,
+        94,
+        "synthetic/doc-n.md",
+        "verified",
+    );
+
+    let preview =
+        authority::preview(&mut client, 94, SHA_B, &ScopeSpec::document()).expect("preview");
+    authority::apply(
+        &mut client,
+        ApplyInput {
+            document_version_id: 94,
+            content_sha256: SHA_B,
+            spec: ScopeSpec::document(),
+            reason: "Current source",
+            actor: "reviewer-13",
+            preview_hash: &preview.preview_hash,
+            confirm: true,
+            acknowledge_conflicts: true,
+        },
+    )
+    .expect("apply");
+    assert_eq!(withdraw(&mut client, 94, "synthetic/doc-n.md"), 3);
+
+    // One snapshot of every current path.
+    let detail = lookup_person(&mut client, "P840")
+        .expect("person detail")
+        .expect("person exists");
+    let tree = load_tree(&mut client).expect("tree");
+    let node = tree
+        .people
+        .iter()
+        .find(|node| node.person_key == "P840")
+        .expect("person in tree");
+    let catalog = person_search::load_catalog(&mut client).expect("catalog");
+    let person_names = catalog
+        .people
+        .iter()
+        .find(|person| person.person_key == "P840")
+        .expect("person in catalog");
+    let parents = person_search::recorded_parents(&mut client, &["P840".to_string()])
+        .expect("recorded parents");
+    let input = eligibility::load_input(&mut client, "P840", "missing").expect("eligibility");
+
+    let detail_kinds: Vec<&str> = detail
+        .assertions
+        .iter()
+        .map(|assertion| assertion.kind.as_str())
+        .collect();
+    assert!(!detail_kinds.contains(&"name_variant"));
+    assert!(!detail_kinds.contains(&"birth_date"));
+    assert!(!detail_kinds.contains(&"parent_child"));
+
+    assert!(node.aliases.is_empty());
+    assert!(node.birth.is_none());
+    assert!(person_names.aliases.is_empty());
+    assert!(rank(&catalog.people, "lanarchive").is_empty());
+    assert!(!parents.contains_key("P840"));
+    assert!(tree
+        .links
+        .iter()
+        .all(|edge| edge.from_key != "P841" && edge.to_key != "P841"));
+    // Nothing in the withdrawn snapshot is offered as verified evidence.
+    assert!(input.branch.is_none() && input.gender.is_none() && input.birth_order.is_none());
+
+    // The review queue still shows the candidate, as an authorized review view.
+    let unresolved: Vec<i64> = unresolved_assertions(&mut client)
+        .expect("review queue")
+        .into_iter()
+        .map(|row| row.assertion_id)
+        .collect();
+    assert!(unresolved.contains(&alias));
     target.cleanup();
 }

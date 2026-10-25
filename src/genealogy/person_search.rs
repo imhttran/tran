@@ -453,7 +453,8 @@ pub fn is_exact_name(candidate: &Candidate) -> bool {
 /// Reads every cataloged person with their recorded spellings and the same
 /// evidence status the tree read assigns.
 pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
-    let rows = client.query(
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
         "SELECT p.person_key,
                 COALESCE(NULLIF(BTRIM(p.display_name), ''), 'Unnamed person') AS display_name,
                 p.generation,
@@ -463,7 +464,7 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                     WHERE a.person_id = p.person_id
                       AND a.assertion_kind = 'name_variant'
                       AND a.value_text IS NOT NULL
-                      AND a.superseded_at IS NULL),
+                      AND ({current})),
                   ARRAY[]::text[]
                 ) AS aliases,
                 CASE
@@ -475,12 +476,12 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                 END AS evidence_status
            FROM person p
            LEFT JOIN assertion a
-             ON a.person_id = p.person_id AND a.superseded_at IS NULL
+             ON a.person_id = p.person_id AND ({current})
           GROUP BY p.person_id
           ORDER BY p.person_key
-          LIMIT $1",
-        &[&(MAX_SEARCH_PEOPLE + 1)],
-    )?;
+          LIMIT $1"
+    );
+    let rows = client.query(&sql, &[&(MAX_SEARCH_PEOPLE + 1)])?;
     let truncated = rows.len() as i64 > MAX_SEARCH_PEOPLE;
     let people = rows
         .iter()
@@ -509,7 +510,8 @@ pub fn recorded_parents(
         return Ok(out);
     }
     let keys = keys.to_vec();
-    let rows = client.query(
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
         "SELECT child.person_key, parent.person_key,
                 COALESCE(NULLIF(BTRIM(parent.display_name), ''), 'Unnamed person'),
                 CASE
@@ -526,7 +528,7 @@ pub fn recorded_parents(
                                OR a.value_text = parent.person_key))
                        )
                        AND a.review_status IN ('needs_review', 'disputed')
-                       AND a.superseded_at IS NULL
+                       AND ({current})
                   ) THEN 'needs_review'
                   WHEN EXISTS (
                     SELECT 1 FROM assertion a
@@ -541,23 +543,43 @@ pub fn recorded_parents(
                                OR a.value_text = parent.person_key))
                        )
                        AND a.review_status = 'verified'
-                       AND a.superseded_at IS NULL
+                       AND ({current})
                   ) THEN 'verified'
-                  ELSE 'unverified'
+                  WHEN EXISTS (
+                    SELECT 1 FROM assertion a
+                     WHERE a.assertion_kind = 'parent_child'
+                       AND (
+                         (a.person_id = parent.person_id
+                          AND (a.object_person_id = child.person_id
+                               OR a.value_text = child.person_key))
+                         OR
+                         (a.person_id = child.person_id
+                          AND (a.object_person_id = parent.person_id
+                               OR a.value_text = parent.person_key))
+                       )
+                       AND ({current})
+                  ) THEN 'unverified'
+                  ELSE ''
                 END AS evidence_status
            FROM parent_child_link pcl
            JOIN person parent ON parent.person_id = pcl.parent_id
            JOIN person child ON child.person_id = pcl.child_id
           WHERE child.person_key = ANY($1::text[])
-          ORDER BY child.person_key, parent.person_key",
-        &[&keys],
-    )?;
+          ORDER BY child.person_key, parent.person_key"
+    );
+    let rows = client.query(&sql, &[&keys])?;
     for row in rows {
+        let status: String = row.try_get(3)?;
+        // The selection step lists a parent only when a current, supported
+        // assertion backs the link, matching the tree and the person detail.
+        if status.is_empty() {
+            continue;
+        }
         let child_key: String = row.try_get(0)?;
         out.entry(child_key).or_default().push(ParentRef {
             person_key: row.try_get(1)?,
             display_name: row.try_get(2)?,
-            evidence_status: row.try_get(3)?,
+            evidence_status: status,
         });
     }
     Ok(out)

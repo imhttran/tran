@@ -153,6 +153,8 @@ function decision(overrides: Record<string, unknown> = {}) {
     reverses_decision_id: null,
     supersedes_decision_id: null,
     items: PREVIEW.items,
+    needs_attention: false,
+    unsupported_assertions: [],
     ...overrides,
   };
 }
@@ -335,6 +337,64 @@ test.describe("current source of truth", () => {
     await expect(page.getByTestId("authority-error")).toContainText(
       "person scope requires a person key",
     );
+  });
+
+  test("a withdrawn source is reported as needing attention", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.route("**/api/documents/submissions", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, submissions: [SUBMISSION] }),
+      }),
+    );
+    await page.route("**/api/genealogy/authority", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          decisions: [
+            decision({
+              needs_attention: true,
+              unsupported_assertions: [
+                assertion({
+                  assertion_id: 12,
+                  kind: "name_variant",
+                  value_text: "hoaarchive",
+                  citations: [
+                    {
+                      document_ref: "demo-card-md-1234",
+                      page: 1,
+                      locator: "line 2",
+                      excerpt: "Also known as: hoaarchive",
+                      label: "demo-card-md-1234 — line 2",
+                      withdrawn: true,
+                    },
+                  ],
+                }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+
+    await page.goto("/admin/source-of-truth");
+    await expect(page.getByTestId("authority-attention-badge")).toBeVisible();
+    await expect(page.getByTestId("authority-needs-attention")).toContainText(
+      "no longer have supporting evidence",
+    );
+    await expect(page.getByTestId("authority-needs-attention")).toContainText(
+      "Reverse this decision",
+    );
+    // The withdrawn citation is labelled rather than hidden.
+    await expect(page.getByTestId("authority-needs-attention")).toContainText(
+      "withdrawn",
+    );
+    await assertNoSensitive(page);
   });
 
   test("an active decision can be reversed with a recorded reason", async ({

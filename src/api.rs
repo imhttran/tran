@@ -4131,6 +4131,11 @@ fn authority_error(err: authority::AuthorityError) -> Response {
             "authority_stale",
             "the document or the current records changed since this preview; review it again",
         ),
+        authority::AuthorityError::Withdrawn => error(
+            StatusCode::CONFLICT,
+            "authority_source_withdrawn",
+            "the source document was removed, so its evidence can no longer support a decision",
+        ),
         authority::AuthorityError::Conflicts(count) => error(
             StatusCode::CONFLICT,
             "authority_conflicts",

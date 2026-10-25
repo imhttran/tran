@@ -257,6 +257,25 @@ _current_; the rest are history.
   `review_status`. Verification still requires its own evidence review and the
   provenance rule in §7.
 
+### Current is not only "unsuperseded"
+
+A current assertion must also still have live evidence. `assertion_evidence.withdrawn_at`
+is set when a reviewed document is removed; an assertion whose only evidence rows
+are withdrawn keeps its value, its review status, and its review events, but it
+stops being current. One SQL fragment
+(`genealogy::current::CURRENT_ASSERTION`) defines this for every current read
+(person, tree, person search, archive person answers, family profile, Head of
+Family eligibility), and the tree draws an edge only when a current, supported
+assertion backs it.
+
+Withdrawal never restores a superseded assertion and never changes
+`review_status`. An active authority decision whose current assertions lost every
+citation is reported as needing attention (`needs_attention` plus
+`unsupported_assertions` in the history read); the reviewer reverses it or
+designates another source. Withdrawal and authority apply/reverse take the same
+per-source advisory lock and lock the same assertion rows, so neither can
+interleave with the other.
+
 ## 10. Persistence boundary
 
 This contract is implemented by additive, versioned SQL in `genealogy/migrations/`

@@ -67,7 +67,7 @@ function citationLabel(assertion: AuthorityAssertion): string {
     assertion.citations.length > 1
       ? ` (+${assertion.citations.length - 1} more)`
       : "";
-  return `${first.label}${extra}`;
+  return `${first.label}${first.withdrawn ? " — withdrawn" : ""}${extra}`;
 }
 
 function valueLabel(assertion: AuthorityAssertion): string {
@@ -77,11 +77,10 @@ function valueLabel(assertion: AuthorityAssertion): string {
 function AssertionLine({ assertion }: { assertion: AuthorityAssertion }) {
   return (
     <span data-testid="authority-assertion">
-      <strong>{assertion.display_name}</strong> ·{" "}
-      {kindLabel(assertion.kind)}: {valueLabel(assertion)} ·{" "}
+      <strong>{assertion.display_name}</strong> · {kindLabel(assertion.kind)}:{" "}
+      {valueLabel(assertion)} ·{" "}
       <span className="meta">
-        {assertion.review_status.replace("_", " ")} ·{" "}
-        {citationLabel(assertion)}
+        {assertion.review_status.replace("_", " ")} · {citationLabel(assertion)}
       </span>
     </span>
   );
@@ -218,10 +217,7 @@ function AuthorityContent({ role }: { role: Role | null }) {
     setError(null);
     setMessage(null);
     try {
-      const result = await reverseAuthorityDecision(
-        decisionId,
-        reversalReason,
-      );
+      const result = await reverseAuthorityDecision(decisionId, reversalReason);
       setMessage(
         `Decision ${decisionId} reversed by decision ${result.decision.decision_id}. The earlier version is current again; both records are kept.`,
       );
@@ -392,9 +388,7 @@ function AuthorityContent({ role }: { role: Role | null }) {
                         checked={selectedAssertions.includes(
                           assertion.assertion_id,
                         )}
-                        onChange={() =>
-                          toggleAssertion(assertion.assertion_id)
-                        }
+                        onChange={() => toggleAssertion(assertion.assertion_id)}
                       />{" "}
                       <AssertionLine assertion={assertion} />
                     </label>
@@ -440,8 +434,8 @@ function AuthorityContent({ role }: { role: Role | null }) {
         <section className="card" data-testid="authority-preview-panel">
           <h2>Effect</h2>
           <p className="meta" data-testid="authority-preview-summary">
-            Scope {preview.scope} · {preview.items.length} record(s) ·{" "}
-            {changed} change(s) · {preview.omissions.length} omission(s) ·{" "}
+            Scope {preview.scope} · {preview.items.length} record(s) · {changed}{" "}
+            change(s) · {preview.omissions.length} omission(s) ·{" "}
             {preview.conflicts.length} conflict(s)
           </p>
           <p className="hint">
@@ -589,6 +583,14 @@ function AuthorityContent({ role }: { role: Role | null }) {
               <span className={`badge proposal-status-${decision.status}`}>
                 {decision.status}
               </span>
+              {decision.needs_attention ? (
+                <span
+                  className="badge badge-feedback"
+                  data-testid="authority-attention-badge"
+                >
+                  Needs attention
+                </span>
+              ) : null}
               <span className="meta">
                 {decision.kind === "reversal" ? "Reversal" : "Designation"} ·{" "}
                 {decision.scope} scope
@@ -632,6 +634,31 @@ function AuthorityContent({ role }: { role: Role | null }) {
                 </li>
               ))}
             </ul>
+            {decision.needs_attention ? (
+              <div
+                className="insufficient"
+                data-testid="authority-needs-attention"
+              >
+                <p>
+                  This decision needs attention: the source document was
+                  removed, so {decision.unsupported_assertions.length} current
+                  record(s) no longer have supporting evidence. They are not
+                  shown in the tree, search, profile, or archive answers.
+                </p>
+                <p className="hint">
+                  Reverse this decision to restore the previous version, or
+                  designate another reviewed source. Nothing was deleted and no
+                  review status changed.
+                </p>
+                <ul>
+                  {decision.unsupported_assertions.map((assertion) => (
+                    <li key={assertion.assertion_id}>
+                      <AssertionLine assertion={assertion} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {decision.status === "active" ? (
               <div className="proposal-value">
                 <label htmlFor={`reverse-${decision.decision_id}`}>
@@ -656,7 +683,8 @@ function AuthorityContent({ role }: { role: Role | null }) {
                     data-testid="authority-reverse"
                     disabled={
                       busy ||
-                      (reversalReasons[decision.decision_id] ?? "").trim() === ""
+                      (reversalReasons[decision.decision_id] ?? "").trim() ===
+                        ""
                     }
                     onClick={() => void reverse(decision.decision_id)}
                   >

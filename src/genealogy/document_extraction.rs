@@ -734,17 +734,37 @@ fn add_evidence(
 
 /// Withdraws every evidence row produced by one document version.
 ///
-/// The rows stay for the audit trail; reads filter them out, so a withdrawn
-/// document immediately stops supporting current answers.
+/// The rows stay for the audit trail; current reads drop an assertion whose only
+/// evidence is withdrawn, so a removed document stops supporting answers and
+/// badges immediately. Review status is never changed and no superseded
+/// assertion is restored.
+///
+/// The withdrawal coordinates with the authority workflow: it takes the same
+/// per-source advisory lock an apply takes, then locks the affected assertion
+/// rows, so a withdrawal cannot slide in between a preview and its apply (or the
+/// other way round).
 pub fn withdraw_document_evidence(
     client: &mut Client,
     document_version_id: i64,
     document_ref: &str,
 ) -> Result<u64, GenealogyError> {
+    let mut tx = client.transaction()?;
+    crate::genealogy::authority::lock_source(&mut tx, document_version_id)?;
+    // Lock every assertion whose evidence is about to disappear, in the same
+    // order the authority apply locks them.
+    tx.query(
+        "SELECT a.assertion_id FROM assertion a
+          WHERE EXISTS (
+                SELECT 1 FROM assertion_evidence ae
+                 WHERE ae.assertion_id = a.assertion_id
+                   AND (ae.document_version_id = $1 OR ae.document_ref = $2))
+          ORDER BY a.assertion_id FOR UPDATE",
+        &[&document_version_id, &document_ref],
+    )?;
     // Evidence written before migration 0024 has no version id, so the source
     // reference is matched as well. The id is filled in while withdrawing, so a
     // later removal is a pure id lookup.
-    let updated = client.execute(
+    let updated = tx.execute(
         "UPDATE assertion_evidence
             SET withdrawn_at = now(),
                 document_version_id = COALESCE(document_version_id, $1)
@@ -752,6 +772,7 @@ pub fn withdraw_document_evidence(
             AND (document_version_id = $1 OR document_ref = $2)",
         &[&document_version_id, &document_ref],
     )?;
+    tx.commit()?;
     Ok(updated)
 }
 
