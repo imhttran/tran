@@ -17,6 +17,7 @@ use postgres::Transaction;
 use thiserror::Error;
 
 use crate::genealogy::dates as genealogy_dates;
+use crate::genealogy::narrative::{self, FamilyPassage};
 
 use super::account_map::IdentityAccount;
 use super::media::{FAMILY_VISIBLE_MEDIA_JOIN, FAMILY_VISIBLE_MEDIA_PREDICATE};
@@ -87,6 +88,9 @@ pub struct FamilyProfile {
     pub media: Vec<FamilyProfileMedia>,
     /// Verified birth and death dates. Empty when nothing is verified yet.
     pub dates: Vec<FamilyProfileDate>,
+    /// Approved archive passages linked to this person. Separate from the
+    /// member's own `biography`, `my_story`, and `family_memories` fields.
+    pub history: Vec<FamilyPassage>,
 }
 
 /// Errors raised by family profile presentation.
@@ -154,6 +158,8 @@ pub fn read_family_profile(
     let fields = family_visible_values(&mut tx, person_id)?;
     let media = family_visible_media(&mut tx, person_id)?;
     let dates = verified_dates(&mut tx, person_id)?;
+    let history = narrative::family_history(&mut tx, person_id)
+        .map_err(|err| FamilyProfileError::Database(err.to_string()))?;
     tx.commit()?;
     Ok(FamilyProfile {
         person_key: person_key.to_string(),
@@ -161,6 +167,7 @@ pub fn read_family_profile(
         fields,
         media,
         dates,
+        history,
     })
 }
 

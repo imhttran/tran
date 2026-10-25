@@ -11,6 +11,7 @@ import {
   familyProfileMediaUrl,
   getFamilyProfile,
   type FamilyProfileFieldView,
+  type FamilyProfilePassageView,
   type FamilyProfileResponse,
 } from "@/lib/api";
 import { formatStructuredDate, precisionLabel } from "@/lib/dates";
@@ -203,6 +204,7 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   // Verified dates are optional in the payload; an older or mocked response that
   // omits them must not break the page.
   const dates = profile.dates ?? [];
+  const history = profile.history ?? [];
   const displayName = profile.person.display_name;
   // Media is presentation only as well: the API already excluded pending,
   // rejected, owner-private, restricted, and unprovenanced assets, and each
@@ -211,7 +213,7 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   const documents = profile.media.filter((item) => item.kind === "personal_document");
   const hasContent =
     presented.length > 0 || photos.length > 0 || documents.length > 0 ||
-    dates.length > 0;
+    dates.length > 0 || history.length > 0;
 
   return (
     <>
@@ -253,6 +255,25 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
                 </div>
               ))}
             </dl>
+          </section>
+        ) : null}
+
+        {history.length > 0 ? (
+          <section
+            className="profile-section"
+            aria-labelledby="family-profile-history"
+            data-testid="family-profile-history"
+          >
+            <div className="profile-section-heading">
+              <h2 id="family-profile-history">History from the family archive</h2>
+              <p>
+                Passages from the family history, reviewed for the family archive.
+                The wording is kept exactly as written in the source.
+              </p>
+            </div>
+            {history.map((passage) => (
+              <HistoryPassage key={passage.passage_id} passage={passage} />
+            ))}
           </section>
         ) : null}
 
@@ -382,6 +403,29 @@ function presentFields(values: FamilyProfileFieldView[]): PresentedField[] {
 
 function labelOf(fieldKey: string): string {
   return profileField(fieldKey)?.label ?? fieldKey;
+}
+
+/// One approved archive passage: source wording, language, and PDF citation.
+function HistoryPassage({ passage }: { passage: FamilyProfilePassageView }) {
+  const pages = passage.page_start === passage.page_end
+    ? `page ${passage.page_start}`
+    : `pages ${passage.page_start}–${passage.page_end}`;
+  const language = passage.language === "vi" ? "Vietnamese" : "English";
+  const paragraphs = passage.body.split(/\n{2,}/);
+  return (
+    <article
+      className="family-history-passage"
+      data-testid={`family-history-passage-${passage.passage_id}`}
+    >
+      {passage.section_title ? <h3>{passage.section_title}</h3> : null}
+      <p className="meta" data-testid="family-history-source">
+        {language} source · PDF {pages}
+      </p>
+      {paragraphs.map((paragraph, index) => (
+        <p key={index} className="family-history-text">{paragraph}</p>
+      ))}
+    </article>
+  );
 }
 
 function formatDate(value: string): string {

@@ -1295,6 +1295,18 @@ export type FamilyProfileDateView = {
   qualifier: "exact" | "circa" | "before" | "after";
 };
 
+/// One approved archive passage. The body is the source wording; the page range
+/// is the PDF citation. Pending, rejected, admin-only, and superseded passages
+/// never appear in this array.
+export type FamilyProfilePassageView = {
+  passage_id: number;
+  language: "vi" | "en";
+  section_title: string | null;
+  page_start: number;
+  page_end: number;
+  body: string;
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
@@ -1304,6 +1316,8 @@ export type FamilyProfileResponse = {
   /// Verified birth and death dates. Empty or absent when nothing is verified
   /// yet; the field is additive, so an older response remains valid.
   dates?: FamilyProfileDateView[];
+  /// Approved archive history, separate from the member's own profile fields.
+  history?: FamilyProfilePassageView[];
 };
 
 /// Decision A2: immediately stop an approved family-visible field from being

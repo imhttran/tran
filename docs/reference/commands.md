@@ -31,6 +31,7 @@ Run them with `cargo run --locked --bin <name>` or use the Makefile shortcuts.
 | `make check` | the Rust checks plus the web typecheck/build |
 | `make genealogy-migrate` | apply the genealogy migrations |
 | `make genealogy-import` | import `CATALOG` (default `docs/tran/Tran-Family-People-Catalog.md`) |
+| `genealogy narrative <dry-run\|import\|review\|link\|passages>` | review and publish source-linked historical passages (see [guides/source-narratives.md](../guides/source-narratives.md)) |
 | `make app-restart` | restart only the API/UI processes the scripts own |
 | `make app-update` | validate, migrate, import, rebuild, restart, and report |
 | `make admin-setup` | resolve a Keycloak username and configure an administrator |

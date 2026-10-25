@@ -2636,7 +2636,11 @@ async fn family_profile(
     .await;
     match result {
         Ok(Ok(profile)) => {
-            let state_label = if profile.fields.is_empty() && profile.media.is_empty() {
+            let state_label = if profile.fields.is_empty()
+                && profile.media.is_empty()
+                && profile.dates.is_empty()
+                && profile.history.is_empty()
+            {
                 "empty"
             } else {
                 "published"
@@ -2664,6 +2668,17 @@ async fn family_profile(
                     "end": date.end,
                     "precision": date.precision,
                     "qualifier": date.qualifier,
+                })).collect::<Vec<_>>(),
+                // Approved archive history, separate from the member's own
+                // profile fields. Pending, rejected, admin-only, restricted, and
+                // superseded passages are excluded server-side.
+                "history": profile.history.iter().map(|passage| serde_json::json!({
+                    "passage_id": passage.passage_id,
+                    "language": passage.language,
+                    "section_title": passage.section_title,
+                    "page_start": passage.page_start,
+                    "page_end": passage.page_end,
+                    "body": passage.body,
                 })).collect::<Vec<_>>(),
                 // Approved, family-visible, unrestricted assets only. The bytes
                 // are served by the person-scoped family media route, which

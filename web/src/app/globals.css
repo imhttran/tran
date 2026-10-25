@@ -777,3 +777,15 @@ textarea:focus-visible {
 @media (max-width: 480px) {
   .family-profile-dates div { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Reviewed archive history on a family profile. Kept visually distinct from a
+   member's own biography so the two are never confused. */
+.family-history-passage {
+  border-left: 3px solid var(--gold);
+  padding: 2px 0 2px 14px;
+  margin: 0 0 18px;
+}
+.family-history-passage:last-child { margin-bottom: 0; }
+.family-history-passage h3 { font-size: 1rem; margin: 0 0 4px; }
+.family-history-text { margin: 8px 0 0; }
+.family-history-text + .family-history-text { margin-top: 10px; }
