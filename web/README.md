@@ -56,9 +56,15 @@ bundled Node. Nothing is installed or upgraded automatically.
 ```sh
 npm run dev          # http://127.0.0.1:3000
 npm run typecheck    # tsc --noEmit
-npm run build        # next build
+npm run build        # next build (writes web/.next — see the note below)
 npm run e2e          # Playwright (servers must already be running)
 ```
+
+`npm run build` writes to `web/.next`, which is the directory a running
+`npm run dev` serves from. Building by hand while the dev server is up leaves
+the UI returning errors until it is restarted. Use `make web-build`: it builds
+into `web/.next-build` and leaves the running server alone. The equivalent is
+`NEXT_DIST_DIR=.next-build npm run build`.
 
 From the repository root:
 

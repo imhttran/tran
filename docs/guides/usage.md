@@ -78,6 +78,11 @@ API process state lives in `.run/api.pid` and `.run/api.log`; the UI uses
 `web/.run/`. A server started some other way is reported with the command to
 stop it and is never killed.
 
+A production build belongs behind `make web-build`, which writes to
+`web/.next-build`. Running `npm run build` directly writes to `web/.next`, the
+directory a running `npm run dev` serves from, so it can leave the UI returning
+500 until the server is restarted with `make app-restart`.
+
 Administrator provisioning stays explicit and is **not** part of `app-update`:
 see
 [operations/RBAC-OPERATIONS.md](../operations/RBAC-OPERATIONS.md#keycloak-administrator-setup).
