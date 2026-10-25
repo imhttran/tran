@@ -12,7 +12,7 @@ use rag_foundation::onboarding::{
     read_grant_snapshot, revoke_grant, BranchGrantError, IdentityAccount,
 };
 
-const MIGRATIONS: [&str; 25] = [
+const MIGRATIONS: [&str; 26] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -38,6 +38,7 @@ const MIGRATIONS: [&str; 25] = [
     "genealogy/migrations/0023_document_extraction.sql",
     "genealogy/migrations/0024_document_evidence_provenance.sql",
     "genealogy/migrations/0025_assertion_dates.sql",
+    "genealogy/migrations/0026_authority_decisions.sql",
 ];
 
 static DB_LOCK: Mutex<()> = Mutex::new(());

@@ -969,12 +969,17 @@ fn insert_decision<C: GenericClient>(
     };
     // The active decision on the same target, if any, was retired immediately
     // before this insert. The chain is recorded so the history stays readable.
+    // A person target is the person; every other scope targets the document
+    // version. This mirrors the partial unique indexes the schema enforces.
     let previous: Option<i64> = client
         .query_opt(
             "SELECT decision_id FROM authority_decision
               WHERE status = 'superseded' AND retired_by_decision_id = $1
-                AND scope = $2 AND document_version_id = $3
-                AND scope_person_id IS NOT DISTINCT FROM $4
+                AND scope = $2
+                AND (
+                  ($4::bigint IS NOT NULL AND scope_person_id = $4)
+                  OR ($4::bigint IS NULL AND document_version_id = $3)
+                )
               ORDER BY decision_id DESC LIMIT 1",
             &[&decision_id, &scope, &version_id, &person_id],
         )?
@@ -1074,8 +1079,10 @@ fn retire_overlapping<C: GenericClient>(
                    AND i.assertion_id = ANY($5::bigint[]))
               OR (
                 d.scope = $3
-                AND d.document_version_id = $2
-                AND d.scope_person_id IS NOT DISTINCT FROM $4
+                AND (
+                  ($4::bigint IS NOT NULL AND d.scope_person_id = $4)
+                  OR ($4::bigint IS NULL AND d.document_version_id = $2)
+                )
               )
             )",
         &[
@@ -1353,14 +1360,24 @@ fn load_decision_items(
         let is_removal = action == "removed";
         let assertion_id: i64 = row.get(1);
         let superseded_id: Option<i64> = row.get(2);
-        let incoming = load_assertion_view(client, assertion_id)?;
+        let view = load_assertion_view(client, assertion_id)?;
+        if is_removal {
+            // A removal keeps the assertion it superseded in `replaces`, the
+            // same shape the preview uses, so the history shows what was lost.
+            out.push(PreviewItem {
+                action,
+                incoming: None,
+                replaces: view.into_iter().collect(),
+            });
+            continue;
+        }
         let replaces = match superseded_id {
             Some(id) => load_assertion_view(client, id)?.into_iter().collect(),
             None => Vec::new(),
         };
         out.push(PreviewItem {
             action,
-            incoming: if is_removal { None } else { incoming },
+            incoming: view,
             replaces,
         });
     }

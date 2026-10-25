@@ -37,6 +37,11 @@ fn insert_person(client: &mut postgres::Client, key: &str, name: &str) -> i64 {
         .get(0)
 }
 
+/// Inserts the applied extraction row a document version needs.
+///
+/// A row with `status = 'applied'` must also carry `applied_by` and
+/// `applied_at` (`document_extraction_applied_check`), so the fixture writes
+/// them together.
 fn insert_extraction(
     client: &mut postgres::Client,
     version_id: i64,
@@ -46,8 +51,9 @@ fn insert_extraction(
     client
         .execute(
             "INSERT INTO document_extraction
-                 (document_version_id, corpus, document_source, content_sha256, created_by, status)
-             VALUES ($1, 'synthetic', $2, $3, 'fixture', 'applied')",
+                 (document_version_id, corpus, document_source, content_sha256, created_by,
+                  status, applied_by, applied_at)
+             VALUES ($1, 'synthetic', $2, $3, 'fixture', 'applied', 'fixture', now())",
             &[&version_id, &document_source, &sha],
         )
         .expect("insert synthetic extraction");

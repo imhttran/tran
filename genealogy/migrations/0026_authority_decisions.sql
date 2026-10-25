@@ -41,7 +41,11 @@ CREATE TABLE IF NOT EXISTS authority_decision (
     supersedes_decision_id BIGINT REFERENCES authority_decision(decision_id),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     retired_at           TIMESTAMPTZ,
-    retired_by_decision_id BIGINT REFERENCES authority_decision(decision_id),
+    -- Deliberately not an inline reference: a decision retires the previous one
+    -- on its target before it inserts its own row, so this forward reference is
+    -- only valid at commit time. The deferrable constraint below allows that
+    -- while still enforcing the reference.
+    retired_by_decision_id BIGINT,
     CONSTRAINT authority_decision_scope_check CHECK (
         scope IN ('document', 'person', 'assertions')
     ),
@@ -73,6 +77,23 @@ CREATE TABLE IF NOT EXISTS authority_decision (
 
 CREATE INDEX IF NOT EXISTS authority_decision_document_idx
     ON authority_decision (document_version_id, decision_id DESC);
+
+-- A decision retires the previous decision on its target before inserting its
+-- own row, so the retirement reference is only satisfiable at commit time. The
+-- constraint is deferred for exactly that reason and still enforced.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'authority_decision_retired_by_decision_id_fkey'
+    ) THEN
+        ALTER TABLE authority_decision
+            ADD CONSTRAINT authority_decision_retired_by_decision_id_fkey
+            FOREIGN KEY (retired_by_decision_id)
+            REFERENCES authority_decision(decision_id)
+            DEFERRABLE INITIALLY DEFERRED;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS authority_decision_person_idx
     ON authority_decision (scope_person_id, decision_id DESC)
