@@ -1,0 +1,19 @@
+{
+  "name": "tom-voice-demo-renderer",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Minimal Remotion project for the tom-voice-demo skill: narration plus captions, 1080p.",
+  "scripts": {
+    "render": "remotion render src/index.ts NarratedDemo"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.538",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

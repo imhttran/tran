@@ -1,0 +1,7 @@
+# Generated media and dependencies never belong in Git.
+remotion/node_modules/
+remotion/public/audio/
+remotion/public/media/
+remotion/.props-*.json
+*.wav
+__pycache__/
