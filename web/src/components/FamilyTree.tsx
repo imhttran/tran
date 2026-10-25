@@ -12,6 +12,7 @@ import { PageTitle } from "@/components/PageTitle";
 import { SourceDialog } from "@/components/SourceDetails";
 import type { CitedFact, OpenSource } from "@/components/SourceDetails";
 import type { EvidenceRef } from "@/lib/experience-contract";
+import { cardLifespanLabel, lifespanLabel } from "@/lib/dates";
 import {
   CARD_HEIGHT, CARD_WIDTH, READABLE_HEIGHT, READABLE_WIDTH, focusCamera, focusedGraph,
   immediateChildIds, immediateParentIds, layoutTree, normalizedName, parseTreeGraph,
@@ -40,6 +41,8 @@ type PersonAssertion = {
   key: string;
   value_text: string | null;
   review_status: string;
+  /** Structured date for birth_date/death_date assertions, when present. */
+  date?: { start: string; end: string | null; precision: string; qualifier: string } | null;
   evidence: EvidenceRef[];
 };
 type PersonDetail = {
@@ -171,6 +174,9 @@ function FamilyTree() {
       p.aliases.some((alias) => normalizedName(alias).includes(term)))).slice(0, 25);
   }, [graph, search]);
   const selectedPerson = activeGraph?.people.find((p) => p.record_id === selected) ?? null;
+  const selectedLifespan = selectedPerson
+    ? lifespanLabel(selectedPerson.birth, selectedPerson.death)
+    : "";
   const focusRoot = focus ? graph?.people.find((p) => p.record_id === focus.rootId) ?? null : null;
   const childCount = graph && selected ? immediateChildIds(graph, selected).length : 0;
   const parentCount = graph && selected ? immediateParentIds(graph, selected).length : 0;
@@ -794,6 +800,9 @@ function FamilyTree() {
                   })}
                   {layout.people.map((person) => {
                     const isSelected = selected === person.record_id;
+                    // A lifespan sits beside the status only when it fits the
+                    // fixed card width; the popup always shows the full value.
+                    const lifespan = cardLifespanLabel(person.birth, person.death);
                     return (
                       <g key={person.record_id} className="family-node"
                         ref={(node) => {
@@ -840,6 +849,13 @@ function FamilyTree() {
                           className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
                           {person.evidence_status.replace("_", " ")}
                         </text>
+                        {lifespan && (
+                          <text x={person.x + CARD_WIDTH - 12} y={person.y + 51}
+                            textAnchor="end" className="family-node-life"
+                            data-testid="family-person-life">
+                            {lifespan}
+                          </text>
+                        )}
                         <title>{person.person_label}</title>
                       </g>
                     );
@@ -865,6 +881,11 @@ function FamilyTree() {
                     <h2 id="family-popup-title">{selectedPerson.person_label}</h2>
                     <p className="hint">Catalog ID: {selectedPerson.record_id}</p>
                     <EvidenceBadge status={selectedPerson.evidence_status} />
+                    {selectedLifespan && (
+                      <p className="meta" data-testid="family-popup-lifespan">
+                        {selectedLifespan}
+                      </p>
+                    )}
                     <p className="meta" data-testid="family-popup-summary">
                       {childCount} recorded {childCount === 1 ? "child" : "children"} ·{" "}
                       {parentCount} recorded {parentCount === 1 ? "parent" : "parents"}

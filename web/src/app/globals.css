@@ -106,6 +106,7 @@ a { color:var(--accent); }
 .family-node-status-verified { fill:#1a7446; }
 .family-node-status-review { fill:#92670a; }
 .family-node-status-unverified { fill:#68716a; }
+.family-node-life { fill:#5c675f; font:12px system-ui, sans-serif; }
 .family-edge { fill:none; stroke-width:2.5; stroke:#89958a; }
 .family-edge-verified { stroke:#348761; }
 .family-edge-review { stroke:#b78b2b; stroke-dasharray:7 4; }
@@ -767,3 +768,12 @@ textarea:focus-visible {
 .proposal-status-applied { background: #e7f2e6; color: #29653b; }
 .proposal-status-approved { background: #fff0d3; color: #81560e; }
 .proposal-status-rejected { background: #fdecea; color: var(--err); }
+/* Verified lifespan dates on a family profile. */
+.family-profile-dates { display:grid; gap:10px; margin:0; }
+.family-profile-dates div { display:grid; grid-template-columns:88px minmax(0, 1fr); gap:0 12px; align-items:baseline; }
+.family-profile-dates dt { margin:0; color:var(--muted); font-weight:600; }
+.family-profile-dates dd { margin:0; }
+.family-profile-date-value { font-weight:600; }
+@media (max-width: 480px) {
+  .family-profile-dates div { grid-template-columns: minmax(0, 1fr); }
+}

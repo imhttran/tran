@@ -1,10 +1,15 @@
 import type { EvidenceRef, EvidenceStatus } from "@/lib/experience-contract";
+import { parseStructuredDate, type StructuredDate } from "@/lib/dates";
 
 export type TreePerson = {
   record_id: string;
   person_label: string;
   evidence_status: EvidenceStatus;
   aliases: string[];
+  /** Verified birth date, when the server has one. */
+  birth?: StructuredDate | null;
+  /** Verified death date, when the server has one. */
+  death?: StructuredDate | null;
 };
 export type TreeLink = {
   from_id: string;
@@ -50,7 +55,14 @@ export function parseTreeGraph(body: unknown): TreeGraph {
   const people = data.people.filter((p): p is TreePerson =>
     !!p && typeof p.record_id === "string" && p.record_id.length > 0 &&
     typeof p.person_label === "string" && validStatus(p.evidence_status) &&
-    Array.isArray(p.aliases) && p.aliases.every((a) => typeof a === "string"));
+    Array.isArray(p.aliases) && p.aliases.every((a) => typeof a === "string"))
+    .map((p) => ({
+      ...p,
+      // Dates are optional in the payload; an unreadable value is dropped
+      // rather than shown as a guessed date.
+      birth: parseStructuredDate(p.birth),
+      death: parseStructuredDate(p.death),
+    }));
   const ids = new Set(people.map((p) => p.record_id));
   const links = data.links.filter((l): l is TreeLink =>
     !!l && typeof l.from_id === "string" && typeof l.to_id === "string" &&
