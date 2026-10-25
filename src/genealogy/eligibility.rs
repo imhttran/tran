@@ -269,6 +269,7 @@ fn verified_evidence<C: GenericClient>(
                 "SELECT assertion_id, value_text FROM assertion
                   WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3
                     AND review_status = 'verified'
+                    AND superseded_at IS NULL
                   ORDER BY assertion_id LIMIT 1",
                 &[&person_id, &kind, &key],
             )
@@ -278,6 +279,7 @@ fn verified_evidence<C: GenericClient>(
                 "SELECT assertion_id, value_text FROM assertion
                   WHERE person_id = $1 AND assertion_kind = $2
                     AND review_status = 'verified'
+                    AND superseded_at IS NULL
                   ORDER BY assertion_id LIMIT 1",
                 &[&person_id, &kind],
             )

@@ -277,6 +277,7 @@ fn verified_dates(
           WHERE person_id = $1
             AND assertion_kind IN ('birth_date', 'death_date')
             AND review_status = 'verified'
+            AND superseded_at IS NULL
             AND value_date_start IS NOT NULL
           ORDER BY assertion_kind, value_date_start, assertion_id",
         &[&person_id],

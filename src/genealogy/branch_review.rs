@@ -483,9 +483,12 @@ pub fn read_proposal(
         .ok_or(BranchReviewError::UnknownProposal)?;
     let person_id: i64 = row.get(1);
     let summary = summary_from_row(row, &account.identity_fingerprint)?;
+    // Prefer the current row: a slot may hold one superseded version and the
+    // current one after an authority decision.
     let current = tx.query_opt(
         "SELECT assertion_id, value_text, review_status, reviewed_by, reviewed_at::text \
-           FROM assertion WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3",
+           FROM assertion WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3 \
+          ORDER BY superseded_at IS NULL DESC, assertion_id DESC LIMIT 1",
         &[&person_id, &summary.assertion_kind, &summary.assertion_key],
     )?;
     let current_assertion = current.map(|row| CurrentAssertion {

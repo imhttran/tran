@@ -108,7 +108,11 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/branch-review", label: "Branch review", icon: "review" },
   { href: "/documents", label: "Documents", icon: "documents" },
 ];
-const UPLOAD_ITEM: NavItem = { href: "/", label: "Add documents", icon: "upload" };
+const UPLOAD_ITEM: NavItem = {
+  href: "/",
+  label: "Add documents",
+  icon: "upload",
+};
 const ADMIN_ITEMS: NavItem[] = [
   { href: "/admin/reviews", label: "Reviews", icon: "admin-reviews" },
   {
@@ -116,7 +120,16 @@ const ADMIN_ITEMS: NavItem[] = [
     label: "Extractions",
     icon: "documents",
   },
-  { href: "/admin/family-members", label: "Bulk onboard", icon: "bulk-onboard" },
+  {
+    href: "/admin/source-of-truth",
+    label: "Source of truth",
+    icon: "documents",
+  },
+  {
+    href: "/admin/family-members",
+    label: "Bulk onboard",
+    icon: "bulk-onboard",
+  },
 ];
 
 async function readSession(): Promise<SessionResult> {

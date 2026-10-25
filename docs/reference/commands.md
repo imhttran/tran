@@ -45,6 +45,29 @@ Birth and death dates are refreshed by the same migrate + import step; see
 steps are in
 [operations/RBAC-OPERATIONS.md](../operations/RBAC-OPERATIONS.md#keycloak-administrator-setup).
 
+## Genealogy CLI
+
+`cargo run --locked --bin genealogy -- <command>` operates on the guarded
+`GENEALOGY_DATABASE_URL` only. It never falls back to `DATABASE_URL`.
+
+| Command | Purpose |
+| --- | --- |
+| `migrate` | apply the genealogy migrations |
+| `import --dry-run <catalog> <report>` | parse a catalog without writing |
+| `import --apply <catalog>` | re-import a catalog idempotently |
+| `unresolved [<report>]` | list or write the unresolved assertions |
+| `person <person-key>` | read one person's current assertions |
+| `relationship <from> <to>` | read one relationship's status |
+| `review <assertion-id> <status> --reviewer R --evidence E` | one assertion review |
+| `authority-preview <version> [--scope document\|person\|assertions]` | show the effect of designating a document version |
+| `authority-apply <version> --reason R --actor A --preview-hash H --confirm` | apply a confirmed preview |
+| `authority-history [<person-key>]` | read the decision history |
+| `authority-reverse <decision-id> --reason R --actor A` | restore the prior version through a new decision |
+
+`authority-preview` and `authority-apply` accept `--person`, `--assertions`,
+`--remove`, and `--sha`. When `--sha` is omitted the stored document content hash
+is used. See [guides/source-of-truth.md](../guides/source-of-truth.md).
+
 ## Rust checks and acceptance
 
 | Target | Runs |

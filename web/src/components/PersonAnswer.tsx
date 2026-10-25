@@ -105,7 +105,17 @@ function AssertionRows({
             >
               {reviewStatusLabel(assertion.review_status)}
             </span>
+            {assertion.authority ? (
+              <span className="badge" data-testid="assertion-authoritative">
+                Authoritative
+              </span>
+            ) : null}
           </div>
+          {assertion.authority ? (
+            <p className="meta" data-testid="assertion-authority-reason">
+              {`Set as the current version by decision ${assertion.authority.decision_id}: “${assertion.authority.reason}”.`}
+            </p>
+          ) : null}
           {assertion.value_text && <p>{assertion.value_text}</p>}
           {assertion.review_status !== "verified" && (
             <p className="meta">

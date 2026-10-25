@@ -146,10 +146,13 @@ fn reimport_in_transaction(
             .map_err(GenealogyError::Query)?
             .get(0);
 
+        // A slot may hold a superseded version plus the current one after an
+        // authority decision; re-import always reconciles the current one.
         let existing: Option<(i64, String)> = tx
             .query_opt(
                 "SELECT assertion_id, review_status FROM assertion
-                  WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3",
+                  WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3
+                  ORDER BY superseded_at IS NULL DESC, assertion_id DESC LIMIT 1",
                 &[&person_id, &assertion.kind, &assertion.key],
             )
             .map_err(GenealogyError::Query)?

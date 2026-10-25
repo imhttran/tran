@@ -676,6 +676,7 @@ fn ensure_alias(
             "SELECT assertion_id FROM assertion
               WHERE person_id = $1 AND assertion_kind = 'name_variant'
                 AND lower(value_text) = lower($2)
+              ORDER BY superseded_at IS NULL DESC, assertion_id DESC
               LIMIT 1",
             &[&person_id, &alias],
         )?
@@ -769,7 +770,8 @@ fn ensure_assertion(
 ) -> Result<i64, GenealogyError> {
     let existing = tx.query_opt(
         "SELECT assertion_id FROM assertion
-          WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3",
+          WHERE person_id = $1 AND assertion_kind = $2 AND assertion_key = $3
+          ORDER BY superseded_at IS NULL DESC, assertion_id DESC LIMIT 1",
         &[&person_id, &kind, &key],
     )?;
     let assertion_id: i64 = match existing {

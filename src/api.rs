@@ -40,8 +40,8 @@ use crate::document_lifecycle::{
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
-    appointments, branch_review, document_extraction, person_search, query as genealogy_query,
-    resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
+    appointments, authority, branch_review, document_extraction, person_search,
+    query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
@@ -342,6 +342,19 @@ impl AppState {
             .route(
                 "/api/genealogy/document-proposals/{id}/decision",
                 post(decide_document_proposal),
+            )
+            .route(
+                "/api/genealogy/documents/{version}/authority/preview",
+                post(preview_document_authority),
+            )
+            .route(
+                "/api/genealogy/documents/{version}/authority/apply",
+                post(apply_document_authority),
+            )
+            .route("/api/genealogy/authority", get(list_authority_decisions))
+            .route(
+                "/api/genealogy/authority/{id}/reverse",
+                post(reverse_authority_decision),
             )
             .route(
                 "/api/admin/family-members/candidates",
@@ -2144,6 +2157,21 @@ fn approved_json(value: &ApprovedProfileValue) -> serde_json::Value {
     })
 }
 
+/// The authority decision that made one assertion current, or `null`.
+fn assertion_authority_json(
+    authority: &Option<genealogy_query::AssertionAuthority>,
+) -> serde_json::Value {
+    match authority {
+        Some(authority) => serde_json::json!({
+            "decision_id": authority.decision_id,
+            "actor": authority.actor,
+            "reason": authority.reason,
+            "created_at": authority.created_at,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 /// The structured date of one genealogy assertion, or `null`.
 fn assertion_date_json(date: &Option<genealogy_query::AssertionDate>) -> serde_json::Value {
     match date {
@@ -3390,6 +3418,7 @@ fn person_payload(result: &person_search::PersonResult) -> (String, bool, serde_
                         "value_text": assertion.value_text,
                         "review_status": assertion.review_status,
                         "evidence": evidence_json(&assertion.citations),
+                        "authority": assertion_authority_json(&assertion.authority),
                     })
                 })
                 .collect();
@@ -3662,6 +3691,7 @@ async fn genealogy_person(
                         "review_status": assertion.review_status,
                         "date": assertion_date_json(&assertion.date),
                         "evidence": evidence_json(&assertion.citations),
+                        "authority": assertion_authority_json(&assertion.authority),
                     })
                 })
                 .collect();
@@ -4047,6 +4077,274 @@ fn genealogy_unavailable(message: String) -> Response {
         "genealogy_unavailable",
         "the genealogy store is unavailable",
     )
+}
+
+// --- authoritative source decisions ---------------------------------------
+
+/// One preview or apply request. The scope selects which assertions of the
+/// document version the reviewer designates as authoritative.
+#[derive(serde::Deserialize)]
+struct AuthorityScopeRequest {
+    /// `document`, `person`, or `assertions`.
+    scope: String,
+    #[serde(default)]
+    person_key: Option<String>,
+    #[serde(default)]
+    assertion_ids: Vec<i64>,
+    /// Current assertions the reviewer explicitly confirms removing.
+    #[serde(default)]
+    remove_assertion_ids: Vec<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct AuthorityApplyRequest {
+    scope: String,
+    #[serde(default)]
+    person_key: Option<String>,
+    #[serde(default)]
+    assertion_ids: Vec<i64>,
+    #[serde(default)]
+    remove_assertion_ids: Vec<i64>,
+    reason: String,
+    preview_hash: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    acknowledge_conflicts: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct AuthorityReverseRequest {
+    reason: String,
+}
+
+fn authority_error(err: authority::AuthorityError) -> Response {
+    eprintln!("api: authority decision failed: {err}");
+    match err {
+        authority::AuthorityError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "authority_not_found",
+            "no reviewed extraction exists for this document version",
+        ),
+        authority::AuthorityError::Stale => error(
+            StatusCode::CONFLICT,
+            "authority_stale",
+            "the document or the current records changed since this preview; review it again",
+        ),
+        authority::AuthorityError::Conflicts(count) => error(
+            StatusCode::CONFLICT,
+            "authority_conflicts",
+            format!(
+                "{count} reviewed record(s) would lose authority; acknowledge them to continue"
+            ),
+        ),
+        authority::AuthorityError::Invalid(message) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authority_invalid",
+            &message,
+        ),
+        authority::AuthorityError::Genealogy(err) => genealogy_error(err),
+    }
+}
+
+fn authority_preview_json(preview: &authority::AuthorityPreview) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "preview": preview,
+    })
+}
+
+#[allow(clippy::result_large_err)]
+async fn preview_document_authority(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+    Json(request): Json<AuthorityScopeRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let _ = identity;
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut rag = open_rag(&config)?;
+        let version = document_lifecycle::get_version(&mut rag, version_id, &corpus)
+            .map_err(lifecycle_error)?;
+        ensure_extractable(&version)?;
+        let mut genealogy = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        let spec = authority::ScopeSpec {
+            scope: &request.scope,
+            person_key: request.person_key.as_deref(),
+            assertion_ids: &request.assertion_ids,
+            remove_assertion_ids: &request.remove_assertion_ids,
+        };
+        authority::preview(&mut genealogy, version_id, &version.content_sha256, &spec)
+            .map_err(authority_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => Json(authority_preview_json(&preview)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: authority preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "authority_failed",
+                "the authority preview failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn apply_document_authority(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(version_id): Path<i64>,
+    Json(request): Json<AuthorityApplyRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut rag = open_rag(&config)?;
+        let version = document_lifecycle::get_version(&mut rag, version_id, &corpus)
+            .map_err(lifecycle_error)?;
+        ensure_extractable(&version)?;
+        let mut genealogy = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        let spec = authority::ScopeSpec {
+            scope: &request.scope,
+            person_key: request.person_key.as_deref(),
+            assertion_ids: &request.assertion_ids,
+            remove_assertion_ids: &request.remove_assertion_ids,
+        };
+        authority::apply(
+            &mut genealogy,
+            authority::ApplyInput {
+                document_version_id: version_id,
+                content_sha256: &version.content_sha256,
+                spec,
+                reason: &request.reason,
+                actor: &actor,
+                preview_hash: &request.preview_hash,
+                confirm: request.confirm,
+                acknowledge_conflicts: request.acknowledge_conflicts,
+            },
+        )
+        .map_err(authority_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => Json(serde_json::json!({
+            "ok": true,
+            "decision": report,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: authority apply task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "authority_failed",
+                "the authority decision failed",
+            )
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AuthorityListQuery {
+    #[serde(default)]
+    person_key: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+async fn list_authority_decisions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthorityListQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let person_key = query
+        .person_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string);
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        authority::list_decisions(&mut client, person_key.as_deref()).map_err(authority_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(decisions)) => Json(serde_json::json!({
+            "ok": true,
+            "decisions": decisions,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: authority history task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "authority_failed",
+                "the authority history could not be read",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn reverse_authority_decision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(decision_id): Path<i64>,
+    Json(request): Json<AuthorityReverseRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        authority::reverse(
+            &mut client,
+            authority::ReverseInput {
+                decision_id,
+                reason: &request.reason,
+                actor: &actor,
+            },
+        )
+        .map_err(authority_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => Json(serde_json::json!({
+            "ok": true,
+            "decision": report,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: authority reversal task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "authority_failed",
+                "the authority reversal failed",
+            )
+        }
+    }
 }
 
 async fn list_nominations(State(state): State<AppState>, headers: HeaderMap) -> Response {

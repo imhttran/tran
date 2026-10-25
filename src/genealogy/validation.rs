@@ -232,7 +232,8 @@ fn check_incompatible_branch(
             "SELECT value_text FROM assertion
               WHERE person_id = $1 AND assertion_kind = 'branch_claim'
                 AND review_status IN ('verified', 'needs_review')
-                AND value_text IS NOT NULL",
+                AND value_text IS NOT NULL
+                AND superseded_at IS NULL",
             &[&person_id],
         )
         .map_err(GenealogyError::Query)?;
@@ -264,7 +265,8 @@ fn check_contradictory_vital(
             "SELECT assertion_key, value_text FROM assertion
               WHERE person_id = $1 AND assertion_kind = 'vital_status'
                 AND review_status IN ('verified', 'needs_review', 'unverified', 'disputed')
-                AND value_text IS NOT NULL",
+                AND value_text IS NOT NULL
+                AND superseded_at IS NULL",
             &[&person_id],
         )
         .map_err(GenealogyError::Query)?;
@@ -335,6 +337,7 @@ fn check_contradictory_date(
                 AND assertion_kind = $2
                 AND assertion_id <> $3
                 AND review_status = 'verified'
+                AND superseded_at IS NULL
                 AND value_date_start IS NOT NULL
               ORDER BY value_date_start, assertion_id",
             &[&person_id, &kind, &assertion_id],

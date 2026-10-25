@@ -223,7 +223,41 @@ verified`.
 - No route exposes family records before RBAC exists. The `Head of Family`
   designation never grants or implies an application permission.
 
-## 9. Persistence boundary
+## 9. Current-version authority
+
+The schema stores every version of a claim. Exactly one version per slot is
+_current_; the rest are history.
+
+- `assertion.superseded_at` marks a row that an authority decision replaced. A
+  current-state read (`person`, tree, person search, archive person answers,
+  Head of Family eligibility) filters `superseded_at IS NULL`.
+- A superseded row keeps its `value_text`, `value_date_*`, `review_status`,
+  review events, and evidence rows. Supersession never deletes and never changes
+  the review status.
+- `authority_decision` records one decision: scope (`document`, `person`, or
+  `assertions`), the exact document version and its content hash, the reviewer,
+  the reason, the confirmation token, and the lifecycle state. At most one
+  decision is `active` per scope target; the application enforces it inside a
+  transaction-scoped advisory lock and retires overlapping decisions by
+  recording `retired_by_decision_id`.
+- `authority_decision_item` records each assertion a decision made current and
+  the assertion it replaced. The table is append-only.
+- `authority_decision_event` is the append-only decision trail (`applied`,
+  `reversed`).
+- A _slot_ is `(person, kind, key)`, except for `display_name`, `birth_date`, and
+  `death_date`, which are single-valued and use `(person, kind)`. Two aliases,
+  branches, parents, spouses, or links can coexist; two spellings of one name
+  cannot both be the current display name.
+- Omission is not deletion. A current assertion the document does not mention is
+  superseded only when the reviewer names it in the apply request.
+- A reversal inserts a new decision of kind `reversal`, supersedes what the
+  reversed decision made current, and restores what it replaced. Neither decision
+  nor any assertion is deleted.
+- **Authoritative is not verified.** The authority tables never write
+  `review_status`. Verification still requires its own evidence review and the
+  provenance rule in §7.
+
+## 10. Persistence boundary
 
 This contract is implemented by additive, versioned SQL in `genealogy/migrations/`
 (TRAN-002B). The existing `migrations/*.sql` files and the RAG `documents` table
@@ -238,4 +272,5 @@ The storage conventions that apply:
 - A unique constraint protects `catalog_entry_key`.
 - A transaction covers each import, so a failed import leaves no partial graph.
 
-No migration is created by TRAN-002A.
+No migration is created by TRAN-002A. Authority decisions are added by
+`0026_authority_decisions.sql`.

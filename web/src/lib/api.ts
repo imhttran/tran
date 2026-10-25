@@ -71,6 +71,13 @@ export type PersonCandidate = {
   recorded_parents: PersonRecordedParent[];
 };
 
+export type AssertionAuthority = {
+  decision_id: number;
+  actor: string;
+  reason: string;
+  created_at: string;
+};
+
 export type PersonAssertion = {
   assertion_id: number;
   kind: string;
@@ -78,6 +85,9 @@ export type PersonAssertion = {
   value_text: string | null;
   review_status: string;
   evidence: EvidenceRef[];
+  // Present when an authority decision made this assertion the current one.
+  // Authoritative is not verified: the two labels are independent.
+  authority?: AssertionAuthority | null;
 };
 
 export type PersonSelection = {
@@ -995,6 +1005,151 @@ export function applyDocumentExtraction(
   );
 }
 
+// --- authoritative source decisions --------------------------------------
+
+export type AuthorityAction = "added" | "replaced" | "removed" | "unchanged";
+
+export type AuthorityCitation = {
+  document_ref: string;
+  page: number;
+  locator: string | null;
+  excerpt: string | null;
+  label: string;
+};
+
+export type AuthorityAssertion = {
+  assertion_id: number;
+  person_key: string;
+  display_name: string;
+  kind: string;
+  key: string;
+  value_text: string | null;
+  review_status: string;
+  citations: AuthorityCitation[];
+};
+
+export type AuthorityItem = {
+  action: AuthorityAction;
+  incoming: AuthorityAssertion | null;
+  replaces: AuthorityAssertion[];
+};
+
+export type AuthorityConflict = {
+  code: string;
+  assertion: AuthorityAssertion;
+};
+
+export type AuthorityPreview = {
+  document_version_id: number;
+  document_ref: string;
+  content_sha256: string;
+  scope: "document" | "person" | "assertions";
+  person_key: string | null;
+  items: AuthorityItem[];
+  omissions: AuthorityAssertion[];
+  conflicts: AuthorityConflict[];
+  preview_hash: string;
+};
+
+export type AuthorityDecision = {
+  decision_id: number;
+  scope: "document" | "person" | "assertions";
+  kind: "designate" | "reversal";
+  status: "active" | "superseded" | "reversed";
+  document_version_id: number;
+  document_ref: string;
+  content_sha256: string;
+  person_key: string | null;
+  reason: string;
+  actor: string;
+  created_at: string;
+  retired_at: string | null;
+  reverses_decision_id: number | null;
+  supersedes_decision_id: number | null;
+  items: AuthorityItem[];
+};
+
+export type AuthorityScopeBody = {
+  scope: "document" | "person" | "assertions";
+  person_key?: string;
+  assertion_ids?: number[];
+  remove_assertion_ids?: number[];
+};
+
+export function previewDocumentAuthority(
+  versionId: number,
+  body: AuthorityScopeBody,
+): Promise<{ ok: true; preview: AuthorityPreview }> {
+  return request<{ ok: true; preview: AuthorityPreview }>(
+    `/api/genealogy/documents/${versionId}/authority/preview`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function applyDocumentAuthority(
+  versionId: number,
+  body: AuthorityScopeBody & {
+    reason: string;
+    preview_hash: string;
+    confirm: boolean;
+    acknowledge_conflicts: boolean;
+  },
+): Promise<{
+  ok: true;
+  decision: {
+    decision_id: number;
+    status: string;
+    applied: number;
+    superseded: number;
+    removed: number;
+  };
+}> {
+  return request<{
+    ok: true;
+    decision: {
+      decision_id: number;
+      status: string;
+      applied: number;
+      superseded: number;
+      removed: number;
+    };
+  }>(`/api/genealogy/documents/${versionId}/authority/apply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function listAuthorityDecisions(
+  personKey?: string,
+): Promise<{ ok: true; decisions: AuthorityDecision[] }> {
+  const query = personKey ? `?person_key=${encodeURIComponent(personKey)}` : "";
+  return request<{ ok: true; decisions: AuthorityDecision[] }>(
+    `/api/genealogy/authority${query}`,
+  );
+}
+
+export function reverseAuthorityDecision(
+  decisionId: number,
+  reason: string,
+): Promise<{
+  ok: true;
+  decision: { decision_id: number; status: string };
+}> {
+  return request<{
+    ok: true;
+    decision: { decision_id: number; status: string };
+  }>(`/api/genealogy/authority/${decisionId}/reverse`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export function reviewDocument(
   versionId: number,
   body: { approve: boolean; note?: string; scope?: string },
@@ -1032,9 +1187,7 @@ export function removeDocument(
   );
 }
 
-export function processDocument(
-  versionId: number,
-): Promise<{
+export function processDocument(versionId: number): Promise<{
   ok: true;
   job_id?: number;
   processing_status?: string;

@@ -102,6 +102,7 @@ the `PLAN-TRAN-*` plans.
 | [guides/family-profile-presentation.md](guides/family-profile-presentation.md)       | You are calling or reviewing the read-only family profile endpoint and page.          |
 | [guides/family-publication-acceptance.md](guides/family-publication-acceptance.md)   | You need the negative-by-default publication matrix and the open policy gates.        |
 | [guides/document-publication-integrity.md](guides/document-publication-integrity.md) | You are reviewing the approved-document retrieval boundary.                           |
+| [guides/source-of-truth.md](guides/source-of-truth.md)                               | You are designating or reversing an authoritative document version.                   |
 | [guides/document-worker-reliability.md](guides/document-worker-reliability.md)       | You are reviewing processing-worker leases and fencing.                               |
 | [guides/agent-scripts.md](guides/agent-scripts.md)                                   | You are working with the git hooks or the agent helper scripts.                       |
 
