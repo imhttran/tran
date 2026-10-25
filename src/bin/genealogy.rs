@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use rag_foundation::config::Config;
 use rag_foundation::genealogy::authority::{self, ApplyInput, ReverseInput, ScopeSpec};
 use rag_foundation::genealogy::migrate::{self, MIGRATIONS_DIR};
+use rag_foundation::genealogy::narrative::{self, PassageDecision, PassageVisibility};
 use rag_foundation::genealogy::parser::{self, AssertionKind, Evidence, ParseOutcome};
 use rag_foundation::genealogy::query;
 use rag_foundation::genealogy::reimport::{
@@ -49,12 +50,14 @@ fn run(args: &[String]) -> Result<(), String> {
                 .ok_or("usage: relationship <from-key> <to-key>")?,
         ),
         Some("review") => review_cmd(&args[1..]),
+        Some("narrative") => narrative_cmd(&args[1..]),
         Some("authority-preview") => authority_preview_cmd(&args[1..]),
         Some("authority-apply") => authority_apply_cmd(&args[1..]),
         Some("authority-reverse") => authority_reverse_cmd(&args[1..]),
         Some("authority-history") => authority_history_cmd(args.get(1).map(String::as_str)),
         _ => Err(
-            "usage: genealogy <migrate|import|unresolved|person|relationship|review> ...".into(),
+            "usage: genealogy <migrate|import|unresolved|person|relationship|review|narrative> ..."
+                .into(),
         ),
     }
 }
@@ -630,5 +633,259 @@ fn review_cmd(args: &[String]) -> Result<(), String> {
         "assertion {} {} -> {}",
         outcome.assertion_id, outcome.from_status, outcome.to_status
     );
+    Ok(())
+}
+
+/// `genealogy narrative ...`: dry run, import, and review archive passages.
+fn narrative_cmd(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("dry-run") => narrative_dry_run(&args[1..]),
+        Some("import") => narrative_import(&args[1..]),
+        Some("review") => narrative_review(&args[1..]),
+        Some("link") => narrative_link(&args[1..]),
+        Some("passages") => narrative_passages(&args[1..]),
+        _ => {
+            Err("usage: genealogy narrative <dry-run|import|review|link|passages> ...".to_string())
+        }
+    }
+}
+
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
+}
+
+fn narrative_source(args: &[String]) -> Result<(String, String, String), String> {
+    let source = args
+        .first()
+        .filter(|arg| !arg.starts_with("--"))
+        .ok_or("usage: narrative <verb> <source.md> --language vi [--kind translation]")?;
+    let language = flag_value(args, "--language").unwrap_or_else(|| "vi".to_string());
+    if language != "vi" && language != "en" {
+        return Err("--language must be vi or en".to_string());
+    }
+    let kind = flag_value(args, "--kind").unwrap_or_else(|| "translation".to_string());
+    Ok((source.clone(), language, kind))
+}
+
+fn read_narrative(source: &str) -> Result<(narrative::NarrativeParse, String), String> {
+    let bytes = fs::read(source).map_err(|err| format!("read {source}: {err}"))?;
+    let text =
+        String::from_utf8(bytes.clone()).map_err(|err| format!("{source} is not UTF-8: {err}"))?;
+    Ok((
+        narrative::parse_narrative(&text, source),
+        sha256_hex(&bytes),
+    ))
+}
+
+fn narrative_dry_run(args: &[String]) -> Result<(), String> {
+    let (source, language, _kind) = narrative_source(args)?;
+    let (parse, _sha) = read_narrative(&source)?;
+    let (_cfg, mut conn) = guarded_client()?;
+    let people = narrative::linkable_people(&mut conn).map_err(|err| err.to_string())?;
+    if people.is_empty() {
+        eprintln!(
+            "narrative dry run: the genealogy database has no catalog people; \
+             every heading will be reported as unmatched"
+        );
+    }
+
+    let mut resolved = 0usize;
+    let mut ambiguous = 0usize;
+    let mut unmatched = 0usize;
+    let mut report = String::from("# Narrative extraction dry run\n\n");
+    report.push_str("This report is local and never committed. Bodies are not included.\n\n");
+    report.push_str(&format!("- source: {source}\n"));
+    report.push_str(&format!("- language: {language}\n"));
+    report.push_str(&format!("- passages: {}\n", parse.passages.len()));
+    report.push_str(&format!("- pages: {}\n", parse.page_count()));
+    report.push_str(&format!("- unpaged_sections: {}\n", parse.unpaged_sections));
+    for passage in &parse.passages {
+        let links = narrative::propose_links(passage, &people);
+        let resolved_here = links
+            .iter()
+            .filter(|link| link.status == narrative::LinkStatus::Resolved)
+            .count();
+        let ambiguous_here = links
+            .iter()
+            .filter(|link| link.status == narrative::LinkStatus::Ambiguous)
+            .count();
+        resolved += resolved_here;
+        ambiguous += ambiguous_here;
+        if passage.section_title.is_some() && links.is_empty() {
+            unmatched += 1;
+        }
+        report.push_str(&format!(
+            "- p.{}{} | {} | resolved {} | review {} | links {}\n",
+            passage.page_start,
+            if passage.page_end > passage.page_start {
+                format!("-{}", passage.page_end)
+            } else {
+                String::new()
+            },
+            passage.section_title.as_deref().unwrap_or("(untitled)"),
+            resolved_here,
+            ambiguous_here,
+            links
+                .iter()
+                .map(|link| link.person_key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    report.push_str(&format!(
+        "\n## Totals\n\n- resolved_links: {resolved}\n- ambiguous_links: {ambiguous}\n- unmatched_headings: {unmatched}\n"
+    ));
+
+    match flag_value(args, "--report") {
+        Some(path) => {
+            fs::write(&path, report).map_err(|err| format!("write {path}: {err}"))?;
+        }
+        None => print!("{report}"),
+    }
+    println!(
+        "passages={} pages={} unresolved_sections={} resolved_links={} ambiguous_links={} unmatched_headings={}",
+        parse.passages.len(),
+        parse.page_count(),
+        parse.unpaged_sections,
+        resolved,
+        ambiguous,
+        unmatched
+    );
+    Ok(())
+}
+
+fn narrative_import(args: &[String]) -> Result<(), String> {
+    let (source, language, kind) = narrative_source(args)?;
+    let (parse, sha) = read_narrative(&source)?;
+    let (cfg, mut conn) = guarded_client()?;
+    migrate::run_migrations(&cfg, Path::new(MIGRATIONS_DIR)).map_err(|err| err.to_string())?;
+    let people = narrative::linkable_people(&mut conn).map_err(|err| err.to_string())?;
+
+    let mut tx = conn.transaction().map_err(|err| err.to_string())?;
+    let report =
+        narrative::import_narrative(&mut tx, &source, &sha, &kind, &language, &parse, &people)
+            .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+    println!(
+        "inserted={} updated={} unchanged={} revisions={} links_inserted={} links_kept={}",
+        report.inserted,
+        report.updated,
+        report.unchanged,
+        report.revisions,
+        report.links_inserted,
+        report.links_kept
+    );
+    Ok(())
+}
+
+fn narrative_review(args: &[String]) -> Result<(), String> {
+    let passage_id: i64 = args
+        .first()
+        .ok_or("usage: narrative review <passage-id> <pending|approved|rejected> --reviewer R [--visibility family]")?
+        .parse()
+        .map_err(|_| "passage id must be an integer".to_string())?;
+    let decision = args
+        .get(1)
+        .and_then(|value| PassageDecision::parse(value))
+        .ok_or("review status must be pending, approved, or rejected")?;
+    let reviewer = flag_value(args, "--reviewer").ok_or("--reviewer is required")?;
+    let note = flag_value(args, "--note");
+    let visibility = match flag_value(args, "--visibility") {
+        Some(value) => Some(
+            PassageVisibility::parse(&value).ok_or("--visibility must be family or admin_only")?,
+        ),
+        None => None,
+    };
+    let (_cfg, mut conn) = guarded_client()?;
+    narrative::review_passage(
+        &mut conn,
+        passage_id,
+        decision,
+        visibility,
+        &reviewer,
+        note.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "passage {passage_id} -> {}{}",
+        decision.as_str(),
+        visibility
+            .map(|value| format!(" ({})", value.as_str()))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+fn narrative_link(args: &[String]) -> Result<(), String> {
+    let passage_id: i64 = args
+        .first()
+        .ok_or("usage: narrative link <passage-id> <person-key> <confirm|reject> --reviewer R")?
+        .parse()
+        .map_err(|_| "passage id must be an integer".to_string())?;
+    let person_key = args.get(1).ok_or("person key is required")?;
+    let decision = args.get(2).ok_or("confirm or reject is required")?;
+    let accept = match decision.as_str() {
+        "confirm" | "confirmed" => true,
+        "reject" | "rejected" => false,
+        _ => return Err("decision must be confirm or reject".to_string()),
+    };
+    let reviewer = flag_value(args, "--reviewer").ok_or("--reviewer is required")?;
+    let note = flag_value(args, "--note");
+    let (_cfg, mut conn) = guarded_client()?;
+    narrative::review_link(
+        &mut conn,
+        passage_id,
+        person_key,
+        accept,
+        &reviewer,
+        note.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "passage {passage_id} link {person_key} -> {}",
+        if accept { "confirmed" } else { "rejected" }
+    );
+    Ok(())
+}
+
+fn narrative_passages(args: &[String]) -> Result<(), String> {
+    let person_key =
+        flag_value(args, "--person").ok_or("usage: narrative passages --person <person-key>")?;
+    let (_cfg, mut conn) = guarded_client()?;
+    let rows = conn
+        .query(
+            "SELECT p.passage_id, p.page_start, p.page_end, p.language, p.review_status,
+                    p.visibility, COALESCE(p.section_title, ''),
+                    COALESCE(string_agg(DISTINCT l.link_status || ':' || pe.person_key, ', '), '')
+               FROM source_narrative_passage p
+               JOIN source_narrative_link l ON l.passage_id = p.passage_id
+               JOIN person pe ON pe.person_id = l.person_id
+              WHERE pe.person_key = $1
+              GROUP BY p.passage_id
+              ORDER BY p.page_start, p.passage_id",
+            &[&person_key],
+        )
+        .map_err(|err| err.to_string())?;
+    for row in rows {
+        let id: i64 = row.get(0);
+        let start: i32 = row.get(1);
+        let end: i32 = row.get(2);
+        let language: String = row.get(3);
+        let status: String = row.get(4);
+        let visibility: String = row.get(5);
+        let title: String = row.get(6);
+        let links: String = row.get(7);
+        println!(
+            "passage {id} p.{start}{} [{language}] {status}/{visibility} {title} links={links}",
+            if end > start {
+                format!("-{end}")
+            } else {
+                String::new()
+            }
+        );
+    }
     Ok(())
 }

@@ -294,6 +294,23 @@ reopen the earlier tasks.
 
 See [guides/genealogy-dates.md](../guides/genealogy-dates.md).
 
+## TRAN-002I — Source-linked historical narratives (post-closure extension)
+
+Import the page-and-section narrative text as reviewed passages linked to
+catalog people, so the family history appears on a family profile beside (never
+inside) member contributions.
+
+- Verbatim bodies with language, source document, and PDF page ranges.
+- Heading or explicit-identifier links resolve; full-name mentions are candidates
+  for review. A one-word name is never an identity.
+- Imported passages start pending and admin-only; publication needs a reviewer
+  and at least one accepted person link.
+- Re-import is idempotent; changed text on an approved passage adds a pending
+  revision instead of replacing published wording.
+- No RAG indexing and no promotion of narrative claims to genealogy facts.
+
+See [guides/source-narratives.md](../guides/source-narratives.md).
+
 ## Dependency graph
 
 ```text

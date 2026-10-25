@@ -208,7 +208,9 @@ for migration in \
 	0022_profile_revision_restriction_generation \
 	0023_document_extraction \
 	0024_document_evidence_provenance \
-	0025_assertion_dates; do
+	0025_assertion_dates \
+	0026_authority_decisions \
+	0027_source_narrative; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done

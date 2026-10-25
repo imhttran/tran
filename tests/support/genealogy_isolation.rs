@@ -57,6 +57,7 @@ pub const GENEALOGY_MIGRATIONS: &[&str] = &[
     "genealogy/migrations/0024_document_evidence_provenance.sql",
     "genealogy/migrations/0025_assertion_dates.sql",
     "genealogy/migrations/0026_authority_decisions.sql",
+    "genealogy/migrations/0027_source_narrative.sql",
 ];
 
 static RUN_TOKEN: AtomicU64 = AtomicU64::new(0);

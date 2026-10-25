@@ -386,3 +386,68 @@ UPDATE assertion a
    AND p.person_key = 'e2e-branch-subject'
    AND a.assertion_kind IN ('birth_date', 'death_date')
    AND a.assertion_key IN ('birth_date:synthetic-e2e', 'death_date:synthetic-e2e');
+
+-- TRAN-002I: reviewed archive history for the family-profile fixture.
+-- The approved, family-visible passage proves that source narrative reaches the
+-- family page; the pending and admin-only passages prove it does not leak.
+-- Wording is synthetic and contains no family content.
+INSERT INTO source_narrative_passage
+    (slot_key, passage_key, source_document_id, language, section_title,
+     page_start, page_end, ordinal, body, content_sha256,
+     review_status, visibility, reviewed_by, reviewed_at)
+SELECT seed.slot_key, seed.passage_key, sd.source_document_id, 'vi',
+       seed.section_title, seed.page_start, seed.page_end, seed.ordinal,
+       seed.body, seed.content_sha256, seed.review_status, seed.visibility,
+       seed.reviewed_by, now()
+  FROM (
+      SELECT
+          'synthetic-e2e-history-approved'::text AS slot_key,
+          'synthetic-e2e-history-approved'::text AS passage_key,
+          'Synthetic archive section'::text AS section_title,
+          8 AS page_start,
+          8 AS page_end,
+          1 AS ordinal,
+          'SYNTHETIC-ARCHIVE-HISTORY-APPROVED paragraph one.' || chr(10) || chr(10) ||
+          'SYNTHETIC-ARCHIVE-HISTORY-APPROVED paragraph two.' AS body,
+          repeat('c', 64)::text AS content_sha256,
+          'approved'::text AS review_status,
+          'family'::text AS visibility,
+          'e2e-seed'::text AS reviewed_by
+      UNION ALL
+      SELECT
+          'synthetic-e2e-history-pending',
+          'synthetic-e2e-history-pending',
+          'Synthetic pending section',
+          9, 9, 2,
+          'SYNTHETIC-ARCHIVE-HISTORY-PENDING must never be published.',
+          repeat('d', 64),
+          'pending',
+          'admin_only',
+          NULL
+      UNION ALL
+      SELECT
+          'synthetic-e2e-history-admin',
+          'synthetic-e2e-history-admin',
+          'Synthetic admin-only section',
+          10, 10, 3,
+          'SYNTHETIC-ARCHIVE-HISTORY-ADMIN must never be published to the family.',
+          repeat('e', 64),
+          'approved',
+          'admin_only',
+          'e2e-seed'
+  ) AS seed
+  JOIN source_document sd
+    ON sd.relative_path = 'synthetic/e2e-branch-review-source.md'
+ON CONFLICT (passage_key) DO NOTHING;
+
+INSERT INTO source_narrative_link
+    (passage_id, person_id, link_status, match_kind, reviewed_by, reviewed_at)
+SELECT p.passage_id, pe.person_id, 'confirmed', 'section_heading', 'e2e-seed', now()
+  FROM source_narrative_passage p
+  JOIN person pe ON pe.person_key = 'e2e-branch-subject'
+ WHERE p.passage_key IN (
+     'synthetic-e2e-history-approved',
+     'synthetic-e2e-history-pending',
+     'synthetic-e2e-history-admin'
+ )
+ON CONFLICT (passage_id, person_id) DO NOTHING;
