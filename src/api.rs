@@ -2144,6 +2144,32 @@ fn approved_json(value: &ApprovedProfileValue) -> serde_json::Value {
     })
 }
 
+/// The structured date of one genealogy assertion, or `null`.
+fn assertion_date_json(date: &Option<genealogy_query::AssertionDate>) -> serde_json::Value {
+    match date {
+        Some(date) => serde_json::json!({
+            "start": date.start,
+            "end": date.end,
+            "precision": date.precision.as_str(),
+            "qualifier": date.qualifier.as_str(),
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// One verified lifespan date on a tree person, or `null`.
+fn tree_date_json(date: &Option<genealogy_tree::TreeDate>) -> serde_json::Value {
+    match date {
+        Some(date) => serde_json::json!({
+            "start": date.start,
+            "end": date.end,
+            "precision": date.precision.as_str(),
+            "qualifier": date.qualifier.as_str(),
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 fn owner_profile_json(profile: &OwnerProfile) -> serde_json::Value {
     let approved: Vec<serde_json::Value> = profile.approved.iter().map(approved_json).collect();
     let pending: Vec<serde_json::Value> = profile.pending.iter().map(revision_json).collect();
@@ -2600,6 +2626,16 @@ async fn family_profile(
                     "visibility": field.visibility,
                     "approved_revision_number": field.approved_revision_number,
                     "updated_at": field.updated_at,
+                })).collect::<Vec<_>>(),
+                // Verified genealogy dates only. A date under review, disputed,
+                // or unclassifiable is never presented as a family fact.
+                "dates": profile.dates.iter().map(|date| serde_json::json!({
+                    "kind": date.kind,
+                    "value": date.value_text,
+                    "start": date.start,
+                    "end": date.end,
+                    "precision": date.precision,
+                    "qualifier": date.qualifier,
                 })).collect::<Vec<_>>(),
                 // Approved, family-visible, unrestricted assets only. The bytes
                 // are served by the person-scoped family media route, which
@@ -3501,6 +3537,8 @@ async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Re
                         "person_label": person.display_name,
                         "evidence_status": person.evidence_status,
                         "aliases": person.aliases,
+                        "birth": tree_date_json(&person.birth),
+                        "death": tree_date_json(&person.death),
                     })
                 })
                 .collect();
@@ -3622,6 +3660,7 @@ async fn genealogy_person(
                         "key": assertion.key,
                         "value_text": assertion.value_text,
                         "review_status": assertion.review_status,
+                        "date": assertion_date_json(&assertion.date),
                         "evidence": evidence_json(&assertion.citations),
                     })
                 })

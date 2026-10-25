@@ -263,6 +263,37 @@ git check-ignore -v docs/tran/
 
 Also execute the new synthetic genealogy integration tests and the preexisting API-contract checks when their inputs are affected. Validate privacy against the **staged diff**, not only the working tree. Any database test that is not using an authorized disposable database must stop before a write.
 
+## TRAN-002H — Birth and death dates (post-closure extension)
+
+Extend the catalog parser and assertion model with explicitly stated birth and
+death dates. This section records work done after TRAN-002G closed; it does not
+reopen the earlier tasks.
+
+### Deliverables
+
+- Parse full dates, year-only dates, month-only dates, approximate dates, bounds,
+  and explicit ranges from both catalog shapes.
+- Store them as `birth_date` / `death_date` assertions with partial ISO values,
+  the precision the source supports, and the source wording. Leave
+  unclassifiable date text as `date_unresolved`, never as a birth or a death.
+- Keep person columns (`birth_year`, `death_year`) untouched so eligibility and
+  living status cannot change without a reviewer.
+- Preserve conflicting claims on correction, and refuse to verify a date that
+  contradicts an already-verified date of the same kind.
+- Project verified dates through the existing authorized reads: the person
+  endpoint, the tree lifespan, and the family profile page.
+
+### Acceptance criteria
+
+- Re-import is idempotent: no duplicate date assertions, no lost review history.
+- A corrected or conflicting date never replaces a reviewed value.
+- A missing or unresolved date stays unknown.
+- No Head of Family or eligibility rule changes.
+
+### Verification
+
+See [guides/genealogy-dates.md](../guides/genealogy-dates.md).
+
 ## Dependency graph
 
 ```text

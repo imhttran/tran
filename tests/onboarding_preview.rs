@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{preview_candidates, Classification};
 
-const MIGRATIONS: [&str; 20] = [
+const MIGRATIONS: [&str; 23] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -36,6 +36,9 @@ const MIGRATIONS: [&str; 20] = [
     "genealogy/migrations/0020_branch_review_proposals.sql",
     "genealogy/migrations/0021_profile_field_restriction.sql",
     "genealogy/migrations/0022_profile_revision_restriction_generation.sql",
+    "genealogy/migrations/0023_document_extraction.sql",
+    "genealogy/migrations/0024_document_evidence_provenance.sql",
+    "genealogy/migrations/0025_assertion_dates.sql",
 ];
 
 fn genealogy_dsn() -> Option<String> {

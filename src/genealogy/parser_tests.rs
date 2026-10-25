@@ -311,3 +311,214 @@ fn a_hedged_parentage_stays_unresolved_for_review() {
         "a hedged statement is kept but marked unsourced: {parents:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Dates
+// ---------------------------------------------------------------------------
+
+const SYNTHETIC_TABLE_DATES: &str = "\
+| ID | Name | Description | Page |
+| --- | --- | --- | --- |
+| P101 | Nguyễn Văn An | dates as printed: 1877–1922 [p. 7]; Child of Lê Văn Bình [p. 7] | 7 |
+| P102 | Lê Thị Bình | born 15/03/1880 [p. 8]; died 1922 [p. 8] | 8 |
+| P103 | Trần Văn Cường | dates as printed: 1914 [p. 9]; died young, no children [p. 9] | 9 |
+| P104 | Phạm Thị Dung | born 03/04/1885 [p. 10] | 10 |
+| P105 | Hoàng Văn Em | Spouse: Nguyễn Thị Hoa (1878–1940) [p. 11]; dates as printed: 1877–1922 [p. 11] | 11 |
+| P106 | Vũ Thị Giang | born c. 1890 [p. 12]; birth year uncertain; died after 1950 [p. 12] | 12 |
+";
+
+fn dates_of(
+    parse: &CatalogParse,
+    index: usize,
+) -> Vec<(AssertionKind, Option<String>, Option<String>)> {
+    parse.entries[index]
+        .assertions
+        .iter()
+        .filter(|a| {
+            matches!(
+                a.kind,
+                AssertionKind::BirthDate | AssertionKind::DeathDate | AssertionKind::DateUnresolved
+            )
+        })
+        .map(|a| {
+            (
+                a.kind,
+                a.date.as_ref().map(|date| date.start.clone()),
+                a.date.as_ref().and_then(|date| date.end.clone()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_printed_lifespan_becomes_a_birth_and_a_death_candidate() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let dates = dates_of(&parse, 0);
+    assert_eq!(
+        dates,
+        vec![
+            (AssertionKind::BirthDate, Some("1877".to_string()), None),
+            (AssertionKind::DeathDate, Some("1922".to_string()), None),
+        ]
+    );
+}
+
+#[test]
+fn labelled_dates_keep_their_precision() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let entry = &parse.entries[1];
+    let birth = entry
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::BirthDate)
+        .expect("birth date");
+    assert_eq!(
+        birth.date.as_ref().map(|date| date.precision),
+        Some(crate::genealogy::dates::DatePrecision::Day)
+    );
+    assert_eq!(
+        birth.date.as_ref().map(|date| date.start.as_str()),
+        Some("1880-03-15")
+    );
+    let death = entry
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::DeathDate)
+        .expect("death date");
+    assert_eq!(
+        death.date.as_ref().map(|date| date.start.as_str()),
+        Some("1922")
+    );
+}
+
+#[test]
+fn an_unlabelled_year_is_unresolved_not_a_birth_or_a_death() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let dates = dates_of(&parse, 2);
+    assert_eq!(
+        dates,
+        vec![(AssertionKind::DateUnresolved, None, None)],
+        "a lone year must not be classified as a birth or a death"
+    );
+    let unresolved = parse.entries[2]
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::DateUnresolved)
+        .expect("unresolved date");
+    assert_eq!(unresolved.value_text, "1914");
+    assert_eq!(unresolved.reason, Some(ReasonCode::AmbiguousDate));
+}
+
+#[test]
+fn an_ambiguous_day_month_order_is_unresolved() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let dates = dates_of(&parse, 3);
+    assert_eq!(dates, vec![(AssertionKind::DateUnresolved, None, None)]);
+    let unresolved = parse.entries[3]
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::DateUnresolved)
+        .expect("unresolved date");
+    assert_eq!(unresolved.value_text, "03/04/1885");
+}
+
+#[test]
+fn spouse_dates_are_never_attributed_to_the_entry() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let dates = dates_of(&parse, 4);
+    assert_eq!(
+        dates,
+        vec![
+            (AssertionKind::BirthDate, Some("1877".to_string()), None),
+            (AssertionKind::DeathDate, Some("1922".to_string()), None),
+        ],
+        "the spouse's own lifespan (1878–1940) must not become this person's dates"
+    );
+}
+
+#[test]
+fn approximate_and_bounded_dates_keep_their_qualifier() {
+    let parse = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let entry = &parse.entries[5];
+    let birth = entry
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::BirthDate)
+        .expect("birth date");
+    assert_eq!(
+        birth.date.as_ref().map(|date| date.qualifier),
+        Some(crate::genealogy::dates::DateQualifier::Circa)
+    );
+    let death = entry
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::DeathDate)
+        .expect("death date");
+    assert_eq!(
+        death.date.as_ref().map(|date| date.qualifier),
+        Some(crate::genealogy::dates::DateQualifier::After)
+    );
+    assert_eq!(
+        death.date.as_ref().map(|date| date.start.as_str()),
+        Some("1950")
+    );
+}
+
+#[test]
+fn heading_catalog_dates_are_read_from_labels_and_parentheses() {
+    let text = "\
+1. Nguyễn Văn An\nSinh: 1877\nMất: 1922\nTrang: 7\n2. Lê Thị Bình (1880–1940)\nTrang: 8\n";
+    let parse = parse_catalog(text);
+    assert_eq!(dates_of(&parse, 0).len(), 2);
+    assert_eq!(dates_of(&parse, 1).len(), 2);
+}
+
+#[test]
+fn no_date_text_produces_no_date_assertion() {
+    let text = "\
+| ID | Name | Description | Page |\n| --- | --- | --- | --- |\n| P201 | Nguyễn Văn An | died young, no children [p. 3]; Died at age 14 [p. 3] | 3 |\n";
+    let parse = parse_catalog(text);
+    assert!(dates_of(&parse, 0).is_empty());
+}
+
+#[test]
+fn a_date_key_is_stable_across_reparses() {
+    let first = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let second = parse_catalog(SYNTHETIC_TABLE_DATES);
+    let keys = |parse: &CatalogParse| -> Vec<String> {
+        parse
+            .entries
+            .iter()
+            .flat_map(|entry| entry.assertions.iter())
+            .filter(|a| {
+                matches!(
+                    a.kind,
+                    AssertionKind::BirthDate
+                        | AssertionKind::DeathDate
+                        | AssertionKind::DateUnresolved
+                )
+            })
+            .map(|a| a.assertion_key.clone())
+            .collect()
+    };
+    assert_eq!(keys(&first), keys(&second));
+}
+
+#[test]
+fn an_approximate_bare_year_is_kept_as_unresolved() {
+    let text = "\
+| ID | Name | Description | Page |\n| --- | --- | --- | --- |\n| P301 | Nguyễn Văn An | c. 1914 [p. 3] | 3 |\n";
+    let parse = parse_catalog(text);
+    let dates = dates_of(&parse, 0);
+    assert_eq!(
+        dates,
+        vec![(AssertionKind::DateUnresolved, None, None)],
+        "a hedged bare year is kept for review, not dropped"
+    );
+    let unresolved = parse.entries[0]
+        .assertions
+        .iter()
+        .find(|a| a.kind == AssertionKind::DateUnresolved)
+        .expect("unresolved date");
+    assert_eq!(unresolved.value_text, "c. 1914");
+}

@@ -13,6 +13,7 @@
 use postgres::Transaction;
 use std::fmt;
 
+use super::dates;
 use super::GenealogyError;
 
 /// A blocking or advisory validation finding.
@@ -34,6 +35,13 @@ pub enum Violation {
     ContradictoryVital {
         person_id: i64,
         vital: String,
+        first: String,
+        second: String,
+    },
+    /// Two verified birth or death dates disagree for one person.
+    ContradictoryDate {
+        person_id: i64,
+        kind: String,
         first: String,
         second: String,
     },
@@ -72,6 +80,15 @@ impl fmt::Display for Violation {
             } => write!(
                 f,
                 "contradictory_vital(person={person_id},vital={vital},first={first},second={second})"
+            ),
+            Violation::ContradictoryDate {
+                person_id,
+                kind,
+                first,
+                second,
+            } => write!(
+                f,
+                "contradictory_date(person={person_id},kind={kind},first={first},second={second})"
             ),
         }
     }
@@ -123,6 +140,8 @@ pub fn validate_candidate(
         check_incompatible_branch(tx, person_id, value.as_deref(), &mut found)?;
     } else if kind == "vital_status" {
         check_contradictory_vital(tx, person_id, &mut found)?;
+    } else if kind == "birth_date" || kind == "death_date" {
+        check_contradictory_date(tx, assertion_id, person_id, &kind, &mut found)?;
     }
 
     found.sort();
@@ -266,6 +285,75 @@ fn check_contradictory_vital(
                 first: values[0].clone(),
                 second: values[1].clone(),
             });
+        }
+    }
+    Ok(())
+}
+
+/// Refuses to verify a date that cannot be true alongside an already-verified
+/// date of the same kind.
+///
+/// The comparison uses the precision the source supports: `1877` and `1877-03`
+/// overlap and may both be true, while `1877` and `1878` cannot. Both claims stay
+/// stored either way; the reviewer decides which one the evidence supports, or
+/// rejects the other. Nothing is overwritten, so a corrected import never
+/// silently replaces a reviewed date.
+fn check_contradictory_date(
+    tx: &mut Transaction<'_>,
+    assertion_id: i64,
+    person_id: i64,
+    kind: &str,
+    found: &mut Vec<Violation>,
+) -> Result<(), GenealogyError> {
+    let candidate = match tx
+        .query_opt(
+            "SELECT value_date_start, value_date_end
+               FROM assertion WHERE assertion_id = $1",
+            &[&assertion_id],
+        )
+        .map_err(GenealogyError::Query)?
+    {
+        Some(row) => row,
+        None => return Ok(()),
+    };
+    let Some(candidate_start) = candidate.try_get::<_, Option<String>>(0)? else {
+        return Ok(());
+    };
+    let candidate_end: Option<String> = candidate.try_get(1)?;
+    // A claim without a machine-readable value cannot be compared semantically;
+    // the stored wording is not a date, so there is nothing to contradict.
+    let Some(candidate_bounds) = dates::claim_bounds(&candidate_start, candidate_end.as_deref())
+    else {
+        return Ok(());
+    };
+
+    let rows = tx
+        .query(
+            "SELECT value_date_start, value_date_end
+               FROM assertion
+              WHERE person_id = $1
+                AND assertion_kind = $2
+                AND assertion_id <> $3
+                AND review_status = 'verified'
+                AND value_date_start IS NOT NULL
+              ORDER BY value_date_start, assertion_id",
+            &[&person_id, &kind, &assertion_id],
+        )
+        .map_err(GenealogyError::Query)?;
+    for row in rows {
+        let other_start: String = row.try_get(0)?;
+        let other_end: Option<String> = row.try_get(1)?;
+        let Some(other_bounds) = dates::claim_bounds(&other_start, other_end.as_deref()) else {
+            continue;
+        };
+        if !dates::intervals_overlap(candidate_bounds, other_bounds) {
+            found.push(Violation::ContradictoryDate {
+                person_id,
+                kind: kind.to_string(),
+                first: candidate_start,
+                second: other_start,
+            });
+            break;
         }
     }
     Ok(())

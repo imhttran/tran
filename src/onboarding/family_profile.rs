@@ -16,6 +16,8 @@
 use postgres::Transaction;
 use thiserror::Error;
 
+use crate::genealogy::dates as genealogy_dates;
+
 use super::account_map::IdentityAccount;
 use super::media::{FAMILY_VISIBLE_MEDIA_JOIN, FAMILY_VISIBLE_MEDIA_PREDICATE};
 use super::profile_revisions::MEDIA_PROFILE_FIELDS;
@@ -30,6 +32,27 @@ pub struct FamilyProfileField {
     pub approved_revision_number: i64,
     /// Provenance: when the approved value was last written.
     pub updated_at: String,
+}
+
+/// One verified birth or death date in a family profile.
+///
+/// Only `verified` genealogy assertions are returned, so an unreviewed or
+/// disputed date never reaches the family audience. `value_text` keeps the
+/// source wording; the structured components carry the precision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyProfileDate {
+    /// `birth_date` or `death_date`.
+    pub kind: String,
+    /// The original source wording.
+    pub value_text: Option<String>,
+    /// Partial ISO start value.
+    pub start: String,
+    /// Partial ISO end value, for a range.
+    pub end: Option<String>,
+    /// `day`, `month`, `year`, or `range`.
+    pub precision: String,
+    /// `exact`, `circa`, `before`, or `after`.
+    pub qualifier: String,
 }
 
 /// One approved, family-visible media item.
@@ -62,6 +85,8 @@ pub struct FamilyProfile {
     pub display_name: String,
     pub fields: Vec<FamilyProfileField>,
     pub media: Vec<FamilyProfileMedia>,
+    /// Verified birth and death dates. Empty when nothing is verified yet.
+    pub dates: Vec<FamilyProfileDate>,
 }
 
 /// Errors raised by family profile presentation.
@@ -128,12 +153,14 @@ pub fn read_family_profile(
 
     let fields = family_visible_values(&mut tx, person_id)?;
     let media = family_visible_media(&mut tx, person_id)?;
+    let dates = verified_dates(&mut tx, person_id)?;
     tx.commit()?;
     Ok(FamilyProfile {
         person_key: person_key.to_string(),
         display_name,
         fields,
         media,
+        dates,
     })
 }
 
@@ -230,4 +257,74 @@ fn family_visible_media(
             created_at: row.get(8),
         })
         .collect())
+}
+
+/// Reads one verified birth and one verified death date, if they exist.
+///
+/// A date is presentation-worthy only when a reviewer verified it. Unverified,
+/// needs-review, disputed, and date-unresolved assertions are excluded, so the
+/// family audience never sees a claim the archive has not accepted. When two
+/// verified values of the same kind exist (which the verification rule blocks),
+/// the first in stable order is used and no value is invented.
+fn verified_dates(
+    tx: &mut Transaction<'_>,
+    person_id: i64,
+) -> Result<Vec<FamilyProfileDate>, FamilyProfileError> {
+    let rows = tx.query(
+        "SELECT assertion_kind, value_text, value_date_start, value_date_end,
+                value_date_precision, value_date_qualifier
+           FROM assertion
+          WHERE person_id = $1
+            AND assertion_kind IN ('birth_date', 'death_date')
+            AND review_status = 'verified'
+            AND value_date_start IS NOT NULL
+          ORDER BY assertion_kind, value_date_start, assertion_id",
+        &[&person_id],
+    )?;
+
+    let mut by_kind: std::collections::BTreeMap<String, Vec<FamilyProfileDate>> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let kind: String = row.get(0);
+        // A verified row without readable components is omitted rather than
+        // presented with a guessed precision.
+        let (Some(precision), Some(qualifier)) = (
+            row.get::<_, Option<String>>(4),
+            row.get::<_, Option<String>>(5),
+        ) else {
+            continue;
+        };
+        let date = FamilyProfileDate {
+            kind: kind.clone(),
+            value_text: row.get(1),
+            start: row.get(2),
+            end: row.get(3),
+            precision,
+            qualifier,
+        };
+        let group = by_kind.entry(kind).or_default();
+        if !group.contains(&date) {
+            group.push(date);
+        }
+    }
+    // Overlapping verified claims are refinements, so the more precise one is
+    // shown. Disjoint claims are an unsettled disagreement, so the page shows
+    // neither rather than picking one.
+    Ok(by_kind.into_values().filter_map(representative).collect())
+}
+
+/// Chooses the date to present from the verified claims of one kind.
+///
+/// Overlapping claims are refinements, so the more precise one is shown. Disjoint
+/// claims are an unsettled disagreement, so the page shows neither.
+fn representative(group: Vec<FamilyProfileDate>) -> Option<FamilyProfileDate> {
+    let claims: Vec<(String, Option<String>, genealogy_dates::DatePrecision)> = group
+        .iter()
+        .map(|date| {
+            let precision = genealogy_dates::DatePrecision::parse(&date.precision)
+                .unwrap_or(genealogy_dates::DatePrecision::Year);
+            (date.start.clone(), date.end.clone(), precision)
+        })
+        .collect();
+    genealogy_dates::representative_claim(&claims).map(|index| group[index].clone())
 }

@@ -1133,12 +1133,24 @@ export type FamilyProfileMediaView = {
   created_at: string;
 };
 
+export type FamilyProfileDateView = {
+  kind: "birth_date" | "death_date";
+  value: string | null;
+  start: string;
+  end: string | null;
+  precision: "day" | "month" | "year" | "range";
+  qualifier: "exact" | "circa" | "before" | "after";
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
   person: { person_key: string; display_name: string };
   fields: FamilyProfileFieldView[];
   media: FamilyProfileMediaView[];
+  /// Verified birth and death dates. Empty or absent when nothing is verified
+  /// yet; the field is additive, so an older response remains valid.
+  dates?: FamilyProfileDateView[];
 };
 
 /// Decision A2: immediately stop an approved family-visible field from being

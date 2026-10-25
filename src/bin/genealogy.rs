@@ -96,12 +96,16 @@ fn import_cmd(args: &[String]) -> Result<(), String> {
             let report = parser::run_dry_run(Path::new(input), Path::new(output))
                 .map_err(|err| err.to_string())?;
             println!(
-                "processed={} parsed={} ambiguous={} rejected={} unmatched={}",
+                "processed={} parsed={} ambiguous={} rejected={} unmatched={} \
+                 birth_dates={} death_dates={} unresolved_dates={}",
                 report.processed,
                 report.parsed,
                 report.ambiguous,
                 report.rejected,
-                report.unmatched
+                report.unmatched,
+                report.birth_dates,
+                report.death_dates,
+                report.unresolved_dates
             );
             Ok(())
         }
@@ -220,6 +224,7 @@ fn import_apply(input: &Path) -> Result<(), String> {
                 value_text: Some(assertion.value_text.clone()),
                 object_key,
                 evidence,
+                date: assertion.date.clone(),
             });
         }
     }
@@ -270,6 +275,9 @@ fn assertion_kind(kind: AssertionKind) -> &'static str {
         AssertionKind::Branch => "branch",
         AssertionKind::ParentChild => "parent_child",
         AssertionKind::Spouse => "spouse",
+        AssertionKind::BirthDate => "birth_date",
+        AssertionKind::DeathDate => "death_date",
+        AssertionKind::DateUnresolved => "date_unresolved",
     }
 }
 
@@ -308,6 +316,16 @@ fn person_cmd(key: &str) -> Result<(), String> {
                     assertion.review_status,
                     assertion.citations.len()
                 );
+                if let Some(date) = assertion.date {
+                    println!(
+                        "  date start={} end={:?} precision={} qualifier={} raw={:?}",
+                        date.start,
+                        date.end,
+                        date.precision.as_str(),
+                        date.qualifier.as_str(),
+                        assertion.value_text
+                    );
+                }
             }
         }
         None => println!("person: not found"),

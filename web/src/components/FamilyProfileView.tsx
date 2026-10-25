@@ -13,6 +13,7 @@ import {
   type FamilyProfileFieldView,
   type FamilyProfileResponse,
 } from "@/lib/api";
+import { formatStructuredDate, precisionLabel } from "@/lib/dates";
 import { profileField } from "@/lib/profile-fields";
 
 // USR-006-B: the family-facing profile and biography page.
@@ -199,6 +200,9 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
 
   const { profile } = state;
   const presented = presentFields(profile.fields);
+  // Verified dates are optional in the payload; an older or mocked response that
+  // omits them must not break the page.
+  const dates = profile.dates ?? [];
   const displayName = profile.person.display_name;
   // Media is presentation only as well: the API already excluded pending,
   // rejected, owner-private, restricted, and unprovenanced assets, and each
@@ -206,7 +210,8 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   const photos = profile.media.filter((item) => item.kind === "profile_photo");
   const documents = profile.media.filter((item) => item.kind === "personal_document");
   const hasContent =
-    presented.length > 0 || photos.length > 0 || documents.length > 0;
+    presented.length > 0 || photos.length > 0 || documents.length > 0 ||
+    dates.length > 0;
 
   return (
     <>
@@ -222,6 +227,35 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       />
 
       <div className="profile-workspace" data-testid="family-profile">
+        {dates.length > 0 ? (
+          <section
+            className="profile-section"
+            aria-labelledby="family-profile-dates"
+            data-testid="family-profile-dates"
+          >
+            <div className="profile-section-heading">
+              <h2 id="family-profile-dates">Dates</h2>
+              <p>Reviewed dates from the family archive. Each keeps the precision the source states.</p>
+            </div>
+            <dl className="family-profile-dates">
+              {dates.map((date) => (
+                <div key={date.kind} data-testid={`family-profile-date-${date.kind}`}>
+                  <dt>{date.kind === "birth_date" ? "Born" : "Died"}</dt>
+                  <dd>
+                    <span className="family-profile-date-value">
+                      {formatStructuredDate(date)}
+                    </span>
+                    <span className="meta"> · {precisionLabel(date.precision)}</span>
+                    {date.value ? (
+                      <span className="meta"> · as written: “{date.value}”</span>
+                    ) : null}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ) : null}
+
         {photos.length > 0 ? (
           <section
             className="profile-section"

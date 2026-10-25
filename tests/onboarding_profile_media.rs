@@ -27,7 +27,7 @@ const IDENTITY_MIGRATIONS: [&str; 3] = [
     "migrations/008_identity_issuer_subject.sql",
 ];
 
-const GENEALOGY_MIGRATIONS: [&str; 22] = [
+const GENEALOGY_MIGRATIONS: [&str; 25] = [
     "genealogy/migrations/0001_genealogy_schema_version.sql",
     "genealogy/migrations/0002_catalog_keys.sql",
     "genealogy/migrations/0003_assertions_evidence_and_links.sql",
@@ -50,6 +50,9 @@ const GENEALOGY_MIGRATIONS: [&str; 22] = [
     "genealogy/migrations/0020_branch_review_proposals.sql",
     "genealogy/migrations/0021_profile_field_restriction.sql",
     "genealogy/migrations/0022_profile_revision_restriction_generation.sql",
+    "genealogy/migrations/0023_document_extraction.sql",
+    "genealogy/migrations/0024_document_evidence_provenance.sql",
+    "genealogy/migrations/0025_assertion_dates.sql",
 ];
 
 const ISSUER: &str = "https://synthetic-issuer.example";

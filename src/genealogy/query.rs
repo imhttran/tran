@@ -7,6 +7,7 @@
 
 use postgres::{Client, Row};
 
+use super::dates::{DatePrecision, DateQualifier};
 use super::GenealogyError;
 
 /// One evidence citation attached to an assertion.
@@ -37,6 +38,19 @@ impl Citation {
     }
 }
 
+/// One stored date on an assertion, with the precision the source supports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionDate {
+    /// Partial ISO start value.
+    pub start: String,
+    /// Partial ISO end value, for a range.
+    pub end: Option<String>,
+    /// The stored precision.
+    pub precision: DatePrecision,
+    /// The stored certainty.
+    pub qualifier: DateQualifier,
+}
+
 /// One assertion with its status and citations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertionRow {
@@ -50,6 +64,8 @@ pub struct AssertionRow {
     pub value_text: Option<String>,
     /// The stored review status.
     pub review_status: String,
+    /// The structured date, when this assertion carries one.
+    pub date: Option<AssertionDate>,
     /// The evidence citations.
     pub citations: Vec<Citation>,
 }
@@ -107,7 +123,9 @@ fn assertion_rows(
     let rows = client
         .query(
             "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, ae.document_ref, ae.page, ae.locator, ae.excerpt
+                    a.review_status, a.value_date_start, a.value_date_end,
+                    a.value_date_precision, a.value_date_qualifier,
+                    ae.document_ref, ae.page, ae.locator, ae.excerpt
                FROM assertion a
                LEFT JOIN assertion_evidence ae
                  ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL
@@ -127,10 +145,10 @@ fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyErro
     let mut out: Vec<AssertionRow> = Vec::new();
     for row in rows {
         let assertion_id: i64 = row.try_get(0)?;
-        let document_ref: Option<String> = row.try_get(5)?;
-        let page: Option<i32> = row.try_get(6)?;
-        let locator: Option<String> = row.try_get(7)?;
-        let excerpt: Option<String> = row.try_get(8)?;
+        let document_ref: Option<String> = row.try_get(9)?;
+        let page: Option<i32> = row.try_get(10)?;
+        let locator: Option<String> = row.try_get(11)?;
+        let excerpt: Option<String> = row.try_get(12)?;
         let citation = match (document_ref, page) {
             (Some(document_ref), Some(page)) => Some(Citation {
                 document_ref,
@@ -154,12 +172,37 @@ fn group_assertion_rows(rows: &[Row]) -> Result<Vec<AssertionRow>, GenealogyErro
                     key: row.try_get(2)?,
                     value_text: row.try_get(3)?,
                     review_status: row.try_get(4)?,
+                    date: stored_date(row)?,
                     citations: citation.into_iter().collect(),
                 });
             }
         }
     }
     Ok(out)
+}
+
+/// Decodes the structured date columns. An unreadable or incomplete value is
+/// reported as absent rather than guessed.
+fn stored_date(row: &Row) -> Result<Option<AssertionDate>, GenealogyError> {
+    let start: Option<String> = row.try_get(5)?;
+    let end: Option<String> = row.try_get(6)?;
+    let precision: Option<String> = row.try_get(7)?;
+    let qualifier: Option<String> = row.try_get(8)?;
+    let (Some(start), Some(precision), Some(qualifier)) = (start, precision, qualifier) else {
+        return Ok(None);
+    };
+    let (Some(precision), Some(qualifier)) = (
+        DatePrecision::parse(&precision),
+        DateQualifier::parse(&qualifier),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(AssertionDate {
+        start,
+        end,
+        precision,
+        qualifier,
+    }))
 }
 
 /// Looks up one person and all assertions by person key.
@@ -331,7 +374,9 @@ pub fn unresolved_assertions(client: &mut Client) -> Result<Vec<AssertionRow>, G
     let rows = client
         .query(
             "SELECT a.assertion_id, a.assertion_kind, a.assertion_key, a.value_text,
-                    a.review_status, ae.document_ref, ae.page, ae.locator, ae.excerpt
+                    a.review_status, a.value_date_start, a.value_date_end,
+                    a.value_date_precision, a.value_date_qualifier,
+                    ae.document_ref, ae.page, ae.locator, ae.excerpt
                FROM assertion a
                LEFT JOIN assertion_evidence ae
                  ON ae.assertion_id = a.assertion_id AND ae.withdrawn_at IS NULL

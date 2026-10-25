@@ -341,3 +341,48 @@ SELECT p.person_id, :restrict_account_id, 'e2e-seed', :'restrict_fingerprint'
  WHERE p.person_key = 'e2e-branch-restrictable';
 
 COMMIT;
+
+-- TRAN-002H: verified lifespan for the family-profile fixture, so the browser
+-- suite proves a reviewed date reaches the family page. Synthetic years only.
+-- The assertion is inserted unverified, given evidence, and only then verified,
+-- because the verified-assertion trigger is checked per statement here.
+INSERT INTO assertion
+    (person_id, assertion_kind, assertion_key, value_text, review_status,
+     value_date_start, value_date_end, value_date_precision, value_date_qualifier)
+SELECT p.person_id, seed.assertion_kind, seed.assertion_key, seed.value_text,
+       'unverified', seed.value_date_start, NULL, seed.value_date_precision,
+       seed.value_date_qualifier
+  FROM (
+      VALUES
+          ('birth_date', 'birth_date:synthetic-e2e', '1901', '1901', 'year', 'exact'),
+          ('death_date', 'death_date:synthetic-e2e', 'khoảng 1980', '1980', 'year', 'circa')
+  ) AS seed(assertion_kind, assertion_key, value_text, value_date_start,
+            value_date_precision, value_date_qualifier)
+  JOIN person p ON p.person_key = 'e2e-branch-subject'
+ON CONFLICT (person_id, assertion_kind, assertion_key) DO NOTHING;
+
+INSERT INTO assertion_evidence
+    (assertion_id, source_evidence_id, document_ref, page)
+SELECT a.assertion_id, seeded.source_evidence_id, seeded.relative_path, 1
+  FROM assertion a
+  JOIN person p ON p.person_id = a.person_id
+ CROSS JOIN (
+     SELECT se.source_evidence_id, sd.relative_path
+       FROM source_evidence se
+       JOIN source_document sd ON sd.source_document_id = se.source_document_id
+      WHERE sd.relative_path = 'synthetic/e2e-branch-review-source.md'
+ ) AS seeded
+ WHERE p.person_key = 'e2e-branch-subject'
+   AND a.assertion_kind IN ('birth_date', 'death_date')
+   AND a.assertion_key IN ('birth_date:synthetic-e2e', 'death_date:synthetic-e2e')
+ON CONFLICT (assertion_id, document_ref, page) DO NOTHING;
+
+UPDATE assertion a
+   SET review_status = 'verified',
+       reviewed_by = 'e2e-seed',
+       reviewed_at = now()
+  FROM person p
+ WHERE p.person_id = a.person_id
+   AND p.person_key = 'e2e-branch-subject'
+   AND a.assertion_kind IN ('birth_date', 'death_date')
+   AND a.assertion_key IN ('birth_date:synthetic-e2e', 'death_date:synthetic-e2e');

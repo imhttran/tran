@@ -36,6 +36,7 @@ fn import_document(sha: &str, evidence: bool) -> ImportDocument {
             } else {
                 Vec::new()
             },
+            date: None,
         }],
         links: Vec::new(),
     }
@@ -408,6 +409,7 @@ fn resolved_relationship_links_import_once_and_survive_reimport() {
             value_text: Some("Person A".to_string()),
             object_key: Some("P901".to_string()),
             evidence: vec![("relationship-source.md".to_string(), 7)],
+            date: None,
         }],
         links: vec![ImportLink {
             kind: "parent_child".to_string(),

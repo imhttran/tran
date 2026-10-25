@@ -44,6 +44,8 @@ type ProfileBody = {
   state: string;
   person: { person_key: string; display_name: string };
   fields: Field[];
+  dates: { kind: string; value: string | null; start: string; end: string | null;
+    precision: string; qualifier: string }[];
 };
 
 function auth(token: string) {
@@ -139,6 +141,23 @@ test.describe.serial("family profile presentation", () => {
     expect(JSON.stringify(body)).not.toContain(PRIVATE_MARKER);
     expect(JSON.stringify(body)).not.toContain("current_location");
     expect(JSON.stringify(body)).not.toContain("profile_photo");
+
+    // Verified lifespan dates are published with their precision intact; the
+    // approximate death year keeps its qualifier instead of becoming exact.
+    expect(profile.dates.map((date) => date.kind).sort()).toEqual([
+      "birth_date",
+      "death_date",
+    ]);
+    const birth = profile.dates.find((date) => date.kind === "birth_date");
+    expect(birth).toMatchObject({
+      start: "1901",
+      end: null,
+      precision: "year",
+      qualifier: "exact",
+      value: "1901",
+    });
+    const death = profile.dates.find((date) => date.kind === "death_date");
+    expect(death).toMatchObject({ start: "1980", precision: "year", qualifier: "circa" });
   });
 
   test("empty, unknown, and unauthorized profiles are distinct and leak nothing", async ({

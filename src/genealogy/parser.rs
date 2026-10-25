@@ -13,6 +13,8 @@
 
 use std::collections::BTreeMap;
 
+use super::dates::{self, DateParse, DatePrecision, DateValue};
+
 /// The smallest PDF page number accepted as evidence for this input.
 pub const MIN_PAGE: u32 = 1;
 /// The largest PDF page number accepted as evidence for this input.
@@ -48,6 +50,8 @@ pub enum ReasonCode {
     UnclearParentage,
     /// A relationship rests only on same-name inference.
     UnsourcedRelationship,
+    /// A date is stated but cannot be classified without guessing.
+    AmbiguousDate,
 }
 
 /// A single evidence locator attached to a candidate assertion.
@@ -72,6 +76,12 @@ pub enum AssertionKind {
     ParentChild,
     /// A spouse relationship.
     Spouse,
+    /// An explicitly stated birth date.
+    BirthDate,
+    /// An explicitly stated death date.
+    DeathDate,
+    /// Date-like text that cannot be classified without guessing.
+    DateUnresolved,
 }
 
 /// The review status of a candidate assertion. The parser only ever emits
@@ -99,6 +109,11 @@ pub struct CandidateAssertion {
     pub evidence: Vec<Evidence>,
     /// Optional reason code when the assertion is unsourced or ambiguous.
     pub reason: Option<ReasonCode>,
+    /// The structured date, for `birth_date` and `death_date` assertions only.
+    ///
+    /// `None` on every other kind, and on `date_unresolved`, which keeps the
+    /// source wording but must not be read as a birth or death date.
+    pub date: Option<DateValue>,
 }
 
 /// The result of parsing one catalog entry.
@@ -343,6 +358,7 @@ pub fn parse_catalog(text: &str) -> CatalogParse {
                 review_status: ReviewStatus::Candidate,
                 evidence: evidence.clone(),
                 reason: reason.clone(),
+                date: None,
             });
         }
 
@@ -356,6 +372,7 @@ pub fn parse_catalog(text: &str) -> CatalogParse {
                 review_status: ReviewStatus::Candidate,
                 evidence: evidence.clone(),
                 reason: None,
+                date: None,
             });
         }
 
@@ -369,6 +386,7 @@ pub fn parse_catalog(text: &str) -> CatalogParse {
                 review_status: ReviewStatus::Candidate,
                 evidence: evidence.clone(),
                 reason: None,
+                date: None,
             });
         }
 
@@ -391,6 +409,23 @@ pub fn parse_catalog(text: &str) -> CatalogParse {
                 review_status: ReviewStatus::Candidate,
                 evidence: evidence.clone(),
                 reason: rel.reason,
+                date: None,
+            });
+        }
+
+        // Birth and death dates are candidates until a reviewer accepts them.
+        // An unclassifiable date keeps its wording as `date_unresolved` so the
+        // claim stays visible without pretending to be a known date.
+        for date in extract_dates(raw) {
+            assertions.push(CandidateAssertion {
+                catalog_entry_key: key.clone(),
+                kind: date.kind,
+                assertion_key: date.key,
+                value_text: date.raw,
+                review_status: ReviewStatus::Candidate,
+                evidence: evidence.clone(),
+                reason: date.reason,
+                date: date.date,
             });
         }
 
@@ -741,6 +776,286 @@ fn label_relationships(raw: &str) -> Vec<RawRelationship> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Date extraction
+// ---------------------------------------------------------------------------
+
+/// One date candidate extracted from a catalog statement.
+struct RawDate {
+    kind: AssertionKind,
+    key: String,
+    raw: String,
+    date: Option<DateValue>,
+    reason: Option<ReasonCode>,
+}
+
+impl RawDate {
+    /// A birth or death date with structured components.
+    fn dated(kind: AssertionKind, value: DateValue) -> Self {
+        let signature = format!(
+            "{}|{}|{}",
+            value.start,
+            value.end.clone().unwrap_or_default(),
+            value.precision.as_str()
+        );
+        Self {
+            key: format!("{}:{}", date_kind_slug(kind), fnv1a64(signature.as_bytes())),
+            raw: value.raw.clone(),
+            date: Some(value),
+            reason: None,
+            kind,
+        }
+    }
+
+    /// Date-like text that must not be read as a birth or death date.
+    fn unresolved(raw: String) -> Self {
+        let normalized = normalize_for_key(&raw);
+        Self {
+            key: format!(
+                "{}:{}",
+                date_kind_slug(AssertionKind::DateUnresolved),
+                fnv1a64(normalized.as_bytes())
+            ),
+            raw,
+            date: None,
+            reason: Some(ReasonCode::AmbiguousDate),
+            kind: AssertionKind::DateUnresolved,
+        }
+    }
+}
+
+fn date_kind_slug(kind: AssertionKind) -> &'static str {
+    match kind {
+        AssertionKind::BirthDate => "birth_date",
+        AssertionKind::DeathDate => "death_date",
+        _ => "date_unresolved",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DateRole {
+    Birth,
+    Death,
+    Lifespan,
+}
+
+/// Extracts explicitly stated birth, death, and lifespan dates from either
+/// catalog shape.
+///
+/// Nothing is inferred. A lone unlabelled year is kept as `date_unresolved`
+/// because the source does not say whether it is a birth or a death, and an
+/// ambiguous day/month order is kept the same way.
+fn extract_dates(raw: &str) -> Vec<RawDate> {
+    let mut out = Vec::new();
+    let mut table_rows = 0usize;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if is_catalog_table_row(trimmed) {
+            table_rows += 1;
+            if let Some(description) = catalog_description_cell(trimmed) {
+                out.extend(dates_from_description(&description));
+            }
+        }
+    }
+    if table_rows == 0 {
+        out.extend(label_dates(raw));
+    }
+    out.sort_by(|left, right| left.key.cmp(&right.key));
+    out.dedup_by(|left, right| left.kind == right.kind && left.key == right.key);
+    out
+}
+
+/// Splits one description cell into date statements.
+///
+/// A relationship clause is skipped first, so the dates in `Spouse: X
+/// (1878–1940)` are never attributed to the entry itself.
+fn dates_from_description(description: &str) -> Vec<RawDate> {
+    let mut out = Vec::new();
+    for clause in description.split(';') {
+        let cleaned = strip_annotations(clause);
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if is_relationship_clause(cleaned) {
+            continue;
+        }
+        if let Some((role, rest)) = date_role(cleaned) {
+            out.extend(push_date_role(role, rest));
+        } else if is_date_only_clause(cleaned) {
+            out.extend(push_date_role(DateRole::Lifespan, cleaned));
+        }
+    }
+    out
+}
+
+/// The older `Label: value` shape, plus a trailing `(1877–1922)` lifespan.
+fn label_dates(raw: &str) -> Vec<RawDate> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((role, rest)) = date_role(trimmed) {
+            out.extend(push_date_role(role, rest));
+            continue;
+        }
+        if let Some(group) = trailing_parenthetical(trimmed) {
+            if is_date_only_clause(group) {
+                out.extend(push_date_role(DateRole::Lifespan, group));
+            }
+        }
+    }
+    out
+}
+
+fn is_relationship_clause(clause: &str) -> bool {
+    let lower = clause.to_lowercase();
+    [
+        "child of",
+        "con của",
+        "con cua",
+        "spouse",
+        "wife",
+        "husband",
+        "vợ",
+        "vo",
+        "chồng",
+        "chong",
+    ]
+    .iter()
+    .any(|marker| lower.starts_with(marker))
+}
+
+/// A clause that is only a date expression, such as `1877–1922` or `c. 1914`.
+///
+/// A leading certainty marker is removed first, so an approximate bare year is
+/// still kept (as unresolved) instead of being dropped silently.
+fn is_date_only_clause(text: &str) -> bool {
+    let (_, body) = dates::split_qualifier(text);
+    let body = body.trim();
+    !body.is_empty()
+        && body.chars().all(|ch| {
+            ch.is_ascii_digit() || matches!(ch, ' ' | '\t' | '-' | '–' | '—' | '.' | '/' | '?')
+        })
+}
+
+/// The last parenthesised group of a line, used for `Name (1877–1922)`.
+fn trailing_parenthetical(line: &str) -> Option<&str> {
+    let end = line.rfind(')')?;
+    let start = line[..end].rfind('(')?;
+    Some(line[start + 1..end].trim())
+}
+
+/// Reads a birth, death, or lifespan label at the start of a clause.
+fn date_role(clause: &str) -> Option<(DateRole, &str)> {
+    let lifespan = [
+        "dates as printed",
+        "dates as recorded",
+        "life dates",
+        "lifespan",
+        "cuộc đời",
+        "cuoc doi",
+        "dates",
+    ];
+    let birth = [
+        "date of birth",
+        "birth date",
+        "ngày sinh",
+        "ngay sinh",
+        "năm sinh",
+        "nam sinh",
+        "birth",
+        "born",
+        "sinh",
+    ];
+    let death = [
+        "date of death",
+        "death date",
+        "ngày mất",
+        "ngay mat",
+        "năm mất",
+        "nam mat",
+        "qua đời",
+        "qua doi",
+        "death",
+        "died",
+        "mất",
+        "mat",
+    ];
+    for (role, labels) in [
+        (DateRole::Lifespan, lifespan.as_slice()),
+        (DateRole::Birth, birth.as_slice()),
+        (DateRole::Death, death.as_slice()),
+    ] {
+        for label in labels {
+            if let Some(rest) = labelled_rest(clause, label) {
+                if label_is_a_qualifier(rest) {
+                    continue;
+                }
+                return Some((role, rest));
+            }
+        }
+    }
+    None
+}
+
+/// `birth order` and `birth place` are not dates.
+fn label_is_a_qualifier(rest: &str) -> bool {
+    let lower = rest.to_lowercase();
+    lower.starts_with("order")
+        || lower.starts_with("place")
+        || lower.starts_with("year")
+        || lower.starts_with("thứ")
+        || lower.starts_with("noi sinh")
+        || lower.starts_with("nơi sinh")
+}
+
+/// Returns the value after a label, which must end at `:` or whitespace.
+fn labelled_rest<'a>(clause: &'a str, label: &str) -> Option<&'a str> {
+    let rest = strip_prefix_ci(clause, label)?;
+    if let Some(after) = rest.trim_start().strip_prefix(':') {
+        return Some(after.trim());
+    }
+    if rest.starts_with([' ', '\t']) {
+        return Some(rest.trim_start());
+    }
+    None
+}
+
+fn push_date_role(role: DateRole, text: &str) -> Vec<RawDate> {
+    match dates::parse_date_expression(text) {
+        DateParse::Date(value) => match role {
+            // A printed lifespan is a pair: the first year is the birth and the
+            // second is the death. A single value has no such meaning.
+            DateRole::Lifespan if value.precision == DatePrecision::Range => {
+                let end = value.end.clone().unwrap_or_default();
+                vec![
+                    RawDate::dated(AssertionKind::BirthDate, endpoint(&value, &value.start)),
+                    RawDate::dated(AssertionKind::DeathDate, endpoint(&value, &end)),
+                ]
+            }
+            DateRole::Lifespan => vec![RawDate::unresolved(value.raw)],
+            DateRole::Birth => vec![RawDate::dated(AssertionKind::BirthDate, value)],
+            DateRole::Death => vec![RawDate::dated(AssertionKind::DeathDate, value)],
+        },
+        DateParse::Ambiguous { raw, .. } => vec![RawDate::unresolved(raw)],
+        DateParse::None => Vec::new(),
+    }
+}
+
+/// One endpoint of a printed lifespan, keeping the range's provenance.
+fn endpoint(value: &DateValue, iso: &str) -> DateValue {
+    DateValue {
+        start: iso.to_string(),
+        end: None,
+        precision: DatePrecision::of_iso(iso),
+        qualifier: value.qualifier,
+        raw: value.raw.clone(),
+    }
+}
+
 /// Returns the text after `keyword` when the keyword opens the clause. An ordinal
 /// prefix ("third child of …") is allowed; any other prefix means the clause is
 /// about something else.
@@ -913,6 +1228,12 @@ pub struct DryRunReport {
     pub ambiguous: usize,
     /// Entries classified as rejected.
     pub rejected: usize,
+    /// Birth-date candidates extracted.
+    pub birth_dates: usize,
+    /// Death-date candidates extracted.
+    pub death_dates: usize,
+    /// Date statements kept unresolved for review.
+    pub unresolved_dates: usize,
     /// Entries with at least one unresolved locator.
     pub unmatched: usize,
     /// Entry keys with unresolved locators.
@@ -931,6 +1252,9 @@ impl DryRunReport {
             parsed: parse.parsed_count(),
             ambiguous: parse.ambiguous_count(),
             rejected: parse.rejected_count(),
+            birth_dates: count_kind(parse, AssertionKind::BirthDate),
+            death_dates: count_kind(parse, AssertionKind::DeathDate),
+            unresolved_dates: count_kind(parse, AssertionKind::DateUnresolved),
             unmatched: parse.unmatched_count(),
             unmatched_keys: parse
                 .entries
@@ -968,8 +1292,19 @@ fn format_reason(reason: Option<ReasonCode>) -> String {
         Some(ReasonCode::SameName) => "same_name".to_string(),
         Some(ReasonCode::UnclearParentage) => "unclear_parentage".to_string(),
         Some(ReasonCode::UnsourcedRelationship) => "unsourced_relationship".to_string(),
+        Some(ReasonCode::AmbiguousDate) => "ambiguous_date".to_string(),
         None => "none".to_string(),
     }
+}
+
+/// Counts the assertions of one kind across every entry.
+fn count_kind(parse: &CatalogParse, kind: AssertionKind) -> usize {
+    parse
+        .entries
+        .iter()
+        .flat_map(|entry| entry.assertions.iter())
+        .filter(|assertion| assertion.kind == kind)
+        .count()
 }
 
 /// Renders a dry-run report as Markdown.
@@ -982,6 +1317,12 @@ pub fn render_report(report: &DryRunReport, catalog_sha256: Option<&str>) -> Str
     out.push_str(&format!("- ambiguous: {}\n", report.ambiguous));
     out.push_str(&format!("- rejected: {}\n", report.rejected));
     out.push_str(&format!("- unmatched: {}\n", report.unmatched));
+    out.push_str(&format!("- birth_dates: {}\n", report.birth_dates));
+    out.push_str(&format!("- death_dates: {}\n", report.death_dates));
+    out.push_str(&format!(
+        "- unresolved_dates: {}\n",
+        report.unresolved_dates
+    ));
     if let Some(hash) = catalog_sha256 {
         out.push_str(&format!("- catalog_sha256: {hash}\n"));
     }

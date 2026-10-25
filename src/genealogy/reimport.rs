@@ -14,6 +14,7 @@
 
 use postgres::Transaction;
 
+use super::dates::DateValue;
 use super::review::{evidence_fingerprint, ReviewStatus};
 use super::GenealogyError;
 
@@ -33,6 +34,9 @@ pub struct ImportAssertion {
     pub object_key: Option<String>,
     /// The evidence rows (document_ref, page).
     pub evidence: Vec<(String, i32)>,
+    /// The structured date, for `birth_date` and `death_date` assertions.
+    /// `None` on every other kind and on `date_unresolved`.
+    pub date: Option<DateValue>,
 }
 
 /// One resolved relationship edge. Only statements whose target names exactly one
@@ -185,6 +189,31 @@ fn reimport_in_transaction(
                     )
                     .map_err(GenealogyError::Query)?;
                 }
+                // A row imported before the date columns existed has the same
+                // assertion key and therefore the same date; fill the structured
+                // columns once, and never rewrite a decided claim.
+                if let Some(value) = assertion.date.as_ref() {
+                    if !was_verified {
+                        tx.execute(
+                            "UPDATE assertion
+                                SET value_date_start = $2,
+                                    value_date_end = $3,
+                                    value_date_precision = $4,
+                                    value_date_qualifier = $5
+                              WHERE assertion_id = $1
+                                AND value_date_start IS NULL
+                                AND review_status <> 'verified'",
+                            &[
+                                &id,
+                                &value.start,
+                                &value.end,
+                                &value.precision.as_str(),
+                                &value.qualifier.as_str(),
+                            ],
+                        )
+                        .map_err(GenealogyError::Query)?;
+                    }
+                }
                 id
             }
             None => {
@@ -199,12 +228,18 @@ fn reimport_in_transaction(
                         .map(|row| row.get(0)),
                     None => None,
                 };
+                let date_start = assertion.date.as_ref().map(|date| date.start.clone());
+                let date_end = assertion.date.as_ref().and_then(|date| date.end.clone());
+                let date_precision = assertion.date.as_ref().map(|date| date.precision.as_str());
+                let date_qualifier = assertion.date.as_ref().map(|date| date.qualifier.as_str());
                 let id: i64 = tx
                     .query_one(
                         "INSERT INTO assertion
                             (person_id, assertion_kind, assertion_key, value_text,
-                             object_person_id, review_status)
-                         VALUES ($1, $2, $3, $4, $5, 'unverified')
+                             object_person_id, review_status,
+                             value_date_start, value_date_end,
+                             value_date_precision, value_date_qualifier)
+                         VALUES ($1, $2, $3, $4, $5, 'unverified', $6, $7, $8, $9)
                          RETURNING assertion_id",
                         &[
                             &person_id,
@@ -212,6 +247,10 @@ fn reimport_in_transaction(
                             &assertion.key,
                             &assertion.value_text,
                             &object_person_id,
+                            &date_start,
+                            &date_end,
+                            &date_precision,
+                            &date_qualifier,
                         ],
                     )
                     .map_err(GenealogyError::Query)?
