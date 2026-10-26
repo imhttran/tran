@@ -242,6 +242,9 @@ export function ExperienceShell({ children }: Props) {
   ];
   return (
     <div className="experience">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
       <aside className="site-nav" data-testid="site-nav">
         <div className="site-nav-bar">
           <Link href="/genealogy" className="brand">
@@ -276,7 +279,7 @@ export function ExperienceShell({ children }: Props) {
           ))}
         </nav>
       </aside>
-      <main className="app-shell">
+      <main id="main-content" className="app-shell" tabIndex={-1}>
         {session ? (
           <AccountMenu
             session={session}

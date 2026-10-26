@@ -224,6 +224,7 @@ export function PersonAnswerView({
 
   return (
     <section className="card person-answer" data-testid="person-found">
+      <p className="person-eyebrow">Person record</p>
       <h2>{selected.display_name}</h2>
       <div className="person-assertion-head">
         <EvidenceBadge status={selected.evidence_status} />

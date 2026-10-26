@@ -3,17 +3,18 @@
 **Type:** Descriptive reference (brand identity, design tokens, and interface rules)
 
 This is the authoritative description of how the Trần Family Archive looks and
-sounds. It records the **light-premium** direction: a warm, quiet archive with
-luminous green light, editorial serif branding, crisp sans interface type, and
-calm motion. Application behavior, authorization, and publication rules live in
-the architecture contracts, not here.
+sounds. It records the **neutral jade** direction: a quiet, neutral archive with
+plain surfaces, one restrained jade accent, a sans interface typeface, and calm
+motion. The interface follows the reader's light or dark system preference.
+Application behavior, authorization, and publication rules live in the
+architecture contracts, not here.
 
 ## Identity
 
 The archive is **private, evidence-backed, and calm**. It is a place to read and
-verify family records, not a marketing dashboard. The interface should feel like
-a well-kept reading room: warm paper, deep evergreen, soft daylight, and clear
-labels.
+verify family records, not a marketing dashboard. The interface should feel like a
+well-kept reading room: neutral surfaces, dark green text, one jade accent, and
+clear labels.
 
 - **Product name:** Trần Family Archive (UI wordmark: `TRẦN FAMILY`).
 - **Personality:** quiet, precise, humane, archival.
@@ -25,71 +26,121 @@ labels.
   see it.
 - Evidence and review status come before confidence. Never imply a relationship,
   living status, or approval that the archive cannot support.
-- “No children recorded” means **no available child links**. It does not mean the
+- "No children recorded" means **no available child links**. It does not mean the
   person had no children. Keep that distinction in every surface.
-- No exclamation marks, no urgency, no “unlock your family story” copy.
+- No exclamation marks, no urgency, no "unlock your family story" copy.
 
 ## Wordmark
 
-- Set **TRẦN FAMILY** in Georgia, uppercase, `letter-spacing: 2px`, cream
-  (`#f2e8c9`) on the evergreen sidebar.
-- The line beneath reads **Family archive** in the UI sans, small and quiet.
+- Set **TRẦN FAMILY** in the UI sans stack, uppercase, no letter-spacing, in
+  `--fg` on the neutral sidebar.
+- The line beneath reads **Family archive** in the UI sans, small and quiet, in
+  `--muted`.
 - The wordmark is the brand mark; there is no separate icon or logotype.
-- Keep the wordmark serif even though interface headings are sans. It is the
-  editorial anchor.
+- The wordmark uses the same sans family as the interface. There is no serif
+  interface type.
 
 ## Palette
 
-All tokens are defined in `web/src/app/globals.css` under
-`Light-premium foundation`.
+All tokens are defined in `web/src/app/globals.css`. The `:root` block holds the
+light values. A `@media (prefers-color-scheme: dark)` block overrides the same
+token names with the dark values. `:root` also sets `color-scheme: light dark`.
 
-| Token | Value | Use |
-| --- | --- | --- |
-| `--bg` | `#f7f5ee` | Page base (warm paper) |
-| `--card` | `#fffefb` | Cards, popups, reading surfaces |
-| `--surface` | `#f1efe6` | Quiet inset panels, legends, notes |
-| `--fg` | `#20362b` | Body text |
-| `--muted` | `#5e6f65` | Secondary text and hints |
-| `--line` | `rgba(24, 61, 48, 0.14)` | Structural borders and dividers |
-| `--line-strong` | `rgba(24, 61, 48, 0.22)` | Input borders |
-| `--accent` | `#183d30` | Headings, brand, primary text |
-| `--accent-strong` | `#123026` | Pressed/deep states |
-| `--accent-bright` | `#2f9e6a` | Focus accents, selected edges |
-| `--accent-soft` | `#e7f3ea` | Active navigation, secondary buttons |
-| `--accent-soft-strong` | `#d3ebdc` | Secondary hover |
-| `--gold` | `#996d21` | Editorial eyebrow labels |
-| `--ok` | `#1a7f37` | Verified |
-| `--warn` | `#9a6700` | Needs review |
-| `--err` | `#b42318` | Errors and destructive actions |
+### Colour
 
-Luminous green is light, never neon: use `rgba(47, 158, 106, 0.10–0.14)` radial
-glows and the `--accent-bright` for small accents. **Red is reserved for
-destructive and error states**, never for a primary call to action.
+| Token                  | Light     | Dark      | Use                                        |
+| ---------------------- | --------- | --------- | ------------------------------------------ |
+| `--bg`                 | `#f5f6f6` | `#111514` | Page base                                  |
+| `--card`               | `#ffffff` | `#181d1c` | Cards, panels, popups, inputs              |
+| `--surface`            | `#eff1f1` | `#1f2523` | Quiet inset panels, legends, quotes        |
+| `--surface-strong`     | `#e6e9e8` | `#262d2b` | Hover and disabled neutral                 |
+| `--fg`                 | `#1c2422` | `#e7ebe9` | Body and heading text                      |
+| `--muted`              | `#5a6663` | `#a3b0ab` | Secondary text and hints                   |
+| `--line`               | `#dfe3e2` | `#2c3432` | Structural borders and dividers            |
+| `--line-strong`        | `#c4cdca` | `#3c4643` | Input borders                              |
+| `--accent`             | `#0f6b4a` | `#4ccf95` | Primary action, selected navigation, links |
+| `--accent-strong`      | `#0b5639` | `#6fe0ac` | Hover and pressed accent                   |
+| `--accent-soft`        | `#e3f1ea` | `#16352a` | Selected navigation fill, active chips     |
+| `--accent-soft-strong` | `#cfe8dc` | `#1d4436` | Accent hover fill                          |
+| `--accent-contrast`    | `#ffffff` | `#082018` | Text on an accent fill                     |
+| `--ok`                 | `#1a7f37` | `#5ecc86` | Verified                                   |
+| `--warn`               | `#8a5b00` | `#e0b355` | Needs review                               |
+| `--err`                | `#b42318` | `#f28b82` | Errors and destructive actions             |
+| `--warn-soft`          | `#fdf4df` | `#2c2413` | Warning surface                            |
+| `--warn-line`          | `#ecd9a8` | `#4a3c1c` | Warning border                             |
+| `--ok-soft`            | `#e6f4ea` | `#16291d` | Success surface                            |
+| `--err-soft`           | `#fceceb` | `#331a19` | Error surface                              |
+| `--info-soft`          | `#e8eef5` | `#1a2430` | Neutral information surface                |
 
-Status color is never the only signal: every badge and edge also carries its
-status word.
+Jade is the only accent. The primary action and the selected navigation state
+both use `--accent`. Secondary controls use neutral `--surface` and
+`--line-strong`, never the accent. **Red is reserved for destructive and error
+states**, never for a primary call to action.
+
+Status color is never the only signal: every badge, chip, and edge also carries
+its status word.
+
+### Radii
+
+| Token           | Value   |
+| --------------- | ------- |
+| `--radius-sm`   | `8px`   |
+| `--radius-md`   | `12px`  |
+| `--radius-lg`   | `16px`  |
+| `--radius-pill` | `999px` |
+
+### Spacing
+
+| Token       | Value  |
+| ----------- | ------ |
+| `--space-1` | `4px`  |
+| `--space-2` | `8px`  |
+| `--space-3` | `12px` |
+| `--space-4` | `16px` |
+| `--space-5` | `24px` |
+
+### Shadows
+
+| Token           | Light                                                                      | Dark                                                                 |
+| --------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `--shadow-sm`   | `0 1px 2px rgba(16, 40, 30, 0.06)`                                         | `0 1px 2px rgba(0, 0, 0, 0.4)`                                       |
+| `--shadow-card` | `0 1px 2px rgba(16, 40, 30, 0.05), 0 8px 24px -20px rgba(16, 40, 30, 0.4)` | `0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 26px -20px rgba(0, 0, 0, 0.8)` |
+
+### Focus
+
+| Token            | Light     | Dark      |
+| ---------------- | --------- | --------- |
+| `--focus-ring`   | `#0f6b4a` | `#6fe0ac` |
+| `--focus-offset` | `2px`     | `2px`     |
 
 ## Typography
 
-- **Interface type:** `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`.
-- **Headings:** 700 weight, tight tracking (`-0.02em` to `-0.025em`). The page
-  title is `clamp(1.75rem, 3.4vw, 2.15rem)`; card headings are about `1.05rem`.
-- **Editorial type:** Georgia, reserved for the wordmark and long-form reading.
-- **Micro-labels:** uppercase, `0.72rem`, `0.12–0.14em` tracking, gold.
-- **Metadata:** `0.9rem` muted; keep line length near `70ch`.
+- **Interface type:** `--font-sans` =
+  `"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Segoe UI Symbol", sans-serif`.
+  The stack uses installed system fonts only. It gives Vietnamese diacritics
+  clean coverage with no font download.
+- **Mono type:** `--font-mono` = `ui-monospace, SFMono-Regular, Menlo, monospace`,
+  for code samples only.
+- **Body text:** `16px`, `line-height: 1.55`, `letter-spacing: normal`. Body copy
+  never carries tracking.
+- **Headings:** the same sans stack, 700 weight, `letter-spacing: normal`. The
+  page title is `clamp(1.6rem, 3.2vw, 2rem)`; card headings are about `1.05rem`.
+  There is no serif interface heading.
+- **Micro-labels:** uppercase, `0.72rem`, small tracking on labels only, in
+  `--muted`.
+- **Metadata:** `0.9rem` in `--muted`; keep line length near `70ch`.
 - Use tabular numerals for counts and tables where alignment matters.
 
 ## Surfaces and depth
 
-- **Radii:** controls `10px`, inner cards `14px`, cards and panels `20px`, the
-  person popup `18px`, pills `999px`.
-- **Shadows:** layered transparent shadow
-  `0 1px 2px rgba(16,40,30,.04), 0 16px 40px -28px rgba(16,40,30,.35)`.
-- **Borders:** structure and state only, at `--line` / `--line-strong`. Do not
-  draw heavy outlines to create depth.
-- **One glow per page:** the page header carries the mint radial light and the
-  faint dot grid. Cards do not repeat it. The body carries only a soft top glow.
-- **Images:** a `1px` low-opacity outline, never a tinted neutral.
+- Every surface uses a token: `--bg`, `--card`, `--surface`, or
+  `--surface-strong`. No surface hard-codes a light colour.
+- The shell, the site navigation, the page header, and the profile hero are plain
+  neutral surfaces with a `1px` `--line` border. They carry no background image.
+- Depth comes from a border and one `--shadow-card`. Do not draw heavy outlines.
+- No page carries a decorative background. Do not add a gradient, a glow, or a dot
+  grid to the body, header, navigation, or any panel.
+- **Images:** a `1px` `--line` outline, never a tinted neutral.
 
 ## Iconography
 
@@ -103,7 +154,6 @@ status word.
 - High-frequency state (hover, focus, press): **150ms**,
   `cubic-bezier(0.2, 0, 0, 1)`, on named properties only.
 - Person popup: **180ms** opacity + `translateY(6px)`.
-- Press feedback: `scale(0.96)`; nothing lower.
 - Animate opacity and transform only. No layout animation.
 - `prefers-reduced-motion: reduce` removes transforms and transitions.
 - Motion is never the only feedback: every state also changes color, an icon, or
@@ -111,22 +161,38 @@ status word.
 
 ## Accessibility
 
-- Meet WCAG AA contrast for text and controls.
-- Focus ring: `3px solid #1f7a50`, `2px` offset; inputs add a soft mint ring.
-- Interactive targets are at least `40px` in popups and `38px` in dense toolbars.
+- Meet WCAG AA contrast for text and controls in both themes.
+- Focus ring: `3px solid var(--focus-ring)` with `2px` offset, visible on
+  buttons, links, inputs, selects, and textareas. Inputs also add a soft
+  `--accent-soft` ring.
+- Interactive targets are at least `44px` in navigation and primary forms, and
+  `38px` in dense toolbars and popups.
+- A skip-to-content link is the first focusable control and targets the main
+  content region.
 - Status, visibility, and review state always have text labels.
 - Keyboard paths: Tab, Enter/Space, Escape. Nothing depends on hover or
   double-click.
 
+## Light and dark themes
+
+- `:root` sets `color-scheme: light dark`.
+- The light token set is the default. A `@media (prefers-color-scheme: dark)`
+  block overrides the same token names.
+- The browser selects the theme from the reader's system preference. There is no
+  JavaScript theme provider and no in-app toggle.
+- Both themes define the same token names. A component reads only the semantic
+  token, never a raw colour.
+
 ## Where the brand lives
 
-| Concern | Location |
-| --- | --- |
-| Tokens, surfaces, type, motion | `web/src/app/globals.css` (`Light-premium foundation`) |
-| Navigation icon set | `web/src/components/ExperienceShell.tsx` (`NavIcon`) |
-| Wordmark | `ExperienceShell.tsx` (`.site-nav .brand`) |
-| Person popup motion and placement | `web/src/components/FamilyTree.tsx`, `web/src/lib/family-tree.ts` |
-| Page header surface | `.page-header` in `globals.css` |
+| Concern                                | Location                                                          |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| Tokens, surfaces, type, motion, themes | `web/src/app/globals.css`                                         |
+| Colour scheme declaration              | `web/src/app/layout.tsx` (root document)                          |
+| Navigation icon set                    | `web/src/components/ExperienceShell.tsx` (`NavIcon`)              |
+| Wordmark and skip link                 | `ExperienceShell.tsx` (`.site-nav .brand`, `.skip-link`)          |
+| Person popup motion and placement      | `web/src/components/FamilyTree.tsx`, `web/src/lib/family-tree.ts` |
+| Page header surface                    | `.page-header` in `globals.css`                                   |
 
 Change the document and the tokens together. A visual change that alters the
 identity (palette, type families, wordmark, motion language) is a brand change,
@@ -134,12 +200,13 @@ not a page tweak.
 
 ## Do and don't
 
-| Do | Don't |
-| --- | --- |
-| Keep one warm paper base and one evergreen brand | Introduce a second competing accent |
-| Use the mint glow once, behind the page title | Glow every card |
-| Pair sans interface headings with the serif wordmark | Turn the wordmark into a sans label |
-| Label every status in words | Rely on color alone |
-| Use red only for destructive/error | Use red as a primary CTA |
-| Prefer 150ms, named-property transitions | Use `transition: all` or animate layout |
-| Say “No children recorded” and explain its limits | Imply the person had no children |
+| Do                                                                | Don't                                                |
+| ----------------------------------------------------------------- | ---------------------------------------------------- |
+| Keep neutral surfaces and one jade accent                         | Introduce a second competing accent                  |
+| Use `--accent` for the primary action and the selected navigation | Give secondary controls the accent fill              |
+| Use a sans interface stack with Vietnamese coverage               | Download a web font or use a serif interface heading |
+| Label every status in words                                       | Rely on color alone                                  |
+| Use red only for destructive/error                                | Use red as a primary CTA                             |
+| Prefer 150ms, named-property transitions                          | Use `transition: all` or animate layout              |
+| Read colours from theme tokens                                    | Hard-code a light colour on a surface                |
+| Say "No children recorded" and explain its limits                 | Imply the person had no children                     |
