@@ -122,18 +122,43 @@ impl RetrievalSource for DbRetrieval<'_> {
             .store
             .keyword_search(self.corpus, question, self.candidate_k, self.language)
             .map_err(DbRetrievalError::Keyword)?;
-        let mut candidates = retrieval_pg::fuse(&[vector_hits, keyword_hits], self.candidate_k);
-        candidates = dedup::dedup(candidates);
-        candidates = expand::expand(&candidates, &chunks, self.expand_limit);
+        let fused = retrieval_pg::fuse(&[vector_hits, keyword_hits], self.candidate_k);
+        // Only a candidate with an approved snapshot identity may consume a
+        // `final_k` slot. Filtering here (not after expansion) keeps the bound
+        // counting real, published sections even if a row was withdrawn between
+        // the snapshot read and the searches.
+        let fused: Vec<Candidate> = fused
+            .into_iter()
+            .filter(|candidate| provenance.contains_key(&candidate.id))
+            .collect();
+        let mut candidates = finalize_candidates(fused, &chunks, self.final_k, self.expand_limit);
         for candidate in &mut candidates {
             if let Some(found) = provenance.get(&candidate.id) {
                 candidate.provenance = found.clone();
             }
         }
         candidates.retain(|candidate| candidate.provenance.chunk_id.is_some());
-        candidates.truncate(self.final_k);
         Ok(candidates)
     }
+}
+
+/// Selects the top fused sections, then expands those sections to nearby chunks.
+///
+/// `final_k` counts sections, not chunks, and only the sections that survive
+/// selection are expanded. Applying the bound after expansion (the old order)
+/// let an earlier same-section chunk crowd the actual match out of the context
+/// before context budgeting ran. The context budget remains the only length
+/// bound on the answer prompt.
+pub fn finalize_candidates(
+    candidates: Vec<Candidate>,
+    chunks: &[Chunk],
+    final_k: usize,
+    expand_limit: u32,
+) -> Vec<Candidate> {
+    let candidates = dedup::dedup(candidates);
+    let mut candidates = dedup::dedup_sections(candidates);
+    candidates.truncate(final_k);
+    expand::expand(&candidates, chunks, expand_limit)
 }
 
 /// Builds the expansion chunk for one approved snapshot row.
@@ -303,10 +328,23 @@ pub fn suggested_questions(topics: &[String], limit: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::suggested_questions;
+    use super::{finalize_candidates, suggested_questions};
+    use crate::document::Chunk;
+    use crate::retrieval::Candidate;
 
     fn topic(value: &str) -> String {
         value.to_string()
+    }
+
+    fn chunk(section: &str, index: u32) -> Chunk {
+        Chunk {
+            source: "family.md".to_string(),
+            section: section.to_string(),
+            language: "english".to_string(),
+            chunk_index: index,
+            content: format!("{section} chunk {index}"),
+            page: None,
+        }
     }
 
     #[test]
@@ -346,5 +384,45 @@ mod tests {
         assert!(suggested_questions(&[], 6).is_empty());
         assert!(suggested_questions(&[topic("")], 6).is_empty());
         assert!(suggested_questions(&[topic("Section")], 0).is_empty());
+    }
+
+    #[test]
+    fn expansion_cannot_crowd_out_the_selected_section() {
+        let mut chunks: Vec<Chunk> = (0..24)
+            .map(|index| chunk("Editorial method", index))
+            .collect();
+        chunks.push(chunk("Target section", 24));
+        let candidate = Candidate::new(chunk("Target section", 24), 1.0);
+        let expanded = finalize_candidates(vec![candidate], &chunks, 1, 20);
+        assert!(
+            expanded
+                .iter()
+                .any(|candidate| candidate.document.chunk.section == "Target section"),
+            "the matched section must survive expansion and final_k"
+        );
+    }
+
+    #[test]
+    fn final_k_counts_sections_before_expansion() {
+        let chunks = vec![
+            chunk("Section A", 0),
+            chunk("Section A", 1),
+            chunk("Section A", 2),
+            chunk("Section B", 3),
+        ];
+        // Two chunks of section A outrank one chunk of section B.
+        let candidates = vec![
+            Candidate::new(chunk("Section A", 0), 0.9),
+            Candidate::new(chunk("Section A", 1), 0.85),
+            Candidate::new(chunk("Section B", 3), 0.8),
+        ];
+        let selected = finalize_candidates(candidates, &chunks, 1, 2);
+        assert_eq!(selected[0].document.chunk.section, "Section A");
+        assert!(
+            selected
+                .iter()
+                .all(|candidate| candidate.document.chunk.section == "Section A"),
+            "one section slot must not admit a second section"
+        );
     }
 }
