@@ -225,6 +225,16 @@ Files you may change: `src/genealogy/photograph_import.rs` (new),
 - A replaced original does not inherit the previous review state.
 - The test creates and drops only its own disposable database.
 
+### Acceptance Checks
+
+- `cargo test --locked`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+
 ## AP-105 — Person links from explicit captions
 
 Implement link proposals and publication state in
