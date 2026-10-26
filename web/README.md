@@ -28,8 +28,8 @@ Start the database and Ollama as for the CLI, then:
 
 ```sh
 cargo build --locked --bin api
-target/debug/api            # 127.0.0.1:8080, RAG_CORPUS default "trusted"
-make web-start                   # 127.0.0.1:3000
+target/debug/api                # 127.0.0.1:8080, RAG_CORPUS default "trusted"
+./scripts/web-control.sh start  # 127.0.0.1:3000
 ```
 
 The API reads the same environment as the CLI (`DATABASE_URL`, `OLLAMA_URL`,
@@ -69,14 +69,14 @@ into `web/.next-build` and leaves the running server alone. The equivalent is
 From the repository root:
 
 ```sh
-make web-check-env   # resolve and validate the Node/npm toolchain
-make web-install     # install web dependencies
-make web-start       # start Next.js on 127.0.0.1:3000 (background)
-make web-status      # report state, URL, and log path
-make web-stop        # stop the Next.js server started by make web-start
-make web-typecheck   # tsc --noEmit
-make web-build       # production build (into .next-build)
-make web-e2e         # start Axum + Next.js, run Playwright, clean up the corpus
+scripts/web-control.sh check-env   # resolve and validate the Node/npm toolchain
+scripts/web-control.sh install     # install web dependencies
+scripts/web-control.sh start       # start Next.js on 127.0.0.1:3000 (background)
+scripts/web-control.sh status      # report state, URL, and log path
+scripts/web-control.sh stop        # stop the Next.js server
+make web-typecheck                 # tsc --noEmit
+make web-build                     # production build (into .next-build)
+make web-e2e                       # start Axum + Next.js, run Playwright, clean up the corpus
 ```
 
 `make web-e2e` is the real-browser verification. It needs PostgreSQL and Ollama,

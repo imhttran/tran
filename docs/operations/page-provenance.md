@@ -8,20 +8,20 @@ today.
 
 Formats that have pages (PDF) carry a **1-based page number** from the loader
 through ingestion, retrieval, and citation rendering. Formats without pages
-(Markdown, plain text) carry **no page** (`0` in Go, `NULL` in PostgreSQL) and are
-byte-identical to the pre-RAG-017 behaviour.
+(Markdown, plain text) carry **no page** (`None` in Rust, `NULL` in PostgreSQL)
+and are byte-identical to the pre-RAG-017 behaviour.
 
 ## 2. Data model
 
 | Layer | Type / artifact | Field | Unset value |
 |-------|-----------------|-------|-------------|
-| Extraction | `document.Section` | `Page int` (`> 0` = page) | `0` |
-| Chunking | `chunking.Chunk` | `Page int` (copied from the section) | `0` |
+| Extraction | `document::Section` | `page: Option<u32>` (`Some(n)` = page) | `None` |
+| Chunking | `document::Chunk` | `page: Option<u32>` (copied from the section) | `None` |
 | Schema | `migrations/004_page.sql` | `documents.page integer` (nullable) | `NULL` |
-| Ingestion | SQL `INSERT` | writes `page` via `NULLIF(0)` → `NULL` | `NULL` |
-| Retrieval | `retrieval.Document` | `Page int` (read `COALESCE(page, 0)`) | `0` |
-| Rendering | `rag.FormatContext` | `Page: N` line **only when `Page > 0`** | omitted |
-| Citations | `internal/citations` | optional `- p.N` segment | absent |
+| Ingestion | SQL `INSERT` | binds `Option<i32>` → `NULL` when absent | `NULL` |
+| Retrieval | `document::RetrievedDocument` | `page: Option<u32>` read from `documents.page` | `None` |
+| Rendering | `answer::prompt` | `Page: N` line **only when `page` is `Some`** | omitted |
+| Citations | `src/answer/citation.rs` | optional `- p.N` segment | absent |
 
 `migrations/004_page.sql` is additive and idempotent:
 
@@ -34,12 +34,12 @@ No default, no backfill (pre-existing rows read `NULL`). No destructive change.
 ## 3. Flow
 
 ```
-loader (PDF: one Section per page, Page = n)
-  → chunking.FromSections (Chunk.Page = Section.Page)
-  → ingestion INSERT (page = NULL when 0, else n)
-  → retrieval (Document.Page = COALESCE(page, 0))
-  → rag.FormatContext ("Page: n" only when Page > 0)
-  → citations ("[source - section - p.n]" is valid iff a retrieved doc matches
+loader (PDF: one Section per page, page = Some(n))
+  → chunking (Chunk.page = Section.page)
+  → ingestion INSERT (page = NULL when None, else n)
+  → retrieval (RetrievedDocument.page = documents.page)
+  → answer::prompt ("Page: n" only when Some)
+  → citation ("[source - section - p.n]" is valid iff a retrieved doc matches
      source+section AND has page n)
 ```
 

@@ -104,7 +104,7 @@ for f in genealogy/migrations/*.sql; do
 done
 
 cargo run --locked --bin api    # 127.0.0.1:8080
-make web-start                  # 127.0.0.1:3000
+./scripts/web-control.sh start  # 127.0.0.1:3000
 ```
 
 Identity, roles, reviewer grants, and recovery are operator procedures: see
@@ -190,7 +190,7 @@ iconography, and motion are defined in
 | [Plans](docs/plans/PLAN-TRAN-USER-ONBOARDING.md)  | Recorded and active implementation plans                                       |
 | [History](docs/history/lessons.md)                | Archived requirements, experiment evidence, and retrospectives (non-normative) |
 | [Reports](docs/reports/rust-migration/README.md)  | Engineering evidence, reviews, and investigation reports (non-normative)       |
-| [Source corpus](docs/tran/Tran-Family-English.md) | The family source text edition and its audit findings                          |
+| [Source corpus](docs/tran/Tran-Family-Vietnamese.md) | The Vietnamese family source edition, people catalog, and audit findings      |
 
 ## Status
 

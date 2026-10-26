@@ -33,7 +33,7 @@ set `EMBED_DIM` back to the column's current width.
 to use.
 2. Make sure it is the dimension the model actually returns; see the model's
 documentation, or embed one string and read the vector length.
-3. Stop `cmd/ingest` and `cmd/rag` while the change is in progress: they read
+3. Stop the `ingest` and `query` binaries while the change is in progress: they read
    `documents.embedding` and will fail against a column of the wrong width.
 4. Have a `psql` connection to the database, e.g.
    `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable`.
@@ -90,8 +90,8 @@ EMBED_DIM=N
 ## Step 3 — Re-ingest the corpus
 
 Every stored vector must be produced at the new dimension. Re-run ingest for
-every corpus file; `cmd/ingest` replaces a source's chunks (delete-then-insert),
-so re-ingesting does not duplicate rows:
+every corpus file; the `ingest` binary replaces a source's chunks
+(delete-then-insert), so re-ingesting does not duplicate rows:
 
 ```bash
 make ingest                                  # examples/loan-policy.md

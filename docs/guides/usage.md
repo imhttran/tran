@@ -181,9 +181,10 @@ top `FINAL_K` fused chunks, and each matched section is then expanded to its
 chunks (`EXPAND_LIMIT` cap) before the context is sent to the model.
 Vector-only candidates below `MIN_SIMILARITY` are marked `FILTERED` and left out.
 
-By default `cmd/rag` rewrites the question into a search query with the chat
-model (`internal/rag`), then retrieves over both the original question and the
-rewritten query. Each query runs a vector search and a PostgreSQL full-text
+By default the `query` binary (`cargo run --locked --bin query`) rewrites the
+question into a search query with the chat model
+(`src/answer/query_rewrite.rs`), then retrieves over both the original question
+and the rewritten query. Each query runs a vector search and a PostgreSQL full-text
 search, and the four rankings are fused with reciprocal rank fusion before
 section deduplication and expansion. Set `QUERY_REWRITE=false` to retrieve over
 the original question only. Either way the model answers the original question.
@@ -193,15 +194,21 @@ rewrite is lossy, and retrieving over it alone finds fewer of the expected
 documents (see the [evaluation guide](evaluation.md)). Fusing both matches the original query's
 retrieval while hedging against a bad rewrite.
 
-When `RAG_LLM_RERANK` is set, `cmd/rag` asks the chat model to reorder the fused
-candidates by relevance (`reranking.RerankLLM`), keeps the top `FINAL_K`, and
-expands those sections before answering — the same reranker the evaluation
-compares under `EVAL_LLM_RERANK`. Otherwise it expands the fused sections
-directly.
+> **Rust port status.** LLM reranking (`RAG_LLM_RERANK`,
+> `reranking.RerankLLM`) is **not present** in the Rust tree; the `query` binary
+> expands the fused sections directly. The paragraph below records the Go
+> baseline's behaviour and is retained for the planned port.
 
-Before answering, `cmd/rag` asks the chat model whether the kept documents can
-actually answer the question (`RAG_ANSWERABILITY_GATE`, on by default). If they
-cannot, it replies "I do not have enough information." instead of answering.
+When `RAG_LLM_RERANK` is set, the Go baseline's `cmd/rag` asks the chat model to
+reorder the fused candidates by relevance (`reranking.RerankLLM`), keeps the top
+`FINAL_K`, and expands those sections before answering — the same reranker the
+evaluation compares under `EVAL_LLM_RERANK`. Otherwise it expands the fused
+sections directly.
+
+Before answering, the `query` binary asks the chat model whether the kept
+documents can actually answer the question (`RAG_ANSWERABILITY_GATE`, on by
+default). If they cannot, it replies "I do not have enough information." instead
+of answering.
 
 ## Ask the archive suggestions
 

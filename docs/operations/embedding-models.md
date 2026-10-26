@@ -1,5 +1,13 @@
 # Comparing embedding models on the evaluation harness
 
+> **Rust port status.** The automation this page describes
+> (`scripts/eval-model-sweep.sh`) and the Go dataset validator
+> (`cmd/eval/main_test.go`) are **not present** in the Rust tree. The committed
+> datasets remain available; run `cargo run --locked --bin eval` with
+> `EVAL_DATASET` set. The answer-level metrics mentioned below (answerability
+> gate, fact judge) are not implemented in the Rust eval, and the sweep-specific
+> sections are retained for the planned port.
+
 This is an operator-run procedure. Nothing here is applied automatically by
 `make db-up`, `make db-schema`, or the `docker-entrypoint-initdb.d` mount in
 `docker-compose.yml`; it is deliberately outside the `migrations/*.sql` glob.
@@ -7,7 +15,8 @@ This is an operator-run procedure. Nothing here is applied automatically by
 ## Purpose
 
 Evaluate a candidate embedding model against the current default by scoring the
-expanded bilingual dataset with `cmd/eval`, one model per isolated database. The
+expanded bilingual dataset with `cargo run --locked --bin eval`, one model per
+isolated database. The
 dataset includes English→English, Vietnamese→Vietnamese, English→Vietnamese,
 and Vietnamese→English retrieval cases plus unanswerable and misleading-context
 cases, so a model that only handles English is visible in the numbers.
@@ -20,7 +29,7 @@ when the candidate's dimension differs).
 
 ## Dataset and corpus manifest
 
-`cmd/eval` reads its cases from the file named by `EVAL_DATASET`:
+`cargo run --locked --bin eval` reads its cases from the file named by `EVAL_DATASET`:
 
 - `EVAL_DATASET` unset or empty loads `evals/retrieval.json`, exactly the
   default run.
@@ -34,7 +43,7 @@ repository-relative `path` and a deterministic `sha256` content hash, and each
 run record reports the manifest hash so comparisons are only made against the
 same corpus. The smaller historical dataset is `evals/retrieval-vi-en.json`.
 
-`cmd/eval/main_test.go` validates both committed datasets against the manifest:
+The Go baseline's `cmd/eval/main_test.go` validated both committed datasets against the manifest:
 every expected source must be listed, every referenced section must exist in
 that file, every evidence string must be a verbatim substring of the referenced
 section, and each dataset must meet its required case counts and language
@@ -196,7 +205,7 @@ labelled to say what they are:
 
 - **`run wall (s)`** is the wall-clock time of the whole `cargo run --locked --bin eval`
   subprocess on the isolated database. It is **client-observed** and includes the
-  Go build, the eval client, and database work — it is **not** embedding-only
+  Rust build, the eval client, and database work — it is **not** embedding-only
   latency.
 - **`client RSS (KiB)`** is the peak resident set size of that eval client
   process. It is **not** the embedding model server's memory.
@@ -288,7 +297,7 @@ the unanswerable cases (`expected: []`) exercise the rejection path. To include
 the answer-level metrics, set `EVAL_ANSWERABILITY_GATE=true` and/or
 `EVAL_FACT_JUDGE=true` as in the main evaluation workflow. The sweep script
 leaves these off so its run wall clock stays comparable across models; note that
-this wall clock is the whole eval subprocess (Go build, client, and database
+this wall clock is the whole eval subprocess (Rust build, client, and database
 work), not embedding-only latency.
 
 7. When both runs are recorded, keep the default model in production unless the
