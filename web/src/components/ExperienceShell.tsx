@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { AccountMenu } from "@/components/AccountMenu";
@@ -16,9 +16,10 @@ import {
 
 // Client shell for authenticated pages. It resolves the session from the
 // same-origin session endpoint (the server never sends a token, subject, email,
-// or credential to the browser) and renders the shared navigation and account
-// menu around the page. The role is passed to the page so it can hide controls,
-// but it is never an authorization decision: Rust enforces every request.
+// or credential to the browser) and renders the shared top header, navigation,
+// and account menu around the page. The role is passed to the page so it can
+// hide controls, but it is never an authorization decision: Rust enforces every
+// request.
 type Props = {
   children: (role: Role | null, session: SessionResult | null) => ReactNode;
 };
@@ -100,13 +101,20 @@ function NavIcon({ name }: { name: NavIconName }) {
 
 // Only implemented routes. "Add documents" is the existing direct-upload page.
 type NavItem = { href: string; label: string; icon: NavIconName };
-const NAV_ITEMS: NavItem[] = [
-  { href: "/profile", label: "My profile", icon: "profile" },
+
+// Three primary destinations stay direct links in the desktop header.
+const PRIMARY_ITEMS: NavItem[] = [
   { href: "/genealogy", label: "Family tree", icon: "tree" },
   { href: "/ask", label: "Ask the archive", icon: "ask" },
+  { href: "/documents", label: "Documents", icon: "documents" },
+];
+
+// Every remaining permitted destination goes into More on desktop and into the
+// Menu on mobile, in this order. Gating is presentation only.
+const SECONDARY_ITEMS: NavItem[] = [
+  { href: "/profile", label: "My profile", icon: "profile" },
   { href: "/head-of-family", label: "Head of Family", icon: "head" },
   { href: "/branch-review", label: "Branch review", icon: "review" },
-  { href: "/documents", label: "Documents", icon: "documents" },
 ];
 const UPLOAD_ITEM: NavItem = {
   href: "/",
@@ -192,11 +200,26 @@ function roleOf(session: SessionResult | null): Role | null {
   return null;
 }
 
+function isCurrent(pathname: string | null, href: string): boolean {
+  if (!pathname) return false;
+  if (href === "/") return pathname === "/";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function matchesAny(pathname: string | null, items: NavItem[]): boolean {
+  return items.some((item) => isCurrent(pathname, item.href));
+}
+
 export function ExperienceShell({ children }: Props) {
   const pathname = usePathname();
   const [session, setSession] = useState<SessionResult | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement | null>(null);
+  const moreButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileRef = useRef<HTMLDivElement | null>(null);
+  const mobileButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -217,6 +240,63 @@ export function ExperienceShell({ children }: Props) {
     };
   }, []);
 
+  // Close open menus after navigation.
+  useEffect(() => {
+    setMoreOpen(false);
+    setMobileOpen(false);
+  }, [pathname]);
+
+  // Close More on outside click.
+  useEffect(() => {
+    if (!moreOpen) return;
+    function onPointerDown(event: MouseEvent | TouchEvent) {
+      if (!moreRef.current) return;
+      if (!moreRef.current.contains(event.target as Node)) {
+        setMoreOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [moreOpen]);
+
+  // Close the mobile menu on outside click.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function onPointerDown(event: MouseEvent | TouchEvent) {
+      if (!mobileRef.current) return;
+      if (!mobileRef.current.contains(event.target as Node)) {
+        setMobileOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [mobileOpen]);
+
+  // Escape closes an open menu and returns focus to its button.
+  useEffect(() => {
+    if (!moreOpen && !mobileOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (moreOpen) {
+        setMoreOpen(false);
+        moreButtonRef.current?.focus();
+      } else if (mobileOpen) {
+        setMobileOpen(false);
+        mobileButtonRef.current?.focus();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [moreOpen, mobileOpen]);
+
   function signIn() {
     window.location.href = "/signin";
   }
@@ -234,60 +314,144 @@ export function ExperienceShell({ children }: Props) {
     }
   }
 
+  // Focus-leave close: when focus moves outside the More element, close it.
+  // The deferred check also covers focus moving to the browser chrome, where
+  // relatedTarget is null.
+  function onMoreBlur(event: React.FocusEvent<HTMLDivElement>) {
+    const next = event.relatedTarget as Node | null;
+    if (next && moreRef.current?.contains(next)) return;
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (!active || !moreRef.current?.contains(active)) {
+        setMoreOpen(false);
+      }
+    }, 0);
+  }
+
   const role = roleOf(session);
-  const items = [
-    ...NAV_ITEMS,
-    ...(role === "admin" ? ADMIN_ITEMS : []),
+  const secondaryItems: NavItem[] = [
+    ...SECONDARY_ITEMS,
     ...(canUpload(role) ? [UPLOAD_ITEM] : []),
+    ...(role === "admin" ? ADMIN_ITEMS : []),
   ];
+  const allItems: NavItem[] = [...PRIMARY_ITEMS, ...secondaryItems];
+  const currentInMore = matchesAny(pathname, secondaryItems);
+
+  function renderLink(item: NavItem) {
+    const current = isCurrent(pathname, item.href);
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={current ? "page" : undefined}
+        onClick={() => {
+          setMoreOpen(false);
+          setMobileOpen(false);
+        }}
+      >
+        <NavIcon name={item.icon} />
+        <span>{item.label}</span>
+      </Link>
+    );
+  }
+
   return (
     <div className="experience">
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <aside className="site-nav" data-testid="site-nav">
-        <div className="site-nav-bar">
+      <header className="site-header" data-testid="site-header">
+        <div className="site-header-inner">
           <Link href="/genealogy" className="brand">
-            TRẦN FAMILY<small>Family archive</small>
+            TRẦN FAMILY <small>Family archive</small>
           </Link>
-          <button
-            type="button"
-            className="site-nav-toggle"
-            aria-expanded={menuOpen}
-            aria-controls="site-nav-links"
-            onClick={() => setMenuOpen((open) => !open)}
-            data-testid="nav-toggle"
+          <nav
+            className="site-header-nav"
+            aria-label="Primary navigation"
+            data-testid="primary-nav"
           >
-            {menuOpen ? "Close" : "Menu"}
-          </button>
-        </div>
-        <nav
-          id="site-nav-links"
-          aria-label="Main navigation"
-          className={menuOpen ? "open" : undefined}
-        >
-          {items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={pathname === item.href ? "page" : undefined}
-              onClick={() => setMenuOpen(false)}
+            {PRIMARY_ITEMS.map((item) => renderLink(item))}
+            <div className="more" ref={moreRef} onBlur={onMoreBlur}>
+              <button
+                type="button"
+                className="more-button"
+                ref={moreButtonRef}
+                aria-expanded={moreOpen}
+                aria-controls="more-menu"
+                aria-haspopup="true"
+                aria-label={currentInMore ? "More, current page" : "More"}
+                data-current={currentInMore ? "true" : undefined}
+                onClick={() => {
+                  setMobileOpen(false);
+                  setMoreOpen((open) => !open);
+                }}
+                data-testid="more-toggle"
+              >
+                <span>More</span>
+                {currentInMore ? (
+                  <span className="current-dot" aria-hidden="true" />
+                ) : null}
+                <span className="more-caret" aria-hidden="true">
+                  ▾
+                </span>
+              </button>
+              {moreOpen ? (
+                <ul
+                  id="more-menu"
+                  className="nav-menu more-panel"
+                  data-testid="more-menu"
+                >
+                  {secondaryItems.map((item) => (
+                    <li key={item.href}>{renderLink(item)}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          </nav>
+          <div className="site-header-account">
+            {session ? (
+              <AccountMenu
+                session={session}
+                signingOut={signingOut}
+                onSignIn={signIn}
+                onSignOut={signOut}
+              />
+            ) : null}
+          </div>
+          <div className="mobile-menu" ref={mobileRef}>
+            <button
+              type="button"
+              className="more-button"
+              ref={mobileButtonRef}
+              aria-expanded={mobileOpen}
+              aria-controls="site-nav"
+              aria-haspopup="true"
+              onClick={() => {
+                setMoreOpen(false);
+                setMobileOpen((open) => !open);
+              }}
+              data-testid="nav-toggle"
             >
-              <NavIcon name={item.icon} />
-              <span>{item.label}</span>
-            </Link>
-          ))}
-        </nav>
-      </aside>
+              {mobileOpen ? "Close" : "Menu"}
+            </button>
+            {mobileOpen ? (
+              <nav
+                id="site-nav"
+                className="mobile-panel"
+                aria-label="Main navigation"
+                data-testid="site-nav"
+              >
+                <ul className="nav-menu">
+                  {allItems.map((item) => (
+                    <li key={item.href}>{renderLink(item)}</li>
+                  ))}
+                </ul>
+              </nav>
+            ) : null}
+          </div>
+        </div>
+      </header>
       <main id="main-content" className="app-shell" tabIndex={-1}>
-        {session ? (
-          <AccountMenu
-            session={session}
-            signingOut={signingOut}
-            onSignIn={signIn}
-            onSignOut={signOut}
-          />
-        ) : null}
         {children(role, session)}
       </main>
     </div>

@@ -302,10 +302,11 @@ test.describe.serial("branch review security acceptance", () => {
 
     await useToken(page, REVIEWER);
     await page.goto("/branch-review");
-    const nav = page.getByTestId("site-nav");
     await expect(page.getByTestId("branch-review-console")).toBeVisible();
-    await expect(nav.getByRole("link", { name: /Reviews/ })).toHaveCount(0);
-    await expect(nav.getByRole("link", { name: /Bulk onboard/ })).toHaveCount(0);
+    await page.getByTestId("more-toggle").click();
+    const more = page.getByTestId("more-menu");
+    await expect(more.getByRole("link", { name: /Reviews/ })).toHaveCount(0);
+    await expect(more.getByRole("link", { name: /Bulk onboard/ })).toHaveCount(0);
 
     // An administrator without a grant has no branch authority either.
     const adminGrants = await api(

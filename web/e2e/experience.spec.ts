@@ -320,45 +320,177 @@ test.describe("enforcement", () => {
 });
 
 test.describe("navigation", () => {
-  test("desktop navigation shows implemented routes and the active page", async ({ page }) => {
+  test("desktop header has the three primary links and no sidebar", async ({ page }) => {
     await signIn(page, "viewer");
-    await page.goto("/head-of-family");
-    const nav = page.getByRole("navigation", { name: "Main navigation" });
+    await page.goto("/ask");
+
+    await expect(page.getByTestId("site-header")).toBeVisible();
+    await expect(page.locator("aside.site-nav")).toHaveCount(0);
+
+    const nav = page.getByTestId("primary-nav");
     await expect(nav.getByRole("link")).toHaveText([
-      /My profile/,
       /Family tree/,
       /Ask the archive/,
-      /Head of Family/,
-      /Branch review/,
       /Documents/,
     ]);
-    await expect(nav.getByRole("link", { name: /Head of Family/ })).toHaveAttribute("aria-current", "page");
-    await nav.getByRole("link", { name: /Ask the archive/ }).click();
-    await expect(page).toHaveURL(/\/ask$/);
-    await expect(nav.getByRole("link", { name: /Ask the archive/ })).toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: /Ask the archive/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await nav.getByRole("link", { name: /Family tree/ }).click();
+    await expect(page).toHaveURL(/\/genealogy$/);
+    await expect(nav.getByRole("link", { name: /Family tree/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     await expect(page.getByTestId("account-role")).toHaveText("viewer");
     await assertNoSensitive(page);
   });
 
-  test("editors also see the existing upload page", async ({ page }) => {
-    await signIn(page, "editor");
+  test("viewer More contains secondary routes and the current state is accessible", async ({ page }) => {
+    await signIn(page, "viewer");
+    await stubHeadOfFamily(page, HOF_AVAILABLE);
+    await page.goto("/head-of-family");
+
+    const moreButton = page.getByTestId("more-toggle");
+    await expect(moreButton).toHaveAccessibleName(/More, current page/);
+    await expect(moreButton).toHaveAttribute("data-current", "true");
+    await moreButton.click();
+
+    const menu = page.getByTestId("more-menu");
+    await expect(menu.getByRole("link")).toHaveText([
+      /My profile/,
+      /Head of Family/,
+      /Branch review/,
+    ]);
+    await expect(menu.getByRole("link", { name: /Head of Family/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(menu.getByRole("link", { name: /Reviews/ })).toHaveCount(0);
+    await expect(menu.getByRole("link", { name: /Bulk onboard/ })).toHaveCount(0);
+    await assertNoSensitive(page);
+  });
+
+  test("administrators see the permitted secondary routes", async ({ page }) => {
+    await signIn(page, "admin");
     await page.goto("/ask");
-    await expect(page.getByRole("navigation", { name: "Main navigation" })
-      .getByRole("link", { name: /Add documents/ })).toHaveAttribute("href", "/");
+    await page.getByTestId("more-toggle").click();
+    const menu = page.getByTestId("more-menu");
+    await expect(menu.getByRole("link", { name: /Add documents/ })).toHaveAttribute(
+      "href",
+      "/",
+    );
+    await expect(menu.getByRole("link", { name: /Personal history review/ })).toBeVisible();
+    await expect(menu.getByRole("link", { name: /Reviews/ })).toBeVisible();
+    await expect(menu.getByRole("link", { name: /Extractions/ })).toBeVisible();
+    await expect(menu.getByRole("link", { name: /Source of truth/ })).toBeVisible();
+    await expect(menu.getByRole("link", { name: /Bulk onboard/ })).toBeVisible();
+  });
+
+  test("More closes on Escape and returns focus", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+    const moreButton = page.getByTestId("more-toggle");
+    await moreButton.click();
+    await expect(moreButton).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("Escape");
+    await expect(moreButton).toHaveAttribute("aria-expanded", "false");
+    await expect(moreButton).toBeFocused();
+    await expect(page.getByTestId("more-menu")).toHaveCount(0);
+  });
+
+  test("More closes on an outside click", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+    await page.getByTestId("more-toggle").click();
+    await expect(page.getByTestId("more-menu")).toBeVisible();
+    await page.locator(".ask-panel").click();
+    await expect(page.getByTestId("more-menu")).toHaveCount(0);
   });
 
   test("mobile menu opens, navigates, and closes", async ({ page }) => {
-    await page.setViewportSize({ width: 375, height: 812 });
-    await signIn(page, "viewer");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, "admin");
+    await stubHeadOfFamily(page, HOF_AVAILABLE);
     await page.goto("/ask");
-    const nav = page.getByRole("navigation", { name: "Main navigation" });
-    await expect(nav).toBeHidden();
-    await page.getByTestId("nav-toggle").click();
-    await expect(page.getByTestId("nav-toggle")).toHaveAttribute("aria-expanded", "true");
+
+    await expect(page.getByTestId("primary-nav")).toBeHidden();
+    const toggle = page.getByTestId("nav-toggle");
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    const nav = page.getByTestId("site-nav");
+    await expect(nav).toBeVisible();
+    const overflow = await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth -
+        document.documentElement.clientWidth,
+    );
+    expect(overflow, "no horizontal overflow with the menu open").toBeLessThanOrEqual(1);
+    await expect(nav.getByRole("link")).toHaveText([
+      /Family tree/,
+      /Ask the archive/,
+      /Documents/,
+      /My profile/,
+      /Head of Family/,
+      /Branch review/,
+      /Add documents/,
+      /Personal history review/,
+      /Reviews/,
+      /Extractions/,
+      /Source of truth/,
+      /Bulk onboard/,
+    ]);
+
     await nav.getByRole("link", { name: /Head of Family/ }).click();
     await expect(page).toHaveURL(/\/head-of-family$/);
-    await expect(nav).toBeHidden();
+    await expect(page.getByTestId("site-nav")).toHaveCount(0);
     await expect(page.getByTestId("sign-out-button")).toBeVisible();
+  });
+
+  test("mobile menu closes on Escape and returns focus", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+    const toggle = page.getByTestId("nav-toggle");
+    await toggle.click();
+    await expect(page.getByTestId("site-nav")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toBeFocused();
+    await expect(page.getByTestId("site-nav")).toHaveCount(0);
+  });
+
+  test("light and dark themes use the stage-three tokens", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.goto("/ask");
+
+    await page.emulateMedia({ colorScheme: "light" });
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--bg")
+            .trim()
+            .toLowerCase(),
+        ),
+      )
+      .toBe("#fafafb");
+
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--bg")
+            .trim()
+            .toLowerCase(),
+        ),
+      )
+      .toBe("#08090a");
   });
 });
 
