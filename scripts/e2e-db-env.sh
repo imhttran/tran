@@ -1,8 +1,9 @@
 #!/bin/sh
-# Environment and database guards for the real-browser E2E runner.
+# Database DSN and disposable-target guards shared by the test runners.
 #
-# Sourced by scripts/web-e2e.sh. It lives in its own file so the rules can be
-# exercised without starting PostgreSQL, Ollama, the API, or a browser.
+# Sourced by scripts/web-e2e.sh and scripts/test-db.sh. It lives in its own file
+# so the rules can be exercised without starting PostgreSQL, Ollama, the API, or
+# a browser.
 #
 # Rules:
 #   * An explicit caller value always wins over the .env default.
@@ -74,6 +75,20 @@ database_identity() {
 	authority=${dsn%/*}
 	authority=${authority##*@}
 	printf '%s@%s' "$name" "$authority"
+}
+
+# with_database DSN NAME
+#
+# Replace the database name in DSN, preserving userinfo, host, port, and query.
+with_database() {
+	dsn=$1
+	name=$2
+	query=
+	case "$dsn" in
+		*\?*) query="?${dsn#*\?}"; dsn=${dsn%%\?*} ;;
+	esac
+	authority=${dsn%/*}
+	printf '%s/%s%s' "$authority" "$name" "$query"
 }
 
 # require_disposable_database LABEL DSN

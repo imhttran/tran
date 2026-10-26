@@ -17,6 +17,7 @@ set -a; source .env; set +a
 | `OLLAMA_EMBED_MODEL`      | `nomic-embed-text`                                      | all         |
 | `OLLAMA_CHAT_MODEL`       | `qwen3.8:27b-mlx`                                       | rag, eval   |
 | `DATABASE_URL`            | `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable` | all         |
+| `GENEALOGY_DATABASE_URL`  | `postgres://rag:rag@127.0.0.1:5434/genealogy?sslmode=disable` | family archive, genealogy tests |
 | `EMBED_DIM`               | `768`                                                   | all         |
 | `EMBED_PROVIDER`          | `ollama`                                                | all         |
 | `GEN_PROVIDER`            | `ollama`                                                | all         |
@@ -35,9 +36,19 @@ set -a; source .env; set +a
 | `RAG_CITATION_VALIDATION` | `false`                                                 | rag         |
 | `QUERY_REWRITE`           | `true`                                                  | rag         |
 | `QUESTION`                | _(none — pass it as an argument, or type it)_           | rag         |
+| `TEST_DATABASE_URL`        | _(derived from `DATABASE_URL` as `<name>_test`)_         | tests       |
+| `TEST_GENEALOGY_DATABASE_URL` | _(derived as `<name>_test`)_                         | tests       |
+| `REQUIRE_TEST_DATABASE`    | _(unset; `1` makes a missing test database fail)_        | tests       |
 
 `all` = every command; `rag` = `src/bin/query.rs` only; `eval` = `src/bin/eval.rs` only;
 `ingest` = `src/bin/ingest.rs` only; `rag, eval` = both commands.
+
+The database settings are portable: Linux runs native PostgreSQL 16, macOS runs
+the Docker compose service. Explicit `DATABASE_URL`/`GENEALOGY_DATABASE_URL`
+values always win; `scripts/test-db.sh` only probes a server when they are
+absent. `make test` and `scripts/validate.sh` derive, create, and migrate
+disposable `*_test` targets and never touch an application database. See
+[guides/testing.md](../guides/testing.md).
 
 ### Post-gap-closure settings
 

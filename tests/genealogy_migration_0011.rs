@@ -11,7 +11,7 @@ mod genealogy_isolation;
 
 use std::fs;
 
-use genealogy_isolation::{base_dsn, create_isolated_target, IsolatedTarget};
+use genealogy_isolation::{base_dsn, create_empty_isolated_target, IsolatedTarget};
 use postgres::Client;
 
 const LINK_TABLES: [&str; 4] = [
@@ -135,7 +135,7 @@ fn assert_single_validated_cascade(keys: &[ForeignKey]) {
 
 fn prepare(label: &str) -> Option<IsolatedTarget> {
     let base = base_dsn()?;
-    Some(create_isolated_target(&base, label))
+    Some(create_empty_isolated_target(&base, label))
 }
 
 #[test]

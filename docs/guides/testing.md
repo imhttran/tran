@@ -6,25 +6,53 @@ used by the database integration tests, and the optional real-Ollama smoke test.
 ## The standard suite (no database, no network, no model)
 
 ```sh
-make test        # or: cargo test --locked
+make test        # resolve + prepare disposable databases, then cargo test
 ```
 
 `cargo test --locked` runs the unit tests and every integration target. Unit
 tests need no database and no model; deterministic stub providers back the
-in-process paths, so identical inputs produce identical results. Database-backed
-targets read `DATABASE_URL` or `GENEALOGY_DATABASE_URL`: the RAG schema suites
-**fail** when `DATABASE_URL` is unset, while most genealogy suites skip with a
-message. There is no `RAG_INTEGRATION` gate; the tier is chosen by test target.
+in-process paths, so identical inputs produce identical results. `make test` calls
+`scripts/test-db.sh exec`, which resolves the test databases, creates and
+migrates them if needed, exports them, and sets `REQUIRE_TEST_DATABASE=1`, so a
+missing database fails the suite instead of skipping green.
+
+Running `cargo test --locked` directly is still supported for a database-free
+unit run; database-backed suites skip when their DSN is unset unless
+`REQUIRE_TEST_DATABASE=1` is set. The RAG schema suites always fail when
+`DATABASE_URL` is unset or lacks pgvector.
+
+## Portable database configuration
+
+Explicit configuration always wins. `scripts/test-db.sh` reads, in order, the
+process environment, `.env`, and an explicit test override:
+
+- `DATABASE_URL` / `GENEALOGY_DATABASE_URL` — the application or test DSNs.
+- `TEST_DATABASE_URL` / `TEST_GENEALOGY_DATABASE_URL` — explicit disposable test
+  targets. When unset, `<name>_test` is derived from the DSN above.
+
+When `DATABASE_URL` is absent, the script probes a server and never guesses a
+password: **Linux tries native PostgreSQL on 5432 first, macOS tries the Docker
+compose port first**, and 5434 (this repository's documented default) stays in
+the probe list. A reachable server is used as-is. If none answers, the script
+fails with setup instructions rather than skipping tests.
+
+```sh
+scripts/test-db.sh status    # show the resolved test targets, no credentials
+scripts/test-db.sh prepare   # create (if absent) and migrate the test targets
+scripts/test-db.sh exec -- cargo test --locked
+```
+
+`prepare` only creates databases and applies idempotent migrations. It never
+drops, truncates, or resets a database, and it refuses any name that does not end
+in `_test` or `_disposable`.
 
 ## Disposable PostgreSQL (never `rag_db`)
 
-The integration tests run against a **throwaway** database, never the development
-database. The harness conventions are:
+The integration tests run against **throwaway** databases, never a persistent
+application database. The harness conventions are:
 
-- **`DATABASE_URL`** points at the disposable RAG database; the Makefile and
-  `.env.example` default to
-  `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable` (the
-  `docker-compose` database exposed on port 5434).
+- **`DATABASE_URL`** points at the disposable RAG database; `.env.example`
+  defaults to `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable`.
 - **`GENEALOGY_DATABASE_URL`** points at the genealogy server DSN. Each suite
   derives a run-unique `*_test` database from it, so the role needs
   `CREATE DATABASE`.
@@ -38,8 +66,14 @@ database. The harness conventions are:
 ### Setup
 
 ```sh
-make db-up            # start PostgreSQL 16 + pgvector (docker-compose)
+make db-up            # Linux: require native PostgreSQL; macOS: docker compose
+make test-db-up       # create and migrate only the disposable test databases
 ```
+
+`make db-up` follows `DB_BACKEND`: `native` requires an already-running server,
+`docker` starts `docker compose up -d --wait`, and with it unset an already
+reachable server is left alone (macOS falls back to Docker, Linux to native).
+Native PostgreSQL is never started by this project on Linux.
 
 ### Running the database-backed tests
 
@@ -69,9 +103,10 @@ cargo test --locked --manifest-path acceptance/live_rag/Cargo.toml
 
 ### Schema migration
 
-The database tests connect to `DATABASE_URL` and apply every
-`migrations/*.sql` file in name order (idempotent), so they work against a fresh
-database and pick up migrations added after `001`.
+The test runner connects to the disposable test DSNs and applies every
+`migrations/*.sql` (RAG) or `genealogy/migrations/*.sql` (genealogy) file in name
+order (idempotent), so it works against a fresh database and picks up migrations
+added after `001`.
 
 ### Teardown
 
@@ -82,9 +117,9 @@ make db-down          # stop and remove the disposable PostgreSQL container
 ## Genealogy integration-test isolation (TDI-002)
 
 The genealogy suites that mutate the genealogy schema no longer share one database.
-Each suite derives its own disposable target from `GENEALOGY_DATABASE_URL`, applies
-the full migration set to that target, and drops only what it created. Parallel
-runs stay safe, so no suite needs `--test-threads=1` or a cross-suite lock.
+Each suite derives its own disposable target from `GENEALOGY_DATABASE_URL` and
+drops only what it created. Parallel runs stay safe, so no suite needs
+`--test-threads=1` or a cross-suite lock.
 
 ### Per-suite target
 
@@ -103,11 +138,36 @@ never truncated.
 
 ### Migration initialisation
 
-The helper applies `GENEALOGY_MIGRATIONS`, the sorted list of every
-`genealogy/migrations/*.sql` file from `0001` through `0030`, to the target it just
-created. Suites no longer keep their own partial migration arrays; the one
-exception is the schema-contract suite, which keeps its original `0001`-`0005`
-scope so its assertions still describe the same contract.
+The helper hashes the full sorted `GENEALOGY_MIGRATIONS` set and builds one
+schema template named `genealogy_schema_<hash>_test` the first time that hash is
+used. A marker row records that the template is complete. Each per-suite target
+is then created with `CREATE DATABASE ... TEMPLATE`, which is a file copy rather
+than a replay of 30 fsync-bound migrations.
+
+The schema-contract suite deliberately uses **an empty target**
+(`create_empty_isolated_target`) and applies its original `0001`-`0005` subset, so
+its assertions still describe the same contract. A changed migration file
+produces a new template name, so a stale template is never served; old templates
+are inert and can be dropped by an operator.
+
+### Why the template exists
+
+Replaying the full migration set per test dominated the suite: measured here at
+about **24 s per test**, with another **6 s** to drop the database. Fourteen
+authority tests took 343 s serially and 228 s in parallel because the work is
+DDL-bound. Copying a migrated template takes under a second, and disabling
+`synchronous_commit` on the disposable admin connection cuts the drop to about
+0.6 s. The same authority suite now runs in about 30 s. This changes only test
+infrastructure: every test still gets its own uniquely named database, and no
+assertion or migration is skipped.
+
+### Interrupted runs
+
+Suites that shared one base database previously relied on `Drop` to delete their
+rows by prefix. A killed process skipped that cleanup, and a later run's
+unfiltered review-queue query could see the leftovers. `onboarding_profile_revisions`
+now uses the per-run isolated target like the other genealogy suites, so an
+interrupted run leaves only an inert `_test` database for that run.
 
 ### Cleanup ownership
 
@@ -123,8 +183,12 @@ run are never touched.
 The helper requires `CREATE DATABASE`. It tries the `postgres` maintenance
 database, then `template1`; if neither can create the database it panics with an
 explicit message naming the suite, both attempted maintenance databases, and their
-server-side errors. It never falls back to a shared database or a schema, so a run
-fails loudly instead of silently touching a shared target.
+server-side errors, and it states that the role must hold `CREATEDB`. It never
+falls back to a shared database or a schema, so a run fails loudly instead of
+silently touching a shared target. If a template copy is refused (for example a
+concurrent connection keeps the template busy), the helper falls back to creating
+an empty database and replaying the migrations, which is slower but still
+isolated.
 
 ### Database-creation capability (from configured validation commands)
 
@@ -170,6 +234,24 @@ Because the CI role can create databases, the helper works there. An environment
 whose role lacks `CREATEDB` fails with the explicit message above; the fix is to
 grant the test role `CREATEDB` on the disposable cluster, never to point the suite
 at a shared database.
+
+### Deterministic browser fixtures
+
+`scripts/web-e2e.sh` truncates its synthetic narrative tables
+(`source_narrative_review_event`, `source_narrative_link`,
+`source_narrative_passage`) before seeding the branch-review fixture. The E2E
+database is disposable, and an interrupted run can leave rows that the seed's
+narrow `DELETE`s do not match; those leftovers changed the review queue from two
+pages to three. `TRUNCATE ... RESTART IDENTITY CASCADE` bypasses the append-only
+row triggers and guarantees the fixture count on every run without changing any
+assertion or expected value.
+
+For a focused rerun, the harness accepts Playwright arguments through
+`PLAYWRIGHT_ARGS`; the seed and servers still run, so the fixture is complete:
+
+```sh
+PLAYWRIGHT_ARGS='e2e/narrative-review.spec.ts -g filters' make web-e2e
+```
 
 ### Why there is no schema fallback
 

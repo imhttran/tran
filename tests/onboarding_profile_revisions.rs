@@ -1,12 +1,11 @@
 //! USR-004B phase 1 service tests for owner drafts and independent review.
 //!
-//! Synthetic PostgreSQL only. The test uses `GENEALOGY_DATABASE_URL`, applies
-//! migrations 0001-0018, and cleans its own rows by prefix.
+//! PostgreSQL only. Each run creates its own disposable database derived from
+//! `GENEALOGY_DATABASE_URL` and drops it afterwards, so rows left behind by an
+//! interrupted run can never reach a later run's review-queue assertions.
 
-use std::fs;
-use std::str::FromStr;
 use std::sync::mpsc;
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,35 +16,8 @@ use rag_foundation::onboarding::{
     ReviewDecision, RevisionError, RevisionStatus, REVIEW_NOTE_MAX_CHARS,
 };
 
-const MIGRATIONS: [&str; 27] = [
-    "genealogy/migrations/0001_genealogy_schema_version.sql",
-    "genealogy/migrations/0002_catalog_keys.sql",
-    "genealogy/migrations/0003_assertions_evidence_and_links.sql",
-    "genealogy/migrations/0004_review_workflow.sql",
-    "genealogy/migrations/0005_source_kind.sql",
-    "genealogy/migrations/0006_head_of_family.sql",
-    "genealogy/migrations/0007_onboarding.sql",
-    "genealogy/migrations/0008_onboarding_identity.sql",
-    "genealogy/migrations/0009_onboarding_link_audit.sql",
-    "genealogy/migrations/0010_onboarding_foreign_keys.sql",
-    "genealogy/migrations/0011_onboarding_foreign_key_reconciliation.sql",
-    "genealogy/migrations/0012_profile_revisions.sql",
-    "genealogy/migrations/0013_profile_revision_actor_scope.sql",
-    "genealogy/migrations/0014_profile_revision_draft_withdrawal.sql",
-    "genealogy/migrations/0015_profile_media.sql",
-    "genealogy/migrations/0016_profile_media_withdrawal.sql",
-    "genealogy/migrations/0017_profile_media_withdrawal_audit.sql",
-    "genealogy/migrations/0018_onboarding_batch.sql",
-    "genealogy/migrations/0019_branch_reviewer_grants.sql",
-    "genealogy/migrations/0020_branch_review_proposals.sql",
-    "genealogy/migrations/0021_profile_field_restriction.sql",
-    "genealogy/migrations/0022_profile_revision_restriction_generation.sql",
-    "genealogy/migrations/0023_document_extraction.sql",
-    "genealogy/migrations/0024_document_evidence_provenance.sql",
-    "genealogy/migrations/0025_assertion_dates.sql",
-    "genealogy/migrations/0026_authority_decisions.sql",
-    "genealogy/migrations/0027_source_narrative.sql",
-];
+#[path = "support/genealogy_isolation.rs"]
+mod genealogy_isolation;
 
 const PERSON_CHILD_TABLES: [&str; 8] = [
     "onboarding_profile_review_event",
@@ -60,20 +32,20 @@ const PERSON_CHILD_TABLES: [&str; 8] = [
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
 
-fn dsn() -> Option<String> {
-    let dsn = std::env::var("GENEALOGY_DATABASE_URL").ok()?;
-    let dsn = dsn.trim().to_string();
-    if dsn.is_empty() {
-        eprintln!("GENEALOGY_DATABASE_URL unset; skipping profile revision service test");
-        return None;
-    }
-    let config = postgres::Config::from_str(&dsn).expect("GENEALOGY_DATABASE_URL parses");
-    let database = config.get_dbname().unwrap_or_default();
-    assert!(
-        database.ends_with("_test") || database.ends_with("_disposable"),
-        "refusing to write to non-disposable genealogy database {database:?}"
-    );
-    Some(dsn)
+/// One disposable database per test binary. The helper drops it when the
+/// process exits, and a per-run token keeps a killed run's leftover database
+/// away from every later run.
+static TARGET: OnceLock<Option<genealogy_isolation::IsolatedTarget>> = OnceLock::new();
+
+fn target() -> Option<&'static genealogy_isolation::IsolatedTarget> {
+    TARGET
+        .get_or_init(|| {
+            let base = genealogy_isolation::base_dsn_or_skip("profile revision service test")?;
+            let target = genealogy_isolation::create_isolated_target(&base, "profile_revisions");
+            target.apply_migrations();
+            Some(target)
+        })
+        .as_ref()
 }
 
 struct TestDb {
@@ -85,10 +57,9 @@ struct TestDb {
 
 impl TestDb {
     fn new() -> Option<Self> {
-        let dsn = dsn()?;
+        let target = target()?;
         let guard = DB_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let mut genealogy = Client::connect(&dsn, NoTls).expect("genealogy database");
-        apply_migrations(&mut genealogy, &MIGRATIONS);
+        let mut genealogy = target.connect();
         clear_orphan_child_rows(&mut genealogy);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -96,7 +67,7 @@ impl TestDb {
             .unwrap_or(0);
         Some(Self {
             genealogy,
-            dsn,
+            dsn: target.dsn.clone(),
             prefix: format!("synthetic-revision-{}-{nanos}", std::process::id()),
             _guard: guard,
         })
@@ -210,15 +181,6 @@ fn clear_orphan_child_rows(genealogy: &mut Client) {
               WHERE NOT EXISTS (SELECT 1 FROM person p WHERE p.person_id = child.person_id)"
         );
         let _ = genealogy.execute(&sql, &[]);
-    }
-}
-
-fn apply_migrations(client: &mut Client, paths: &[&str]) {
-    for path in paths {
-        let sql = fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
-        client
-            .batch_execute(&sql)
-            .unwrap_or_else(|err| panic!("apply {path}: {err}"));
     }
 }
 

@@ -259,6 +259,13 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 
 # USR-005B: synthetic branch-review people with verified branch claims, plus the
 # reviewer's own account-person link. Reuses the synthetic branch rows above.
+#
+# The narrative fixture must be deterministic even when an interrupted run left
+# rows behind. The database is disposable, so clear the narrative tables before
+# the seed recreates them. TRUNCATE bypasses the append-only DELETE triggers.
+echo "web-e2e: resetting synthetic narrative fixtures"
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "TRUNCATE source_narrative_review_event, source_narrative_link, source_narrative_passage RESTART IDENTITY CASCADE" >/dev/null
 echo "web-e2e: seeding branch-review fixture"
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-v reviewer_account_id="$E2E_REVIEWER_ACCOUNT_ID" \
