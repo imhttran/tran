@@ -1062,7 +1062,7 @@ fn the_tree_read_uses_the_authoritative_value() {
     )
     .expect("apply");
 
-    let tree = load_tree(&mut client).expect("tree");
+    let tree = load_tree(&mut client, false).expect("tree");
     let node = tree
         .people
         .iter()
@@ -1391,7 +1391,7 @@ fn withdrawal_after_apply_stops_every_current_view_and_flags_the_decision() {
     assert_eq!(review_status(&mut client, catalog_name), "verified");
 
     // Before the withdrawal every current path agrees the document is live.
-    let tree = load_tree(&mut client).expect("tree before");
+    let tree = load_tree(&mut client, false).expect("tree before");
     let node = tree
         .people
         .iter()
@@ -1432,7 +1432,7 @@ fn withdrawal_after_apply_stops_every_current_view_and_flags_the_decision() {
     assert!(!kinds.contains(&"display_name"));
 
     // Tree: alias, date, and edge all disappear.
-    let tree = load_tree(&mut client).expect("tree after");
+    let tree = load_tree(&mut client, false).expect("tree after");
     let node = tree
         .people
         .iter()
@@ -1668,7 +1668,7 @@ fn current_views_agree_on_aliases_dates_and_relationships_after_withdrawal() {
     let detail = lookup_person(&mut client, "P840")
         .expect("person detail")
         .expect("person exists");
-    let tree = load_tree(&mut client).expect("tree");
+    let tree = load_tree(&mut client, false).expect("tree");
     let node = tree
         .people
         .iter()

@@ -10,6 +10,8 @@ export type TreePerson = {
   birth?: StructuredDate | null;
   /** Verified death date, when the server has one. */
   death?: StructuredDate | null;
+  /** Published archive passages the viewer may open. Absent means zero. */
+  history_passages: number;
 };
 export type TreeLink = {
   from_id: string;
@@ -52,6 +54,8 @@ export function parseTreeGraph(body: unknown): TreeGraph {
       typeof data.truncated !== "boolean") throw new Error("Invalid genealogy graph");
   const validStatus = (s: unknown): s is EvidenceStatus =>
     s === "verified" || s === "unverified" || s === "needs_review";
+  const historyCount = (value: unknown): number =>
+    typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 0;
   const people = data.people.filter((p): p is TreePerson =>
     !!p && typeof p.record_id === "string" && p.record_id.length > 0 &&
     typeof p.person_label === "string" && validStatus(p.evidence_status) &&
@@ -62,6 +66,8 @@ export function parseTreeGraph(body: unknown): TreeGraph {
       // rather than shown as a guessed date.
       birth: parseStructuredDate(p.birth),
       death: parseStructuredDate(p.death),
+      // Additive field: an older server payload means no history links.
+      history_passages: historyCount(p.history_passages),
     }));
   const ids = new Set(people.map((p) => p.record_id));
   const links = data.links.filter((l): l is TreeLink =>

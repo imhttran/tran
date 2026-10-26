@@ -87,8 +87,9 @@ impl NarrativeParse {
 
 /// Parses a Markdown narrative into page-and-section passages.
 ///
-/// Recognised page boundaries are `## Trang PDF N`, `## Page N`, `## Trang N`,
-/// and a line that is only `[p. N]`. Section headings are `###` or deeper.
+/// Recognised page boundaries are `## Trang PDF N`, `## PDF page N`,
+/// `## Page N`, `## Trang N`, and a line that is only `[p. N]`; the prefixed
+/// forms are matched case-insensitively. Section headings are `###` or deeper.
 pub fn parse_narrative(text: &str, source_ref: &str) -> NarrativeParse {
     let mut parse = NarrativeParse::default();
     let mut state = ParseState::default();
@@ -232,7 +233,7 @@ impl SectionBuilder {
 fn page_marker(line: &str) -> Option<i32> {
     let stripped = line.trim_start_matches('#').trim();
     let lower = stripped.to_lowercase();
-    for prefix in ["trang pdf ", "page ", "trang ", "p. ", "p "] {
+    for prefix in ["trang pdf ", "pdf page ", "page ", "trang ", "p. ", "p "] {
         if let Some(rest) = lower.strip_prefix(prefix) {
             let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
             if let Ok(page) = digits.parse::<i32>() {
@@ -915,57 +916,99 @@ pub fn review_link(
 pub struct FamilyPassage {
     pub passage_id: i64,
     pub language: String,
+    /// The source document's relative path, kept beside the wording so a
+    /// citation can name the document and not only its page.
+    pub document_ref: String,
     pub section_title: Option<String>,
     pub page_start: i32,
     pub page_end: i32,
     pub body: String,
 }
 
+/// The one predicate for published family history.
+///
+/// The passage is `approved`, its visibility is `family` (a restriction sets it
+/// back to `admin_only`), the person link is `resolved` or `confirmed`, and the
+/// passage is the newest approved revision in its slot. `pending`, `rejected`,
+/// `admin_only`, and superseded text can never satisfy it. Both the per-person
+/// read and the per-person count use this CTE, so a count cannot disagree with
+/// the passages it describes.
+const PUBLISHED_HISTORY_CTE: &str = "\
+WITH published_history AS (
+    SELECT l.person_id, p.passage_id
+      FROM source_narrative_passage p
+      JOIN source_narrative_link l ON l.passage_id = p.passage_id
+     WHERE l.link_status IN ('resolved', 'confirmed')
+       AND p.review_status = 'approved'
+       AND p.visibility = 'family'
+       AND p.passage_id = (
+           SELECT newest.passage_id
+             FROM source_narrative_passage newest
+            WHERE newest.slot_key = p.slot_key
+              AND newest.review_status = 'approved'
+            ORDER BY newest.reviewed_at DESC NULLS LAST, newest.passage_id DESC
+            LIMIT 1
+       )
+)";
+
 /// Reads the approved archive history for one person.
 ///
-/// The predicate is entirely server-side:
-/// - the passage is `approved`;
-/// - its visibility is `family` (a restriction sets it back to `admin_only`);
-/// - the person link is `resolved` or `confirmed`;
-/// - the passage is the newest approved revision in its slot, so a superseded
-///   text never reappears;
-/// - `pending` and `rejected` passages are never returned.
+/// The predicate is [`PUBLISHED_HISTORY_CTE`].
 pub fn family_history(
     tx: &mut Transaction<'_>,
     person_id: i64,
 ) -> Result<Vec<FamilyPassage>, GenealogyError> {
+    let sql = format!(
+        "{PUBLISHED_HISTORY_CTE}
+         SELECT p.passage_id, p.language, sd.relative_path, p.section_title,
+                p.page_start, p.page_end, p.body
+           FROM published_history h
+           JOIN source_narrative_passage p ON p.passage_id = h.passage_id
+           JOIN source_document sd ON sd.source_document_id = p.source_document_id
+          WHERE h.person_id = $1
+          ORDER BY p.page_start, p.page_end, p.passage_id"
+    );
     let rows = tx
-        .query(
-            "SELECT p.passage_id, p.language, p.section_title, p.page_start, p.page_end, p.body
-               FROM source_narrative_passage p
-               JOIN source_narrative_link l ON l.passage_id = p.passage_id
-              WHERE l.person_id = $1
-                AND l.link_status IN ('resolved', 'confirmed')
-                AND p.review_status = 'approved'
-                AND p.visibility = 'family'
-                AND p.passage_id = (
-                    SELECT newest.passage_id
-                      FROM source_narrative_passage newest
-                     WHERE newest.slot_key = p.slot_key
-                       AND newest.review_status = 'approved'
-                     ORDER BY newest.reviewed_at DESC NULLS LAST, newest.passage_id DESC
-                     LIMIT 1
-                )
-              ORDER BY p.page_start, p.page_end, p.passage_id",
-            &[&person_id],
-        )
+        .query(&sql, &[&person_id])
         .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| FamilyPassage {
             passage_id: row.get(0),
             language: row.get(1),
-            section_title: row.get(2),
-            page_start: row.get(3),
-            page_end: row.get(4),
-            body: row.get(5),
+            document_ref: row.get(2),
+            section_title: row.get(3),
+            page_start: row.get(4),
+            page_end: row.get(5),
+            body: row.get(6),
         })
         .collect())
+}
+
+/// Counts published archive passages per person key.
+///
+/// This uses [`PUBLISHED_HISTORY_CTE`], the same predicate as
+/// [`family_history`], so the tree badge and the dialog can never disagree.
+/// Keys with no published passage are absent from the result.
+pub fn published_history_counts(
+    client: &mut Client,
+    person_keys: &[String],
+) -> Result<BTreeMap<String, i64>, GenealogyError> {
+    if person_keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let sql = format!(
+        "{PUBLISHED_HISTORY_CTE}
+         SELECT pe.person_key, count(*)::bigint
+           FROM published_history h
+           JOIN person pe ON pe.person_id = h.person_id
+          WHERE pe.person_key = ANY($1::text[])
+          GROUP BY pe.person_key"
+    );
+    let rows = client
+        .query(&sql, &[&person_keys])
+        .map_err(GenealogyError::Query)?;
+    Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
 }
 
 #[cfg(test)]
@@ -1153,6 +1196,19 @@ Another section.
         let links = propose_links(&passage, &people);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].match_kind, MatchKind::ExplicitId);
+    }
+
+    #[test]
+    fn page_markers_cover_all_forms_case_insensitively() {
+        assert_eq!(page_marker("## PDF page 12"), Some(12));
+        assert_eq!(page_marker("## pdf page 12"), Some(12));
+        assert_eq!(page_marker("## Pdf Page 12"), Some(12));
+        assert_eq!(page_marker("## Trang PDF 12"), Some(12));
+        assert_eq!(page_marker("## Page 12"), Some(12));
+        assert_eq!(page_marker("## Trang 12"), Some(12));
+        assert_eq!(page_marker("[p. 12]"), Some(12));
+        assert_eq!(page_marker("A line with no page marker"), None);
+        assert_eq!(page_marker("## Not a page marker"), None);
     }
 
     #[test]

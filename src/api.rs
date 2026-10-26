@@ -40,7 +40,7 @@ use crate::document_lifecycle::{
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
-    appointments, authority, branch_review, document_extraction, person_search,
+    appointments, authority, branch_review, document_extraction, narrative, person_search,
     query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
@@ -276,6 +276,10 @@ impl AppState {
             .route(
                 "/api/family/persons/{person_key}/profile",
                 get(family_profile),
+            )
+            .route(
+                "/api/family/persons/{person_key}/history",
+                get(family_history),
             )
             .route(
                 "/api/family/persons/{person_key}/media/{media_id}",
@@ -2675,6 +2679,7 @@ async fn family_profile(
                 "history": profile.history.iter().map(|passage| serde_json::json!({
                     "passage_id": passage.passage_id,
                     "language": passage.language,
+                    "document_ref": passage.document_ref,
                     "section_title": passage.section_title,
                     "page_start": passage.page_start,
                     "page_end": passage.page_end,
@@ -2703,6 +2708,68 @@ async fn family_profile(
             family_profile_unavailable()
         }
     }
+}
+
+/// Reads one person's approved, family-visible archive history.
+///
+/// Same authorization, same transaction-bound membership check, and the same
+/// error mapping as [`family_profile`]. The response contains only the
+/// [`onboarding::read_family_history`] projection, so pending, rejected,
+/// admin-only, restricted, and superseded text is never serialized.
+#[allow(clippy::result_large_err)]
+async fn family_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::FamilyProfileRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_family_history(&mut genealogy, &account, &person_key)
+            .map_err(family_profile_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(history)) => Json(serde_json::json!({
+            "ok": true,
+            "person": {
+                "person_key": history.person_key,
+                "display_name": history.display_name,
+            },
+            "history": family_history_json(&history.history),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: family history task failed: {err}");
+            family_profile_unavailable()
+        }
+    }
+}
+
+/// The one JSON shape for a published passage in both family responses.
+fn family_history_json(passages: &[narrative::FamilyPassage]) -> Vec<serde_json::Value> {
+    passages
+        .iter()
+        .map(|passage| {
+            serde_json::json!({
+                "passage_id": passage.passage_id,
+                "language": passage.language,
+                "document_ref": passage.document_ref,
+                "section_title": passage.section_title,
+                "page_start": passage.page_start,
+                "page_end": passage.page_end,
+                "body": passage.body,
+            })
+        })
+        .collect()
 }
 
 /// Maps a family profile failure without revealing restricted content.
@@ -3559,14 +3626,27 @@ async fn genealogy_records(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 /// Authorized, bounded, read-only genealogy graph.
+///
+/// History counts are populated only for an active linked family member,
+/// because that is the only caller allowed to read the passages. Identity or
+/// link resolution fails closed (zero counts) without failing the tree.
 async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
-        return response;
-    }
+    let identity = match authorize(&state, &headers, Operation::GenealogyRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
     let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_genealogy(&config)?;
-        genealogy_tree::load_tree(&mut client).map_err(|err| err.to_string())
+        let include_history = match resolve_profile_account(&config, &issuer, &subject) {
+            Ok(account) => {
+                onboarding::has_active_family_link(&mut client, &account).unwrap_or(false)
+            }
+            Err(_) => false,
+        };
+        genealogy_tree::load_tree(&mut client, include_history).map_err(|err| err.to_string())
     })
     .await;
 
@@ -3583,6 +3663,7 @@ async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Re
                         "aliases": person.aliases,
                         "birth": tree_date_json(&person.birth),
                         "death": tree_date_json(&person.death),
+                        "history_passages": person.history_passages,
                     })
                 })
                 .collect();

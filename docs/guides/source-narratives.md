@@ -23,11 +23,11 @@ wording. It only decides where a block starts and ends.
 
 ### Storage
 
-| Table | Purpose |
-| --- | --- |
-| `source_narrative_passage` | One passage revision: slot key, revision key, language, section, page range, body, content hash, review status, visibility |
-| `source_narrative_link` | One `(passage, person)` link with `resolved`, `ambiguous`, `confirmed`, or `rejected` |
-| `source_narrative_review_event` | Append-only audit of passage and link decisions |
+| Table                           | Purpose                                                                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `source_narrative_passage`      | One passage revision: slot key, revision key, language, section, page range, body, content hash, review status, visibility |
+| `source_narrative_link`         | One `(passage, person)` link with `resolved`, `ambiguous`, `confirmed`, or `rejected`                                      |
+| `source_narrative_review_event` | Append-only audit of passage and link decisions                                                                            |
 
 Migration: `genealogy/migrations/0027_source_narrative.sql`.
 
@@ -39,8 +39,9 @@ derived from its content hash. An approved revision is never overwritten.
 
 The parser recognises:
 
-- page boundaries: `## Trang PDF N`, `## Page N`, `## Trang N`, or a line that is
-  only `[p. N]`;
+- page boundaries: `## Trang PDF N`, `## PDF page N`, `## Page N`, `## Trang N`,
+  or a line that is only `[p. N]`; the prefixed forms are matched
+  case-insensitively;
 - section headings: `###` or deeper, kept as the section title;
 - paragraphs: runs of non-empty lines, joined with a blank line.
 
@@ -52,11 +53,11 @@ an unpaged section and is not imported, because it cannot be cited.
 
 Links come from three signals, in this order:
 
-| Signal | Result |
-| --- | --- |
-| An explicit person key in the text or heading (for example `ce-0007-…`, matched as a token sequence) | `resolved` / `explicit_id` |
-| A section heading naming exactly one catalog person | `resolved` / `section_heading` |
-| A full-name mention in the body | `ambiguous` / `name_mention` |
+| Signal                                                                                               | Result                         |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------ |
+| An explicit person key in the text or heading (for example `ce-0007-…`, matched as a token sequence) | `resolved` / `explicit_id`     |
+| A section heading naming exactly one catalog person                                                  | `resolved` / `section_heading` |
+| A full-name mention in the body                                                                      | `ambiguous` / `name_mention`   |
 
 Rules:
 
@@ -141,6 +142,7 @@ Imported passages are never bulk-approved.
     {
       "passage_id": 12,
       "language": "vi",
+      "document_ref": "docs/tran/Tran-Family-Vietnamese.md",
       "section_title": "…",
       "page_start": 11,
       "page_end": 12,
@@ -165,6 +167,39 @@ The profile page shows this under **History from the family archive**, with the
 language and the PDF page citation. It is a separate section from the member's own
 `biography`, `my_story`, and `family_memories`, which the importer never writes.
 
+### Person-scoped history endpoint
+
+The family tree fetches history only when a node's **Personal history** link is
+opened:
+
+```text
+GET /api/family/persons/{person_key}/history
+```
+
+It applies the same authorization, the same membership check in the same
+transaction, and the same published-passage predicate as the profile. The
+response is `{ person: { person_key, display_name }, history: [...] }`, where each
+passage has the same shape as the profile's `history[]`, including
+`document_ref`.
+
+The tree response adds `history_passages` to each person. The server counts only
+when the authenticated caller is an active linked family member; identity or link
+resolution fails closed to zero without failing the tree. The counts and the
+dialog use one shared SQL predicate, so a link is never shown for a person whose
+passages the dialog would not return.
+
+On the tree, **Personal history** appears inside a node only when
+`history_passages > 0`. It is a separate focusable control, not part of the card's
+select/drag button, so opening it does not select the node, start a drag, open the
+person popup, or navigate. The dialog shows every available passage with its
+language, source document, PDF page range, section title, and verbatim
+paragraphs. **View source details** opens the existing source-details control with
+the document reference and page; it never invents an excerpt. Escape and the
+visible **Close** button both close the dialog, and focus returns to the link.
+
+The tree also shows no link for a person whose passages are pending, rejected,
+admin-only, restricted, superseded, or linked only ambiguously.
+
 ## 8. Verification
 
 ```sh
@@ -179,18 +214,28 @@ make web-e2e
 
 `tests/source_narrative.rs` covers idempotent import, heading versus mention
 links, publication, privacy, link confirmation, the publish guard, source-change
-revisions, and append-only audit.
+revisions, append-only audit, the English `## PDF page N` marker, the document
+reference, and the count helper agreeing with the per-person read.
+
+`tests/family_profile_presentation.rs` covers the person-scoped history read: an
+unlinked caller is refused, and an approved passage carries its document
+reference.
 
 `web/e2e/family-history.spec.ts` covers the profile section, the language and page
 citation, the absence of pending and admin-only text, separation from member
-fields, and the unauthorized response.
+fields, the unauthorized response, and the tree link opening the dialog for an
+eligible node only.
+
+`web/e2e/family-tree.spec.ts` covers the link as its own control: it appears only
+on a node with published history, opens the dialog without opening the person
+popup, lists every passage with language, document, and pages, closes on Escape
+and on the Close button, reuses the source-details control, and returns focus.
 
 ## 9. Known limitations
 
-- **No English Markdown source is present in this checkout.** Only the PDF, the
-  Vietnamese transcription, and the people catalog are available locally. The
-  importer is language-neutral (`--language en`), but the English narrative was
-  not exercised.
+- **The private sources are not committed.** The PDF and both Markdown
+  transcriptions are local, ignored inputs. The English `## PDF page N` marker is
+  covered by a synthetic test; no real English passage is committed.
 - **No OCR.** Passages come from the Markdown transcription. The PDF text layer is
   not re-read.
 - **Admin review is command-line only.** There is no web review screen for
@@ -202,6 +247,10 @@ fields, and the unauthorized response.
   hyphenated key is matched as a token sequence in the body or the section
   heading.
 - **Mentions are numerous.** A long section can mention many relatives; the dry
-  run reports the candidate count so the reviewer can judge the workload.
+  run reports the candidate count so the reviewer can judge the workload. An
+  ambiguous link stays unlinked until a reviewer confirms it, so it produces no
+  tree link.
+- **No original-file viewer exists.** Source details are citation metadata only:
+  the document reference and page, not the PDF itself.
 - **No RAG indexing.** Passages are not embedded and are not available to Ask the
   archive.

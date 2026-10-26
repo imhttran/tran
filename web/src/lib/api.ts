@@ -1308,6 +1308,8 @@ export type FamilyProfileDateView = {
 export type FamilyProfilePassageView = {
   passage_id: number;
   language: "vi" | "en";
+  /// The source document's relative path. Absent on an older server payload.
+  document_ref?: string | null;
   section_title: string | null;
   page_start: number;
   page_end: number;
@@ -1325,6 +1327,15 @@ export type FamilyProfileResponse = {
   dates?: FamilyProfileDateView[];
   /// Approved archive history, separate from the member's own profile fields.
   history?: FamilyProfilePassageView[];
+};
+
+/// The person-scoped history response used by the family-tree dialog. It carries
+/// the same published passages as the profile, with the same authorization; the
+/// separate route exists so the tree fetches history only when a dialog opens.
+export type FamilyHistoryResponse = {
+  ok: true;
+  person: { person_key: string; display_name: string };
+  history: FamilyProfilePassageView[];
 };
 
 /// Decision A2: immediately stop an approved family-visible field from being
@@ -1349,6 +1360,18 @@ export function getFamilyProfile(
   return request<FamilyProfileResponse>(
     `/api/family/persons/${encodeURIComponent(personKey)}/profile`,
     { cache: "no-store" },
+  );
+}
+
+/// Fetches the published archive history for one person. Used by the family-tree
+/// dialog when it opens; a failure must replace, never preserve, prior content.
+export function getFamilyHistory(
+  personKey: string,
+  signal?: AbortSignal,
+): Promise<FamilyHistoryResponse> {
+  return request<FamilyHistoryResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/history`,
+    { cache: "no-store", signal },
   );
 }
 

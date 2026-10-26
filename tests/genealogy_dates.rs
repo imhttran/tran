@@ -286,7 +286,7 @@ fn verified_dates_reach_the_tree_and_the_person_query() {
     reimport(&mut client, vec![birth.clone(), death.clone()]);
 
     // Nothing is verified yet, so the tree carries no lifespan at all.
-    let graph = tree::load_tree(&mut client).expect("tree");
+    let graph = tree::load_tree(&mut client, false).expect("tree");
     let person = graph
         .people
         .iter()
@@ -303,7 +303,7 @@ fn verified_dates_reach_the_tree_and_the_person_query() {
     verify(&mut client, birth_id).expect("verify birth");
     verify(&mut client, death_id).expect("verify death");
 
-    let graph = tree::load_tree(&mut client).expect("tree after review");
+    let graph = tree::load_tree(&mut client, false).expect("tree after review");
     let person = graph
         .people
         .iter()
@@ -472,7 +472,7 @@ fn overlapping_verified_claims_keep_the_more_precise_date() {
     // A refinement is not a contradiction: both claims can be true.
     verify(&mut client, precise_id).expect("the day claim refines the year");
 
-    let graph = tree::load_tree(&mut client).expect("tree");
+    let graph = tree::load_tree(&mut client, false).expect("tree");
     let person = graph
         .people
         .iter()

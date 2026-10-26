@@ -9,6 +9,10 @@ import { EvidenceBadge, EvidenceList } from "@/components/EvidenceBadge";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
+import {
+  PersonalHistoryDialog,
+  type HistoryPerson,
+} from "@/components/PersonalHistoryDialog";
 import { SourceDialog } from "@/components/SourceDetails";
 import type { CitedFact, OpenSource } from "@/components/SourceDetails";
 import type { EvidenceRef } from "@/lib/experience-contract";
@@ -18,7 +22,7 @@ import {
   immediateChildIds, immediateParentIds, layoutTree, normalizedName, parseTreeGraph,
   popupPosition, relationLabel, revealPerson,
 } from "@/lib/family-tree";
-import type { Focus, PopupPlacement, TreeGraph, TreeLink } from "@/lib/family-tree";
+import type { Focus, PopupPlacement, TreeGraph, TreeLink, TreePerson } from "@/lib/family-tree";
 
 // Only an explicit http(s) URL becomes a link. An alias, a bare handle, or an
 // executable scheme stays plain text.
@@ -103,6 +107,7 @@ function FamilyTree() {
   const [detail, setDetail] = useState<PersonDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
+  const [historyPerson, setHistoryPerson] = useState<HistoryPerson | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [isTouch, setIsTouch] = useState(false);
@@ -119,6 +124,7 @@ function FamilyTree() {
   const popupRef = useRef<HTMLDivElement>(null);
   const helpRef = useRef<HTMLElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
+  const historyReturnFocus = useRef<SVGGElement | null>(null);
   const cardRefs = useRef(new Map<string, SVGGElement>());
   const clickTimer = useRef<number | null>(null);
   const focusedPopupFor = useRef<string | null>(null);
@@ -196,6 +202,8 @@ function FamilyTree() {
     if (!helpOpen && !popupOpen && !expanded) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // A modal personal-history dialog owns Escape while it is open.
+      if (historyPerson) return;
       if (helpOpen) {
         event.preventDefault();
         closeHelp();
@@ -208,7 +216,7 @@ function FamilyTree() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [helpOpen, popupOpen, expanded, selected]);
+  }, [helpOpen, popupOpen, expanded, selected, historyPerson]);
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -370,6 +378,18 @@ function FamilyTree() {
   function closeHelp() {
     setHelpOpen(false);
     helpButtonRef.current?.focus({ preventScroll: true });
+  }
+
+  function openPersonalHistory(person: TreePerson, trigger: SVGGElement) {
+    cancelScheduledOpen();
+    historyReturnFocus.current = trigger;
+    setHistoryPerson({ person_key: person.record_id, person_label: person.person_label });
+  }
+
+  function closePersonalHistory() {
+    setHistoryPerson(null);
+    const target = historyReturnFocus.current;
+    window.setTimeout(() => target?.focus({ preventScroll: true }), 0);
   }
 
   function cancelScheduledOpen() {
@@ -805,56 +825,86 @@ function FamilyTree() {
                     const lifespan = cardLifespanLabel(person.birth, person.death);
                     return (
                       <g key={person.record_id} className="family-node"
-                        ref={(node) => {
-                          if (node) cardRefs.current.set(person.record_id, node);
-                          else cardRefs.current.delete(person.record_id);
-                        }}
-                        role="button" tabIndex={0}
-                        aria-label={"Select " + person.person_label}
-                        aria-pressed={isSelected}
-                        aria-haspopup="dialog"
-                        aria-expanded={isSelected && popupOpen}
-                        onPointerDown={(event) => {
-                          event.stopPropagation();
-                          press.current = { id: person.record_id, x: event.clientX,
-                            y: event.clientY, pointerType: event.pointerType };
-                          event.currentTarget.setPointerCapture(event.pointerId);
-                        }}
-                        onPointerUp={(event) => {
-                          event.stopPropagation();
-                          handleCardPointerUp(event, person.record_id);
-                        }}
-                        onPointerCancel={() => { press.current = null; }}
-                        onDoubleClick={(event) => {
-                          event.stopPropagation();
-                          cancelScheduledOpen();
-                          focusChildren(person.record_id);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            openPopup(person.record_id);
-                          }
-                        }}
+                        role="group" aria-label={person.person_label}
                         data-testid="family-person">
-                        <rect x={person.x} y={person.y} rx="11"
-                          width={CARD_WIDTH} height={CARD_HEIGHT}
-                          className={isSelected ? "family-node-selected" : ""} />
-                        <text x={person.x + 12} y={person.y + 26}
-                          className="family-node-name">
-                          {person.person_label.length > 23
-                            ? person.person_label.slice(0, 22) + "…" : person.person_label}
-                        </text>
-                        <text x={person.x + 12} y={person.y + 51}
-                          className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
-                          {person.evidence_status.replace("_", " ")}
-                        </text>
-                        {lifespan && (
-                          <text x={person.x + CARD_WIDTH - 12} y={person.y + 51}
-                            textAnchor="end" className="family-node-life"
-                            data-testid="family-person-life">
-                            {lifespan}
+                        <g className="family-node-card"
+                          ref={(node) => {
+                            if (node) cardRefs.current.set(person.record_id, node);
+                            else cardRefs.current.delete(person.record_id);
+                          }}
+                          role="button" tabIndex={0}
+                          aria-label={"Select " + person.person_label}
+                          aria-pressed={isSelected}
+                          aria-haspopup="dialog"
+                          aria-expanded={isSelected && popupOpen}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            press.current = { id: person.record_id, x: event.clientX,
+                              y: event.clientY, pointerType: event.pointerType };
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                          }}
+                          onPointerUp={(event) => {
+                            event.stopPropagation();
+                            handleCardPointerUp(event, person.record_id);
+                          }}
+                          onPointerCancel={() => { press.current = null; }}
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            cancelScheduledOpen();
+                            focusChildren(person.record_id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openPopup(person.record_id);
+                            }
+                          }}>
+                          <rect x={person.x} y={person.y} rx="11"
+                            width={CARD_WIDTH} height={CARD_HEIGHT}
+                            className={isSelected ? "family-node-selected" : ""} />
+                          <text x={person.x + 12} y={person.y + 26}
+                            className="family-node-name">
+                            {person.person_label.length > 23
+                              ? person.person_label.slice(0, 22) + "…" : person.person_label}
                           </text>
+                          <text x={person.x + 12} y={person.y + 49}
+                            className={"family-node-status family-node-status-" + statusClass(person.evidence_status)}>
+                            {person.evidence_status.replace("_", " ")}
+                          </text>
+                          {lifespan && (
+                            <text x={person.x + CARD_WIDTH - 12} y={person.y + 49}
+                              textAnchor="end" className="family-node-life"
+                              data-testid="family-person-life">
+                              {lifespan}
+                            </text>
+                          )}
+                        </g>
+                        {person.history_passages > 0 && (
+                          <g className="family-node-history" role="link" tabIndex={0}
+                            aria-label={"Personal history for " + person.person_label}
+                            aria-haspopup="dialog"
+                            data-testid="family-person-history"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onPointerUp={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openPersonalHistory(person, event.currentTarget);
+                            }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openPersonalHistory(person, event.currentTarget);
+                            }}>
+                            <rect x={person.x + 8} y={person.y + 54} rx="5"
+                              width={CARD_WIDTH - 16} height={18}
+                              className="family-node-history-hit" />
+                            <text x={person.x + 12} y={person.y + 67}
+                              className="family-node-history-label">
+                              Personal history
+                            </text>
+                          </g>
                         )}
                         <title>{person.person_label}</title>
                       </g>
@@ -1013,6 +1063,8 @@ function FamilyTree() {
             <span className="family-key family-key-unverified" /> Unverified
           </p>
           <SourceDialog source={openSource} onClose={() => setOpenSource(null)} />
+          <PersonalHistoryDialog person={historyPerson} onClose={closePersonalHistory}
+            onOpenSource={setOpenSource} />
           <section className="card">
             <h2>Catalog view</h2>
             <ul className="family-catalog" data-testid="genealogy-records">
