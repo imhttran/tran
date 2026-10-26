@@ -60,7 +60,7 @@ implementation was removed by RUST-007C; its pinned provenance remains in
 ├── evals/                     # frozen evaluation datasets (legacy demo fixture)
 ├── examples/                  # sample documents (legacy loan demo corpus)
 ├── web/                       # Next.js UI and Playwright browser tests
-├── scripts/                   # web-control.sh, web-e2e.sh
+├── scripts/                   # web-control.sh, web-e2e.sh, test-db.sh, validate.sh
 ├── docs/                      # requirements, architecture, reference, guides, evidence
 ├── Makefile                   # Rust and web convenience targets
 ├── .githooks/                 # pre-commit / pre-push Rust checks

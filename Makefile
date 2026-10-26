@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-schema test fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e genealogy-migrate genealogy-import app-restart app-update admin-setup
+.PHONY: db-up db-down db-schema test test-db-up validate fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e genealogy-migrate genealogy-import app-restart app-update admin-setup
 # Convenience targets for the Rust-only ingest/query workflow.
 #
 #   make db-up        start PostgreSQL and apply the schema
@@ -48,19 +48,31 @@ CATALOG ?= docs/tran/Tran-Family-People-Catalog.md
 ADMIN_CORPUS ?= trusted
 KEYCLOAK_USERNAME ?=
 
-# Start the database and make sure the schema is applied.
+# Start the database and apply the RAG schema to the resolved DSN. The backend
+# follows DB_BACKEND (native|docker); with it unset, an already-running server is
+# left alone, macOS starts Docker, and Linux requires native PostgreSQL.
 db-up:
-	docker compose up -d --wait
-	$(MAKE) db-schema
+	./scripts/db-up.sh
 
-# Stop the database.
+# Stop the database. Only the Docker backend is stopped; native PostgreSQL is
+# managed by the operating system.
 db-down:
-	docker compose down
+	./scripts/db-down.sh
 
-# Run the Rust tests. Database-backed tests need DATABASE_URL; the suite fails
-# rather than skips when the configured database is unavailable.
+# Run the Rust tests against disposable test databases. The runner resolves and
+# prepares them, exports REQUIRE_TEST_DATABASE=1 so a missing database fails the
+# suite, and never touches an application database.
 test:
-	cargo test --locked
+	./scripts/test-db.sh exec -- cargo test --locked
+
+# Create and migrate only the disposable test databases.
+test-db-up:
+	./scripts/test-db.sh prepare
+
+# Full validation with portable database configuration and a stable log at
+# .run/validation/latest.log. This is the single command SOP validation runs.
+validate:
+	./scripts/validate.sh
 
 # Rewrite every tracked JSON file with jq's formatting. This expands the
 # hand-compacted one-line arrays in .zed/settings.json and evals/retrieval.json,
@@ -120,7 +132,7 @@ rust-build:
 	cargo build --locked
 
 rust-test:
-	cargo test --locked
+	./scripts/test-db.sh exec -- cargo test --locked
 
 rust-clippy:
 	cargo clippy --locked --all-targets -- -D warnings

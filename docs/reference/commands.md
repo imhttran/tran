@@ -19,10 +19,12 @@ Run them with `cargo run --locked --bin <name>` or use the Makefile shortcuts.
 
 | Target | Runs |
 | --- | --- |
-| `make db-up` | start the database and apply all migrations |
-| `make db-down` | `docker compose down` |
+| `make db-up` | start the selected backend (native on Linux, Docker on macOS) and apply all migrations |
+| `make db-down` | stop the Docker backend; native PostgreSQL is left to the operating system |
 | `make db-schema` | apply all migrations (existing volume only) |
-| `make test` | `cargo test --locked` |
+| `make test` | resolve and prepare disposable test databases, then `cargo test --locked` |
+| `make test-db-up` | create and migrate only the disposable test databases |
+| `make validate` | full validation with portable DB config; log at `.run/validation/latest.log` |
 | `make fmt-json` | rewrite every tracked JSON file with `jq` |
 | `make ingest` | ingest `examples/loan-policy.md` (`FILE=…` to change) |
 | `make ask Q="…"` | ask a question (omit `Q` to be prompted) |

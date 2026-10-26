@@ -24,9 +24,11 @@
 use std::fs;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
+use ring::digest::{Context, SHA256};
 
 /// Sorted list of every genealogy migration the helper applies to a fresh
 /// target. It matches the files present in `genealogy/migrations/`.
@@ -66,6 +68,12 @@ pub const GENEALOGY_MIGRATIONS: &[&str] = &[
 
 static RUN_TOKEN: AtomicU64 = AtomicU64::new(0);
 
+/// Advisory lock that serializes template creation across test processes.
+const TEMPLATE_LOCK: i64 = 0x6765_6e65_616c_6f67;
+
+/// The complete-schema marker written into a template after every migration.
+const TEMPLATE_MARKER: &str = "_test_template_marker";
+
 /// PostgreSQL limits identifiers to 63 bytes. `pg_database.datname` is a `name`
 /// column, so a longer value is not truncated for a parameterised comparison:
 /// the server raises SQLSTATE 42622 (`identifier too long`).
@@ -89,6 +97,8 @@ pub struct IsolatedTarget {
     pub mode: Mode,
     /// The owned database name.
     pub owned_name: String,
+    /// True when the database already carries the full migration set.
+    migrated: bool,
     /// The maintenance-database DSN that actually created this target. Cleanup
     /// and `Drop` use it verbatim instead of re-deriving one from the target DSN.
     admin_dsn: String,
@@ -104,7 +114,13 @@ impl IsolatedTarget {
     }
 
     /// Apply the full sorted genealogy migration set to this target.
+    ///
+    /// A target copied from the migrated template is already complete, so this
+    /// is a no-op there; only an empty target replays the migrations.
     pub fn apply_migrations(&self) {
+        if self.migrated {
+            return;
+        }
         self.apply_migration_files(GENEALOGY_MIGRATIONS);
     }
 
@@ -133,6 +149,9 @@ impl IsolatedTarget {
         }
         let mut admin =
             Client::connect(&self.admin_dsn, NoTls).expect("connect to postgres for cleanup");
+        // The database is disposable; skip the per-statement flush that made a
+        // small schema take seconds to drop on a busy disk.
+        let _ = admin.batch_execute("SET synchronous_commit = off");
         admin
             .batch_execute(&drop_database_sql(&self.owned_name))
             .expect("drop owned disposable database");
@@ -148,6 +167,7 @@ impl IsolatedTarget {
         }
         self.cleaned = true;
         if let Ok(mut admin) = Client::connect(&self.admin_dsn, NoTls) {
+            let _ = admin.batch_execute("SET synchronous_commit = off");
             let _ = admin.batch_execute(&drop_database_sql(&self.owned_name));
         }
     }
@@ -250,6 +270,25 @@ pub fn base_dsn() -> Option<String> {
     Some(dsn)
 }
 
+/// Read the base DSN, or skip the suite when it is unset.
+///
+/// `REQUIRE_TEST_DATABASE=1` turns the skip into a hard failure, so the
+/// validation and CI entry points cannot report a green suite while the
+/// PostgreSQL integration tests never ran.
+pub fn base_dsn_or_skip(label: &str) -> Option<String> {
+    match base_dsn() {
+        Some(dsn) => Some(dsn),
+        None if std::env::var("REQUIRE_TEST_DATABASE").is_ok() => panic!(
+            "GENEALOGY_DATABASE_URL is not set: {label} is a required PostgreSQL \
+             integration test and REQUIRE_TEST_DATABASE forbids skipping"
+        ),
+        None => {
+            eprintln!("GENEALOGY_DATABASE_URL is unset; skipping {label}");
+            None
+        }
+    }
+}
+
 /// The single guarded entry point every mutating genealogy suite uses.
 ///
 /// It refuses a database whose name does not end in `_test` or `_disposable`,
@@ -291,15 +330,192 @@ fn describe_pg_error(err: &postgres::Error) -> String {
     }
 }
 
-/// Create a uniquely named disposable database for `suite_label`.
+/// Hash of the full migration set, used to name the migrated template database.
+/// A changed migration file produces a new template, so a stale template can
+/// never be served and no in-place rebuild (which would race test copies) is
+/// needed.
+fn schema_hash() -> String {
+    let mut ctx = Context::new(&SHA256);
+    for path in GENEALOGY_MIGRATIONS {
+        ctx.update(path.as_bytes());
+        ctx.update(&[0]);
+        let data = fs::read(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
+        ctx.update(&data);
+        ctx.update(&[0]);
+    }
+    let digest = ctx.finish();
+    let mut hex = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        use std::fmt::Write;
+        write!(&mut hex, "{byte:02x}").expect("write hex");
+    }
+    hex
+}
+
+fn template_database_name() -> String {
+    let hash = schema_hash();
+    format!("genealogy_schema_{}_test", &hash[..16])
+}
+
+/// The process-wide schema template name, so the template is checked once per
+/// test binary rather than once per test. A per-test marker connection to the
+/// template would otherwise contend with concurrent template copies.
+static TEMPLATE: OnceLock<String> = OnceLock::new();
+
+fn ensure_template_once(base: &str) -> &'static str {
+    TEMPLATE.get_or_init(|| {
+        let name = template_database_name();
+        ensure_template(base, &name);
+        name
+    })
+}
+
+/// Ensure the migrated template exists. The advisory lock serializes the first
+/// creation across test processes; later callers find it and return immediately.
+fn ensure_template(base: &str, template: &str) {
+    let admin_dsn = with_database(base, "postgres");
+    let mut admin = Client::connect(&admin_dsn, NoTls).unwrap_or_else(|err| {
+        panic!(
+            "connect to postgres for template: {}. The configured role must hold \
+             CREATEDB on postgres or template1, and the server must be reachable.",
+            describe_pg_error(&err)
+        )
+    });
+    admin
+        .execute("SELECT pg_advisory_lock($1)", &[&TEMPLATE_LOCK])
+        .expect("acquire template lock");
+
+    let present: bool = admin
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)",
+            &[&template],
+        )
+        .expect("read template presence")
+        .get(0);
+
+    let complete = present
+        && Client::connect(&with_database(base, template), NoTls)
+            .ok()
+            .and_then(|mut client| {
+                client
+                    .query_opt(
+                        &format!("SELECT 1 FROM {TEMPLATE_MARKER} WHERE key = 'complete'"),
+                        &[],
+                    )
+                    .ok()
+                    .flatten()
+            })
+            .is_some();
+
+    if !complete {
+        if present {
+            admin
+                .batch_execute(&format!(
+                    "DROP DATABASE IF EXISTS \"{template}\" WITH (FORCE);"
+                ))
+                .expect("drop incomplete template");
+        }
+        admin
+            .batch_execute(&format!("CREATE DATABASE \"{template}\";"))
+            .unwrap_or_else(|err| {
+                panic!(
+                    "create template {template}: {}. The configured role must hold CREATEDB.",
+                    describe_pg_error(&err)
+                )
+            });
+
+        let mut client =
+            Client::connect(&with_database(base, template), NoTls).unwrap_or_else(|err| {
+                panic!(
+                    "connect to template {template}: {}",
+                    describe_pg_error(&err)
+                )
+            });
+        let _ = client.batch_execute("SET synchronous_commit = off");
+        for path in GENEALOGY_MIGRATIONS {
+            let sql = fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
+            client
+                .batch_execute(&sql)
+                .unwrap_or_else(|err| panic!("apply {path} to template {template}: {err}"));
+        }
+        client
+            .batch_execute(&format!(
+                "CREATE TABLE {TEMPLATE_MARKER} (key text PRIMARY KEY, value text NOT NULL); \
+                 INSERT INTO {TEMPLATE_MARKER} (key, value) VALUES ('complete', '1');"
+            ))
+            .expect("mark template complete");
+    }
+
+    admin
+        .execute("SELECT pg_advisory_unlock($1)", &[&TEMPLATE_LOCK])
+        .expect("release template lock");
+}
+
+/// Create a uniquely named disposable database for `suite_label`, copied from
+/// the migrated template.
 ///
-/// The admin connection tries the `postgres` maintenance database, then
-/// `template1`. If neither can create a database, the helper panics with an
-/// actionable message rather than silently running the suite against a shared
-/// target. That loud failure is required because genealogy migrations 0010 and
-/// 0011 look up `pg_constraint` by name, which is database-global; a shared
-/// base database would let sibling suites pollute each other's results.
+/// Replaying the 30 fsync-bound migrations per test dominated the suite (about
+/// 24 s per test in this environment); a template copy takes under a second.
+/// The per-suite database is still unique and isolated. The schema-contract
+/// suite uses [`create_empty_isolated_target`] so its 0001-0005 subset stays
+/// meaningful.
 pub fn create_isolated_target(base: &str, suite_label: &str) -> IsolatedTarget {
+    let template = ensure_template_once(base);
+    let token = next_run_token();
+    let label = sanitize(suite_label);
+    let database_name = isolated_database_name(&label, &token);
+
+    let mut errors: Vec<String> = Vec::new();
+    for maintenance_db in ["postgres", "template1"] {
+        let admin_dsn = with_database(base, maintenance_db);
+        let mut admin = match Client::connect(&admin_dsn, NoTls) {
+            Ok(client) => client,
+            Err(err) => {
+                errors.push(format!("{maintenance_db}: {}", describe_pg_error(&err)));
+                continue;
+            }
+        };
+        // A per-run token makes a genuine name collision a bug worth surfacing.
+        match admin.batch_execute(&format!(
+            "CREATE DATABASE \"{database_name}\" TEMPLATE \"{template}\";"
+        )) {
+            Ok(()) => {
+                return IsolatedTarget {
+                    dsn: with_database(base, &database_name),
+                    mode: Mode::Database,
+                    owned_name: database_name,
+                    migrated: true,
+                    admin_dsn,
+                    cleaned: false,
+                };
+            }
+            Err(err) => {
+                if err.code() == Some(&postgres::error::SqlState::DUPLICATE_DATABASE) {
+                    panic!("per-run database name collided unexpectedly: {database_name}");
+                }
+                errors.push(format!("{maintenance_db}: {}", describe_pg_error(&err)));
+            }
+        }
+    }
+
+    // The template copy was refused (for example, a concurrent connection kept
+    // the template busy). Fall back to an empty database with an explicit
+    // replay so the suite stays correct even though it is slower.
+    let detail = if errors.is_empty() {
+        "no maintenance database was attempted".to_string()
+    } else {
+        errors.join("; ")
+    };
+    eprintln!("isolated target: template copy failed, replaying migrations instead: {detail}");
+    let mut target = create_empty_isolated_target(base, suite_label);
+    target.apply_migration_files(GENEALOGY_MIGRATIONS);
+    target.migrated = true;
+    target
+}
+
+/// Create a uniquely named empty database for a suite that applies its own
+/// migration subset (the schema-contract suite).
+pub fn create_empty_isolated_target(base: &str, suite_label: &str) -> IsolatedTarget {
     let token = next_run_token();
     let label = sanitize(suite_label);
     let database_name = isolated_database_name(&label, &token);
@@ -325,6 +541,7 @@ pub fn create_isolated_target(base: &str, suite_label: &str) -> IsolatedTarget {
                     dsn: with_database(base, &database_name),
                     mode: Mode::Database,
                     owned_name: database_name,
+                    migrated: false,
                     admin_dsn,
                     cleaned: false,
                 };

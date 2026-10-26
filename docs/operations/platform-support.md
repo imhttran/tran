@@ -77,7 +77,15 @@ installed by rustup; no platform-specific Go toolchain is required.
   committed `Cargo.lock`.
 
 ### PostgreSQL + pgvector
-- A PostgreSQL 16/17 server **with the `vector` (pgvector) extension** (0.6+).
+- **Linux:** native PostgreSQL 16 with the `vector` (pgvector) extension (0.6+).
+  Docker is not required. Start the server with the operating system, then set
+  `DATABASE_URL`/`GENEALOGY_DATABASE_URL` (or let `scripts/test-db.sh` probe
+  5432/5434).
+- **macOS:** PostgreSQL in Docker. `docker compose up -d --wait` publishes
+  `127.0.0.1:5434`; native PostgreSQL is not required.
+- `DB_BACKEND=native|docker` makes the choice explicit. With it unset, an
+  already-reachable server is left alone; macOS defaults to Docker and Linux to
+  native PostgreSQL. Native PostgreSQL is never started by this project.
 - Schema is owned by `migrations/*.sql` (idempotent, applied in name order). Apply with
   `make db-schema` (requires `psql`) or let the Docker entrypoint apply them.
 - Set `DATABASE_URL` to the target database (default
@@ -87,7 +95,7 @@ installed by rustup; no platform-specific Go toolchain is required.
 ### Docker (or equivalent)
 - `docker-compose.yml` runs `pgvector/pgvector:pg17`, publishes **5434→5432**, and mounts
   `./migrations` into `/docker-entrypoint-initdb.d`. `make db-up` runs
-  `docker compose up -d --wait` then `make db-schema`.
+  `docker compose up -d --wait` when Docker is the selected backend, then applies the schema.
 - Equivalent setup: any reachable PostgreSQL+pgvector with `DATABASE_URL` set; the Docker path is
   a convenience, not a requirement.
 
@@ -96,7 +104,9 @@ installed by rustup; no platform-specific Go toolchain is required.
   (default `nomic-embed-text`) and a **chat model** for answer/eval features.
 - `EMBED_PROVIDER`/`GEN_PROVIDER` are validated at config load; only `ollama` is
   registered, and an unknown provider fails fast at `Config::load`.
-- `make test` (unit) needs **no** Ollama; ingest and `cargo run --locked --bin query` do.
+- `make test` runs `scripts/test-db.sh exec`, which resolves and prepares
+  disposable test databases and exports `REQUIRE_TEST_DATABASE=1`; a missing
+  database fails the suite. Ollama is needed only for ingest/answer/eval.
 
 ### POSIX shell, Makefile, and helper tools
 - `scripts/*.sh` are `#!/bin/sh`; the `Makefile` uses POSIX `make` with `-include .env`.
@@ -110,8 +120,12 @@ installed by rustup; no platform-specific Go toolchain is required.
 - **Genealogy entity extraction (RAG-016)** — not implemented.
 - **macOS / Windows validation** — not exercised in this environment; treat as untested.
 - **Disposable-database integration tests** require a real PostgreSQL+pgvector; there is no mock
-  database. The RAG schema suites read `DATABASE_URL` and fail (never skip) when it is unset or
-  lacks pgvector; genealogy suites read `GENEALOGY_DATABASE_URL` and isolate themselves per suite.
+  database. `scripts/test-db.sh prepare` creates and migrates `<name>_test` targets, refuses any
+  name that is not `_test`/`_disposable`, and never drops or resets one. The RAG schema suites
+  read `DATABASE_URL` and fail when it is unset or lacks pgvector; genealogy suites read
+  `GENEALOGY_DATABASE_URL` and isolate themselves per suite. `REQUIRE_TEST_DATABASE=1` (set by
+  `make test`, `scripts/validate.sh`, and CI) turns a missing database into a failure instead of a
+  skip.
 
 ## Platform-specific validation commands
 

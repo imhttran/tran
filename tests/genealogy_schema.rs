@@ -8,7 +8,7 @@
 #[path = "support/genealogy_isolation.rs"]
 mod genealogy_isolation;
 
-use genealogy_isolation::{base_dsn, create_isolated_target};
+use genealogy_isolation::{base_dsn, create_empty_isolated_target};
 
 #[test]
 fn migrations_constraints_and_rollback_are_enforced() {
@@ -22,7 +22,7 @@ fn migrations_constraints_and_rollback_are_enforced() {
     // suite now runs that subset against its own disposable database instead of
     // the shared one; other suites apply the full migration set.
     let migrations = &genealogy_isolation::GENEALOGY_MIGRATIONS[..5];
-    let target = create_isolated_target(&base, "schema");
+    let target = create_empty_isolated_target(&base, "schema");
     target.apply_migration_files(migrations);
     let mut client = target.connect();
 

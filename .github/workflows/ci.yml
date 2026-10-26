@@ -32,6 +32,8 @@ jobs:
       # Without this the genealogy integration tests skip and report "ok".
       # They create their own disposable *_test databases from this DSN.
       GENEALOGY_DATABASE_URL: postgres://rag:rag@127.0.0.1:5432/genealogy_test?sslmode=disable
+      # A missing database must fail the suite, never skip it green.
+      REQUIRE_TEST_DATABASE: "1"
     steps:
       - uses: actions/checkout@v4
       # rustup honors rust-toolchain.toml at the repository root.
