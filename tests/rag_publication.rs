@@ -18,9 +18,9 @@ use rag_foundation::answer::service::{
 };
 use rag_foundation::document::Chunk;
 use rag_foundation::generation::{GenerationError, Generator};
-use rag_foundation::query_service::suggested_questions;
 use rag_foundation::retrieval::{Candidate, ChunkProvenance};
 use rag_foundation::storage_pg::{PgStore, SectionKey};
+use rag_foundation::suggestions;
 
 const CORPUS: &str = "rag-publication-a";
 const OTHER_CORPUS: &str = "rag-publication-b";
@@ -233,7 +233,7 @@ fn identity(row: &rag_foundation::storage_pg::PublicationRow) -> PassageIdentity
 }
 
 #[test]
-fn suggestions_come_only_from_approved_sections_and_fall_back_to_the_source() {
+fn suggestions_come_only_from_approved_content_and_skip_structural_labels() {
     let Some(dsn) = dsn() else {
         eprintln!("DATABASE_URL unset; skipping suggestions test");
         return;
@@ -245,57 +245,236 @@ fn suggestions_come_only_from_approved_sections_and_fall_back_to_the_source() {
 
     assert!(
         store
-            .suggestion_sections("empty-suggestion-corpus", 6)
+            .suggestion_sections("empty-suggestion-corpus", 48)
             .expect("empty suggestions")
             .is_empty(),
         "an empty corpus suggests nothing"
     );
 
+    // A substantive heading is quoted as-is.
     seed_approved(
         &mut client,
         CORPUS,
-        "suggestion-early",
+        "suggestion-heading",
         1,
-        "family.md",
-        "Early years",
-        "Early years evidence",
+        "archive-section.md",
+        "Archive Test Section",
+        "The synthetic archive codeword is ZX-ASK-SUGGESTION-2026.",
+        0.9,
+    );
+    // A page marker is never quoted; the body supplies a verbatim topic.
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "suggestion-page",
+        1,
+        "family-page.md",
+        "PDF page 5",
+        "Mr Trần Tối Lạc was the fourth child of Mr. Trần Huy Nghìn.",
+        0.9,
+    );
+    // Contents and editorial metadata are excluded outright.
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "suggestion-contents",
+        1,
+        "family-contents.md",
+        "Contents",
+        "PDF 1-5: introduction and Tran family origin",
         0.9,
     );
     seed_approved(
         &mut client,
         CORPUS,
-        "suggestion-migration",
-        2,
-        "family-migration.md",
-        "Migration",
-        "Migration evidence",
+        "suggestion-editorial",
+        1,
+        "family-editorial.md",
+        "Editorial method",
+        "The supplied PDF is predominantly an existing English adaptation.",
         0.9,
     );
-    seed_approved(
+
+    // Unapproved and admin-only rows must never reach a suggestion.
+    let mut pending = VersionSpec::approved(CORPUS, "suggestion-pending", "hidden.md", SHA);
+    pending.review_status = "pending_review";
+    pending.processing_status = "unprocessed";
+    pending.approved_sha256 = None;
+    pending.approved_scope = None;
+    pending.approved_version_number = None;
+    let pending_version = insert_version(&mut client, &pending);
+    insert_chunk(
         &mut client,
+        pending_version,
         CORPUS,
-        "suggestion-source-fallback",
-        3,
-        "source-only.md",
-        "",
-        "Source-only evidence",
+        "hidden.md",
+        "Hidden Section",
+        None,
+        0,
+        "Hidden pending passage about the Hidden family.",
+        0.9,
+    );
+    let mut restricted = VersionSpec::approved(CORPUS, "suggestion-admin", "admin.md", SHA);
+    restricted.access_scope = Some("admin_only");
+    restricted.approved_scope = Some("admin_only");
+    let restricted_version = insert_version(&mut client, &restricted);
+    insert_chunk(
+        &mut client,
+        restricted_version,
+        CORPUS,
+        "admin.md",
+        "Restricted Section",
+        None,
+        0,
+        "Restricted passage about the Restricted family.",
         0.9,
     );
 
     let sections = store
-        .suggestion_sections(CORPUS, 6)
+        .suggestion_sections(CORPUS, 48)
         .expect("approved sections");
-    let questions = suggested_questions(&sections, 6);
+
+    let mut questions = suggestions::questions(&sections, 6);
+    questions.sort();
     assert_eq!(
         questions,
         vec![
-            "What does the archive say about \"Early years\"?",
-            "What does the archive say about \"Migration\"?",
-            "What does the archive say about \"source-only.md\"?",
-        ]
+            "What does the archive say about \"Archive Test Section\"?".to_string(),
+            "What does the archive say about \"Trần Tối Lạc\"?".to_string(),
+        ],
+        "only substantive, approved topics are suggested"
     );
+    assert!(!questions
+        .iter()
+        .any(|question| question.contains("PDF page")));
+    assert!(!questions
+        .iter()
+        .any(|question| question.contains("Contents")));
+    assert!(!questions
+        .iter()
+        .any(|question| question.contains("Editorial")));
     assert!(!questions.iter().any(|question| question.contains("Hidden")));
-    assert_eq!(suggested_questions(&sections, 2).len(), 2);
+    assert!(!questions
+        .iter()
+        .any(|question| question.contains("Restricted")));
+    assert_eq!(suggestions::questions(&sections, 1).len(), 1);
+
+    // Every displayed suggestion must retrieve the approved section it names.
+    for (question, section) in [
+        (
+            "What does the archive say about \"Archive Test Section\"?",
+            "Archive Test Section",
+        ),
+        (
+            "What does the archive say about \"Trần Tối Lạc\"?",
+            "PDF page 5",
+        ),
+    ] {
+        assert!(
+            questions.iter().any(|displayed| displayed == question),
+            "{question:?} must be displayed"
+        );
+        let hits = store
+            .keyword_search(CORPUS, question, 4, "")
+            .expect("keyword search for a suggestion");
+        assert!(
+            hits.iter()
+                .any(|hit| hit.row.chunk.section.as_deref() == Some(section)),
+            "{question:?} must retrieve its approved section {section:?}"
+        );
+    }
+}
+
+#[test]
+fn keyword_search_recovers_a_question_the_strict_query_cannot_match() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping keyword relaxation test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    prepare(&mut client);
+    let store = PgStore::connect(&dsn).expect("store");
+
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "keyword-relax",
+        1,
+        "family.md",
+        "Early years",
+        "Early years evidence about the Tran family.",
+        0.9,
+    );
+
+    // The strict pass ANDs every term, and a passage never repeats the question's
+    // scaffolding, so it matches nothing on its own.
+    let strict: i64 = client
+        .query_one(
+            "SELECT count(*) FROM approved_documents \
+              WHERE corpus = $1 AND to_tsvector( \
+                  'english', COALESCE(section, '') || ' ' || content \
+              ) @@ websearch_to_tsquery('english', $2)",
+            &[&CORPUS, &"What does the archive say about \"Early years\"?"],
+        )
+        .expect("strict count")
+        .get(0);
+    assert_eq!(
+        strict, 0,
+        "the strict query cannot match the question wording"
+    );
+
+    // `""` is the production default (`DEFAULT_LANGUAGE`), which maps to the
+    // `english` text-search configuration: stopword removal plus stemming.
+    let hits = store
+        .keyword_search(
+            CORPUS,
+            "What does the archive say about \"Early years\"?",
+            4,
+            "",
+        )
+        .expect("relaxed keyword search");
+    assert_eq!(hits.len(), 1, "the relaxed pass recovers the passage");
+    assert_eq!(
+        hits[0].row.chunk.content,
+        "Early years evidence about the Tran family."
+    );
+    assert!(hits[0].keyword_score > 0.0);
+
+    // A query the strict pass can match is answered without relaxing: an
+    // unrelated passage that only shares a scaffolding word is not returned.
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "keyword-other",
+        1,
+        "other.md",
+        "Archive log",
+        "The archive says the shelf is full.",
+        0.9,
+    );
+    let strict_hits = store
+        .keyword_search(CORPUS, "Early years evidence", 4, "")
+        .expect("strict keyword search");
+    assert!(
+        strict_hits
+            .iter()
+            .all(|hit| hit.row.chunk.source.as_deref() == Some("family.md")),
+        "a strict match must not pull in passages that only share a stopword or scaffolding"
+    );
+
+    // A question made only of stopwords has no lexemes and finds nothing.
+    let stopword_hits = store
+        .keyword_search(CORPUS, "the and of", 4, "")
+        .expect("stopword-only search");
+    assert!(
+        stopword_hits.is_empty(),
+        "a stopword-only question must find nothing, found {:?}",
+        stopword_hits
+            .iter()
+            .map(|hit| hit.row.chunk.content.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

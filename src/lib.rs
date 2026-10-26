@@ -52,4 +52,5 @@ pub mod section;
 pub mod service;
 pub mod storage;
 pub mod storage_pg;
+pub mod suggestions;
 pub mod transaction;
