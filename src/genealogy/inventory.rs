@@ -1034,7 +1034,7 @@ pub fn persist_inventory<C: postgres::GenericClient>(
                         &image.object_name,
                         &image.tinted,
                         &image.tint_signal,
-                        &image.occurrence_count,
+                        &(image.occurrence_count as i32),
                         &classification.label,
                         &classification.rule,
                         &classification.detail,
