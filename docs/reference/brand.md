@@ -3,11 +3,12 @@
 **Type:** Descriptive reference (brand identity, design tokens, and interface rules)
 
 This is the authoritative description of how the Trần Family Archive looks and
-sounds. It records the **neutral jade** direction: a quiet, neutral archive with
-plain surfaces, one restrained jade accent, a sans interface typeface, and calm
-motion. The interface follows the reader's light or dark system preference.
-Application behavior, authorization, and publication rules live in the
-architecture contracts, not here.
+sounds. It records the **neutral jade** direction: a quiet, Linear-inspired
+archive with white or near-black surfaces, one restrained jade accent, neutral
+primary actions, a sans interface typeface, and calm motion. The interface
+follows the reader's light or dark system preference. Application behavior,
+authorization, and publication rules live in the architecture contracts, not
+here.
 
 ## Identity
 
@@ -33,9 +34,9 @@ clear labels.
 ## Wordmark
 
 - Set **TRẦN FAMILY** in the UI sans stack, uppercase, no letter-spacing, in
-  `--fg` on the neutral sidebar.
-- The line beneath reads **Family archive** in the UI sans, small and quiet, in
-  `--muted`.
+  `--fg` at the left of the slim top header.
+- The line beside or beneath reads **Family archive** in the UI sans, small and
+  quiet, in `--muted`.
 - The wordmark is the brand mark; there is no separate icon or logotype.
 - The wordmark uses the same sans family as the interface. There is no serif
   interface type.
@@ -50,19 +51,22 @@ token names with the dark values. `:root` also sets `color-scheme: light dark`.
 
 | Token                  | Light     | Dark      | Use                                        |
 | ---------------------- | --------- | --------- | ------------------------------------------ |
-| `--bg`                 | `#f5f6f6` | `#111514` | Page base                                  |
-| `--card`               | `#ffffff` | `#181d1c` | Cards, panels, popups, inputs              |
-| `--surface`            | `#eff1f1` | `#1f2523` | Quiet inset panels, legends, quotes        |
-| `--surface-strong`     | `#e6e9e8` | `#262d2b` | Hover and disabled neutral                 |
-| `--fg`                 | `#1c2422` | `#e7ebe9` | Body and heading text                      |
-| `--muted`              | `#5a6663` | `#a3b0ab` | Secondary text and hints                   |
-| `--line`               | `#dfe3e2` | `#2c3432` | Structural borders and dividers            |
-| `--line-strong`        | `#c4cdca` | `#3c4643` | Input borders                              |
-| `--accent`             | `#0f6b4a` | `#4ccf95` | Primary action, selected navigation, links |
-| `--accent-strong`      | `#0b5639` | `#6fe0ac` | Hover and pressed accent                   |
-| `--accent-soft`        | `#e3f1ea` | `#16352a` | Selected navigation fill, active chips     |
-| `--accent-soft-strong` | `#cfe8dc` | `#1d4436` | Accent hover fill                          |
-| `--accent-contrast`    | `#ffffff` | `#082018` | Text on an accent fill                     |
+| `--bg`                 | `#FAFAFB` | `#08090A` | Page base                                  |
+| `--card`               | `#FFFFFF` | `#111214` | Header, cards, panels, popups, inputs      |
+| `--surface`            | `#F3F4F6` | `#191B1F` | Quiet inset panels, legends, quotes        |
+| `--surface-strong`     | `#E9EAED` | `#24272D` | Hover and disabled neutral                 |
+| `--fg`                 | `#18191B` | `#F1F2F4` | Body and heading text                      |
+| `--muted`              | `#60646C` | `#A2A7B0` | Secondary text and hints                   |
+| `--line`               | `#E2E4E8` | `#2A2D33` | Structural borders and dividers            |
+| `--line-strong`        | `#80858E` | `#707782` | Input and required control borders         |
+| `--accent`             | `#0F6B4A` | `#4CCF95` | Links, selected navigation, selected nodes |
+| `--accent-strong`      | `#0B5639` | `#6FE0AC` | Link and accent hover state                |
+| `--accent-soft`        | `#E8F3ED` | `#122A20` | Selected navigation fill, active chips     |
+| `--accent-soft-strong` | `#D5EADD` | `#1A3A2B` | Accent hover fill                          |
+| `--accent-contrast`    | `#FFFFFF` | `#082018` | Text on a deliberate accent fill           |
+| `--action-bg`          | `#202124` | `#E6E8EB` | Neutral primary button                     |
+| `--action-hover`       | `#34363B` | `#FFFFFF` | Neutral primary button hover               |
+| `--action-fg`          | `#FFFFFF` | `#111214` | Neutral primary button text                |
 | `--ok`                 | `#1a7f37` | `#5ecc86` | Verified                                   |
 | `--warn`               | `#8a5b00` | `#e0b355` | Needs review                               |
 | `--err`                | `#b42318` | `#f28b82` | Errors and destructive actions             |
@@ -70,12 +74,13 @@ token names with the dark values. `:root` also sets `color-scheme: light dark`.
 | `--warn-line`          | `#ecd9a8` | `#4a3c1c` | Warning border                             |
 | `--ok-soft`            | `#e6f4ea` | `#16291d` | Success surface                            |
 | `--err-soft`           | `#fceceb` | `#331a19` | Error surface                              |
-| `--info-soft`          | `#e8eef5` | `#1a2430` | Neutral information surface                |
+| `--info-soft`          | `#eef1f0` | `#1b211f` | Neutral information surface                |
 
-Jade is the only accent. The primary action and the selected navigation state
-both use `--accent`. Secondary controls use neutral `--surface` and
-`--line-strong`, never the accent. **Red is reserved for destructive and error
-states**, never for a primary call to action.
+Jade is the only accent. Links, selected navigation, selected tree nodes, and
+focus use `--accent`. Primary buttons use the neutral `--action-*` tokens, so
+solid green is reserved for deliberate emphasis rather than every action. **Red
+is reserved for destructive and error states**, never for a primary call to
+action.
 
 Status color is never the only signal: every badge, chip, and edge also carries
 its status word.
@@ -101,10 +106,10 @@ its status word.
 
 ### Shadows
 
-| Token           | Light                                                                      | Dark                                                                 |
-| --------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `--shadow-sm`   | `0 1px 2px rgba(16, 40, 30, 0.06)`                                         | `0 1px 2px rgba(0, 0, 0, 0.4)`                                       |
-| `--shadow-card` | `0 1px 2px rgba(16, 40, 30, 0.05), 0 8px 24px -20px rgba(16, 40, 30, 0.4)` | `0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 26px -20px rgba(0, 0, 0, 0.8)` |
+| Token           | Light                                                                       | Dark                                                                 |
+| --------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `--shadow-sm`   | `0 1px 2px rgba(16, 24, 40, 0.06)`                                          | `0 1px 2px rgba(0, 0, 0, 0.4)`                                       |
+| `--shadow-card` | `0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px -20px rgba(16, 24, 40, 0.35)` | `0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 26px -20px rgba(0, 0, 0, 0.8)` |
 
 ### Focus
 
@@ -135,8 +140,9 @@ its status word.
 
 - Every surface uses a token: `--bg`, `--card`, `--surface`, or
   `--surface-strong`. No surface hard-codes a light colour.
-- The shell, the site navigation, the page header, and the profile hero are plain
-  neutral surfaces with a `1px` `--line` border. They carry no background image.
+- The shell, the top header, dropdown and mobile menus, the page header, and the
+  profile hero are plain neutral surfaces with a `1px` `--line` border. They
+  carry no background image.
 - Depth comes from a border and one `--shadow-card`. Do not draw heavy outlines.
 - No page carries a decorative background. Do not add a gradient, a glow, or a dot
   grid to the body, header, navigation, or any panel.
@@ -190,7 +196,7 @@ its status word.
 | Tokens, surfaces, type, motion, themes | `web/src/app/globals.css`                                         |
 | Colour scheme declaration              | `web/src/app/layout.tsx` (root document)                          |
 | Navigation icon set                    | `web/src/components/ExperienceShell.tsx` (`NavIcon`)              |
-| Wordmark and skip link                 | `ExperienceShell.tsx` (`.site-nav .brand`, `.skip-link`)          |
+| Wordmark and skip link                 | `ExperienceShell.tsx` (`.site-header .brand`, `.skip-link`)       |
 | Person popup motion and placement      | `web/src/components/FamilyTree.tsx`, `web/src/lib/family-tree.ts` |
 | Page header surface                    | `.page-header` in `globals.css`                                   |
 
@@ -200,13 +206,13 @@ not a page tweak.
 
 ## Do and don't
 
-| Do                                                                | Don't                                                |
-| ----------------------------------------------------------------- | ---------------------------------------------------- |
-| Keep neutral surfaces and one jade accent                         | Introduce a second competing accent                  |
-| Use `--accent` for the primary action and the selected navigation | Give secondary controls the accent fill              |
-| Use a sans interface stack with Vietnamese coverage               | Download a web font or use a serif interface heading |
-| Label every status in words                                       | Rely on color alone                                  |
-| Use red only for destructive/error                                | Use red as a primary CTA                             |
-| Prefer 150ms, named-property transitions                          | Use `transition: all` or animate layout              |
-| Read colours from theme tokens                                    | Hard-code a light colour on a surface                |
-| Say "No children recorded" and explain its limits                 | Imply the person had no children                     |
+| Do                                                                          | Don't                                                |
+| --------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Keep neutral surfaces and one jade accent                                   | Introduce a second competing accent                  |
+| Use `--action-*` for primary buttons and `--accent` for selected navigation | Give every primary button an accent fill             |
+| Use a sans interface stack with Vietnamese coverage                         | Download a web font or use a serif interface heading |
+| Label every status in words                                                 | Rely on color alone                                  |
+| Use red only for destructive/error                                          | Use red as a primary CTA                             |
+| Prefer 150ms, named-property transitions                                    | Use `transition: all` or animate layout              |
+| Read colours from theme tokens                                              | Hard-code a light colour on a surface                |
+| Say "No children recorded" and explain its limits                           | Imply the person had no children                     |

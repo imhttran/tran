@@ -184,11 +184,13 @@ test.describe.serial("branch review interface", () => {
     await page.goto("/branch-review");
 
     // The console renders only after the grants call succeeds, and the shared
-    // navigation offers the route.
+    // navigation offers the route in the desktop More menu.
     await expect(page.getByTestId("branch-review-console")).toBeVisible();
+    await page.getByTestId("more-toggle").click();
     await expect(
-      page.getByTestId("site-nav").getByRole("link", { name: /Branch review/ }),
+      page.getByTestId("more-menu").getByRole("link", { name: /Branch review/ }),
     ).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(
       page.getByTestId("branch-review-branch-filter"),
     ).toContainText("First Branch");

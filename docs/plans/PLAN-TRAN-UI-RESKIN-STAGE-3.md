@@ -1,5 +1,8 @@
 # Implementation Plan — Tran UI reskin, stage 3
 
+**Status:** Implemented; awaiting review. Evidence is in
+[`ui-reskin/stage-3`](../reports/ui-reskin/stage-3/README.md).
+
 ## Project
 
 Tran family archive web UI (`web/`).

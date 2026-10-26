@@ -433,13 +433,11 @@ test("a 503 shows a retryable unavailable state, then retry renders the tree", a
       body: JSON.stringify(session),
     }),
   );
-  let attempts = 0;
+  let serveGraph = false;
   await page.route("**/api/genealogy/tree", (route) => {
-    attempts += 1;
-    // React development mode runs the initial effect twice. Both initial
-    // requests must fail so the retryable state is observable; the explicit
-    // Retry click then receives the graph.
-    if (attempts <= 2) {
+    // Keep failing until the test enables recovery. This covers both the
+    // development server (two initial effects) and the production build (one).
+    if (!serveGraph) {
       return route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -473,6 +471,7 @@ test("a 503 shows a retryable unavailable state, then retry renders the tree", a
   await expect(page.getByTestId("denied-view")).toHaveCount(0);
   await expect(page.getByTestId("genealogy-tree")).toHaveCount(0);
 
+  serveGraph = true;
   await page.getByTestId("genealogy-unavailable-retry").click();
   await expect(page.getByTestId("genealogy-tree")).toBeVisible();
   await expect(unavailable).toHaveCount(0);
