@@ -15,7 +15,7 @@ is the project landing page; start there for what the project is and how to run 
 | [`history/`](history/lessons.md)                  | Completed experiment evidence, acceptance records, retrospectives, archived PRDs | Non-normative history             |
 | [`reports/`](reports/rust-migration/README.md)    | Engineering evidence, reviews, preflight notes, and investigation reports        | Non-normative evidence            |
 | [`mockups/`](mockups/family-experience/README.md) | Static UI mockups                                                                | Non-normative design input        |
-| [`tran/`](tran/Tran-Family-English.md)            | The family source corpus and its audit findings                                  | Source data (operational)         |
+| [`tran/`](tran/)                                  | The family source corpus and its audit findings                                  | Source data (operational)         |
 
 The authority chain for a change is:
 
@@ -95,25 +95,28 @@ the `PLAN-TRAN-*` plans.
 | [guides/usage.md](guides/usage.md)                                                   | You want to set up, ingest a document, or ask a question.                             |
 | [guides/testing.md](guides/testing.md)                                               | You need the test-database isolation model and how the suites are run.                |
 | [guides/evaluation.md](guides/evaluation.md)                                         | You want to score retrieval or compare settings/models.                               |
+| [guides/genealogy-dates.md](guides/genealogy-dates.md)                               | You need how birth and death dates move from the catalog into assertions.             |
 | [guides/my-profile.md](guides/my-profile.md)                                         | You are building or reviewing the member My Profile surface and its privacy boundary. |
 | [guides/review-console.md](guides/review-console.md)                                 | You are building or reviewing the administrator review queue and media review.        |
+| [guides/session-expiry.md](guides/session-expiry.md)                                 | You need browser session lifetime, renewal, or the sign-in-again behaviour.           |
 | [guides/branch-review.md](guides/branch-review.md)                                   | You are granting or auditing branch reviewer authority.                               |
 | [guides/branch-review-acceptance.md](guides/branch-review-acceptance.md)             | You need the branch-review acceptance matrix.                                         |
 | [guides/family-profile-presentation.md](guides/family-profile-presentation.md)       | You are calling or reviewing the read-only family profile endpoint and page.          |
 | [guides/family-publication-acceptance.md](guides/family-publication-acceptance.md)   | You need the negative-by-default publication matrix and the open policy gates.        |
 | [guides/document-publication-integrity.md](guides/document-publication-integrity.md) | You are reviewing the approved-document retrieval boundary.                           |
 | [guides/source-of-truth.md](guides/source-of-truth.md)                               | You are designating or reversing an authoritative document version.                   |
+| [guides/source-narratives.md](guides/source-narratives.md)                           | You are extracting, reviewing, or publishing source-linked historical narratives.     |
 | [guides/document-worker-reliability.md](guides/document-worker-reliability.md)       | You are reviewing processing-worker leases and fencing.                               |
 | [guides/agent-scripts.md](guides/agent-scripts.md)                                   | You are working with the git hooks or the agent helper scripts.                       |
 
 ## Plans
 
-Active and recorded plans. SOP matches a plan by the path recorded in
-`.agent-sdlc/plan.meta.json`; see the exceptions section below.
+Active and recorded plans. When a plan is active, SOP matches it by the path
+recorded in `.agent-sdlc/plan.meta.json`; see the exceptions section below.
 
 | Document                                                                                                 | Read it when                                                                   |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [plans/PLAN-TRAN-TEST-DB-ISOLATION.md](plans/PLAN-TRAN-TEST-DB-ISOLATION.md)                             | You are running the **active** SOP plan for genealogy test-database isolation. |
+| [plans/PLAN-TRAN-TEST-DB-ISOLATION.md](plans/PLAN-TRAN-TEST-DB-ISOLATION.md)                             | You are running the recorded genealogy test-database isolation plan.           |
 | [plans/PLAN-TRAN-USER-ONBOARDING.md](plans/PLAN-TRAN-USER-ONBOARDING.md)                                 | You want the living-members, profiles, and branch-review plan.                 |
 | [plans/PLAN-TRAN-USER-ONBOARDING-SOP.md](plans/PLAN-TRAN-USER-ONBOARDING-SOP.md)                         | You want the SOP execution decomposition of that plan.                         |
 | [plans/PLAN-TRAN-BRANCH-REVIEW.md](plans/PLAN-TRAN-BRANCH-REVIEW.md)                                     | You want the branch-scoped verification plan.                                  |
@@ -126,6 +129,7 @@ Active and recorded plans. SOP matches a plan by the path recorded in
 | [plans/PLAN-TRAN-FAMILY-TREE.md](plans/PLAN-TRAN-FAMILY-TREE.md)                                         | You want the family-archive experience plan.                                   |
 | [plans/PLAN-TRAN-FAM-DOCUMENT-LIFECYCLE.md](plans/PLAN-TRAN-FAM-DOCUMENT-LIFECYCLE.md)                   | You want the family document versioning and review plan.                       |
 | [plans/PLAN-TRAN-FAM-DOCUMENT-SECURITY-HARDENING.md](plans/PLAN-TRAN-FAM-DOCUMENT-SECURITY-HARDENING.md) | You want the post-merge document security hardening record.                    |
+| [plans/PLAN-TRAN-ARCHIVE-PHOTOGRAPHS.md](plans/PLAN-TRAN-ARCHIVE-PHOTOGRAPHS.md)                         | You want the archive-photograph inventory plan.                                |
 | [plans/PLAN-TRAN-FAM-RAG-01.md](plans/PLAN-TRAN-FAM-RAG-01.md)                                           | You want the approved-retrieval, citation-provenance, and revocation plan.     |
 | [plans/PLAN-TRAN-FAM-RAG-02.md](plans/PLAN-TRAN-FAM-RAG-02.md)                                           | You want the reliable document-processing-worker plan.                         |
 | [plans/TRAN-001-document-inventory.md](plans/TRAN-001-document-inventory.md)                             | You want the genealogy document-inventory plan.                                |
@@ -150,6 +154,7 @@ Raw experiment captures are preserved as measurements, not current guidance; rea
 
 | Document                                                                                         | Read it when                                                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [reports/archive-photograph-inventory.md](reports/archive-photograph-inventory.md)               | You need the deterministic per-page archive photograph inventory (AP-101).                                                                                                                 |
 | [reports/genealogy-test-db-isolation.md](reports/genealogy-test-db-isolation.md)                 | You need the root-cause investigation for the genealogy test-database interference.                                                                                                       |
 | [reports/rbac/phase-0-baseline.md](reports/rbac/phase-0-baseline.md)                             | You need the RBAC phase-0 preflight and baseline.                                                                                                                                         |
 | [reports/rust-best-practices-review.md](reports/rust-best-practices-review.md)                   | You want the crate's best-practices review.                                                                                                                                               |
@@ -161,7 +166,7 @@ Raw experiment captures are preserved as measurements, not current guidance; rea
 
 | Path           | Read it when                                                                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| [tran/](tran/) | You need the family source text edition (English and Vietnamese), the people catalog, or the TRAN-001/002 audit findings. |
+| [tran/](tran/) | You need the Vietnamese family source edition, the people catalog, or the TRAN-001/002 audit findings. |
 
 `docs/tran` is the default `SOURCE_ROOT` for the `inventory` and `pdf_assessment`
 binaries. Do not move or rename it.
@@ -189,8 +194,8 @@ reader depends on the exact location:
   `src/inventory.rs`.
 - [`rq-006-query-cache.json`](rq-006-query-cache.json) — the default query-cache path in
   `src/bilingual.rs`.
-- [`plans/PLAN-TRAN-TEST-DB-ISOLATION.md`](plans/PLAN-TRAN-TEST-DB-ISOLATION.md) — the
-  plan path recorded in `.agent-sdlc/plan.meta.json`. Moving it would break
+- [`plans/PLAN-TRAN-TEST-DB-ISOLATION.md`](plans/PLAN-TRAN-TEST-DB-ISOLATION.md) — a plan path
+  that SOP may record in `.agent-sdlc/plan.meta.json`. Moving it would break
   `sop run`/`resume`/`reconcile`; SOP matches a plan by its recorded source path.
 - [`experiments-eval-sweep.md`](experiments-eval-sweep.md) — the documented
   `SWEEP_RESULTS` output path referenced by

@@ -20,7 +20,9 @@ file with `jq`, then runs the Rust and web checks through the Makefile:
 - `make web-build` (the Next.js production build)
 
 The Makefile targets are the single source of truth; the hooks do not duplicate
-the commands.
+the commands. `make web-check-env` is currently a declared no-op;
+`scripts/web-control.sh check-env` performs the toolchain validation, and
+`make web-typecheck` / `make web-build` resolve the toolchain themselves.
 `.agents/scripts/review-agent.sh` reviews the diff against `origin/main` and is
 advisory — a finding never fails anything. It is not wired into the hook either,
 so run it by hand when you want a second pair of eyes: it is read-only
@@ -63,32 +65,12 @@ Git does not pick up `.githooks/` on its own. Enable it once per clone:
 
 ```bash
 git config core.hooksPath .githooks
+git config --get core.hooksPath   # expect .githooks
 ```
 
 Bypass the commit hook with `git commit --no-verify`, or the push hook with
 `git push --no-verify`.
 
-## Installing the hooks
-
-The hooks are version-controlled under `.githooks/`. Enable them once per clone:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-Bypass a single operation with `git commit --no-verify` / `git push --no-verify`.
 `core.hooksPath` is repository-local configuration, so each clone must run the
-command above. Verify with `git config --get core.hooksPath` (expect `.githooks`).
-
-## Rust and web checks
-
-Both hooks delegate to the Makefile so the commands never drift:
-
-- `pre-commit` runs `make rust-fmt`, `make rust-acceptance-evidence`,
-  `make rust-acceptance-final-layout`, `make web-check-env`, and
-  `make web-typecheck`.
-- `pre-push` runs `make rust-build rust-test rust-clippy`,
-  `make transition-evidence` (including the clean checkout without Go), and
-  `make web-build`.
-
-The Cargo package is at the repository root; no separate `rust/` path is used.
+command above. The Cargo package is at the repository root; no separate `rust/`
+path is used.

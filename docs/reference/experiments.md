@@ -1,7 +1,14 @@
 # Experiment log
 
-Evidence behind the current defaults. `scripts/sweep.sh` (`make sweep`) runs
-`cmd/eval` once per configuration and prints the Overall averages, one row per
+> **Rust port status.** These measurements were taken against the Go baseline.
+> `scripts/sweep.sh` (`make sweep`) is **not present** in the Rust tree, and the
+> Rust `eval` binary implements the deterministic retrieval path (vector +
+> full-text + fusion + dedup) without the rerank, answerability-gate,
+> fact-judge, or rewrite-only experiment arms. The rows below are retained as
+> the evidence that drove the current defaults.
+
+Evidence behind the current defaults. `scripts/sweep.sh` (`make sweep`) ran
+`cmd/eval` once per configuration and printed the Overall averages, one row per
 configuration, so a setting is changed because the numbers moved rather than
 because a couple of answers looked better.
 
@@ -293,7 +300,7 @@ section is returned first and therefore the evidence-recall before/after split.
   in "Still open" as the residual.
 - **Generation-judge metrics (fact recall, groundedness, citation validity,
   citation entailment).** F7/F8 replace the per-consumer citation parser with one
-  shared parser in `internal/citations` and treat a trailing segment as a page
+  shared parser in `src/answer/citation.rs` and treat a trailing segment as a page
   only when it matches `p.N`. Pre-fix, a section title containing `" - "` was
 dropped (F7) and a `Page N - p.N` tail was mis-read (F8), so citation validity
   and entailment were scored against a parser that silently discarded some

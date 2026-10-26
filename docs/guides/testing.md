@@ -9,32 +9,31 @@ used by the database integration tests, and the optional real-Ollama smoke test.
 make test        # or: cargo test --locked
 ```
 
-`cargo test --locked` runs every non-optional test with no database and no model.
-Database-backed tests **skip** (they do not fail) unless `RAG_INTEGRATION=1` is
-set, so the standard suite stays fast and green on a machine with no PostgreSQL
-and no Ollama running. Deterministic, network-free stub providers back the
-in-process tests, so identical inputs always produce identical results.
+`cargo test --locked` runs the unit tests and every integration target. Unit
+tests need no database and no model; deterministic stub providers back the
+in-process paths, so identical inputs produce identical results. Database-backed
+targets read `DATABASE_URL` or `GENEALOGY_DATABASE_URL`: the RAG schema suites
+**fail** when `DATABASE_URL` is unset, while most genealogy suites skip with a
+message. There is no `RAG_INTEGRATION` gate; the tier is chosen by test target.
 
 ## Disposable PostgreSQL (never `rag_db`)
 
 The integration tests run against a **throwaway** database, never the development
 database. The harness conventions are:
 
-- **`RAG_TEST_DATABASE_URL`** points at the disposable database; it defaults to
-  `postgres://rag:rag@127.0.0.1:5434/rag_test?sslmode=disable` (the
+- **`DATABASE_URL`** points at the disposable RAG database; the Makefile and
+  `.env.example` default to
+  `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable` (the
   `docker-compose` database exposed on port 5434).
-- **Never `rag_db`.** The retrieval integration tests truncate the `documents`
-  table, so they must never be pointed at `DATABASE_URL` (the dev database).
-  The `.githooks/pre-push` hook probes `INTEGRATION_TEST_DB` (bound to
-  `RAG_TEST_DATABASE_URL`) with `psql` first, and skips cleanly when the database
-  is unreachable, so a stopped Docker daemon never blocks a push.
-- **Throwaway name.** Use a clearly disposable name such as `rag_test`. Never
-  create, migrate, or truncate a database named `rag_db`.
-- **Refusal guard.** The RAG-025B harness in `internal/rag/e2e_db_test.go` parses
-  the database name out of `RAG_TEST_DATABASE_URL` (falling back to `DATABASE_URL`
-  only when the former is unset) and **refuses to run** — before any migration or
-  mutation — when that name is `rag_db`. No integration path in the rag package
-  can reach `rag_db`.
+- **`GENEALOGY_DATABASE_URL`** points at the genealogy server DSN. Each suite
+  derives a run-unique `*_test` database from it, so the role needs
+  `CREATE DATABASE`.
+- **Never a shared database.** The RAG schema tests write and delete rows, so
+  point them at a disposable database. The genealogy suites already isolate
+  themselves per suite. Never point the destructive tests at the development
+  database (`rag`) or a database named `rag_db`.
+- **Guard for the browser suite.** `scripts/e2e-db-env.sh` refuses an
+  application database for `make web-e2e`; `cargo test` does not use it.
 
 ### Setup
 
@@ -70,7 +69,7 @@ cargo test --locked --manifest-path acceptance/live_rag/Cargo.toml
 
 ### Schema migration
 
-The database tests connect to `RAG_TEST_DATABASE_URL` and apply every
+The database tests connect to `DATABASE_URL` and apply every
 `migrations/*.sql` file in name order (idempotent), so they work against a fresh
 database and pick up migrations added after `001`.
 
@@ -105,7 +104,7 @@ never truncated.
 ### Migration initialisation
 
 The helper applies `GENEALOGY_MIGRATIONS`, the sorted list of every
-`genealogy/migrations/*.sql` file from `0001` through `0022`, to the target it just
+`genealogy/migrations/*.sql` file from `0001` through `0030`, to the target it just
 created. Suites no longer keep their own partial migration arrays; the one
 exception is the schema-contract suite, which keeps its original `0001`-`0005`
 scope so its assertions still describe the same contract.
@@ -199,17 +198,23 @@ Replacement ingest is atomic: `ReplaceDocument` embeds every chunk **before**
 the transaction opens and runs all batched `INSERT`s on a single transaction.
 If any batch fails, the transaction rolls back the whole replacement — including
 the `DELETE` of the previous document — so a failing batch leaves the previously
-stored document untouched. This contract is exercised by
-`internal/ingestion`'s integration tests (`TestReplaceDocumentIntegration*`,
-including `TestReplaceDocumentIntegrationLargeReplacementRollsBackOnLaterBatchFailure`)
-and by `internal/rag`'s `TestE2EIngestReplacementIsAtomicDBIntegration`.
+stored document untouched. This contract is exercised by `tests/ingest_pipeline.rs`
+(`forced_replacement_failure_rolls_back_and_preserves_stored_data` and
+`repeated_ingestion_of_an_unchanged_source_preserves_stored_data`) and by the
+RAG schema tests in `tests/storage_interop.rs`.
 
 ## Reliability paths (failure / cancellation / timeout)
 
-The `internal/rag` reliability tests exercise the generation failure, request
-cancellation, and request timeout paths. They run entirely in memory with the
-deterministic stub generator and **do not touch any database** — so they can
-never reach `rag_db`. See `internal/rag/reliability_test.go`.
+The answer-service tests exercise retrieval failure, generation failure, and the
+insufficient-evidence refusal path in memory with the deterministic stub
+provider; they **do not touch any database**. See the `#[cfg(test)]` module in
+`src/answer/service.rs` (`retrieval_dependency_failure_is_reported`,
+`generation_dependency_failure_is_reported`,
+`insufficient_evidence_refuses_without_generation`). Worker lease, fencing, and
+heartbeat failure behaviour is covered by `tests/worker_reliability.rs`.
+
+The generation timeout is a configuration bound (`REQUEST_TIMEOUT`, enforced by
+the Ollama HTTP client); there is no separate cancellation test.
 
 ## Optional: real-Ollama smoke testing (non-gating)
 

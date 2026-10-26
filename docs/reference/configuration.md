@@ -65,16 +65,16 @@ Each defaults to the pre-change behaviour, so an unset value changes nothing:
   question into a retrieval query. The answer prompt and citations still use the
   original question. A blank or failed rewrite falls back to the original.
 - **`EMBED_PROVIDER` / `GEN_PROVIDER`** (`all`) — provider-registry selectors
-  (`ollama` by default), **honoured by the commands**: `src/bin/ingest.rs`, `src/bin/query.rs`, and
-  `src/bin/eval.rs` resolve the embedder/generator through
-  `config.Config.Embedder()` / `Generator()` (dispatching via `src/provider.rs`)
-  rather than constructing a vendor client directly. An **unregistered name fails
-  fast at `config.Load`** with an error naming the variable and the value — it is
-  never silently ignored. Only `ollama` is registered today; adding another
-  provider means registering a constructor in [`src/provider.rs`](../../src/provider.rs).
+  (`ollama` by default), resolved through `provider::embedder` / `provider::generator`
+  in [`src/provider.rs`](../../src/provider.rs). An **unregistered name fails fast at
+  `Config::load`** with an error naming the variable and the value — it is never
+  silently ignored. Only `ollama` is registered today; adding another provider means
+  registering a constructor in `src/provider.rs`. The current command binaries still
+  construct the Ollama client directly, so the selector is validated but does not yet
+  switch the active client.
 
 `EMBED_DIM` must match the stored `documents.embedding` column. The guard
-`ingestion.CheckEmbeddingDim` fails fast otherwise and points at
+`storage::validate_embedding_dim` fails fast otherwise and points at
 [`docs/operations/embedding-dimension.md`](../operations/embedding-dimension.md),
 the operator-run procedure for changing the dimension; changing it also
 requires re-ingesting the corpus.

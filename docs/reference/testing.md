@@ -1,37 +1,39 @@
 # Testing
 
-`cargo test --locked` runs the unit tests. They need no database or model: chunking,
-document parsing, reranking, answerability, the eval metrics, and RRF fusion are
-pure functions, and `HybridRetrieve` is driven through a fake `Searcher` that
-records the arguments each stage received, so the pipeline's stage order and its
-use of the similarity floor and section deduplication are pinned down.
+`cargo test --locked` (or `make test` / `make rust-test`) runs the unit and
+integration test targets in this package. The runnable procedures — disposable
+databases, per-suite isolation, and the real-browser suite — are owned by
+[guides/testing.md](../guides/testing.md); this page records the facts the
+commands depend on.
 
-The SQL needs PostgreSQL, so `src/retrieval`/`src/retrieval_pg.rs` and `src/pipeline.rs`/`src/transaction.rs` have
-integration tests. They connect to `DATABASE_URL`, apply
-`migrations/001_init.sql` (idempotent, like `make db-up`), and cover:
+## Test tiers
 
-- `src/retrieval`/`src/retrieval_pg.rs` — `Search`, `KeywordSearch`, `SectionChunks`, and the whole
-  `HybridRetrieve` pipeline against real data, the part a fake cannot check,
-  since column order, scan alignment, and placeholder numbering only fail against
-  a real server.
-- `src/pipeline.rs`/`src/transaction.rs` — `ReplaceDocument`'s delete-then-insert transaction:
-  re-running replaces rather than appends, the `$5::vector` cast round-trips, and
-  a failed embedding leaves the stored document untouched. Embeddings come from a
-  stub Ollama server, so no model is needed.
+| Tier | Command | Needs | Behaviour when the database is unset |
+| --- | --- | --- | --- |
+| Unit | `cargo test --locked --lib` | Nothing | Runs; network and model calls use deterministic stubs. |
+| RAG schema integration | `cargo test --locked --test ingest_binary --test section_chunks_pg --test storage_interop` | `DATABASE_URL` with pgvector | **Fails** with an explicit message; it never skips. |
+| Genealogy integration | `cargo test --locked --test <suite>` | `GENEALOGY_DATABASE_URL` | Most suites skip with a message; each creates and drops its own database. |
+| Acceptance | `cargo test --locked --manifest-path acceptance/<crate>/Cargo.toml` | Varies | Separate crates, not part of the default suite. |
 
-They are skipped unless `RAG_INTEGRATION=1` is set, so the pre-commit hook stays
-fast and database-free. `make integration` brings the database up first:
+## Environment
 
-```bash
-make integration
-```
+- `DATABASE_URL` — the RAG database (`documents`, chunks, embeddings). Apply
+  `migrations/*.sql` first (`make db-up` does this).
+- `GENEALOGY_DATABASE_URL` — the genealogy server DSN. Each suite derives a
+  disposable `*_test` database from it, so the role needs `CREATE DATABASE`.
+- No `RAG_INTEGRATION` gate exists: the suite is selected by test target, not by
+  an environment variable.
+- `EMBED_PROVIDER` / `GEN_PROVIDER` are validated at config load, but the
+  current command binaries construct the Ollama client directly. Unit tests
+  substitute deterministic stub embedder and generator implementations.
 
-Both test targets use the `documents` table, and `src/retrieval`/`src/retrieval_pg.rs` truncates it, so
-`make integration` passes `-p 1` to run them one at a time. Because the tests
-truncate, run them against a throwaway database rather than the dev one;
-`DATABASE_URL` is honoured by both the migration step and the tests:
+## Serialization
 
-```bash
-psql 'postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable' -c 'CREATE DATABASE rag_test'
-make integration DATABASE_URL='postgres://rag:rag@127.0.0.1:5434/rag_test?sslmode=disable'
-```
+Suites that replace shared source rows must not run in parallel against one
+database. Run those targets with `-- --test-threads=1`; genealogy suites are
+already isolated per suite and do not need it.
+
+## Real browser
+
+`make web-e2e` runs the Playwright suite against disposable databases. Its
+selection and refusal rules live in `scripts/e2e-db-env.sh`.

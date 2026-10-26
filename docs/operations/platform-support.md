@@ -21,7 +21,7 @@ Support is stated explicitly as one of:
 | **Windows (native)** | **Gap** | No native `make`/`sh`; see Windows section |
 | **Windows via WSL2** | Expected (untested) | Recommended Windows path (Ubuntu + Docker Desktop + Ollama) |
 
-The Rust code is portable: the package has no cgo/Go dependency and uses the
+The Rust code is portable: the package has no Go dependency and uses the
 cross-platform `postgres`/`r2d2` and `lopdf` crates. The pinned Rust toolchain is
 installed by rustup; no platform-specific Go toolchain is required.
 
@@ -40,8 +40,9 @@ installed by rustup; no platform-specific Go toolchain is required.
 - **Prerequisites:** the Rust toolchain pinned in `rust-toolchain.toml`; Docker + Docker Compose
   (or a local PostgreSQL with `vector`); Ollama for ingest/answer; `make`, POSIX `sh`, `psql`,
   `jq`.
-- **Notes:** Linux Mint is Ubuntu/Debian-based; the Debian/Ubuntu packages (`golang-go`,
-  `docker.io`/Docker CE, `postgresql-client` for `psql`, `jq`, `make`) satisfy the prerequisites.
+- **Notes:** Linux Mint is Ubuntu/Debian-based; the Debian/Ubuntu packages (`docker.io`/Docker CE,
+  `postgresql-client` for `psql`, `jq`, `make`) plus the pinned Rust toolchain satisfy the
+  prerequisites.
   Verified here: `cargo build --locked`, `cargo test --locked`, `docker compose` config, the `sh` scripts, the
   `Makefile`, and `psql`.
 
@@ -77,8 +78,8 @@ installed by rustup; no platform-specific Go toolchain is required.
 
 ### PostgreSQL + pgvector
 - A PostgreSQL 16/17 server **with the `vector` (pgvector) extension** (0.6+).
-- Schema is owned by `migrations/00{1..4}_*.sql` (idempotent). Apply with `make db-schema`
-  (requires `psql`) or let the Docker entrypoint apply them.
+- Schema is owned by `migrations/*.sql` (idempotent, applied in name order). Apply with
+  `make db-schema` (requires `psql`) or let the Docker entrypoint apply them.
 - Set `DATABASE_URL` to the target database (default
   `postgres://rag:rag@127.0.0.1:5434/rag?sslmode=disable`). **Never point destructive tests at a
   shared/production database.**
@@ -93,9 +94,9 @@ installed by rustup; no platform-specific Go toolchain is required.
 ### Ollama / provider
 - A local Ollama at `OLLAMA_URL` (default `http://localhost:11434`) with an **embedding model**
   (default `nomic-embed-text`) and a **chat model** for answer/eval features.
-- The provider registry (`EMBED_PROVIDER`/`GEN_PROVIDER`) selects the implementation; only
-  `ollama` is registered today. An unknown provider fails fast at `config.Load`.
-- `make test` (unit) needs **no** Ollama; ingest and `cmd/rag` do.
+- `EMBED_PROVIDER`/`GEN_PROVIDER` are validated at config load; only `ollama` is
+  registered, and an unknown provider fails fast at `Config::load`.
+- `make test` (unit) needs **no** Ollama; ingest and `cargo run --locked --bin query` do.
 
 ### POSIX shell, Makefile, and helper tools
 - `scripts/*.sh` are `#!/bin/sh`; the `Makefile` uses POSIX `make` with `-include .env`.
@@ -104,20 +105,20 @@ installed by rustup; no platform-specific Go toolchain is required.
 
 ## Known unsupported workflows and gaps
 
-- **Windows-native shell/Makefile/sweep workflow** — unsupported without WSL2 or Git-Bash+make.
+- **Windows-native shell/Makefile workflow** — unsupported without WSL2 or Git-Bash+make.
 - **OCR for scanned PDFs (RAG-008)** — not implemented (text-layer PDFs only).
 - **Genealogy entity extraction (RAG-016)** — not implemented.
 - **macOS / Windows validation** — not exercised in this environment; treat as untested.
 - **Disposable-database integration tests** require a real PostgreSQL+pgvector; there is no mock
-  database, and the RAG-025B integration test **refuses** the `rag_db` name and reads
-  `RAG_TEST_DATABASE_URL` (falling back to `DATABASE_URL`).
+  database. The RAG schema suites read `DATABASE_URL` and fail (never skip) when it is unset or
+  lacks pgvector; genealogy suites read `GENEALOGY_DATABASE_URL` and isolate themselves per suite.
 
 ## Platform-specific validation commands
 
 Run from the repository root. These are the checks used to classify the platforms above.
 
 ```sh
-# Rust build and the standard (no-DB, no-network) suite
+# Rust build and test suite (database-backed targets need DATABASE_URL)
 cargo build --locked
 cargo test --locked
 

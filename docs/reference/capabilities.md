@@ -11,16 +11,17 @@ integration suite). They are recorded here so the code and this document agree:
 - **Ingestion provenance and idempotent re-index (RAG-003)** — every chunk stores
   a content hash, embed model, dimension, chunker config, ingest time, and
   language; re-ingesting an unchanged file is a no-op (migrations 002/003).
-- **Model/provider independence (RAG-004/RAG-005; wired by RAG-025A)** — the commands
-  (`src/bin/ingest.rs`, `src/bin/query.rs`, `src/bin/eval.rs`) resolve the embedder and generator through
-  `src/provider.rs` via `config.Config.Embedder()` / `Generator()`
-  (`EMBED_PROVIDER` / `GEN_PROVIDER`), so a non-default provider is a registry entry,
-  not a code edit. An unregistered provider name fails fast at `config.Load` (naming
-  the variable and the value). `EMBED_DIM` is validated against the stored column
-  before any write.
+- **Model/provider independence (RAG-004/RAG-005)** — `src/provider.rs` exposes a
+  registry (`provider::embedder` / `provider::generator`) keyed by
+  `EMBED_PROVIDER` / `GEN_PROVIDER`, and an unregistered name fails fast at
+  `Config::load` with the variable and value. Only `ollama` is registered today,
+  and the command binaries still construct the Ollama client directly, so the
+  selector is validated but does not yet switch the active client. `EMBED_DIM`
+  is validated against the stored column before any write.
 - **Multilingual retrieval (RAG-009)** — `CORPUS_LANGUAGE` selects the FTS
-  configuration (`NormalizeFTSConfig`; unset → `english`, unsupported → `simple`)
-  and is stored per document; the FTS config is a bound SQL parameter.
+  configuration (`normalize_fts_config` in `src/storage_pg.rs`; unset → `english`,
+  unsupported → `simple`) and is stored per document; the FTS config is a bound SQL
+  parameter.
 - **Metadata filtering (RAG-011)** — an optional parameterized `Filter` (source
   prefix with LIKE-escaping, language, ingested-date range) narrows vector search,
   keyword search, and section expansion; a zero filter is byte-identical to the
@@ -29,21 +30,19 @@ integration suite). They are recorded here so the code and this document agree:
   subset of ranked documents whose byte-estimated size fits `CONTEXT_BUDGET`
   (higher-rank priority, round-robin fairness, oversize chunks excluded); `0`
   disables it and keeps the chunk-count behaviour.
-- **Reranking hardening (RAG-012)** — a malformed, slow, or failed LLM reranker
-  degrades to the fused order (bounded by `RERANK_TIMEOUT`) instead of aborting the
-  request; the default stays off.
+- **Reranking hardening (RAG-012) — not present in the Rust tree.** The Go
+  baseline degraded a malformed, slow, or failed LLM reranker to the fused order
+  (bounded by `RERANK_TIMEOUT`); the Rust retrieval path has no reranker.
 - **Structured citation validation (RAG-013)** — `src/answer/citation.rs` parses,
   validates, and repairs `[source - section]` citations; `RAG_CITATION_VALIDATION`
-  runs it in `src/bin/query.rs` (off by default), reusing the parser that `src/bin/eval.rs`
-  already used.
-- **Structured observability (RAG-014)** — `OBSERVABILITY_FORMAT=json` emits one
-  correlated `log/slog` record per run (run ID, stage timings, counts, context
-  usage); the default `human` output is unchanged.
+  enables it in the answer path (off by default).
+- **Structured observability (RAG-014) — not present in the Rust tree.** The Go
+  baseline's `OBSERVABILITY_FORMAT=json` records are not implemented by the Rust
+  binaries.
 - **Security hardening (RAG-015)** — `MAX_QUESTION_BYTES`/`MAX_INPUT_BYTES` fail
-  fast with actionable errors; the answer prompt separates trusted instructions
+  fast with actionable errors, and the answer prompt separates trusted instructions
   from untrusted retrieved text (see
-  [`docs/operations/prompt-injection.md`](../operations/prompt-injection.md));
-  the pre-commit hook runs `govulncheck` when it is installed.
+  [`docs/operations/prompt-injection.md`](../operations/prompt-injection.md)).
 
 ## Phase 23b capabilities
 

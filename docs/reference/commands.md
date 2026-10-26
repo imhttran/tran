@@ -40,7 +40,7 @@ Run them with `cargo run --locked --bin <name>` or use the Makefile shortcuts.
 [guides/usage.md](../guides/usage.md#update-the-local-app-after-a-merge)). It
 uses the checked-out code and never fetches, branches, stashes, or resets.
 Birth and death dates are refreshed by the same migrate + import step; see
-[guides/genealogy-dates.md](../guides/genealogy-dates.md#operator-refresh).
+[guides/genealogy-dates.md](../guides/genealogy-dates.md#6-operator-refresh).
 `make admin-setup KEYCLOAK_USERNAME=…` is explicit and never runs from
 `app-update`; the configuration, manual equivalents, verification, and recovery
 steps are in
