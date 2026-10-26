@@ -1,6 +1,6 @@
 # Platform support
 
-This page classifies the platforms the RAG template runs on, its prerequisites, and its gaps.
+This page classifies the platforms the Tran archive runs on, its prerequisites, and its gaps.
 Support is stated explicitly as one of:
 
 - **Verified** — exercised on this platform (commands run, results observed).
