@@ -2712,8 +2712,8 @@ async fn family_profile(
 
 /// Reads one person's approved, family-visible archive history.
 ///
-/// Same authorization, same transaction-bound membership check, and the same
-/// error mapping as [`family_profile`]. The response contains only the
+/// Administrators may read it without a family-person link; every other caller
+/// keeps the transaction-bound membership check. The response contains only the
 /// [`onboarding::read_family_history`] projection, so pending, rejected,
 /// admin-only, restricted, and superseded text is never serialized.
 #[allow(clippy::result_large_err)]
@@ -2726,13 +2726,14 @@ async fn family_history(
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    let is_admin = identity.has_role(Role::Admin);
     let config = state.config.clone();
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let account = resolve_profile_account(&config, &issuer, &subject)?;
         let mut genealogy = open_genealogy_response(&config)?;
-        onboarding::read_family_history(&mut genealogy, &account, &person_key)
+        onboarding::read_family_history(&mut genealogy, &account, &person_key, is_admin)
             .map_err(family_profile_error)
     })
     .await;
@@ -3627,23 +3628,24 @@ async fn genealogy_records(State(state): State<AppState>, headers: HeaderMap) ->
 
 /// Authorized, bounded, read-only genealogy graph.
 ///
-/// History counts are populated only for an active linked family member,
-/// because that is the only caller allowed to read the passages. Identity or
-/// link resolution fails closed (zero counts) without failing the tree.
+/// History counts are populated for an administrator and for an active linked
+/// family member, because those are the callers allowed to read the passages.
+/// Identity or link resolution fails closed (zero counts) without failing the
+/// tree.
 async fn genealogy_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let identity = match authorize(&state, &headers, Operation::GenealogyRead) {
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    let is_admin = identity.has_role(Role::Admin);
     let config = state.config.clone();
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_genealogy(&config)?;
         let include_history = match resolve_profile_account(&config, &issuer, &subject) {
-            Ok(account) => {
-                onboarding::has_active_family_link(&mut client, &account).unwrap_or(false)
-            }
+            Ok(account) => onboarding::can_read_family_history(&mut client, &account, is_admin)
+                .unwrap_or(false),
             Err(_) => false,
         };
         genealogy_tree::load_tree(&mut client, include_history).map_err(|err| err.to_string())

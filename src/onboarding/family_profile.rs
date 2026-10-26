@@ -170,24 +170,26 @@ pub fn read_family_profile(
     })
 }
 
-/// Reads one person's published archive history for a linked member.
+/// Reads one person's published archive history for a family reader.
 ///
-/// This uses the same membership check as [`read_family_profile`] in the same
-/// transaction as the read, and the same error mapping, so an unlinked caller
-/// cannot distinguish a missing person from a forbidden one. The returned list
-/// is the [`narrative::family_history`] projection: approved, family-visible,
-/// accepted-link, newest-approved-revision rows only.
+/// An administrator may read it without a family-person link; every other
+/// caller still needs an active linked membership. The check runs in the same
+/// transaction as the read, and the same error mapping is used, so an
+/// unauthorized caller cannot distinguish a missing person from a forbidden
+/// one. The returned list is the [`narrative::family_history`] projection:
+/// approved, family-visible, accepted-link, newest-approved-revision rows only.
 pub fn read_family_history(
     client: &mut postgres::Client,
     requester: &IdentityAccount,
     person_key: &str,
+    is_admin: bool,
 ) -> Result<FamilyHistory, FamilyProfileError> {
     let person_key = person_key.trim();
     if person_key.is_empty() {
         return Err(FamilyProfileError::UnknownPerson);
     }
     let mut tx = client.transaction()?;
-    require_active_link(&mut tx, requester)?;
+    require_history_access(&mut tx, requester, is_admin)?;
     let Some((person_id, display_name)) = family_person(&mut tx, person_key)? else {
         return Err(FamilyProfileError::UnknownPerson);
     };
@@ -201,22 +203,49 @@ pub fn read_family_history(
     })
 }
 
-/// Whether this identity currently holds an active linked family membership.
+/// Whether this caller may read published family history.
 ///
-/// The tree uses this only to decide whether it may count published history. A
-/// false result is fail-closed: the tree still renders, with no history links.
-pub fn has_active_family_link(
+/// The rule is the same for the tree history count and the person-scoped read:
+/// an administrator may read it without a person link, and every other caller
+/// needs an active linked membership. A false result is fail-closed: the tree
+/// still renders, without history links.
+pub fn can_read_family_history(
     client: &mut postgres::Client,
     requester: &IdentityAccount,
+    is_admin: bool,
 ) -> Result<bool, FamilyProfileError> {
     let mut tx = client.transaction()?;
-    let linked = match require_active_link(&mut tx, requester) {
-        Ok(_) => true,
-        Err(FamilyProfileError::NotFamilyMember) => false,
-        Err(err) => return Err(err),
-    };
+    let allowed = history_access(&mut tx, requester, is_admin)?;
     tx.commit()?;
-    Ok(linked)
+    Ok(allowed)
+}
+
+fn require_history_access(
+    tx: &mut Transaction<'_>,
+    requester: &IdentityAccount,
+    is_admin: bool,
+) -> Result<(), FamilyProfileError> {
+    if history_access(tx, requester, is_admin)? {
+        Ok(())
+    } else {
+        Err(FamilyProfileError::NotFamilyMember)
+    }
+}
+
+/// The one history-audience rule: an administrator, or an active linked member.
+fn history_access(
+    tx: &mut Transaction<'_>,
+    requester: &IdentityAccount,
+    is_admin: bool,
+) -> Result<bool, FamilyProfileError> {
+    if is_admin {
+        return Ok(true);
+    }
+    match require_active_link(tx, requester) {
+        Ok(_) => Ok(true),
+        Err(FamilyProfileError::NotFamilyMember) => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 /// The shared membership check: the caller's exact identity must hold a link.

@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls};
 use rag_foundation::genealogy::narrative::{self, PassageDecision, PassageVisibility};
 use rag_foundation::onboarding::{
-    has_active_family_link, read_family_history, read_family_profile, read_owner_profile,
+    can_read_family_history, read_family_history, read_family_profile, read_owner_profile,
     FamilyProfileError, IdentityAccount, ProfileVisibility,
 };
 
@@ -389,9 +389,9 @@ fn family_history_read_refuses_an_unlinked_caller_and_keeps_provenance() {
     tx.commit().expect("commit");
 
     // Imported passages start pending and admin-only.
-    assert!(has_active_family_link(&mut db.genealogy, &reader).expect("membership"));
-    let history =
-        read_family_history(&mut db.genealogy, &reader, &subject_key).expect("authorized person");
+    assert!(can_read_family_history(&mut db.genealogy, &reader, false).expect("membership"));
+    let history = read_family_history(&mut db.genealogy, &reader, &subject_key, false)
+        .expect("authorized person");
     assert!(history.history.is_empty());
 
     let passage_id: i64 = db
@@ -414,8 +414,8 @@ fn family_history_read_refuses_an_unlinked_caller_and_keeps_provenance() {
     )
     .expect("approve");
 
-    let history =
-        read_family_history(&mut db.genealogy, &reader, &subject_key).expect("authorized person");
+    let history = read_family_history(&mut db.genealogy, &reader, &subject_key, false)
+        .expect("authorized person");
     assert_eq!(history.person_key, subject_key);
     assert_eq!(history.display_name, "Synthetic Family Person subject");
     assert_eq!(history.history.len(), 1);
@@ -426,11 +426,121 @@ fn family_history_read_refuses_an_unlinked_caller_and_keeps_provenance() {
     assert_eq!(history.history[0].body.trim(), "Verbatim paragraph.");
 
     let stranger = db.account("stranger");
-    assert!(!has_active_family_link(&mut db.genealogy, &stranger).expect("membership"));
+    assert!(!can_read_family_history(&mut db.genealogy, &stranger, false).expect("membership"));
     assert!(matches!(
-        read_family_history(&mut db.genealogy, &stranger, &subject_key),
+        read_family_history(&mut db.genealogy, &stranger, &subject_key, false),
         Err(FamilyProfileError::NotFamilyMember)
     ));
+}
+
+#[test]
+fn an_administrator_reads_published_history_without_a_link_but_not_the_profile() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    // No account-to-person link: this caller must pass only as an administrator.
+    let admin = db.account("admin");
+    let (_subject, subject_key) = db.person("subject");
+
+    let source = format!("synthetic/{}/admin-history.md", db.prefix);
+    let text = "## PDF page 5\n\n### Synthetic Family Person subject\n\nVerbatim paragraph.\n";
+    let parse = narrative::parse_narrative(text, &source);
+    let people = narrative::linkable_people(&mut db.genealogy).expect("people");
+    let mut tx = db.genealogy.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        &source,
+        &"b".repeat(64),
+        "translation",
+        "en",
+        &parse,
+        &people,
+    )
+    .expect("import");
+    tx.commit().expect("commit");
+
+    let passage_id: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT p.passage_id FROM source_narrative_passage p \
+              JOIN source_document sd ON sd.source_document_id = p.source_document_id \
+             WHERE sd.relative_path = $1",
+            &[&source],
+        )
+        .expect("passage")
+        .get(0);
+
+    // Pending text is not history, even for an administrator.
+    assert!(can_read_family_history(&mut db.genealogy, &admin, true).expect("admin gate"));
+    assert!(
+        read_family_history(&mut db.genealogy, &admin, &subject_key, true)
+            .expect("admin read")
+            .history
+            .is_empty()
+    );
+    // Without the admin flag, an unlinked caller is still refused.
+    assert!(!can_read_family_history(&mut db.genealogy, &admin, false).expect("link gate"));
+    assert!(matches!(
+        read_family_history(&mut db.genealogy, &admin, &subject_key, false),
+        Err(FamilyProfileError::NotFamilyMember)
+    ));
+
+    // An approved but admin-only passage stays hidden from the family audience.
+    narrative::review_passage(
+        &mut db.genealogy,
+        passage_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::AdminOnly),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve admin only");
+    assert!(
+        read_family_history(&mut db.genealogy, &admin, &subject_key, true)
+            .expect("admin read")
+            .history
+            .is_empty()
+    );
+
+    // Family visibility is readable without a link when the role is admin.
+    narrative::review_passage(
+        &mut db.genealogy,
+        passage_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve family");
+    let history =
+        read_family_history(&mut db.genealogy, &admin, &subject_key, true).expect("admin read");
+    assert_eq!(history.history.len(), 1);
+    assert_eq!(history.history[0].document_ref, source);
+    assert_eq!(history.history[0].body.trim(), "Verbatim paragraph.");
+
+    // The admin exception is for history only; the full family profile still
+    // requires the reviewed account-person link.
+    assert!(matches!(
+        read_family_profile(&mut db.genealogy, &admin, &subject_key),
+        Err(FamilyProfileError::NotFamilyMember)
+    ));
+
+    // Restricting the passage again hides it from the administrator as well.
+    narrative::review_passage(
+        &mut db.genealogy,
+        passage_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::AdminOnly),
+        "synthetic-reviewer",
+        Some("restricted after publication"),
+    )
+    .expect("restrict");
+    assert!(
+        read_family_history(&mut db.genealogy, &admin, &subject_key, true)
+            .expect("admin read")
+            .history
+            .is_empty()
+    );
 }
 
 #[test]
