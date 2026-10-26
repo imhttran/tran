@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use postgres::{Client, Transaction};
 
+use super::query as genealogy_query;
 use super::GenealogyError;
 use crate::inventory::sha256_hex;
 
@@ -762,6 +763,8 @@ impl PassageVisibility {
 }
 
 /// Reviews one passage: its text and its audience.
+///
+/// This wrapper keeps the CLI behaviour: no staleness expectation.
 pub fn review_passage(
     client: &mut Client,
     passage_id: i64,
@@ -770,23 +773,63 @@ pub fn review_passage(
     reviewer: &str,
     note: Option<&str>,
 ) -> Result<(), GenealogyError> {
+    review_passage_checked(
+        client, passage_id, decision, visibility, reviewer, note, None, None,
+    )
+}
+
+/// Reviews one passage with an optional staleness guard.
+///
+/// The row is locked in the same transaction, then `expected_status` and
+/// `expected_version` are compared with the locked row. `expected_version` is
+/// the passage's `updated_at::text`, exactly as the detail read returns it. A
+/// mismatch is a [`GenealogyError::Review`] and nothing is written.
+#[allow(clippy::too_many_arguments)]
+pub fn review_passage_checked(
+    client: &mut Client,
+    passage_id: i64,
+    decision: PassageDecision,
+    visibility: Option<PassageVisibility>,
+    reviewer: &str,
+    note: Option<&str>,
+    expected_status: Option<&str>,
+    expected_version: Option<&str>,
+) -> Result<(), GenealogyError> {
     if reviewer.trim().is_empty() {
         return Err(GenealogyError::Review("reviewer is required".into()));
     }
 
     let mut tx = client.transaction().map_err(GenealogyError::Query)?;
-    let current: Option<String> = tx
+    let current = tx
         .query_opt(
-            "SELECT review_status FROM source_narrative_passage WHERE passage_id = $1 FOR UPDATE",
+            "SELECT review_status, updated_at::text
+               FROM source_narrative_passage
+              WHERE passage_id = $1 FOR UPDATE",
             &[&passage_id],
         )
-        .map_err(GenealogyError::Query)?
-        .map(|row| row.get(0));
-    let Some(from_status) = current else {
+        .map_err(GenealogyError::Query)?;
+    let Some(row) = current else {
         return Err(GenealogyError::Review(
             "no such narrative passage".to_string(),
         ));
     };
+    let from_status: String = row.get(0);
+    let current_version: String = row.get(1);
+
+    if let Some(expected) = expected_status {
+        if expected != from_status {
+            return Err(GenealogyError::Review(
+                "the passage review status changed since it was opened".to_string(),
+            ));
+        }
+    }
+    if let Some(expected) = expected_version {
+        if expected != current_version {
+            return Err(GenealogyError::Review(
+                "the passage changed since it was opened".to_string(),
+            ));
+        }
+    }
 
     // Publishing a passage under a person's name needs at least one link the
     // archive has accepted. The check runs inside this transaction, after the
@@ -847,6 +890,8 @@ pub fn review_passage(
 }
 
 /// Confirms or rejects one person link.
+///
+/// This wrapper keeps the CLI behaviour: no staleness expectation.
 pub fn review_link(
     client: &mut Client,
     passage_id: i64,
@@ -854,6 +899,23 @@ pub fn review_link(
     accept: bool,
     reviewer: &str,
     note: Option<&str>,
+) -> Result<(), GenealogyError> {
+    review_link_checked(client, passage_id, person_key, accept, reviewer, note, None)
+}
+
+/// Confirms or rejects one person link with an optional staleness guard.
+///
+/// The link row is locked in the same transaction, then `expected_link_status`
+/// is compared with the locked row. A mismatch is a [`GenealogyError::Review`]
+/// and nothing is written. Link review never changes the passage status.
+pub fn review_link_checked(
+    client: &mut Client,
+    passage_id: i64,
+    person_key: &str,
+    accept: bool,
+    reviewer: &str,
+    note: Option<&str>,
+    expected_link_status: Option<&str>,
 ) -> Result<(), GenealogyError> {
     if reviewer.trim().is_empty() {
         return Err(GenealogyError::Review("reviewer is required".into()));
@@ -880,6 +942,14 @@ pub fn review_link(
     let Some(from_status) = from_status else {
         return Err(GenealogyError::Review("no such narrative link".to_string()));
     };
+
+    if let Some(expected) = expected_link_status {
+        if expected != from_status {
+            return Err(GenealogyError::Review(
+                "the person link changed since it was opened".to_string(),
+            ));
+        }
+    }
 
     let to_status = if accept { "confirmed" } else { "rejected" };
     tx.execute(
@@ -926,13 +996,6 @@ pub struct FamilyPassage {
 }
 
 /// The one predicate for published family history.
-///
-/// The passage is `approved`, its visibility is `family` (a restriction sets it
-/// back to `admin_only`), the person link is `resolved` or `confirmed`, and the
-/// passage is the newest approved revision in its slot. `pending`, `rejected`,
-/// `admin_only`, and superseded text can never satisfy it. Both the per-person
-/// read and the per-person count use this CTE, so a count cannot disagree with
-/// the passages it describes.
 const PUBLISHED_HISTORY_CTE: &str = "\
 WITH published_history AS (
     SELECT l.person_id, p.passage_id
@@ -952,8 +1015,6 @@ WITH published_history AS (
 )";
 
 /// Reads the approved archive history for one person.
-///
-/// The predicate is [`PUBLISHED_HISTORY_CTE`].
 pub fn family_history(
     tx: &mut Transaction<'_>,
     person_id: i64,
@@ -986,10 +1047,6 @@ pub fn family_history(
 }
 
 /// Counts published archive passages per person key.
-///
-/// This uses [`PUBLISHED_HISTORY_CTE`], the same predicate as
-/// [`family_history`], so the tree badge and the dialog can never disagree.
-/// Keys with no published passage are absent from the result.
 pub fn published_history_counts(
     client: &mut Client,
     person_keys: &[String],
@@ -1009,6 +1066,635 @@ pub fn published_history_counts(
         .query(&sql, &[&person_keys])
         .map_err(GenealogyError::Query)?;
     Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Admin review read models (PH-202)
+// ---------------------------------------------------------------------------
+
+/// One person link candidate on a passage, for the admin review screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewLink {
+    /// Stable person key.
+    pub person_key: String,
+    /// Display name from the catalog.
+    pub display_name: String,
+    /// `resolved`, `ambiguous`, `confirmed`, or `rejected`.
+    pub link_status: String,
+    /// `section_heading`, `explicit_id`, or `name_mention`.
+    pub match_kind: String,
+    /// The proposal's evidence note, when recorded.
+    pub evidence_note: Option<String>,
+    /// The reviewer who decided the link, when one did.
+    pub reviewed_by: Option<String>,
+    /// The decision timestamp as PostgreSQL text, when one exists.
+    pub reviewed_at: Option<String>,
+}
+
+/// One passage in the admin review read models.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPassage {
+    pub passage_id: i64,
+    pub language: String,
+    pub section_title: Option<String>,
+    /// The source document's relative path.
+    pub document_ref: String,
+    pub page_start: i32,
+    pub page_end: i32,
+    pub review_status: String,
+    pub visibility: String,
+    /// The complete verbatim body, paragraph breaks preserved.
+    pub body: String,
+    /// A short, single-line excerpt for list rows.
+    pub excerpt: String,
+    /// `updated_at::text`, exactly as PostgreSQL returns it. This is the
+    /// passage version the review conflict check compares.
+    pub updated_at: String,
+}
+
+/// Genealogy-only context for one linked person, never private identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPersonContext {
+    pub person_key: String,
+    pub display_name: String,
+    pub aliases: Vec<String>,
+    /// A verified birth label, when one is recorded.
+    pub birth: Option<String>,
+    /// A verified death label, when one is recorded.
+    pub death: Option<String>,
+    /// Recorded parent names.
+    pub parents: Vec<String>,
+    /// Recorded spouse names.
+    pub spouses: Vec<String>,
+    /// Recorded child names.
+    pub children: Vec<String>,
+}
+
+/// One append-only review event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewEvent {
+    pub event_id: i64,
+    /// The linked person, for a link review; `None` for a passage review.
+    pub person_key: Option<String>,
+    pub actor: String,
+    pub action: String,
+    pub from_status: Option<String>,
+    pub to_status: String,
+    pub visibility: Option<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+/// The complete admin review of one passage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPassageDetail {
+    pub passage: ReviewPassage,
+    /// Every link candidate with its status.
+    pub links: Vec<ReviewLink>,
+    /// Genealogy context for every linked person.
+    pub people: Vec<ReviewPersonContext>,
+    /// The append-only review events for this passage, oldest first.
+    pub events: Vec<ReviewEvent>,
+}
+
+/// The applied admin review filters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFilters {
+    /// `pending`, `approved`, `rejected`, or `all`.
+    pub status: String,
+    /// `vi`, `en`, or `None` for every language.
+    pub language: Option<String>,
+    /// An exact person key, when filtering by person.
+    pub person_key: Option<String>,
+    /// Only passages with no link candidate at all.
+    pub unmatched_only: bool,
+    /// `all`, `needs_confirmation`, `no_accepted`, `has_accepted`, or
+    /// `no_candidates`.
+    pub link: String,
+    /// `admin_only`, `family`, or `None` for every visibility.
+    pub visibility: Option<String>,
+    /// Exact source document relative path.
+    pub document_ref: Option<String>,
+    /// Inclusive PDF page overlap start.
+    pub page_from: Option<i32>,
+    /// Inclusive PDF page overlap end.
+    pub page_to: Option<i32>,
+    /// Accent-insensitive search over the section title and passage body.
+    pub search: Option<String>,
+    /// Zero-based row offset. The API applies this after filtering.
+    pub offset: i64,
+    /// The bounded row limit that was applied.
+    pub limit: i64,
+}
+
+impl Default for ReviewFilters {
+    fn default() -> Self {
+        Self {
+            status: "pending".to_string(),
+            language: None,
+            person_key: None,
+            unmatched_only: false,
+            link: "all".to_string(),
+            visibility: None,
+            document_ref: None,
+            page_from: None,
+            page_to: None,
+            search: None,
+            offset: 0,
+            limit: REVIEW_QUEUE_DEFAULT_LIMIT,
+        }
+    }
+}
+
+/// One passage and its link candidates in the admin review queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueueEntry {
+    pub passage: ReviewPassage,
+    pub links: Vec<ReviewLink>,
+}
+
+/// One page of the admin review queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueue {
+    pub entries: Vec<ReviewQueueEntry>,
+    /// True when more rows match than the requested page returned.
+    pub truncated: bool,
+    /// The number of rows that match every filter, before pagination.
+    pub total: i64,
+    /// Source documents that have at least one narrative passage.
+    pub documents: Vec<String>,
+    pub filters: ReviewFilters,
+}
+
+/// The default and maximum queue limit.
+pub const REVIEW_QUEUE_DEFAULT_LIMIT: i64 = 100;
+/// The largest accepted queue limit.
+pub const REVIEW_QUEUE_MAX_LIMIT: i64 = 200;
+
+/// The short single-line excerpt for a list row.
+fn excerpt_of(body: &str) -> String {
+    const MAX: usize = 160;
+    let single = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single.chars().count() > MAX {
+        let truncated: String = single.chars().take(MAX).collect();
+        format!("{truncated}…")
+    } else {
+        single
+    }
+}
+
+fn review_passage_from_row(row: &postgres::Row) -> ReviewPassage {
+    let body: String = row.get(8);
+    ReviewPassage {
+        passage_id: row.get(0),
+        language: row.get(1),
+        section_title: row.get(2),
+        document_ref: row.get(3),
+        page_start: row.get(4),
+        page_end: row.get(5),
+        review_status: row.get(6),
+        visibility: row.get(7),
+        excerpt: excerpt_of(&body),
+        body,
+        updated_at: row.get(9),
+    }
+}
+
+/// Lists passages for the admin review queue.
+///
+/// All link candidates, including rejected links, are returned with each
+/// passage. Filters are applied in SQL before pagination: status, language,
+/// exact person key, unmatched-only, link state, visibility, source document,
+/// an inclusive PDF page overlap, and an accent-insensitive search over linked
+/// person names, section titles, and passage text. Ordering is deterministic and
+/// both the offset and limit are bounded.
+pub fn review_queue(
+    client: &mut Client,
+    filters: &ReviewFilters,
+) -> Result<ReviewQueue, GenealogyError> {
+    let applied = ReviewFilters {
+        status: filters.status.clone(),
+        language: filters.language.clone(),
+        person_key: filters.person_key.clone(),
+        unmatched_only: filters.unmatched_only,
+        link: filters.link.clone(),
+        visibility: filters.visibility.clone(),
+        document_ref: filters.document_ref.clone(),
+        page_from: filters.page_from,
+        page_to: filters.page_to,
+        search: filters
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        offset: filters.offset.max(0),
+        limit: filters.limit.clamp(1, REVIEW_QUEUE_MAX_LIMIT),
+    };
+    let documents = narrative_documents(client)?;
+    let person_id: Option<i64> = match applied.person_key.as_deref() {
+        Some(key) => client
+            .query_opt(
+                "SELECT person_id FROM person WHERE person_key = $1",
+                &[&key],
+            )
+            .map_err(GenealogyError::Query)?
+            .map(|row| row.get(0)),
+        None => None,
+    };
+    // A supplied person key that does not exist is an empty result, not an
+    // absent filter. Passing NULL to the SQL below would silently remove the
+    // person filter and return every passage.
+    if applied.person_key.is_some() && person_id.is_none() {
+        return Ok(ReviewQueue {
+            entries: Vec::new(),
+            truncated: false,
+            total: 0,
+            documents,
+            filters: applied,
+        });
+    }
+    let status = match applied.status.as_str() {
+        "all" => None,
+        other => Some(other.to_string()),
+    };
+    let predicate = r#"
+        ($1::text IS NULL OR p.review_status = $1)
+        AND ($2::text IS NULL OR p.language = $2)
+        AND ($3::bigint IS NULL OR EXISTS (
+              SELECT 1 FROM source_narrative_link l
+               WHERE l.passage_id = p.passage_id AND l.person_id = $3))
+        AND (NOT $4::boolean OR NOT EXISTS (
+              SELECT 1 FROM source_narrative_link l
+               WHERE l.passage_id = p.passage_id))
+        AND (
+            $5::text = 'all'
+            OR ($5::text = 'needs_confirmation' AND EXISTS (
+                  SELECT 1 FROM source_narrative_link l
+                   WHERE l.passage_id = p.passage_id AND l.link_status = 'ambiguous'))
+            OR ($5::text = 'no_accepted' AND NOT EXISTS (
+                  SELECT 1 FROM source_narrative_link l
+                   WHERE l.passage_id = p.passage_id
+                     AND l.link_status IN ('resolved', 'confirmed')))
+            OR ($5::text = 'has_accepted' AND EXISTS (
+                  SELECT 1 FROM source_narrative_link l
+                   WHERE l.passage_id = p.passage_id
+                     AND l.link_status IN ('resolved', 'confirmed')))
+            OR ($5::text = 'no_candidates' AND NOT EXISTS (
+                  SELECT 1 FROM source_narrative_link l
+                   WHERE l.passage_id = p.passage_id))
+        )
+        AND ($6::text IS NULL OR p.visibility = $6)
+        AND ($7::text IS NULL OR sd.relative_path = $7)
+        AND ($8::int IS NULL OR p.page_end >= $8)
+        AND ($9::int IS NULL OR p.page_start <= $9)
+        AND (
+            $10::text IS NULL
+            OR narrative_search_normalize(coalesce(p.section_title, ''))
+                 LIKE '%' || narrative_search_normalize($10) || '%'
+            OR narrative_search_normalize(p.body)
+                 LIKE '%' || narrative_search_normalize($10) || '%'
+        )
+    "#;
+    let count_sql = format!(
+        "SELECT count(*)::bigint
+           FROM source_narrative_passage p
+           JOIN source_document sd ON sd.source_document_id = p.source_document_id
+          WHERE {predicate}"
+    );
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &status,
+        &applied.language,
+        &person_id,
+        &applied.unmatched_only,
+        &applied.link,
+        &applied.visibility,
+        &applied.document_ref,
+        &applied.page_from,
+        &applied.page_to,
+        &applied.search,
+    ];
+    let total: i64 = client
+        .query_one(&count_sql, &params)
+        .map_err(GenealogyError::Query)?
+        .get(0);
+    let page_limit = applied.limit + 1;
+    let offset = applied.offset;
+    params.push(&page_limit);
+    params.push(&offset);
+    let sql = format!(
+        "SELECT p.passage_id, p.language, p.section_title, sd.relative_path,
+                p.page_start, p.page_end, p.review_status, p.visibility, p.body,
+                p.updated_at::text
+           FROM source_narrative_passage p
+           JOIN source_document sd ON sd.source_document_id = p.source_document_id
+          WHERE {predicate}
+          ORDER BY p.review_status, p.page_start, p.page_end, p.passage_id
+          LIMIT $11 OFFSET $12"
+    );
+    let rows = client.query(&sql, &params).map_err(GenealogyError::Query)?;
+    let truncated = rows.len() as i64 > applied.limit;
+    let rows = &rows[..rows.len().min(applied.limit as usize)];
+    let passages: Vec<ReviewPassage> = rows.iter().map(review_passage_from_row).collect();
+    let ids: Vec<i64> = passages.iter().map(|passage| passage.passage_id).collect();
+    let mut links = review_links_for(client, &ids)?;
+    let entries = passages
+        .into_iter()
+        .map(|passage| {
+            let candidates = links.remove(&passage.passage_id).unwrap_or_default();
+            ReviewQueueEntry {
+                passage,
+                links: candidates,
+            }
+        })
+        .collect();
+    Ok(ReviewQueue {
+        entries,
+        truncated,
+        total,
+        documents,
+        filters: applied,
+    })
+}
+
+/// Distinct source documents that have narrative passages, for the queue filter.
+fn narrative_documents(client: &mut Client) -> Result<Vec<String>, GenealogyError> {
+    let rows = client
+        .query(
+            "SELECT DISTINCT sd.relative_path
+               FROM source_document sd
+               JOIN source_narrative_passage p
+                 ON p.source_document_id = sd.source_document_id
+              ORDER BY sd.relative_path",
+            &[],
+        )
+        .map_err(GenealogyError::Query)?;
+    Ok(rows.iter().map(|row| row.get(0)).collect())
+}
+
+/// Reads every link candidate for one passage with its display name.
+fn review_links(client: &mut Client, passage_id: i64) -> Result<Vec<ReviewLink>, GenealogyError> {
+    Ok(review_links_for(client, &[passage_id])?
+        .remove(&passage_id)
+        .unwrap_or_default())
+}
+
+/// Reads every link candidate for a set of passages, grouped by passage id.
+fn review_links_for(
+    client: &mut Client,
+    passage_ids: &[i64],
+) -> Result<BTreeMap<i64, Vec<ReviewLink>>, GenealogyError> {
+    if passage_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows = client
+        .query(
+            "SELECT l.passage_id, pe.person_key, pe.display_name, l.link_status, l.match_kind,
+                    l.evidence_note, l.reviewed_by, l.reviewed_at::text
+               FROM source_narrative_link l
+               JOIN person pe ON pe.person_id = l.person_id
+              WHERE l.passage_id = ANY($1::bigint[])
+              ORDER BY l.passage_id, pe.person_key",
+            &[&passage_ids],
+        )
+        .map_err(GenealogyError::Query)?;
+    let mut grouped: BTreeMap<i64, Vec<ReviewLink>> = BTreeMap::new();
+    for row in &rows {
+        grouped.entry(row.get(0)).or_default().push(ReviewLink {
+            person_key: row.get(1),
+            display_name: row.get(2),
+            link_status: row.get(3),
+            match_kind: row.get(4),
+            evidence_note: row.get(5),
+            reviewed_by: row.get(6),
+            reviewed_at: row.get(7),
+        });
+    }
+    Ok(grouped)
+}
+
+/// Builds genealogy-only context from the existing person reads.
+///
+/// Only [`genealogy_query::lookup_person`] and
+/// [`genealogy_query::lookup_relationship`] are used: no fact is invented, and
+/// no private identity data is read.
+pub fn review_person_context(
+    client: &mut Client,
+    person_key: &str,
+) -> Result<Option<ReviewPersonContext>, GenealogyError> {
+    // The relationship reads and the person reads both borrow the client, so
+    // the person is loaded first, then the family names are resolved.
+    let Some(person) = genealogy_query::lookup_person(client, person_key)? else {
+        return Ok(None);
+    };
+    let display_name = person
+        .display_name
+        .clone()
+        .unwrap_or_else(|| person_key.to_string());
+    let aliases: Vec<String> = client
+        .query(
+            "SELECT name_variant FROM person_name_variant WHERE person_id = (
+                SELECT person_id FROM person WHERE person_key = $1
+             ) ORDER BY name_variant",
+            &[&person_key],
+        )
+        .map_err(GenealogyError::Query)?
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    let mut birth: Option<String> = None;
+    let mut death: Option<String> = None;
+    for assertion in &person.assertions {
+        if assertion.review_status != "verified" {
+            continue;
+        }
+        let Some(date) = assertion.date.as_ref() else {
+            continue;
+        };
+        let label = match date.qualifier.as_str() {
+            "exact" => date.start.clone(),
+            other => format!("{other} {}", date.start),
+        };
+        match assertion.kind.as_str() {
+            "birth" | "birth_date" if birth.is_none() => birth = Some(label),
+            "death" | "death_date" if death.is_none() => death = Some(label),
+            _ => {}
+        }
+    }
+
+    let parents = related_names(client, person_key, "parent")?;
+    let spouses = related_names(client, person_key, "spouse")?;
+    let children = related_names(client, person_key, "child")?;
+
+    Ok(Some(ReviewPersonContext {
+        person_key: person_key.to_string(),
+        display_name,
+        aliases,
+        birth,
+        death,
+        parents,
+        spouses,
+        children,
+    }))
+}
+
+/// Reads recorded parent/spouse/child display names from the relationship links.
+///
+/// This is a genealogy read only; it never creates or promotes a relationship.
+fn related_names(
+    client: &mut Client,
+    person_key: &str,
+    relation: &str,
+) -> Result<Vec<String>, GenealogyError> {
+    let sql = match relation {
+        "parent" => {
+            "SELECT p.display_name FROM parent_child_link pcl
+                       JOIN person c ON c.person_id = pcl.child_id
+                       JOIN person p ON p.person_id = pcl.parent_id
+                      WHERE c.person_key = $1 ORDER BY p.display_name"
+        }
+        "child" => {
+            "SELECT c.display_name FROM parent_child_link pcl
+                      JOIN person p ON p.person_id = pcl.parent_id
+                      JOIN person c ON c.person_id = pcl.child_id
+                     WHERE p.person_key = $1 ORDER BY c.display_name"
+        }
+        "spouse" => {
+            "SELECT s.display_name FROM spouse_link sl
+                       JOIN person p ON p.person_id = sl.person_id
+                       JOIN person s ON s.person_id = sl.spouse_id
+                      WHERE p.person_key = $1 ORDER BY s.display_name"
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let rows = client
+        .query(sql, &[&person_key])
+        .map_err(GenealogyError::Query)?;
+    Ok(rows.iter().map(|row| row.get(0)).collect())
+}
+
+/// Searches the catalog for the review screen's person selector.
+///
+/// The query is matched case- and accent-insensitively, including `đ` to `d`,
+/// against the person key, display name, recorded name variants, and assertions.
+/// The returned contexts preserve the original names and add only recorded
+/// genealogy context. A query is never treated as an inferred identity: callers
+/// must select a returned person key explicitly.
+pub fn search_review_people(
+    client: &mut Client,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<ReviewPersonContext>, GenealogyError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 20);
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
+        "SELECT p.person_key
+           FROM person p
+          WHERE narrative_search_normalize(p.person_key)
+                  LIKE '%' || narrative_search_normalize($1) || '%'
+             OR narrative_search_normalize(p.display_name)
+                  LIKE '%' || narrative_search_normalize($1) || '%'
+             OR EXISTS (
+                  SELECT 1 FROM person_name_variant v
+                   WHERE v.person_id = p.person_id
+                     AND narrative_search_normalize(v.name_variant)
+                       LIKE '%' || narrative_search_normalize($1) || '%'
+                )
+             OR EXISTS (
+                  SELECT 1 FROM assertion a
+                   WHERE a.person_id = p.person_id
+                     AND a.assertion_kind = 'name_variant'
+                     AND a.value_text IS NOT NULL
+                     AND ({current})
+                     AND narrative_search_normalize(a.value_text)
+                       LIKE '%' || narrative_search_normalize($1) || '%'
+                )
+          ORDER BY p.display_name, p.person_key
+          LIMIT $2"
+    );
+    let rows = client
+        .query(&sql, &[&query, &limit])
+        .map_err(GenealogyError::Query)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let key: String = row.get(0);
+        if let Some(context) = review_person_context(client, &key)? {
+            out.push(context);
+        }
+    }
+    Ok(out)
+}
+
+fn review_events(client: &mut Client, passage_id: i64) -> Result<Vec<ReviewEvent>, GenealogyError> {
+    let rows = client
+        .query(
+            "SELECT e.event_id, pe.person_key, e.actor, e.action, e.from_status,
+                    e.to_status, e.visibility, e.note, e.created_at::text
+               FROM source_narrative_review_event e
+               LEFT JOIN person pe ON pe.person_id = e.person_id
+              WHERE e.passage_id = $1
+              ORDER BY e.event_id",
+            &[&passage_id],
+        )
+        .map_err(GenealogyError::Query)?;
+    Ok(rows
+        .iter()
+        .map(|row| ReviewEvent {
+            event_id: row.get(0),
+            person_key: row.get(1),
+            actor: row.get(2),
+            action: row.get(3),
+            from_status: row.get(4),
+            to_status: row.get(5),
+            visibility: row.get(6),
+            note: row.get(7),
+            created_at: row.get(8),
+        })
+        .collect())
+}
+
+/// Reads the complete admin review detail for one passage.
+///
+/// A missing passage returns `Ok(None)`. Otherwise the response carries the
+/// complete passage body, its source document, every link candidate, genealogy
+/// context for every linked person, and the append-only review events.
+pub fn review_detail(
+    client: &mut Client,
+    passage_id: i64,
+) -> Result<Option<ReviewPassageDetail>, GenealogyError> {
+    let row = client
+        .query_opt(
+            "SELECT p.passage_id, p.language, p.section_title, sd.relative_path,
+                    p.page_start, p.page_end, p.review_status, p.visibility, p.body,
+                    p.updated_at::text
+               FROM source_narrative_passage p
+               JOIN source_document sd ON sd.source_document_id = p.source_document_id
+              WHERE p.passage_id = $1",
+            &[&passage_id],
+        )
+        .map_err(GenealogyError::Query)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let passage = review_passage_from_row(&row);
+    let links = review_links(client, passage_id)?;
+    let mut people = Vec::with_capacity(links.len());
+    for link in &links {
+        if let Some(context) = review_person_context(client, &link.person_key)? {
+            people.push(context);
+        }
+    }
+    let events = review_events(client, passage_id)?;
+    Ok(Some(ReviewPassageDetail {
+        passage,
+        links,
+        people,
+        events,
+    }))
 }
 
 #[cfg(test)]
@@ -1052,8 +1738,6 @@ Another section.
     #[test]
     fn sections_become_passages_with_page_ranges() {
         let parse = parse();
-        // The page-9 continuation belongs to the page-8 section, so there are
-        // three passages, not four.
         assert_eq!(parse.passages.len(), 3);
         assert_eq!(parse.unpaged_sections, 1);
         assert_eq!(

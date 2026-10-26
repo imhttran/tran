@@ -649,3 +649,640 @@ fn a_pending_revision_key_follows_its_body() {
     // still holds its single row.
     assert_eq!(total, 4, "three page-8 revisions and one page-11 passage");
 }
+
+#[test]
+fn admin_review_queue_and_detail_show_candidates_and_context() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative review read test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+
+    let queue = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: Some("vi".to_string()),
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            ..Default::default()
+        },
+    )
+    .expect("review queue");
+    assert_eq!(queue.entries.len(), 1);
+    assert!(!queue.truncated);
+    let entry = &queue.entries[0];
+    assert_eq!(entry.passage.passage_id, first_id);
+    assert_eq!(entry.passage.document_ref, SOURCE);
+    assert_eq!(entry.passage.page_start, 8);
+    assert_eq!(entry.passage.page_end, 8);
+    assert!(entry
+        .passage
+        .body
+        .contains("First paragraph about the ancestor."));
+    assert_eq!(entry.links.len(), 2);
+    assert!(entry
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-one" && link.link_status == "resolved"));
+    assert!(entry
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-two" && link.link_status == "ambiguous"));
+
+    let detail = narrative::review_detail(&mut client, first_id)
+        .expect("review detail")
+        .expect("passage");
+    assert_eq!(detail.passage.review_status, "pending");
+    assert_eq!(detail.links.len(), 2);
+    assert_eq!(detail.people.len(), 2);
+    assert!(detail
+        .people
+        .iter()
+        .any(|person| person.person_key == "synthetic-one"
+            && person.display_name == "Synthetic Ancestor One"));
+    assert!(
+        detail.events.is_empty(),
+        "import alone writes no review event"
+    );
+
+    let english = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: Some("en".to_string()),
+            person_key: None,
+            unmatched_only: false,
+            ..Default::default()
+        },
+    )
+    .expect("English filter");
+    assert!(english.entries.is_empty());
+
+    let no_person = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: None,
+            person_key: Some("synthetic-unknown".to_string()),
+            unmatched_only: false,
+            ..Default::default()
+        },
+    )
+    .expect("unknown person filter");
+    assert!(no_person.entries.is_empty());
+
+    let unmatched_source = "## Trang PDF 20\n\n### No known person here\n\nUnmatched paragraph.\n";
+    let unmatched_parse =
+        narrative::parse_narrative(unmatched_source, "synthetic/narrative-unmatched.md");
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        "synthetic/narrative-unmatched.md",
+        &"d".repeat(64),
+        "translation",
+        "vi",
+        &unmatched_parse,
+        &people,
+    )
+    .expect("unmatched import");
+    tx.commit().expect("commit");
+
+    let unmatched = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            link: "no_candidates".to_string(),
+            ..Default::default()
+        },
+    )
+    .expect("no-candidates filter");
+    assert_eq!(unmatched.entries.len(), 1);
+    assert!(unmatched.entries[0].links.is_empty());
+}
+
+#[test]
+fn admin_review_actions_are_separate_and_reject_stale_state() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative review action test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+    let before = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    let old_version = before.passage.updated_at.clone();
+
+    narrative::review_link_checked(
+        &mut client,
+        first_id,
+        "synthetic-two",
+        true,
+        "synthetic-reviewer",
+        Some("confirm the ambiguous mention"),
+        Some("ambiguous"),
+    )
+    .expect("confirm link");
+    let after_link = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    assert!(after_link
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-two" && link.link_status == "confirmed"));
+    assert_eq!(
+        after_link.passage.review_status, "pending",
+        "confirming a link must not approve the passage"
+    );
+
+    assert!(
+        narrative::review_link_checked(
+            &mut client,
+            first_id,
+            "synthetic-two",
+            false,
+            "synthetic-reviewer",
+            None,
+            Some("ambiguous"),
+        )
+        .is_err(),
+        "a stale link decision must not overwrite the confirmed link"
+    );
+
+    narrative::review_passage_checked(
+        &mut client,
+        first_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        Some("approved after source review"),
+        Some("pending"),
+        Some(&old_version),
+    )
+    .expect("approve passage");
+    let after_review = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    assert_eq!(after_review.passage.review_status, "approved");
+    assert_eq!(after_review.passage.visibility, "family");
+    assert_eq!(after_review.events.len(), 2);
+    assert!(after_review
+        .events
+        .iter()
+        .any(|event| event.action == "link_review"));
+    assert!(after_review
+        .events
+        .iter()
+        .any(|event| event.action == "passage_review"));
+
+    assert!(
+        narrative::review_passage_checked(
+            &mut client,
+            first_id,
+            PassageDecision::Rejected,
+            Some(PassageVisibility::AdminOnly),
+            "synthetic-reviewer",
+            None,
+            Some("pending"),
+            Some(&old_version),
+        )
+        .is_err(),
+        "a stale passage decision must not overwrite the approved passage"
+    );
+
+    let approved = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "approved".to_string(),
+            language: None,
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            ..Default::default()
+        },
+    )
+    .expect("approved queue");
+    assert_eq!(approved.entries.len(), 1);
+    let pending = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: None,
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            ..Default::default()
+        },
+    )
+    .expect("pending queue");
+    assert!(pending.entries.is_empty());
+}
+
+#[test]
+fn checked_family_approval_still_requires_an_accepted_link() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative checked publish guard test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    let source = "synthetic/narrative-unlinked.md";
+    let text = "## Trang PDF 21\n\n### No catalog match\n\nUnlinked paragraph.\n";
+    let parse = narrative::parse_narrative(text, source);
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        source,
+        &"e".repeat(64),
+        "translation",
+        "vi",
+        &parse,
+        &people,
+    )
+    .expect("import");
+    tx.commit().expect("commit");
+    let passage_id: i64 = client
+        .query_one(
+            "SELECT passage_id FROM source_narrative_passage LIMIT 1",
+            &[],
+        )
+        .expect("passage")
+        .get(0);
+    let detail = narrative::review_detail(&mut client, passage_id)
+        .expect("detail")
+        .expect("passage");
+    assert!(
+        narrative::review_passage_checked(
+            &mut client,
+            passage_id,
+            PassageDecision::Approved,
+            Some(PassageVisibility::Family),
+            "synthetic-reviewer",
+            None,
+            Some("pending"),
+            Some(&detail.passage.updated_at),
+        )
+        .is_err(),
+        "family approval without an accepted link must fail"
+    );
+    let after = narrative::review_detail(&mut client, passage_id)
+        .expect("detail")
+        .expect("passage");
+    assert_eq!(after.passage.review_status, "pending");
+    assert!(after.events.is_empty(), "a rejected guard writes no event");
+}
+
+#[test]
+fn admin_person_search_matches_accent_alias_and_key_without_changing_names() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative person search test");
+        return;
+    };
+    let mut client = target.connect();
+    let person_id: i64 = client
+        .query_one(
+            "INSERT INTO person (person_key, display_name)
+             VALUES ('synthetic-duc-han', 'Trần Đức Hân') RETURNING person_id",
+            &[],
+        )
+        .expect("person")
+        .get(0);
+    client
+        .execute(
+            "INSERT INTO person_name_variant (person_id, name_variant)
+             VALUES ($1, 'Tran Duc Han')",
+            &[&person_id],
+        )
+        .expect("alias");
+
+    for query in ["duc han", "ĐỨC HÂN", "duc-han", "tran duc"] {
+        let people =
+            narrative::search_review_people(&mut client, query, 10).expect("person search");
+        assert!(
+            people
+                .iter()
+                .any(|person| person.person_key == "synthetic-duc-han"
+                    && person.display_name == "Trần Đức Hân"),
+            "search {query:?} should find the original name"
+        );
+    }
+
+    let none = narrative::search_review_people(&mut client, "no such person", 10)
+        .expect("empty person search");
+    assert!(none.is_empty());
+}
+
+#[test]
+fn admin_review_queue_filters_search_page_overlap_and_pagination() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative review filter test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+
+    let mut filters = narrative::ReviewFilters::default();
+    let queue = narrative::review_queue(&mut client, &filters).expect("default queue");
+    assert_eq!(queue.total, 2);
+    assert_eq!(queue.entries.len(), 2);
+    assert_eq!(queue.documents, vec![SOURCE.to_string()]);
+    assert!(!queue.truncated);
+
+    filters.link = "needs_confirmation".to_string();
+    let needs_confirmation = narrative::review_queue(&mut client, &filters).expect("needs");
+    assert_eq!(needs_confirmation.total, 1);
+    assert_eq!(needs_confirmation.entries[0].passage.page_start, 8);
+
+    filters.link = "no_accepted".to_string();
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("no accepted")
+            .total,
+        0
+    );
+
+    filters.link = "has_accepted".to_string();
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("has accepted")
+            .total,
+        2
+    );
+
+    filters.link = "no_candidates".to_string();
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("no candidates")
+            .total,
+        0
+    );
+
+    filters = narrative::ReviewFilters {
+        page_from: Some(9),
+        page_to: Some(10),
+        ..Default::default()
+    };
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("page gap")
+            .total,
+        0
+    );
+    filters.page_from = Some(8);
+    filters.page_to = Some(8);
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("page 8")
+            .total,
+        1
+    );
+    filters.page_from = Some(9);
+    filters.page_to = Some(11);
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("page 11 overlap")
+            .total,
+        1
+    );
+    filters.page_from = Some(8);
+    filters.page_to = Some(11);
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("all pages")
+            .total,
+        2
+    );
+
+    filters = narrative::ReviewFilters {
+        search: Some("ancestor one".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("section search")
+            .total,
+        1
+    );
+    filters.search = Some("SYNTHETIC ANCESTOR TWO".to_string());
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("body/name search")
+            .total,
+        2
+    );
+    filters.search = Some("no such text".to_string());
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("empty search")
+            .total,
+        0
+    );
+
+    filters = narrative::ReviewFilters {
+        document_ref: Some(SOURCE.to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("document filter")
+            .total,
+        2
+    );
+    filters.document_ref = Some("synthetic/other.md".to_string());
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("missing document")
+            .total,
+        0
+    );
+
+    filters = narrative::ReviewFilters {
+        visibility: Some("admin_only".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("admin-only visibility")
+            .total,
+        2
+    );
+    filters.visibility = Some("family".to_string());
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("family visibility")
+            .total,
+        0
+    );
+
+    filters = narrative::ReviewFilters {
+        offset: 0,
+        limit: 1,
+        ..Default::default()
+    };
+    let first_page = narrative::review_queue(&mut client, &filters).expect("first page");
+    assert_eq!(first_page.total, 2);
+    assert_eq!(first_page.entries.len(), 1);
+    assert!(first_page.truncated);
+    filters.offset = 1;
+    let second_page = narrative::review_queue(&mut client, &filters).expect("second page");
+    assert_eq!(second_page.total, 2);
+    assert_eq!(second_page.entries.len(), 1);
+    assert!(!second_page.truncated);
+
+    filters = narrative::ReviewFilters {
+        status: "pending".to_string(),
+        language: Some("vi".to_string()),
+        link: "needs_confirmation".to_string(),
+        visibility: Some("admin_only".to_string()),
+        document_ref: Some(SOURCE.to_string()),
+        page_from: Some(8),
+        page_to: Some(8),
+        search: Some("ancestor one".to_string()),
+        ..Default::default()
+    };
+    let combined = narrative::review_queue(&mut client, &filters).expect("combined filters");
+    assert_eq!(combined.total, 1);
+    assert_eq!(combined.entries[0].passage.page_start, 8);
+
+    let first_id = combined.entries[0].passage.passage_id;
+    narrative::review_passage(
+        &mut client,
+        first_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve family");
+
+    filters = narrative::ReviewFilters {
+        status: "approved".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("approved status")
+            .total,
+        1
+    );
+    filters.visibility = Some("family".to_string());
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("approved family")
+            .total,
+        1
+    );
+    filters = narrative::ReviewFilters::default();
+    assert_eq!(
+        narrative::review_queue(&mut client, &filters)
+            .expect("pending after approval")
+            .total,
+        1
+    );
+}
+
+#[test]
+fn admin_review_queue_search_ignores_case_and_vietnamese_accents() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative search test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    client
+        .execute(
+            "INSERT INTO person (person_key, display_name)
+             VALUES ('synthetic-accented', 'Nguyễn Văn Ánh')",
+            &[],
+        )
+        .expect("accented person");
+
+    let section_source = "synthetic/search-section.md";
+    let section = narrative::parse_narrative(
+        "## Trang PDF 15\n\n### Đời thứ 15: NGUYỄN VĂN ÁNH\n\nĐoạn văn mô tả.\n",
+        section_source,
+    );
+    let name_source = "synthetic/search-name.md";
+    let name = narrative::parse_narrative(
+        "## Trang PDF 16\n\n### Unrelated heading\n\nExplicit key synthetic-accented appears here.\n",
+        name_source,
+    );
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        section_source,
+        &"1".repeat(64),
+        "translation",
+        "vi",
+        &section,
+        &people,
+    )
+    .expect("section import");
+    narrative::import_narrative(
+        &mut tx,
+        name_source,
+        &"2".repeat(64),
+        "translation",
+        "vi",
+        &name,
+        &people,
+    )
+    .expect("name import");
+    tx.commit().expect("commit");
+
+    let mut filters = narrative::ReviewFilters {
+        search: Some("nguyen van anh".to_string()),
+        ..Default::default()
+    };
+    let matched = narrative::review_queue(&mut client, &filters).expect("accent search");
+    assert_eq!(
+        matched.total, 1,
+        "the text search matches the accented section title only"
+    );
+    assert_eq!(matched.entries[0].passage.page_start, 15);
+
+    // Person names are searched through the dedicated person selector, not the
+    // passage text search. The exact selected key still filters the queue.
+    let people_match =
+        narrative::search_review_people(&mut client, "nguyen van anh", 10).expect("person search");
+    assert!(people_match
+        .iter()
+        .any(|person| person.person_key == "synthetic-accented"));
+    filters = narrative::ReviewFilters {
+        person_key: Some("synthetic-accented".to_string()),
+        ..Default::default()
+    };
+    let by_person = narrative::review_queue(&mut client, &filters).expect("person filter");
+    assert_eq!(
+        by_person.total, 2,
+        "both passages carry a link to the selected person"
+    );
+    assert!(by_person
+        .entries
+        .iter()
+        .any(|entry| entry.passage.page_start == 15));
+    assert!(by_person
+        .entries
+        .iter()
+        .any(|entry| entry.passage.page_start == 16));
+
+    filters = narrative::ReviewFilters {
+        search: Some("doan van".to_string()),
+        ..Default::default()
+    };
+    let body = narrative::review_queue(&mut client, &filters).expect("body search");
+    assert_eq!(body.total, 1);
+    assert_eq!(body.entries[0].passage.page_start, 15);
+
+    filters.search = Some("unrelated".to_string());
+    let heading = narrative::review_queue(&mut client, &filters).expect("heading search");
+    assert_eq!(heading.total, 1);
+    assert_eq!(heading.entries[0].passage.page_start, 16);
+}

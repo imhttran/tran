@@ -277,6 +277,28 @@ a { color:var(--accent); }
   .review-actions button { flex:1 1 auto; }
 }
 
+/* Administrator narrative review (PH-202). */
+.narrative-review-body { white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto; background:#faf8f2; border:1px solid #ece7d7; border-radius:10px; padding:14px; margin:12px 0; }
+.narrative-review-body p { margin:0 0 12px; }
+.narrative-review-body p:last-child { margin-bottom:0; }
+.narrative-link-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:10px; }
+.narrative-link-candidate { border:1px solid #e3e2d8; border-radius:10px; padding:12px; background:#fffdf8; }
+.narrative-link-candidate.selected { border-color:var(--accent); background:#eef4ed; box-shadow:inset 3px 0 0 var(--accent); }
+.narrative-link-choice { display:flex; align-items:flex-start; gap:8px; margin:0; cursor:pointer; }
+.narrative-link-choice input { margin-top:3px; }
+.narrative-person-context { margin-top:8px; padding-top:8px; border-top:1px solid #ece9dc; }
+.narrative-link-confirmed { background:#e8f5ec; color:#155c35; border:1px solid #b9ddc5; }
+.narrative-link-resolved { background:#eaf1fb; color:#1f4f86; border:1px solid #c2d6ef; }
+.narrative-link-ambiguous { background:#fff3d8; color:#6b4d00; border:1px solid #e2c777; }
+.narrative-link-rejected { background:#f1f1ee; color:#5f625d; border:1px solid #d9d8d2; }
+.narrative-link-unmatched { background:#fdecec; color:#8a231b; border:1px solid #edc2bd; }
+.narrative-link-pending { background:#fff3d8; color:#6b4d00; border:1px solid #e2c777; }
+.narrative-link-approved { background:#e8f5ec; color:#155c35; border:1px solid #b9ddc5; }
+@media(max-width:600px) {
+  .narrative-review-body { max-height:none; }
+  .narrative-link-choice { align-items:flex-start; }
+}
+
 /* Family document lifecycle (FAM-003). */
 .documents-form { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; align-items:end; }
 .documents-form label, .documents-note { display:grid; gap:4px; font-size:.9rem; color:var(--muted); }
@@ -823,4 +845,40 @@ textarea:focus-visible {
   .personal-history-body { padding:12px 14px 18px; }
   .personal-history-source { grid-template-columns:minmax(0, 1fr); gap:1px 0; }
   .personal-history-source dt { margin-top:6px; }
+}
+
+/* PH-203: narrative review filters and pagination. */
+.narrative-review-filters { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin:16px 0; }
+.narrative-filter-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:end; }
+.narrative-filter-field { display:grid; gap:4px; min-width:0; color:var(--muted); font-size:.85rem; font-weight:600; }
+.narrative-filter-field select, .narrative-filter-field input { min-width:0; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--fg); font:inherit; font-weight:400; }
+.narrative-filter-search { grid-column:span 2; }
+.narrative-filter-page { max-width:150px; }
+.narrative-filter-check { display:flex; align-items:center; padding-bottom:7px; }
+.narrative-filter-check label { display:flex; align-items:center; gap:7px; margin:0; font-weight:500; }
+.narrative-filter-check input { width:auto; }
+.narrative-filter-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.narrative-filter-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 14px; }
+.narrative-filter-summary .hint { margin:0; }
+.narrative-active-filter-list { display:flex; flex-wrap:wrap; gap:6px; list-style:none; margin:0; padding:0; }
+.narrative-active-filter { background:var(--accent-soft); border:1px solid var(--line); border-radius:999px; padding:4px 9px; font-size:.8rem; color:var(--accent); }
+.narrative-pagination { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.narrative-pagination button { margin:0; }
+.narrative-empty { display:grid; justify-items:start; gap:10px; }
+@media(max-width:600px) {
+  .narrative-filter-search { grid-column:span 1; }
+  .narrative-filter-page { max-width:none; }
+  .narrative-filter-actions button { flex:1 1 auto; }
+  .narrative-pagination { justify-content:center; }
+}
+
+/* PH-203 person search selector. */
+.narrative-filter-person { grid-column:span 2; }
+.narrative-selected-person { margin:4px 0 0; padding:6px 8px; background:#eef4ed; border-radius:8px; color:var(--fg); font-size:.85rem; }
+.narrative-person-results { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:6px; max-height:240px; overflow:auto; }
+.narrative-person-option { width:100%; display:grid; gap:2px; text-align:left; margin:0; padding:8px; background:#fff; color:var(--fg); border:1px solid #e3e2d8; border-radius:8px; font-weight:400; }
+.narrative-person-option:hover, .narrative-person-option:focus { border-color:var(--accent); background:#eef4ed; }
+.narrative-person-option strong { font-weight:600; }
+@media(max-width:600px) {
+  .narrative-filter-person { grid-column:span 1; }
 }

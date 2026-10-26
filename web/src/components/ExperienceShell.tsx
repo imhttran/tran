@@ -114,6 +114,11 @@ const UPLOAD_ITEM: NavItem = {
   icon: "upload",
 };
 const ADMIN_ITEMS: NavItem[] = [
+  {
+    href: "/admin/narrative-review",
+    label: "Personal history review",
+    icon: "admin-reviews",
+  },
   { href: "/admin/reviews", label: "Reviews", icon: "admin-reviews" },
   {
     href: "/admin/document-extraction",
