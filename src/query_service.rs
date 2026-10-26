@@ -9,7 +9,7 @@
 //! are synchronous. Async callers run [`QueryService::answer`] on a blocking
 //! task instead of blocking an executor thread.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -30,8 +30,6 @@ use crate::storage_pg::{PgStore, PublicationRow};
 
 /// Default character budget for the model context, matching `bin/query`.
 const DEFAULT_CONTEXT_BUDGET: usize = 4000;
-/// The number of question suggestions the Ask page requests.
-pub const SUGGESTION_LIMIT: usize = 6;
 
 /// Errors raised while building or running the shared query service.
 #[derive(Debug, Error)]
@@ -299,42 +297,11 @@ impl QueryService {
     }
 }
 
-/// Builds deterministic questions from approved archive topics.
-///
-/// The suggestions name only content that is already inside the publication
-/// boundary. They never invent a fact or expose a passage body. The caller
-/// supplies distinct section titles (or source names as fallbacks).
-pub fn suggested_questions(topics: &[String], limit: usize) -> Vec<String> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let mut seen = BTreeSet::new();
-    let mut questions = Vec::new();
-    for topic in topics {
-        let topic = topic.trim();
-        if topic.is_empty() {
-            continue;
-        }
-        let question = format!("What does the archive say about \"{topic}\"?");
-        if seen.insert(question.clone()) {
-            questions.push(question);
-            if questions.len() >= limit {
-                break;
-            }
-        }
-    }
-    questions
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{finalize_candidates, suggested_questions};
+    use super::finalize_candidates;
     use crate::document::Chunk;
     use crate::retrieval::Candidate;
-
-    fn topic(value: &str) -> String {
-        value.to_string()
-    }
 
     fn chunk(section: &str, index: u32) -> Chunk {
         Chunk {
@@ -345,45 +312,6 @@ mod tests {
             content: format!("{section} chunk {index}"),
             page: None,
         }
-    }
-
-    #[test]
-    fn suggestions_are_derived_from_approved_topics() {
-        let questions = suggested_questions(&[topic("Early years"), topic("Migration")], 6);
-        assert_eq!(
-            questions,
-            vec![
-                "What does the archive say about \"Early years\"?",
-                "What does the archive say about \"Migration\"?",
-            ]
-        );
-    }
-
-    #[test]
-    fn duplicates_and_blank_topics_are_removed() {
-        let questions = suggested_questions(
-            &[
-                topic("family.md"),
-                topic("Same title"),
-                topic("Same title"),
-                topic("  "),
-            ],
-            6,
-        );
-        assert_eq!(
-            questions,
-            vec![
-                "What does the archive say about \"family.md\"?",
-                "What does the archive say about \"Same title\"?",
-            ]
-        );
-    }
-
-    #[test]
-    fn no_approved_topics_produce_no_suggestions() {
-        assert!(suggested_questions(&[], 6).is_empty());
-        assert!(suggested_questions(&[topic("")], 6).is_empty());
-        assert!(suggested_questions(&[topic("Section")], 0).is_empty());
     }
 
     #[test]

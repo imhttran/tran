@@ -216,6 +216,51 @@ pub fn section_cap(limit: usize, key_count: usize) -> usize {
     (limit / key_count.max(1)).max(1)
 }
 
+/// Relaxed full-text fallback: ORs the question's stemmed lexemes instead of
+/// requiring every one of them.
+///
+/// `to_tsvector` drops stopwords and applies the language's stemmer, so the
+/// lexeme set is exactly the content words a passage would have to repeat.
+/// `quote_literal` makes each lexeme a tsquery literal, so punctuation in a
+/// term can never be read as a tsquery operator. An all-stopword question
+/// yields no lexemes, and the statement then returns no rows.
+const RELAXED_KEYWORD_SQL: &str = "WITH terms AS ( \
+         SELECT string_agg(quote_literal(lexeme), ' | ') AS query_text \
+           FROM ( \
+                 SELECT DISTINCT lexeme \
+                   FROM unnest(to_tsvector($3::text::regconfig, $1)) \
+                ) AS lexemes \
+     ) \
+     SELECT id, content, source, section, chunk_index, language, page, corpus, \
+            content_hash, embed_model, embedding_dim, chunker_config, \
+            ingested_at::text, embedding::text, \
+            ts_rank( \
+                to_tsvector($3::text::regconfig, COALESCE(section, '') || ' ' || content), \
+                to_tsquery($3::text::regconfig, terms.query_text) \
+            )::float8 AS rank \
+       FROM approved_documents, terms \
+      WHERE corpus = $4 \
+        AND terms.query_text IS NOT NULL \
+        AND to_tsvector( \
+                $3::text::regconfig, COALESCE(section, '') || ' ' || content \
+            ) @@ to_tsquery($3::text::regconfig, terms.query_text) \
+      ORDER BY rank DESC, id \
+      LIMIT $2";
+
+/// Maps ranked rows from either keyword pass back to [`SqlHit`]s.
+fn keyword_hits(rows: &[postgres::Row]) -> Result<Vec<SqlHit>, PgStoreError> {
+    rows.iter()
+        .map(|row| {
+            let keyword_score: f64 = row.try_get(14).map_err(PgStoreError::Query)?;
+            Ok(SqlHit {
+                row: row_to_chunk(row)?,
+                similarity: 0.0,
+                keyword_score,
+            })
+        })
+        .collect()
+}
+
 impl PgStore {
     /// Builds a new store by creating a connection pool from `dsn`.
     pub fn connect(dsn: &str) -> Result<PgStore, PgStoreError> {
@@ -432,29 +477,54 @@ impl PgStore {
             .collect()
     }
 
-    /// Distinct approved topics available for question suggestions.
+    /// Reads the first approved chunk of each section as suggestion material.
     ///
-    /// This reads the same publication boundary as retrieval, so a suggestion
-    /// can only name content that a query is allowed to retrieve. A section
-    /// title is preferred; a source name is the fallback. The limit applies
-    /// after de-duplication, and only labels are returned, never bodies.
+    /// The read is scoped to `corpus` and to `approved_documents`, the same
+    /// publication boundary retrieval uses, so a suggestion can only name
+    /// content a query is allowed to retrieve. Sources are interleaved — one
+    /// section from each source, then the next — so a small approved document is
+    /// represented instead of being hidden behind a large one, and sections keep
+    /// document order within a source. `limit` bounds the sections considered,
+    /// not the suggestions returned; only a heading and a body are returned,
+    /// never a whole corpus.
     pub fn suggestion_sections(
         &self,
         corpus: &str,
         limit: usize,
-    ) -> Result<Vec<String>, PgStoreError> {
+    ) -> Result<Vec<crate::suggestions::SuggestionSection>, PgStoreError> {
         let mut conn = self.connection()?;
         let rows = conn
             .query(
-                "SELECT DISTINCT COALESCE(NULLIF(BTRIM(section), ''), source) AS topic
-                   FROM approved_documents
-                  WHERE corpus = $1
-                  ORDER BY 1
+                "WITH ranked AS ( \
+                     SELECT source, COALESCE(section, '') AS section, content, chunk_index, \
+                            ROW_NUMBER() OVER ( \
+                                PARTITION BY source, section ORDER BY chunk_index, id \
+                            ) AS position \
+                       FROM approved_documents \
+                      WHERE corpus = $1 \
+                 ), \
+                 sections AS ( \
+                     SELECT source, section, content, chunk_index, \
+                            ROW_NUMBER() OVER ( \
+                                PARTITION BY source ORDER BY chunk_index, section \
+                            ) AS source_rank \
+                       FROM ranked \
+                      WHERE position = 1 \
+                 ) \
+                 SELECT section, content \
+                   FROM sections \
+                  ORDER BY source_rank, source, chunk_index \
                   LIMIT $2",
                 &[&corpus, &(limit as i64)],
             )
             .map_err(PgStoreError::Query)?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        Ok(rows
+            .iter()
+            .map(|row| crate::suggestions::SuggestionSection {
+                section: row.get(0),
+                content: row.get(1),
+            })
+            .collect())
     }
 
     /// Revalidates that every identity is still published in `corpus`.
@@ -538,6 +608,14 @@ impl PgStore {
 
     /// Searches `corpus` with PostgreSQL full-text search, returning at most
     /// `top_k` rows ordered by `ts_rank`.
+    ///
+    /// The first pass is `websearch_to_tsquery`, which ANDs every term. Natural
+    /// questions carry interrogative scaffolding ("what does the archive say
+    /// about …") that a passage rarely repeats, so the strict pass can match
+    /// nothing even when the passage answers the question. When it does, a
+    /// second pass ORs the same stemmed lexemes and ranks by `ts_rank`; the
+    /// similarity floor and the answerability gate still decide whether the
+    /// result is evidence, so relaxing recall never relaxes evidence.
     pub fn keyword_search(
         &self,
         corpus: &str,
@@ -547,7 +625,9 @@ impl PgStore {
     ) -> Result<Vec<SqlHit>, PgStoreError> {
         let mut conn = self.connection()?;
         let config = normalize_fts_config(language);
-        let rows = conn
+        let params: [&(dyn postgres::types::ToSql + Sync); 4] =
+            [&query, &(top_k as i64), &config, &corpus];
+        let strict = conn
             .query(
                 "SELECT id, content, source, section, chunk_index, language, page, corpus, \
                  content_hash, embed_model, embedding_dim, chunker_config, \
@@ -560,20 +640,17 @@ impl PgStore {
                  WHERE corpus = $4 AND to_tsvector(\
                      $3::text::regconfig, COALESCE(section, '') || ' ' || content\
                  ) @@ websearch_to_tsquery($3::text::regconfig, $1) \
-                 ORDER BY rank DESC LIMIT $2",
-                &[&query, &(top_k as i64), &config, &corpus],
+                 ORDER BY rank DESC, id LIMIT $2",
+                &params,
             )
             .map_err(PgStoreError::Query)?;
-        rows.iter()
-            .map(|row| {
-                let keyword_score: f64 = row.try_get(14).map_err(PgStoreError::Query)?;
-                Ok(SqlHit {
-                    row: row_to_chunk(row)?,
-                    similarity: 0.0,
-                    keyword_score,
-                })
-            })
-            .collect()
+        if !strict.is_empty() {
+            return keyword_hits(&strict);
+        }
+        let relaxed = conn
+            .query(RELAXED_KEYWORD_SQL, &params)
+            .map_err(PgStoreError::Query)?;
+        keyword_hits(&relaxed)
     }
 
     /// Issues `SELECT 1` so a caller can fail fast, naming the store, before any

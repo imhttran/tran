@@ -181,6 +181,14 @@ top `FINAL_K` fused chunks, and each matched section is then expanded to its
 chunks (`EXPAND_LIMIT` cap) before the context is sent to the model.
 Vector-only candidates below `MIN_SIMILARITY` are marked `FILTERED` and left out.
 
+The full-text pass first requires every term (`websearch_to_tsquery`). Natural
+questions carry interrogative scaffolding, such as “what does the archive say
+about …”, that a passage rarely repeats, so a strict miss falls back to a second
+pass that ORs the question's stemmed content words and ranks by `ts_rank`.
+Stemming and stopword removal come from the corpus language configuration, so
+the fallback adds recall only: `MIN_SIMILARITY`, the answerability gate, and
+citation validation still decide what may be answered.
+
 By default the `query` binary (`cargo run --locked --bin query`) rewrites the
 question into a search query with the chat model
 (`src/answer/query_rewrite.rs`), then retrieves over both the original question
@@ -212,10 +220,14 @@ of answering.
 
 ## Ask the archive suggestions
 
-The web page at `/ask` no longer uses a fixed list of sample questions. It calls
+The web page at `/ask` does not use a fixed list of sample questions. It calls
 `GET /api/query/suggestions`, which reads only `approved_documents` for the
-active `RAG_CORPUS` and derives one question per approved section (or source
-when a document has no section). The response is:
+active `RAG_CORPUS` and derives one question per approved section. Structural
+labels are never quoted: page markers (`PDF page 12`), `Contents`, and editorial
+notes describe the document's layout rather than its content. A section whose
+heading cannot be quoted contributes a capitalised phrase copied from its
+passage, such as a person or place; a passage without one contributes nothing,
+because a sentence fragment does not read as a topic. The response is:
 
 ```json
 {
@@ -228,7 +240,7 @@ No passage body is returned, and no unapproved, restricted, removed, or
 admin-only document can supply a suggestion. If the corpus has no approved
 chunks, `questions` is empty and the page shows an explicit “No searchable
 archive content yet” state instead of offering questions the archive cannot
-answer.
+answer; the question box stays usable either way.
 
 Indexing is separate from the genealogy catalog import. The catalog import writes
 only the genealogy database; it does not embed family Markdown or PDF files. To

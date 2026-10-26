@@ -261,7 +261,7 @@ test.describe.serial("RUST-008A browser integration", () => {
   test("an approved family fixture supplies a suggested question and a cited answer", async ({
     page,
   }) => {
-    test.setTimeout(6 * ANSWER_TIMEOUT);
+    test.setTimeout(8 * ANSWER_TIMEOUT);
     const version = await uploadForReview(
       page,
       "fixtures/family/ask-suggestions.md",
@@ -275,8 +275,16 @@ test.describe.serial("RUST-008A browser integration", () => {
     );
     expect(response.status()).toBe(200);
     const body = (await response.json()) as { questions: string[] };
+    // A substantive heading is quoted as-is.
     expect(body.questions).toContain(
       'What does the archive say about "Archive Test Section"?',
+    );
+    // A page marker is never quoted; the passage supplies the topic instead.
+    expect(body.questions).toContain(
+      'What does the archive say about "Marigold Ledger"?',
+    );
+    expect(body.questions.some((question) => /PDF page/i.test(question))).toBe(
+      false,
     );
 
     await page.goto("/ask");
@@ -293,5 +301,60 @@ test.describe.serial("RUST-008A browser integration", () => {
       /ZX-ASK-SUGGESTION-2026/i,
       /ask-suggestions\.md/,
     );
+
+    // The content-derived suggestion answers from the page it was drawn from.
+    await page.goto("/ask");
+    const derived = page
+      .getByTestId("ask-example")
+      .filter({ hasText: "Marigold Ledger" });
+    await expect(derived).toHaveCount(1);
+    await derived.click();
+    await expect(page.getByTestId("question-input")).toHaveValue(
+      'What does the archive say about "Marigold Ledger"?',
+    );
+    await askUntilCited(page, /Willowmere/i, /ask-suggestions\.md/);
+  });
+});
+
+// Suggestions are an aid, never a gate: an empty or failed suggestion read must
+// leave the free-text question available.
+test.describe("Ask suggestions states", () => {
+  test("an empty suggestion list still accepts a question", async ({ page }) => {
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, questions: [] }),
+      }),
+    );
+
+    await page.goto("/ask");
+    await expect(page.getByTestId("ask-suggestions-empty")).toBeVisible();
+    await expect(page.getByTestId("ask-example")).toHaveCount(0);
+
+    await page.getByTestId("question-input").fill("Who founded the family?");
+    await expect(page.getByTestId("ask-button")).toBeEnabled();
+  });
+
+  test("a failed suggestion request still accepts a question", async ({
+    page,
+  }) => {
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: "query_suggestions_unavailable",
+        }),
+      }),
+    );
+
+    await page.goto("/ask");
+    await expect(page.getByTestId("ask-suggestions-error")).toBeVisible();
+    await expect(page.getByTestId("ask-example")).toHaveCount(0);
+
+    await page.getByTestId("question-input").fill("Who founded the family?");
+    await expect(page.getByTestId("ask-button")).toBeEnabled();
   });
 });

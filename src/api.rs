@@ -53,7 +53,7 @@ use crate::onboarding::{
     OwnerProfile, PreviewSummary, ProfileRevision, ProfileVisibility, ReviewDecision,
     RevisionError, RevisionStatus,
 };
-use crate::query_service::{self, QueryService};
+use crate::query_service::QueryService;
 use crate::ratelimit::RateLimiter;
 use crate::storage_pg::{PgStore, PgStoreError};
 
@@ -3869,9 +3869,9 @@ async fn query_suggestions(State(state): State<AppState>, headers: HeaderMap) ->
     let corpus = state.corpus.clone();
     let result = tokio::task::spawn_blocking(move || {
         store
-            .suggestion_sections(&corpus, query_service::SUGGESTION_LIMIT)
+            .suggestion_sections(&corpus, crate::suggestions::SUGGESTION_SCAN)
             .map(|sections| {
-                query_service::suggested_questions(&sections, query_service::SUGGESTION_LIMIT)
+                crate::suggestions::questions(&sections, crate::suggestions::SUGGESTION_LIMIT)
             })
             .map_err(|err| err.to_string())
     })
