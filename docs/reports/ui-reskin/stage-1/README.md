@@ -22,28 +22,32 @@ The baseline was captured against the pre-change app with synthetic intercepted
 data. The previous design had a dark evergreen sidebar and warm paper canvas,
 with no dark theme.
 
-| Desktop idle | Desktop answered | Mobile answered |
-| --- | --- | --- |
+| Desktop idle                                             | Desktop answered                                                 | Mobile answered                                                |
+| -------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
 | ![Before: desktop idle](./before/desktop-light-idle.png) | ![Before: desktop answered](./before/desktop-light-answered.png) | ![Before: mobile answered](./before/mobile-light-answered.png) |
 
 ## After
 
-| Desktop light idle | Desktop light answered |
-| --- | --- |
+| Desktop light idle                                           | Desktop light answered                                               |
+| ------------------------------------------------------------ | -------------------------------------------------------------------- |
 | ![After: desktop light idle](./after/desktop-light-idle.png) | ![After: desktop light answered](./after/desktop-light-answered.png) |
 
-| Desktop dark answered | Mobile light answered | Mobile dark answered |
-| --- | --- | --- |
-| ![After: desktop dark answered](./after/desktop-dark-answered.png) | ![After: mobile light answered](./after/mobile-light-answered.png) | ![After: mobile dark answered](./after/mobile-dark-answered.png) |
+| Desktop dark idle                                          | Desktop dark answered                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| ![After: desktop dark idle](./after/desktop-dark-idle.png) | ![After: desktop dark answered](./after/desktop-dark-answered.png) |
+
+| Mobile light answered                                              | Mobile dark answered                                             |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| ![After: mobile light answered](./after/mobile-light-answered.png) | ![After: mobile dark answered](./after/mobile-dark-answered.png) |
 
 Additional state captures:
 
-| Loading | Empty | Error | Insufficient |
-| --- | --- | --- | --- |
+| Loading                                       | Empty                                             | Error                                                 | Insufficient                                                     |
+| --------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
 | ![Loading](./after/desktop-light-loading.png) | ![Empty archive](./after/desktop-light-empty.png) | ![Recoverable error](./after/desktop-light-error.png) | ![Insufficient evidence](./after/desktop-light-insufficient.png) |
 
-| Mobile light navigation open | Mobile dark navigation open |
-| --- | --- |
+| Mobile light navigation open                                  | Mobile dark navigation open                                 |
+| ------------------------------------------------------------- | ----------------------------------------------------------- |
 | ![Mobile light navigation](./after/mobile-light-nav-open.png) | ![Mobile dark navigation](./after/mobile-dark-nav-open.png) |
 
 All screenshots use synthetic labels, synthetic sources, and synthetic
@@ -79,15 +83,15 @@ the Next.js development indicator so it is not mistaken for product UI.
 
 ## Verification
 
-| Check | Result |
-| --- | --- |
-| `scripts/web-control.sh typecheck` (`tsc --noEmit`) | **PASS** |
-| `scripts/web-control.sh build` (`next build`, isolated `.next-build`) | **PASS** |
-| `npx playwright test e2e/experience.spec.ts` | **PASS — 34/34** (22.2s) |
-| Shell smoke: 13 routes × desktop/mobile × light/dark | **PASS — 52 checks**, 0 horizontal overflow, 0 page errors |
-| `sop validate` (build, unit test, PostgreSQL integration, fmt, clippy) | **PASS** |
-| Real-browser RAG spec (`PLAYWRIGHT_ARGS=e2e/rag.spec.ts`) | **Partial** — see below |
-| `auth.spec.ts` standalone | **Not runnable standalone** — the first case needs the disposable OIDC issuer that `scripts/web-e2e.sh` starts; the second case passed |
+| Check                                                                                           | Result                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/web-control.sh typecheck` (`tsc --noEmit`)                                             | **PASS**                                                                                                                               |
+| `scripts/web-control.sh build` (`next build` with lockfile Next 16.4.2, isolated `.next-build`) | **PASS**                                                                                                                               |
+| `npx playwright test e2e/experience.spec.ts`                                                    | **PASS — 34/34** (22.2s)                                                                                                               |
+| Shell smoke: 13 routes × desktop/mobile × light/dark                                            | **PASS — 52 checks**, 0 horizontal overflow, 0 page errors                                                                             |
+| `sop validate` (build, unit test, PostgreSQL integration, fmt, clippy)                          | **PASS**                                                                                                                               |
+| Real-browser RAG spec (`PLAYWRIGHT_ARGS=e2e/rag.spec.ts`)                                       | **Partial** — see below                                                                                                                |
+| `auth.spec.ts` standalone                                                                       | **Not runnable standalone** — the first case needs the disposable OIDC issuer that `scripts/web-e2e.sh` starts; the second case passed |
 
 The shell smoke checked `/`, `/ask`, `/genealogy`, `/profile`, `/documents`,
 `/head-of-family`, `/branch-review`, `/family/synthetic-person`, and the five
