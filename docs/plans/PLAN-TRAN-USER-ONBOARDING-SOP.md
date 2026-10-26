@@ -223,7 +223,7 @@ is idempotent for the same person, and never uses a date of birth.
 
 ### Acceptance Criteria
 
-- `Nguyen Van An` reserves display `NVAn` with key `nvan`.
+- `Nguyen Van An` reserves username `nvan` with key `nvan`.
 - A taken `nvan` reserves `nvan2`; an existing `nvan` and `nvan2` reserve `nvan3`;
   comparison is case-insensitive.
 - Repeating the same reservation for the same person returns the existing row and writes no

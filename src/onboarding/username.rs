@@ -4,10 +4,11 @@
 //! case-insensitive ASCII key, a candidate username, and a unique username. It
 //! never touches persistence, passwords, birthdays, or HTTP endpoints.
 //!
-//! Candidate shape: `[lastInitial][MiddleInitial][FirstName]` using verified
+//! Candidate shape: `[lastInitial][middleInitial][givenName]` using verified
 //! structured name parts. The family name is first and the given name is last.
 
 use thiserror::Error;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Verified structured name parts for one person.
 ///
@@ -36,26 +37,6 @@ pub enum UsernameError {
     AmbiguousSingleToken,
 }
 
-/// Maps one char to its lowercase ASCII base form.
-///
-/// Vietnamese precomposed vowels and `đ`/`Đ` fold to `a`..`d`. Other chars fall
-/// back to their Unicode lowercase form.
-fn fold_char(ch: char) -> char {
-    let lower = ch.to_lowercase().next().unwrap_or(ch);
-    match lower {
-        'à' | 'á' | 'ạ' | 'ả' | 'ã' | 'â' | 'ầ' | 'ấ' | 'ậ' | 'ẩ' | 'ẫ' | 'ă' | 'ắ' | 'ặ' | 'ẳ'
-        | 'ẵ' => 'a',
-        'è' | 'é' | 'ẹ' | 'ẻ' | 'ẽ' | 'ê' | 'ề' | 'ế' | 'ệ' | 'ể' | 'ễ' => 'e',
-        'ì' | 'í' | 'ị' | 'ỉ' | 'ĩ' => 'i',
-        'ò' | 'ó' | 'ọ' | 'ỏ' | 'õ' | 'ô' | 'ồ' | 'ố' | 'ộ' | 'ổ' | 'ỗ' | 'ơ' | 'ờ' | 'ớ' | 'ợ'
-        | 'ở' | 'ỡ' => 'o',
-        'ù' | 'ú' | 'ụ' | 'ủ' | 'ũ' | 'ư' | 'ừ' | 'ứ' | 'ự' | 'ử' | 'ữ' => 'u',
-        'ỳ' | 'ý' | 'ỵ' | 'ỷ' | 'ỹ' => 'y',
-        'đ' => 'd',
-        other => other,
-    }
-}
-
 /// Preserves the Unicode display name, trims surrounding whitespace, and
 /// collapses internal whitespace runs to one space.
 pub fn normalize_display_name(name: &str) -> String {
@@ -66,8 +47,10 @@ pub fn normalize_display_name(name: &str) -> String {
 /// diacritics, including mapping `đ`/`Đ` to `d`.
 pub fn key(name: &str) -> String {
     normalize_display_name(name)
-        .chars()
-        .map(fold_char)
+        .nfd()
+        .filter(|ch| !is_combining_mark(*ch))
+        .flat_map(char::to_lowercase)
+        .map(|ch| if ch == 'đ' { 'd' } else { ch })
         .collect()
 }
 
@@ -89,10 +72,10 @@ fn initial(part: &Option<String>) -> String {
     }
 }
 
-/// Builds the candidate username `[lastInitial][MiddleInitial][FirstName]`.
+/// Builds the lowercase, accent-free candidate username.
 ///
-/// A missing middle initial is omitted. The function returns the display form,
-/// for example `NVAn` for family `Nguyen`, middle `Van`, given `An`.
+/// A missing middle initial is omitted. For example, `Nguyễn Văn An` becomes
+/// `nvan`. Full display names retain their original spelling.
 pub fn candidate_username(parts: &NameParts) -> Result<String, UsernameError> {
     let family = parts.family.as_deref().map(str::trim).unwrap_or("");
     let given = parts.given.as_deref().map(str::trim).unwrap_or("");
@@ -126,7 +109,7 @@ pub fn candidate_username(parts: &NameParts) -> Result<String, UsernameError> {
     candidate.push_str(&initial(&parts.family));
     candidate.push_str(&initial(&parts.middle));
     candidate.push_str(given);
-    Ok(candidate)
+    Ok(key(&candidate))
 }
 
 /// Enforces case-insensitive uniqueness by appending the smallest deterministic
@@ -185,13 +168,13 @@ mod tests {
     }
 
     #[test]
-    fn candidate_is_display_form() {
+    fn candidate_is_lowercase_without_accents() {
         let parts = NameParts {
-            family: Some("Nguyen".to_string()),
-            middle: Some("Van".to_string()),
-            given: Some("An".to_string()),
+            family: Some("Nguyễn".to_string()),
+            middle: Some("Văn".to_string()),
+            given: Some("Án".to_string()),
         };
-        assert_eq!(candidate_username(&parts).unwrap(), "NVAn");
+        assert_eq!(candidate_username(&parts).unwrap(), "nvan");
         assert_eq!(key("NVAn"), "nvan");
     }
 
@@ -202,7 +185,18 @@ mod tests {
             middle: None,
             given: Some("An".to_string()),
         };
-        assert_eq!(candidate_username(&parts).unwrap(), "NAn");
+        assert_eq!(candidate_username(&parts).unwrap(), "nan");
+    }
+
+    #[test]
+    fn candidate_handles_decomposed_accents_and_d_bar() {
+        let parts = NameParts {
+            family: Some("Đặng".to_string()),
+            middle: Some("Thị".to_string()),
+            given: Some("HỒNG".nfd().collect()),
+        };
+        assert_eq!(candidate_username(&parts).unwrap(), "dthong");
+        assert_eq!(unique_username("ĐTHỒNG", &["dthong".into()]), "dthong2");
     }
 
     #[test]

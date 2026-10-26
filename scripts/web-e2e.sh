@@ -211,7 +211,9 @@ for migration in \
 	0025_assertion_dates \
 	0026_authority_decisions \
 	0027_source_narrative \
-	0029_narrative_review_search; do
+	0028_archive_photograph_inventory \
+	0029_narrative_review_search \
+	0030_lowercase_usernames; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done

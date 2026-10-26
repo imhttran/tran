@@ -333,3 +333,19 @@ Migration safety rules:
 - The supported recovery for a blocked SOP task is `sop retry <task-id>` after
   the concrete blocker is resolved, followed by
   `sop run docs/plans/PLAN-TRAN-RBAC.md`.
+
+## Username format
+
+Onboarding usernames use lowercase letters without Vietnamese accents. For
+example, `Nguyễn Văn An` produces `nvan`, and `Đặng Thị Hồng` produces `dthong`.
+A collision adds the next available suffix, such as `nvan2`. Full person names
+keep their original spelling.
+
+Migration `0030_lowercase_usernames.sql` updates existing reservations and their
+uniqueness keys. Apply it through the normal genealogy migration procedure. If
+two active reservations normalize to the same key, the migration rolls back.
+Resolve that collision before retrying.
+
+Keycloak login usernames are managed separately. This migration does not rename
+provider accounts. Keep each account's immutable OIDC subject when changing its
+Keycloak username so its application access and person link remain valid.

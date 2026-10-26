@@ -54,7 +54,7 @@ pub struct Reservation {
     pub reservation_id: i64,
     /// The person the username is held for.
     pub person_id: i64,
-    /// The display username, for example `NVAn`.
+    /// The display username, for example `nvan`.
     pub username: String,
     /// The case-insensitive canonical key, for example `nvan`.
     pub username_key: String,
