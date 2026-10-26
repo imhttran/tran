@@ -1,24 +1,65 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  focusedGraph, immediateChildIds, immediateParentIds, layoutTree, popupPosition,
-  relationLabel, revealPerson, READABLE_HEIGHT, READABLE_WIDTH,
+  focusedGraph,
+  immediateChildIds,
+  immediateParentIds,
+  layoutTree,
+  popupPosition,
+  relationLabel,
+  revealPerson,
+  READABLE_HEIGHT,
+  READABLE_WIDTH,
 } from "../src/lib/family-tree";
 import type { TreeGraph } from "../src/lib/family-tree";
 
-const session = { state: "signed_in", role: "viewer", display_name: "Synthetic viewer" };
+const session = {
+  state: "signed_in",
+  role: "viewer",
+  display_name: "Synthetic viewer",
+};
 const graph = {
   people: [
-    { record_id: "root", person_label: "Nguyễn Văn A", evidence_status: "verified", aliases: ["Nguyen A"] },
-    { record_id: "child", person_label: "Trần Văn B", evidence_status: "unverified", aliases: [] },
-    { record_id: "grandchild", person_label: "Child C", evidence_status: "needs_review", aliases: [] },
-    { record_id: "disconnected", person_label: "Unlinked Person", evidence_status: "unverified", aliases: [] },
+    {
+      record_id: "root",
+      person_label: "Nguyễn Văn A",
+      evidence_status: "verified",
+      aliases: ["Nguyen A"],
+    },
+    {
+      record_id: "child",
+      person_label: "Trần Văn B",
+      evidence_status: "unverified",
+      aliases: [],
+    },
+    {
+      record_id: "grandchild",
+      person_label: "Child C",
+      evidence_status: "needs_review",
+      aliases: [],
+    },
+    {
+      record_id: "disconnected",
+      person_label: "Unlinked Person",
+      evidence_status: "unverified",
+      aliases: [],
+    },
   ],
   links: [
-    { from_id: "root", to_id: "child", kind: "parent_child",
-      evidence_status: "verified", evidence: [{ evidence_id: "e-1", citation: "synthetic p.2" }] },
-    { from_id: "child", to_id: "grandchild", kind: "parent_child",
-      evidence_status: "needs_review", evidence: [] },
+    {
+      from_id: "root",
+      to_id: "child",
+      kind: "parent_child",
+      evidence_status: "verified",
+      evidence: [{ evidence_id: "e-1", citation: "synthetic p.2" }],
+    },
+    {
+      from_id: "child",
+      to_id: "grandchild",
+      kind: "parent_child",
+      evidence_status: "needs_review",
+      evidence: [],
+    },
   ],
   truncated: false,
 };
@@ -26,41 +67,85 @@ const person = {
   record_id: "root",
   person_label: "Nguyễn Văn A",
   assertions: [
-    { assertion_id: 101, kind: "birth", key: "date",
-      value_text: "1901", review_status: "verified",
-      evidence: [{ evidence_id: "e-2", citation: "synthetic p.3" }] },
+    {
+      assertion_id: 101,
+      kind: "birth",
+      key: "date",
+      value_text: "1901",
+      review_status: "verified",
+      evidence: [{ evidence_id: "e-2", citation: "synthetic p.3" }],
+    },
     // An explicit http(s) link is clickable; an executable scheme is not.
-    { assertion_id: 102, kind: "social_link", key: "link",
-      value_text: "https://example.test/a", review_status: "unverified", evidence: [] },
-    { assertion_id: 103, kind: "social_link", key: "link-js",
-      value_text: "javascript:alert(1)", review_status: "unverified", evidence: [] },
+    {
+      assertion_id: 102,
+      kind: "social_link",
+      key: "link",
+      value_text: "https://example.test/a",
+      review_status: "unverified",
+      evidence: [],
+    },
+    {
+      assertion_id: 103,
+      kind: "social_link",
+      key: "link-js",
+      value_text: "javascript:alert(1)",
+      review_status: "unverified",
+      evidence: [],
+    },
   ],
 };
 
 async function stubAuthorized(page: import("@playwright/test").Page) {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(graph) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(graph),
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ ...person,
-        record_id: decodeURIComponent(route.request().url().split("/").pop() || ""),
-      }) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...person,
+        record_id: decodeURIComponent(
+          route.request().url().split("/").pop() || "",
+        ),
+      }),
+    }),
+  );
 }
 
-test("graph, citations, disconnected records, and uncertain edges stay distinct", async ({ page }) => {
+test("graph, citations, disconnected records, and uncertain edges stay distinct", async ({
+  page,
+}) => {
   await stubAuthorized(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("genealogy-tree")).toBeVisible();
   await expect(page.getByTestId("family-person")).toHaveCount(4);
   await expect(page.getByTestId("family-relationship")).toHaveCount(2);
-  await expect(page.locator("[data-testid=family-relationship][data-status=verified]")).toHaveCount(1);
-  await expect(page.locator("[data-testid=family-relationship][data-status=needs_review]")).toHaveCount(1);
+  await expect(
+    page.locator("[data-testid=family-relationship][data-status=verified]"),
+  ).toHaveCount(1);
+  await expect(
+    page.locator("[data-testid=family-relationship][data-status=needs_review]"),
+  ).toHaveCount(1);
   await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
-  await page.getByRole("button", { name: "Select Nguyễn Văn A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Nguyễn Văn A", exact: true })
+    .click();
   await expect(page.getByTestId("family-person-details")).toBeVisible();
-  await expect(page.getByTestId("family-assertions")).toContainText("synthetic p.3");
+  await expect(page.getByTestId("family-assertions")).toContainText(
+    "synthetic p.3",
+  );
   // A recorded social URL is a link; an executable scheme stays text.
   await expect(page.getByTestId("family-social-link")).toHaveCount(1);
   await expect(page.getByTestId("family-social-link")).toHaveAttribute(
@@ -76,16 +161,28 @@ test("graph, citations, disconnected records, and uncertain edges stay distinct"
   );
 });
 
-test("Vietnamese name search reveals the requested person", async ({ page }) => {
+test("Vietnamese name search reveals the requested person", async ({
+  page,
+}) => {
   await stubAuthorized(page);
   await page.goto("/genealogy");
   await page.getByTestId("family-search").fill("Nguyen A");
-  await expect(page.getByTestId("family-search-results")).toContainText("Nguyễn Văn A");
-  await page.getByTestId("family-search-results").getByRole("button").first().click();
-  await expect(page.getByTestId("family-person-details")).toContainText("Nguyễn Văn A");
+  await expect(page.getByTestId("family-search-results")).toContainText(
+    "Nguyễn Văn A",
+  );
+  await page
+    .getByTestId("family-search-results")
+    .getByRole("button")
+    .first()
+    .click();
+  await expect(page.getByTestId("family-person-details")).toContainText(
+    "Nguyễn Văn A",
+  );
 });
 
-test("collapsing a lineage does not delete catalog records", async ({ page }) => {
+test("collapsing a lineage does not delete catalog records", async ({
+  page,
+}) => {
   await stubAuthorized(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(4);
@@ -96,76 +193,144 @@ test("collapsing a lineage does not delete catalog records", async ({ page }) =>
   await expect(page.getByTestId("family-person")).toHaveCount(4);
 });
 
-test("a rooted component with an attached ancestor cycle still renders every person", async ({ page }) => {
+test("a rooted component with an attached ancestor cycle still renders every person", async ({
+  page,
+}) => {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   const people = ["A", "B", "C", "D"].map((id) => ({
-    record_id: id, person_label: "Person " + id, evidence_status: "unverified", aliases: [],
+    record_id: id,
+    person_label: "Person " + id,
+    evidence_status: "unverified",
+    aliases: [],
   }));
   const edge = (from_id: string, to_id: string) => ({
-    from_id, to_id, kind: "parent_child",
-    evidence_status: "unverified", evidence: [],
+    from_id,
+    to_id,
+    kind: "parent_child",
+    evidence_status: "unverified",
+    evidence: [],
   });
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json",
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
       body: JSON.stringify({
         people,
         links: [edge("A", "B"), edge("B", "A"), edge("B", "C"), edge("D", "C")],
         truncated: false,
       }),
-    }));
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json",
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
       body: JSON.stringify({
         record_id: route.request().url().split("/").pop(),
-        person_label: "Synthetic person", assertions: [],
+        person_label: "Synthetic person",
+        assertions: [],
       }),
-    }));
+    }),
+  );
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(4);
   await expect(page.getByTestId("family-relationship")).toHaveCount(4);
   await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
 });
 
-test("only a node with published history shows the link, and it opens a dialog without selecting the node", async ({ page }) => {
+test("only a node with published history shows the link, and it opens a dialog without selecting the node", async ({
+  page,
+}) => {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   const tree = {
     people: [
-      { record_id: "with-history", person_label: "Nguyễn Văn Có", evidence_status: "verified",
-        aliases: [], history_passages: 2 },
-      { record_id: "without-history", person_label: "Trần Thị Không", evidence_status: "unverified",
-        aliases: [], history_passages: 0 },
+      {
+        record_id: "with-history",
+        person_label: "Nguyễn Văn Có",
+        evidence_status: "verified",
+        aliases: [],
+        history_passages: 2,
+      },
+      {
+        record_id: "without-history",
+        person_label: "Trần Thị Không",
+        evidence_status: "unverified",
+        aliases: [],
+        history_passages: 0,
+      },
     ],
-    links: [], truncated: false,
+    links: [],
+    truncated: false,
   };
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(tree),
+    }),
+  );
   let detailsRequested = 0;
   await page.route("**/api/genealogy/person/**", (route) => {
     detailsRequested += 1;
-    return route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ record_id: "with-history", person_label: "Nguyễn Văn Có",
-        assertions: [] }) });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: "with-history",
+        person_label: "Nguyễn Văn Có",
+        assertions: [],
+      }),
+    });
   });
   await page.route("**/api/family/persons/**/history", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-      ok: true,
-      person: { person_key: "with-history", display_name: "Nguyễn Văn Có" },
-      history: [
-        { passage_id: 1, language: "vi", document_ref: "synthetic/history-vi.md",
-          section_title: "Synthetic Vietnamese section", page_start: 8, page_end: 9,
-          body: "SYNTHETIC-VI-ONE\n\nSYNTHETIC-VI-TWO" },
-        { passage_id: 2, language: "en", document_ref: "synthetic/history-en.md",
-          section_title: "Synthetic English section", page_start: 12, page_end: 12,
-          body: "SYNTHETIC-EN-ONE" },
-      ],
-    }) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        person: { person_key: "with-history", display_name: "Nguyễn Văn Có" },
+        history: [
+          {
+            passage_id: 1,
+            language: "vi",
+            document_ref: "synthetic/history-vi.md",
+            section_title: "Synthetic Vietnamese section",
+            page_start: 8,
+            page_end: 9,
+            body: "SYNTHETIC-VI-ONE\n\nSYNTHETIC-VI-TWO",
+          },
+          {
+            passage_id: 2,
+            language: "en",
+            document_ref: "synthetic/history-en.md",
+            section_title: "Synthetic English section",
+            page_start: 12,
+            page_end: 12,
+            body: "SYNTHETIC-EN-ONE",
+          },
+        ],
+      }),
+    }),
+  );
 
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(2);
   await expect(page.getByTestId("family-person-history")).toHaveCount(1);
-  const eligible = page.getByTestId("family-person").filter({ hasText: "Nguyễn Văn Có" });
+  const eligible = page
+    .getByTestId("family-person")
+    .filter({ hasText: "Nguyễn Văn Có" });
   const link = eligible.getByTestId("family-person-history");
   await expect(link).toBeVisible();
 
@@ -205,29 +370,147 @@ test("only a node with published history shows the link, and it opens a dialog w
   await expect(source).toContainText("8");
 });
 
-test("a 403 denies the tree before any person details render", async ({ page }) => {
+test("a 403 denies the tree before any person details render", async ({
+  page,
+}) => {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 403, contentType: "application/json", body: "{}" }));
+    route.fulfill({ status: 403, contentType: "application/json", body: "{}" }),
+  );
   await page.goto("/genealogy");
   await expect(page.getByTestId("denied-view")).toBeVisible();
   await expect(page.getByTestId("family-person")).toHaveCount(0);
   await expect(page.getByTestId("family-person-details")).toHaveCount(0);
 });
 
-test("unreferenced graph edges are rejected rather than fabricated", async ({ page }) => {
+test("unreferenced graph edges are rejected rather than fabricated", async ({
+  page,
+}) => {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ ...graph, links: [
-        ...graph.links, { from_id: "root", to_id: "unknown-id",
-          kind: "parent_child", evidence_status: "verified", evidence: [] },
-      ] }) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...graph,
+        links: [
+          ...graph.links,
+          {
+            from_id: "root",
+            to_id: "unknown-id",
+            kind: "parent_child",
+            evidence_status: "verified",
+            evidence: [],
+          },
+        ],
+      }),
+    }),
+  );
   await page.goto("/genealogy");
   await expect(page.getByTestId("denied-view")).toBeVisible();
   await expect(page.getByTestId("family-relationship")).toHaveCount(0);
+});
+
+test("a 503 shows a retryable unavailable state, then retry renders the tree", async ({
+  page,
+}) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
+  let attempts = 0;
+  await page.route("**/api/genealogy/tree", (route) => {
+    attempts += 1;
+    // React development mode runs the initial effect twice. Both initial
+    // requests must fail so the retryable state is observable; the explicit
+    // Retry click then receives the graph.
+    if (attempts <= 2) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: "{}",
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(graph),
+    });
+  });
+  await page.route("**/api/genealogy/person/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...person,
+        record_id: decodeURIComponent(
+          route.request().url().split("/").pop() || "",
+        ),
+      }),
+    }),
+  );
+
+  await page.goto("/genealogy");
+  const unavailable = page.getByTestId("genealogy-unavailable");
+  await expect(unavailable).toBeVisible();
+  await expect(unavailable).toContainText("temporarily unavailable");
+  // A service failure is never an authorization decision.
+  await expect(page.getByTestId("denied-view")).toHaveCount(0);
+  await expect(page.getByTestId("genealogy-tree")).toHaveCount(0);
+
+  await page.getByTestId("genealogy-unavailable-retry").click();
+  await expect(page.getByTestId("genealogy-tree")).toBeVisible();
+  await expect(unavailable).toHaveCount(0);
+  await expect(page.getByTestId("denied-view")).toHaveCount(0);
+  await expect(page.getByTestId("family-person")).toHaveCount(4);
+});
+
+test.describe("a 390px viewport", () => {
+  test.use({ viewport: { width: 390, height: 780 } });
+
+  test("has no page-level horizontal overflow and keeps the search and principal controls reachable", async ({
+    page,
+  }) => {
+    await stubBranches(page);
+    await page.goto("/genealogy");
+    await expect(page.getByTestId("genealogy-tree")).toBeVisible();
+
+    const overflow = await page.evaluate(() => {
+      const root = document.documentElement;
+      return { scrollWidth: root.scrollWidth, clientWidth: root.clientWidth };
+    });
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+
+    const search = page.getByTestId("family-search");
+    await expect(search).toBeVisible();
+    await search.fill("B1");
+    await expect(search).toHaveValue("B1");
+
+    const toggle = page.getByTestId("family-canvas-toggle");
+    await expect(toggle).toBeVisible();
+    const box = await toggle.boundingBox();
+    expect(box).toBeTruthy();
+    if (box) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x).toBeLessThan(390);
+    }
+    await expect(page.getByRole("button", { name: "Zoom in" })).toBeVisible();
+  });
 });
 
 test("anonymous graph request is denied by Rust API", async ({ request }) => {
@@ -238,12 +521,23 @@ test("anonymous graph request is denied by Rust API", async ({ request }) => {
 // --- Relationship direction, path reveal, and source drill-down -------------
 
 const p = (record_id: string, aliases: string[] = [], historyPassages = 0) => ({
-  record_id, person_label: record_id, evidence_status: "unverified" as const, aliases,
-  history_passages: historyPassages });
+  record_id,
+  person_label: record_id,
+  evidence_status: "unverified" as const,
+  aliases,
+  history_passages: historyPassages,
+});
 const pc = (from_id: string, to_id: string) => ({
-  from_id, to_id, kind: "parent_child" as const, evidence_status: "unverified" as const, evidence: [] });
+  from_id,
+  to_id,
+  kind: "parent_child" as const,
+  evidence_status: "unverified" as const,
+  evidence: [],
+});
 const shown = (g: TreeGraph, collapsed: ReadonlySet<string>) =>
-  layoutTree(g, collapsed).people.map((x) => x.record_id).sort();
+  layoutTree(g, collapsed)
+    .people.map((x) => x.record_id)
+    .sort();
 
 // R → A → A1, R → B → B1
 const branches: TreeGraph = {
@@ -272,14 +566,24 @@ test("reveal and layout terminate on cycles, shared ancestors, and multiple pare
   // M and F are both parents of C.
   const g: TreeGraph = {
     people: [p("M"), p("F"), p("X"), p("Y"), p("C")],
-    links: [pc("X", "Y"), pc("Y", "X"), pc("Y", "C"), pc("M", "C"), pc("F", "C")],
+    links: [
+      pc("X", "Y"),
+      pc("Y", "X"),
+      pc("Y", "C"),
+      pc("M", "C"),
+      pc("F", "C"),
+    ],
     truncated: false,
   };
   expect(shown(g, new Set())).toEqual(["C", "F", "M", "X", "Y"]);
   const collapsed = new Set(["M", "F", "X", "Y"]);
   expect(shown(g, collapsed)).not.toContain("C");
   // An unrelated collapsed branch (U → V) must survive the reveal.
-  const withU: TreeGraph = { ...g, people: [...g.people, p("U"), p("V")], links: [...g.links, pc("U", "V")] };
+  const withU: TreeGraph = {
+    ...g,
+    people: [...g.people, p("U"), p("V")],
+    links: [...g.links, pc("U", "V")],
+  };
   const next = revealPerson(withU, new Set([...collapsed, "U"]), "C");
   expect(shown(withU, next)).toContain("C");
   expect([...next]).toEqual(["U"]); // Only C's collapsed ancestors were expanded.
@@ -289,7 +593,12 @@ test("reveal reaches a person whose only route is a spouse of a hidden branch", 
   // R → S, S married to A, parent cycle A ⇄ B; collapsing R hides S.
   const g: TreeGraph = {
     people: [p("R"), p("S"), p("A"), p("B")],
-    links: [pc("R", "S"), { ...pc("S", "A"), kind: "spouse" }, pc("A", "B"), pc("B", "A")],
+    links: [
+      pc("R", "S"),
+      { ...pc("S", "A"), kind: "spouse" },
+      pc("A", "B"),
+      pc("B", "A"),
+    ],
     truncated: false,
   };
   const collapsed = new Set(["R"]);
@@ -298,72 +607,135 @@ test("reveal reaches a person whose only route is a spouse of a hidden branch", 
 });
 
 const branchGraph = {
-  people: branches.people.map((x) => ({ ...x, person_label: "Person " + x.record_id })),
+  people: branches.people.map((x) => ({
+    ...x,
+    person_label: "Person " + x.record_id,
+  })),
   links: [
-    { ...pc("R", "A"), evidence_status: "verified",
-      evidence: [{ evidence_id: "synthetic-register#4", citation: "synthetic-register p.4",
-        document_ref: "synthetic-register", page: 4 }] },
-    pc("A", "A1"), pc("R", "B"), pc("B", "B1"),
+    {
+      ...pc("R", "A"),
+      evidence_status: "verified",
+      evidence: [
+        {
+          evidence_id: "synthetic-register#4",
+          citation: "synthetic-register p.4",
+          document_ref: "synthetic-register",
+          page: 4,
+        },
+      ],
+    },
+    pc("A", "A1"),
+    pc("R", "B"),
+    pc("B", "B1"),
   ],
   truncated: false,
 };
 
 async function stubBranches(page: import("@playwright/test").Page) {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(branchGraph) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(branchGraph),
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) => {
     const id = decodeURIComponent(route.request().url().split("/").pop() || "");
-    return route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Person " + id,
+        assertions: [],
+      }),
+    });
   });
 }
 
 async function collapse(page: import("@playwright/test").Page, id: string) {
-  await page.getByRole("button", { name: "Select Person " + id, exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person " + id, exact: true })
+    .click();
   // The single click opens the popup; dismiss it so it cannot cover the button.
   await expect(page.getByTestId("family-person-details")).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByTestId("family-collapse").click();
 }
 
-test("the popup lists recorded parents and children from the selection", async ({ page }) => {
+test("the popup lists recorded parents and children from the selection", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   const relatives = page.getByTestId("family-relative");
-  await expect(relatives.filter({ hasText: "Person R" }).getByTestId("family-relation")).toHaveText("Parent");
-  await expect(relatives.filter({ hasText: "Person A1" }).getByTestId("family-relation")).toHaveText("Child");
+  await expect(
+    relatives.filter({ hasText: "Person R" }).getByTestId("family-relation"),
+  ).toHaveText("Parent");
+  await expect(
+    relatives.filter({ hasText: "Person A1" }).getByTestId("family-relation"),
+  ).toHaveText("Child");
 });
 
-test("search reveals a person without expanding unrelated branches", async ({ page }) => {
+test("search reveals a person without expanding unrelated branches", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await collapse(page, "B");
   await collapse(page, "R");
   await expect(page.getByTestId("family-person")).toHaveCount(1);
   await page.getByTestId("family-search").fill("anh mot"); // Alias, without diacritics.
-  await page.getByTestId("family-search-results").getByRole("button").first().click();
-  await expect(page.getByTestId("family-person-details")).toContainText("Person A1");
+  await page
+    .getByTestId("family-search-results")
+    .getByRole("button")
+    .first()
+    .click();
+  await expect(page.getByTestId("family-person-details")).toContainText(
+    "Person A1",
+  );
   await expect(page.getByTestId("family-person")).toHaveCount(4); // R, A, A1, B — B1 stays collapsed.
-  await expect(page.getByRole("button", { name: "Select Person B1" })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Select Person B1" }),
+  ).toHaveCount(0);
 });
 
 test("catalog selection reveals the selected person", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await collapse(page, "B");
-  await page.getByTestId("genealogy-records").getByRole("button", { name: "Person B1" }).click();
-  await expect(page.getByRole("button", { name: "Select Person B1" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Select Person B1" })).toHaveAttribute("aria-pressed", "true");
+  await page
+    .getByTestId("genealogy-records")
+    .getByRole("button", { name: "Person B1" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Select Person B1" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Select Person B1" }),
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 test("a tree citation opens metadata-only source details", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
-  await page.getByTestId("citation-button").filter({ hasText: "synthetic-register p.4" }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
+  await page
+    .getByTestId("citation-button")
+    .filter({ hasText: "synthetic-register p.4" })
+    .click();
   const dialog = page.getByTestId("source-details");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("synthetic-register");
@@ -379,39 +751,65 @@ test("a tree citation opens metadata-only source details", async ({ page }) => {
 
 const manyUnlinked: TreeGraph = {
   people: Array.from({ length: 263 }, (_, index) =>
-    p("L" + String(index).padStart(3, "0"))),
+    p("L" + String(index).padStart(3, "0")),
+  ),
   links: [],
   truncated: false,
 };
 
 async function stubManyUnlinked(page: import("@playwright/test").Page) {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(manyUnlinked) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(manyUnlinked),
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) => {
     const id = decodeURIComponent(route.request().url().split("/").pop() || "");
-    return route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Person " + id,
+        assertions: [],
+      }),
+    });
   });
 }
 
-test("Fit all and Focus selected are separate camera controls", async ({ page }) => {
+test("Fit all and Focus selected are separate camera controls", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A1", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .click();
   const before = await readViewBox(page);
   await page.getByTestId("family-focus-selected").click();
   const focused = await readViewBox(page);
   expect(focused.width).toBeLessThanOrEqual(READABLE_WIDTH);
   expect(focused.height).toBeLessThanOrEqual(READABLE_HEIGHT);
   expect(focused.x).not.toBe(before.x);
-  const card = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  const card = await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .boundingBox();
   const canvas = await page.getByTestId("family-tree-canvas").boundingBox();
   expect(card && canvas).toBeTruthy();
   if (card && canvas) {
     expect(card.x).toBeGreaterThanOrEqual(canvas.x);
-    expect(card.x + card.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
+    expect(card.x + card.width).toBeLessThanOrEqual(
+      canvas.x + canvas.width + 1,
+    );
   }
   await page.getByTestId("family-fit-all").click();
   const fitted = await readViewBox(page);
@@ -421,20 +819,31 @@ test("Fit all and Focus selected are separate camera controls", async ({ page })
   expect(fitted.height).toBeGreaterThanOrEqual(370);
 });
 
-test("the canvas expands to full screen and Escape restores the layout", async ({ page }) => {
+test("the canvas expands to full screen and Escape restores the layout", async ({
+  page,
+}) => {
   await stubManyUnlinked(page);
   await page.goto("/genealogy");
   const toggle = page.getByTestId("family-canvas-toggle");
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "false",
+  );
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   const before = await readViewBox(page);
   await toggle.click();
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "true",
+  );
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   // Expanding changes the viewport, never the camera.
   expect(await readViewBox(page)).toEqual(before);
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "false",
+  );
 });
 
 test("manual pan and zoom survive unrelated UI updates", async ({ page }) => {
@@ -458,8 +867,12 @@ test("manual pan and zoom survive unrelated UI updates", async ({ page }) => {
   expect(zoomed.width).toBeGreaterThan(panned.width);
 
   // Selecting a card, searching, and toggling the canvas must not reset it.
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
-  await expect(page.getByTestId("family-person-details")).toContainText("Person A");
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
+  await expect(page.getByTestId("family-person-details")).toContainText(
+    "Person A",
+  );
   await page.getByTestId("family-search").fill("B1");
   await page.getByTestId("family-canvas-toggle").click();
   await page.getByTestId("family-canvas-toggle").click();
@@ -467,7 +880,9 @@ test("manual pan and zoom survive unrelated UI updates", async ({ page }) => {
   expect(zoomed.x).not.toBe(0);
 });
 
-test("263 unlinked people open readable and a search selection stays readable", async ({ page }) => {
+test("263 unlinked people open readable and a search selection stays readable", async ({
+  page,
+}) => {
   await stubManyUnlinked(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(263);
@@ -484,41 +899,70 @@ test("263 unlinked people open readable and a search selection stays readable", 
   expect(cardHeight).toBeGreaterThanOrEqual(30);
 
   await page.getByTestId("family-search").fill("L262");
-  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await page
+    .getByTestId("family-search-results")
+    .getByRole("button")
+    .first()
+    .click();
   const selected = await readViewBox(page);
   expect(selected.width).toBeLessThanOrEqual(READABLE_WIDTH);
   expect(selected.height).toBeLessThanOrEqual(READABLE_HEIGHT);
 
-  const card = await page.getByRole("button", { name: "Select L262", exact: true }).boundingBox();
+  const card = await page
+    .getByRole("button", { name: "Select L262", exact: true })
+    .boundingBox();
   expect(card).toBeTruthy();
   if (!card) return;
   expect(card.width).toBeGreaterThanOrEqual(100);
   expect(card.y).toBeGreaterThanOrEqual(canvas.y - 1);
-  expect(card.y + card.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+  expect(card.y + card.height).toBeLessThanOrEqual(
+    canvas.y + canvas.height + 1,
+  );
 });
 
 // --- A catalog without relationships still renders readable cards ----------
 
 const unlinked: TreeGraph = {
-  people: Array.from({ length: 60 }, (_, index) => p("L" + String(index).padStart(2, "0"))),
+  people: Array.from({ length: 60 }, (_, index) =>
+    p("L" + String(index).padStart(2, "0")),
+  ),
   links: [],
   truncated: false,
 };
 
 async function stubUnlinked(page: import("@playwright/test").Page) {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(unlinked) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(unlinked),
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) => {
     const id = decodeURIComponent(route.request().url().split("/").pop() || "");
-    return route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Person " + id,
+        assertions: [],
+      }),
+    });
   });
 }
 
 async function readViewBox(page: import("@playwright/test").Page) {
-  const value = await page.getByTestId("family-tree-canvas").getAttribute("viewBox");
+  const value = await page
+    .getByTestId("family-tree-canvas")
+    .getAttribute("viewBox");
   const [x, y, width, height] = (value ?? "").split(" ").map(Number);
   return { x, y, width, height };
 }
@@ -530,11 +974,17 @@ test("an unlinked catalog wraps components into bands instead of one long row", 
   // less than a pixel; the bands keep the canvas bounded (max band + one card).
   expect(layout.width).toBeLessThanOrEqual(1790);
   expect(layout.height).toBeGreaterThan(720);
-  expect(new Set(layout.people.map((person) => person.y)).size).toBeGreaterThan(1);
-  expect(layout.people.every((person) => person.x >= 0 && person.y >= 0)).toBe(true);
+  expect(new Set(layout.people.map((person) => person.y)).size).toBeGreaterThan(
+    1,
+  );
+  expect(layout.people.every((person) => person.x >= 0 && person.y >= 0)).toBe(
+    true,
+  );
 });
 
-test("every authorized person renders without a relationship edge", async ({ page }) => {
+test("every authorized person renders without a relationship edge", async ({
+  page,
+}) => {
   await stubUnlinked(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(60);
@@ -544,11 +994,17 @@ test("every authorized person renders without a relationship edge", async ({ pag
   expect(view.height).toBeLessThanOrEqual(720);
 });
 
-test("search selection reveals a readable card in an unlinked catalog", async ({ page }) => {
+test("search selection reveals a readable card in an unlinked catalog", async ({
+  page,
+}) => {
   await stubUnlinked(page);
   await page.goto("/genealogy");
   await page.getByTestId("family-search").fill("L59");
-  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await page
+    .getByTestId("family-search-results")
+    .getByRole("button")
+    .first()
+    .click();
   await expect(page.getByTestId("family-person-details")).toContainText("L59");
   const view = await readViewBox(page);
   expect(view.width).toBeLessThanOrEqual(READABLE_WIDTH);
@@ -578,16 +1034,39 @@ test("recorded children and parents are exact, unique, and ID-keyed", () => {
 });
 
 test("the focused graph keeps only the immediate family", () => {
-  const childrenOnly = focusedGraph(family, { rootId: "P1", showParents: false });
-  expect(childrenOnly.people.map((person) => person.record_id).sort())
-    .toEqual(["C1", "C2", "P1", "P2"]);
-  expect(childrenOnly.links.map((link) => link.kind + ":" + link.from_id + ":" + link.to_id).sort())
-    .toEqual(["parent_child:P1:C1", "parent_child:P1:C2", "parent_child:P2:C1", "spouse:P1:P2"]);
+  const childrenOnly = focusedGraph(family, {
+    rootId: "P1",
+    showParents: false,
+  });
+  expect(childrenOnly.people.map((person) => person.record_id).sort()).toEqual([
+    "C1",
+    "C2",
+    "P1",
+    "P2",
+  ]);
+  expect(
+    childrenOnly.links
+      .map((link) => link.kind + ":" + link.from_id + ":" + link.to_id)
+      .sort(),
+  ).toEqual([
+    "parent_child:P1:C1",
+    "parent_child:P1:C2",
+    "parent_child:P2:C1",
+    "spouse:P1:P2",
+  ]);
 
   const withParents = focusedGraph(family, { rootId: "P1", showParents: true });
-  expect(withParents.people.map((person) => person.record_id).sort())
-    .toEqual(["C1", "C2", "GP1", "GP2", "P1", "P2"]);
-  expect(withParents.people.some((person) => person.record_id === "X")).toBe(false);
+  expect(withParents.people.map((person) => person.record_id).sort()).toEqual([
+    "C1",
+    "C2",
+    "GP1",
+    "GP2",
+    "P1",
+    "P2",
+  ]);
+  expect(withParents.people.some((person) => person.record_id === "X")).toBe(
+    false,
+  );
 });
 
 test("focused traversal terminates on cycles and never duplicates cards", () => {
@@ -597,18 +1076,29 @@ test("focused traversal terminates on cycles and never duplicates cards", () => 
     truncated: false,
   };
   const focused = focusedGraph(cyclic, { rootId: "B", showParents: true });
-  expect(focused.people.map((person) => person.record_id).sort()).toEqual(["A", "B", "C"]);
-  expect(new Set(focused.people.map((person) => person.record_id)).size).toBe(3);
+  expect(focused.people.map((person) => person.record_id).sort()).toEqual([
+    "A",
+    "B",
+    "C",
+  ]);
+  expect(new Set(focused.people.map((person) => person.record_id)).size).toBe(
+    3,
+  );
   expect(focused.links).toHaveLength(3);
 
-  const missing = focusedGraph(cyclic, { rootId: "missing", showParents: true });
+  const missing = focusedGraph(cyclic, {
+    rootId: "missing",
+    showParents: true,
+  });
   expect(missing.people).toEqual([]);
   expect(missing.links).toEqual([]);
 });
 
 test("a focused graph keeps the truncation disclosure", () => {
   const truncated: TreeGraph = { ...family, truncated: true };
-  expect(focusedGraph(truncated, { rootId: "P1", showParents: false }).truncated).toBe(true);
+  expect(
+    focusedGraph(truncated, { rootId: "P1", showParents: false }).truncated,
+  ).toBe(true);
 });
 
 test("the popup sits below the card, above when needed, and stays inside", () => {
@@ -616,28 +1106,46 @@ test("the popup sits below the card, above when needed, and stays inside", () =>
   const svg = { left: 0, top: 0, width: 800, height: 500 };
   const view = { x: 0, y: 0, width: 800, height: 500 };
 
-  const beside = popupPosition({ x: 100, y: 100 }, view, svg, container, { width: 300, height: 200 });
+  const beside = popupPosition({ x: 100, y: 100 }, view, svg, container, {
+    width: 300,
+    height: 200,
+  });
   expect(beside?.placement).toBe("right");
   expect(beside?.left).toBeCloseTo(300, 0);
   expect(beside?.top).toBeCloseTo(100, 0);
 
   // A narrow canvas has no room beside the card, so it goes above it.
   const narrow = { left: 0, top: 0, width: 400, height: 500 };
-  const above = popupPosition({ x: 100, y: 400 }, { x: 0, y: 0, width: 400, height: 500 },
-    narrow, narrow, { width: 300, height: 200 });
+  const above = popupPosition(
+    { x: 100, y: 400 },
+    { x: 0, y: 0, width: 400, height: 500 },
+    narrow,
+    narrow,
+    { width: 300, height: 200 },
+  );
   expect(above?.placement).toBe("above");
   expect(above?.top).toBeCloseTo(190, 0);
 
-  const clamped = popupPosition({ x: 0, y: 0 }, { x: 0, y: 0, width: 400, height: 500 },
-    narrow, narrow, { width: 300, height: 200 });
+  const clamped = popupPosition(
+    { x: 0, y: 0 },
+    { x: 0, y: 0, width: 400, height: 500 },
+    narrow,
+    narrow,
+    { width: 300, height: 200 },
+  );
   expect(clamped?.left).toBe(12);
 
   // A card near the right edge flips to the left rather than clipping.
-  const flipped = popupPosition({ x: 600, y: 100 }, view, svg, container,
-    { width: 420, height: 200 });
+  const flipped = popupPosition({ x: 600, y: 100 }, view, svg, container, {
+    width: 420,
+    height: 200,
+  });
   expect(flipped?.placement).toBe("left");
 
-  const huge = popupPosition({ x: 100, y: 100 }, view, svg, container, { width: 5000, height: 5000 });
+  const huge = popupPosition({ x: 100, y: 100 }, view, svg, container, {
+    width: 5000,
+    height: 5000,
+  });
   expect(huge?.maxHeight).toBeLessThanOrEqual(480);
   expect(huge?.left).toBeGreaterThanOrEqual(10);
 });
@@ -664,10 +1172,15 @@ test("the popup placement accounts for letterboxing and hides off-screen anchors
   expect(offScreen).toBeNull();
 });
 
-test("single click opens an anchored popup and Escape restores card focus", async ({ page }) => {
+test("single click opens an anchored popup and Escape restores card focus", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  const card = page.getByRole("button", {
+    name: "Select Person A",
+    exact: true,
+  });
   await card.click();
   const popup = page.getByTestId("family-person-details");
   await expect(popup).toBeVisible();
@@ -679,28 +1192,44 @@ test("single click opens an anchored popup and Escape restores card focus", asyn
     expect(box.x).toBeGreaterThanOrEqual(canvas.x - 1);
     expect(box.y).toBeGreaterThanOrEqual(canvas.y - 1);
     expect(box.x + box.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
-    expect(box.y + box.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(
+      canvas.y + canvas.height + 1,
+    );
   }
   await page.keyboard.press("Escape");
   await expect(popup).toBeHidden();
   await expect(card).toBeFocused();
 });
 
-test("double-click focuses immediate children above an unrelated graph", async ({ page }) => {
+test("double-click focuses immediate children above an unrelated graph", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(5);
   const before = await readViewBox(page);
 
-  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .dblclick();
   await expect(page.getByTestId("family-focus")).toContainText("Person A");
   await expect(page.getByTestId("family-person")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Select Person R", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Select Person B", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Select Person A1", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Select Person R", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Select Person B", exact: true }),
+  ).toHaveCount(0);
 
-  const root = await page.getByRole("button", { name: "Select Person A", exact: true }).boundingBox();
-  const child = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  const root = await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .boundingBox();
+  const child = await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .boundingBox();
   expect(root && child && root.y < child.y).toBe(true);
   expect(child && child.width).toBeGreaterThanOrEqual(100);
 
@@ -710,93 +1239,149 @@ test("double-click focuses immediate children above an unrelated graph", async (
   expect(await readViewBox(page)).toEqual(before);
 });
 
-test("Show parents reveals recorded parents above the person", async ({ page }) => {
+test("Show parents reveals recorded parents above the person", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A1", exact: true }).click();
-  await expect(page.getByTestId("family-show-parents")).toHaveText("Show parents (1)");
+  await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .click();
+  await expect(page.getByTestId("family-show-parents")).toHaveText(
+    "Show parents (1)",
+  );
   await page.getByTestId("family-show-parents").click();
-  await expect(page.getByTestId("family-focus")).toContainText("parents and children");
+  await expect(page.getByTestId("family-focus")).toContainText(
+    "parents and children",
+  );
   await expect(page.getByTestId("family-person")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Select Person R", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Select Person R", exact: true }),
+  ).toHaveCount(0);
 
-  const parent = await page.getByRole("button", { name: "Select Person A", exact: true }).boundingBox();
-  const person = await page.getByRole("button", { name: "Select Person A1", exact: true }).boundingBox();
+  const parent = await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .boundingBox();
+  const person = await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .boundingBox();
   expect(parent && person && parent.y < person.y).toBe(true);
 });
 
-test("Show children moves exactly one generation at a time", async ({ page }) => {
+test("Show children moves exactly one generation at a time", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person R", exact: true }).click();
-  await expect(page.getByTestId("family-show-children")).toHaveText("Show children (2)");
+  await page
+    .getByRole("button", { name: "Select Person R", exact: true })
+    .click();
+  await expect(page.getByTestId("family-show-children")).toHaveText(
+    "Show children (2)",
+  );
   await page.getByTestId("family-show-children").click();
   await expect(page.getByTestId("family-focus")).toContainText("Person R");
   await expect(page.getByTestId("family-person")).toHaveCount(3);
-  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
   await expect(
-    page.getByTestId("family-person-details").getByRole("heading", { level: 2 }),
+    page.getByRole("button", { name: "Select Person A1", exact: true }),
+  ).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
+  await expect(
+    page
+      .getByTestId("family-person-details")
+      .getByRole("heading", { level: 2 }),
   ).toHaveText("Person A");
   await page.getByTestId("family-show-children").click();
   await expect(page.getByTestId("family-focus")).toContainText("Person A");
   await expect(page.getByTestId("family-person")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Select Person A1", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Select Person A1", exact: true }),
+  ).toBeVisible();
 });
 
-test("a person with no recorded children keeps the view and says so", async ({ page }) => {
+test("a person with no recorded children keeps the view and says so", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-person")).toHaveCount(5);
   const before = await readViewBox(page);
-  await page.getByRole("button", { name: "Select Person A1", exact: true }).dblclick();
-  await expect(page.getByTestId("family-popup-notice")).toContainText("No children recorded");
+  await page
+    .getByRole("button", { name: "Select Person A1", exact: true })
+    .dblclick();
+  await expect(page.getByTestId("family-popup-notice")).toContainText(
+    "No children recorded",
+  );
   await expect(page.getByTestId("family-focus")).toHaveCount(0);
   expect(await readViewBox(page)).toEqual(before);
 });
 
-test("Back restores focus, expansion state, and the camera", async ({ page }) => {
+test("Back restores focus, expansion state, and the camera", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await collapse(page, "B");
   await expect(page.getByTestId("family-person")).toHaveCount(4);
   const before = await readViewBox(page);
 
-  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .dblclick();
   await expect(page.getByTestId("family-person")).toHaveCount(2);
   await page.getByTestId("family-back").click();
   await expect(page.getByTestId("family-person")).toHaveCount(4);
-  await expect(page.getByRole("button", { name: "Select Person B1", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Select Person B1", exact: true }),
+  ).toHaveCount(0);
   expect(await readViewBox(page)).toEqual(before);
 });
 
 test("Show entire tree returns to the full graph", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .dblclick();
   await expect(page.getByTestId("family-person")).toHaveCount(2);
   await page.getByTestId("family-show-entire-tree").click();
   await expect(page.getByTestId("family-focus")).toHaveCount(0);
   await expect(page.getByTestId("family-person")).toHaveCount(5);
 });
 
-test("search leaves a focused view and reveals the requested person", async ({ page }) => {
+test("search leaves a focused view and reveals the requested person", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).dblclick();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .dblclick();
   await expect(page.getByTestId("family-person")).toHaveCount(2);
   await page.getByTestId("family-search").fill("B1");
-  await page.getByTestId("family-search-results").getByRole("button").first().click();
+  await page
+    .getByTestId("family-search-results")
+    .getByRole("button")
+    .first()
+    .click();
   await expect(page.getByTestId("family-focus")).toHaveCount(0);
   await expect(page.getByTestId("family-person")).toHaveCount(5);
-  await expect(page.getByTestId("family-person-details")).toContainText("Person B1");
+  await expect(page.getByTestId("family-person-details")).toContainText(
+    "Person B1",
+  );
 });
 
-test("the popup follows a pan and closes when its anchor leaves the canvas", async ({ page }) => {
+test("the popup follows a pan and closes when its anchor leaves the canvas", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   const popup = page.getByTestId("family-person-details");
   await expect(popup).toBeVisible();
   const canvas = await page.getByTestId("family-tree-canvas").boundingBox();
@@ -818,21 +1403,32 @@ test("the popup follows a pan and closes when its anchor leaves the canvas", asy
 
   await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(canvas.x + canvas.width - 20, startY + 100, { steps: 12 });
+  await page.mouse.move(canvas.x + canvas.width - 20, startY + 100, {
+    steps: 12,
+  });
   await page.mouse.up();
   await expect(popup).toBeHidden();
 });
 
-test("dragging a card is not a click and does not open the popup", async ({ page }) => {
+test("dragging a card is not a click and does not open the popup", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  const card = page.getByRole("button", {
+    name: "Select Person A",
+    exact: true,
+  });
   const box = await card.boundingBox();
   expect(box).toBeTruthy();
   if (!box) return;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 40, { steps: 5 });
+  await page.mouse.move(
+    box.x + box.width / 2 + 40,
+    box.y + box.height / 2 + 40,
+    { steps: 5 },
+  );
   await page.mouse.up();
   await page.waitForTimeout(SINGLE_CLICK_DELAY_WAIT_MS);
   await expect(page.getByTestId("family-person-details")).toHaveCount(0);
@@ -841,7 +1437,10 @@ test("dragging a card is not a click and does not open the popup", async ({ page
 test("keyboard opens, navigates, and dismisses the popup", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  const card = page.getByRole("button", { name: "Select Person A", exact: true });
+  const card = page.getByRole("button", {
+    name: "Select Person A",
+    exact: true,
+  });
   await card.focus();
   await page.keyboard.press("Enter");
   const popup = page.getByTestId("family-person-details");
@@ -854,44 +1453,316 @@ test("keyboard opens, navigates, and dismisses the popup", async ({ page }) => {
 
   await page.keyboard.press("Escape");
   await expect(popup).toBeHidden();
-  await expect(page.getByRole("button", { name: "Select Person A", exact: true })).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: "Select Person A", exact: true }),
+  ).toBeFocused();
 });
 
-test("a truncated graph discloses that relatives and counts may be incomplete", async ({ page }) => {
+test("a truncated graph discloses that relatives and counts may be incomplete", async ({
+  page,
+}) => {
   await page.route("**/api/auth/session", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
   await page.route("**/api/genealogy/tree", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ ...branchGraph, truncated: true }) }));
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...branchGraph, truncated: true }),
+    }),
+  );
   await page.route("**/api/genealogy/person/**", (route) => {
     const id = decodeURIComponent(route.request().url().split("/").pop() || "");
-    return route.fulfill({ status: 200, contentType: "application/json",
-      body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions: [] }) });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Person " + id,
+        assertions: [],
+      }),
+    });
   });
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
-  await expect(page.getByTestId("family-popup-truncated")).toContainText("partial");
-  await expect(page.getByTestId("family-show-children")).toHaveText("Show children (1)");
-  await expect(page.getByRole("status").filter({ hasText: "counts and relatives may be incomplete" }))
-    .toBeVisible();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
+  await expect(page.getByTestId("family-popup-truncated")).toContainText(
+    "partial",
+  );
+  await expect(page.getByTestId("family-show-children")).toHaveText(
+    "Show children (1)",
+  );
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "counts and relatives may be incomplete" }),
+  ).toBeVisible();
 });
 
-test("the popup closes when the click is outside the tree workspace", async ({ page }) => {
+test("the popup closes when the click is outside the tree workspace", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   await expect(page.getByTestId("family-person-details")).toBeVisible();
   await page.getByRole("heading", { name: "Family tree", level: 1 }).click();
   await expect(page.getByTestId("family-person-details")).toBeHidden();
 });
 
+test("every card shows a readable initials avatar and keeps its accessible name", async ({
+  page,
+}) => {
+  await stubAuthorized(page);
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(4);
+  const avatar = page
+    .getByTestId("family-person")
+    .filter({ hasText: "Nguyễn Văn A" })
+    .getByTestId("family-person-avatar");
+  await expect(avatar).toBeVisible();
+  await expect(avatar).toContainText("N");
+  // The card's accessible name is unchanged; the avatar is decorative.
+  const card = page.getByRole("button", {
+    name: "Select Nguyễn Văn A",
+    exact: true,
+  });
+  await expect(card).toBeVisible();
+  // The full label stays available on the card's group, not only the avatar.
+  await expect(
+    page.getByRole("group", { name: "Nguyễn Văn A", exact: true }),
+  ).toBeVisible();
+  const geometry = await card.boundingBox();
+  expect(geometry && Math.round(geometry.width) >= 100).toBe(true);
+});
+
+test("a name with no usable letter keeps a stable avatar glyph", async ({
+  page,
+}) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        people: [
+          {
+            record_id: "odd",
+            person_label: "  ",
+            evidence_status: "unverified",
+            aliases: [],
+          },
+        ],
+        links: [],
+        truncated: false,
+      }),
+    }),
+  );
+  await page.route("**/api/genealogy/person/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: "odd",
+        person_label: "  ",
+        assertions: [],
+      }),
+    }),
+  );
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person-avatar")).toContainText("?");
+});
+
+test("the popup has relationships, facts, and sources sections", async ({
+  page,
+}) => {
+  await stubBranches(page);
+  // Give the selected person one stored fact so the facts section has content.
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Person " + id,
+        assertions: [
+          {
+            assertion_id: 900,
+            kind: "display_name",
+            key: "name",
+            value_text: "Person " + id,
+            review_status: "verified",
+            evidence: [
+              {
+                evidence_id: "synthetic-register#4",
+                citation: "synthetic-register p.4",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+  });
+  await page.goto("/genealogy");
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
+  const popup = page.getByTestId("family-person-details");
+  await expect(popup).toBeVisible();
+  const relationships = popup.getByTestId("family-popup-relationships");
+  await expect(relationships).toContainText("Recorded relationships");
+  await expect(relationships.getByTestId("family-relation").first()).toHaveText(
+    "Parent",
+  );
+  const facts = popup.getByTestId("family-popup-facts");
+  await expect(facts).toContainText("Recorded facts");
+  await expect(facts.getByTestId("family-assertions")).toBeVisible();
+  const sources = popup.getByTestId("family-popup-sources");
+  await expect(sources).toContainText("Sources");
+  // Existing evidence links still open the source dialog.
+  await popup
+    .getByTestId("citation-button")
+    .filter({ hasText: "synthetic-register p.4" })
+    .first()
+    .click();
+  await expect(page.getByTestId("source-details")).toBeVisible();
+});
+
+test("the popup Personal history action opens the existing dialog and restores focus", async ({
+  page,
+}) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    }),
+  );
+  const tree = {
+    people: [
+      {
+        record_id: "with-history",
+        person_label: "Nguyễn Văn Có",
+        evidence_status: "verified",
+        aliases: [],
+        history_passages: 1,
+      },
+      {
+        record_id: "without-history",
+        person_label: "Trần Thị Không",
+        evidence_status: "unverified",
+        aliases: [],
+        history_passages: 0,
+      },
+    ],
+    links: [],
+    truncated: false,
+  };
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(tree),
+    }),
+  );
+  await page.route("**/api/genealogy/person/**", (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        record_id: id,
+        person_label: "Nguyễn Văn Có",
+        assertions: [],
+      }),
+    });
+  });
+  await page.route("**/api/family/persons/**/history", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        person: { person_key: "with-history", display_name: "Nguyễn Văn Có" },
+        history: [
+          {
+            passage_id: 1,
+            language: "en",
+            document_ref: "synthetic/history.md",
+            section_title: "Synthetic section",
+            page_start: 3,
+            page_end: 3,
+            body: "SYNTHETIC-POPUP-HISTORY",
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.goto("/genealogy");
+  // The dialog never opens without a user action.
+  await expect(page.getByTestId("personal-history-dialog")).toBeHidden();
+
+  await page
+    .getByRole("button", { name: "Select Nguyễn Văn Có", exact: true })
+    .click();
+  const popup = page.getByTestId("family-person-details");
+  const action = popup.getByTestId("family-popup-history");
+  await expect(action).toBeVisible();
+  // The popup is still settling into its anchored position. Activate the new
+  // action by keyboard, which also proves it is keyboard reachable.
+  await page.waitForTimeout(250);
+  await action.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByTestId("personal-history-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("SYNTHETIC-POPUP-HISTORY");
+
+  await dialog.getByTestId("personal-history-close").click();
+  await expect(dialog).toBeHidden();
+  await expect(action).toBeFocused();
+
+  // Close the popup before selecting a different card; otherwise the anchored
+  // panel can cover the next card while it is still mounted.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(220);
+
+  // A person without published history has no popup action.
+  await page
+    .getByRole("button", { name: "Select Trần Thị Không", exact: true })
+    .click();
+  await expect(
+    page
+      .getByTestId("family-person-details")
+      .getByTestId("family-popup-history"),
+  ).toHaveCount(0);
+});
+
 test.describe("touch", () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 780 } });
 
-  test("a tap opens the popup and the visible buttons navigate", async ({ page }) => {
+  test("a tap opens the popup and the visible buttons navigate", async ({
+    page,
+  }) => {
     await stubBranches(page);
     await page.goto("/genealogy");
-    await page.getByRole("button", { name: "Select Person A", exact: true }).tap();
+    await page
+      .getByRole("button", { name: "Select Person A", exact: true })
+      .tap();
     const popup = page.getByTestId("family-person-details");
     await expect(popup).toBeVisible();
     await page.getByTestId("family-show-children").tap();
@@ -905,19 +1776,29 @@ const SINGLE_CLICK_DELAY_WAIT_MS = 500;
 test("the popup keeps the family profile link", async ({ page }) => {
   await stubAuthorized(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Nguyễn Văn A", exact: true }).click();
-  await expect(page.getByTestId("open-family-profile")).toHaveAttribute("href", "/family/root");
+  await page
+    .getByRole("button", { name: "Select Nguyễn Văn A", exact: true })
+    .click();
+  await expect(page.getByTestId("open-family-profile")).toHaveAttribute(
+    "href",
+    "/family/root",
+  );
 });
 
 test("the popup stays in bounds when the canvas expands", async ({ page }) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   const popup = page.getByTestId("family-person-details");
   await expect(popup).toBeVisible();
 
   await page.getByTestId("family-canvas-toggle").click();
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "true",
+  );
   await expect(popup).toBeVisible();
   const canvas = await page.getByTestId("family-canvas").boundingBox();
   const box = await popup.boundingBox();
@@ -925,19 +1806,29 @@ test("the popup stays in bounds when the canvas expands", async ({ page }) => {
   if (canvas && box) {
     expect(box.x).toBeGreaterThanOrEqual(canvas.x - 1);
     expect(box.x + box.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
-    expect(box.y + box.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(
+      canvas.y + canvas.height + 1,
+    );
   }
 
   await page.keyboard.press("Escape");
   await expect(popup).toBeHidden();
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "true");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "true",
+  );
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute("data-expanded", "false");
+  await expect(page.getByTestId("genealogy-tree")).toHaveAttribute(
+    "data-expanded",
+    "false",
+  );
 });
 
 // --- Contextual help ---------------------------------------------------------
 
-test("the canvas shows the compact desktop navigation hint", async ({ page }) => {
+test("the canvas shows the compact desktop navigation hint", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   await expect(page.getByTestId("family-navigation-hint")).toHaveText(
@@ -946,7 +1837,9 @@ test("the canvas shows the compact desktop navigation hint", async ({ page }) =>
   await expect(page.getByTestId("family-help")).toBeVisible();
 });
 
-test("Help opens a dismissible guide with the implemented controls", async ({ page }) => {
+test("Help opens a dismissible guide with the implemented controls", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
   const helpButton = page.getByTestId("family-help");
@@ -971,7 +1864,9 @@ test("Help opens a dismissible guide with the implemented controls", async ({ pa
   ]) {
     await expect(panel).toContainText(text);
   }
-  await expect(page.getByTestId("family-help-no-children")).toContainText("does not establish");
+  await expect(page.getByTestId("family-help-no-children")).toContainText(
+    "does not establish",
+  );
   await page.keyboard.press("Escape");
   await expect(panel).toBeHidden();
   await expect(helpButton).toBeFocused();
@@ -986,7 +1881,9 @@ test("Help opens a dismissible guide with the implemented controls", async ({ pa
 test.describe("help on a narrow screen", () => {
   test.use({ viewport: { width: 390, height: 780 } });
 
-  test("the guide stays inside the viewport and is dismissible", async ({ page }) => {
+  test("the guide stays inside the viewport and is dismissible", async ({
+    page,
+  }) => {
     await stubBranches(page);
     await page.goto("/genealogy");
     await page.getByTestId("family-help").click();
@@ -1008,7 +1905,9 @@ test.describe("help on a narrow screen", () => {
 test.describe("touch hint", () => {
   test.use({ hasTouch: true });
 
-  test("uses tap wording instead of click and double-click", async ({ page }) => {
+  test("uses tap wording instead of click and double-click", async ({
+    page,
+  }) => {
     await stubBranches(page);
     await page.goto("/genealogy");
     const hint = page.getByTestId("family-navigation-hint");
@@ -1021,10 +1920,14 @@ test.describe("touch hint", () => {
 
 // --- Popup sizing, scrolling, and motion -------------------------------------
 
-test("the popup is about 420px wide on desktop and animates opacity and transform", async ({ page }) => {
+test("the popup is about 420px wide on desktop and animates opacity and transform", async ({
+  page,
+}) => {
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   const popup = page.getByTestId("family-person-details");
   await expect(popup).toBeVisible();
   const box = await popup.boundingBox();
@@ -1035,7 +1938,10 @@ test("the popup is about 420px wide on desktop and animates opacity and transfor
   }
   const motion = await popup.evaluate((element) => {
     const style = getComputedStyle(element as HTMLElement);
-    return { duration: style.transitionDuration, properties: style.transitionProperty };
+    return {
+      duration: style.transitionDuration,
+      properties: style.transitionProperty,
+    };
   });
   expect(motion.duration).toContain("0.18s");
   expect(motion.properties).toContain("opacity");
@@ -1056,15 +1962,23 @@ test.describe("popup on a narrow screen", () => {
       evidence: [],
     }));
     await page.route("**/api/genealogy/person/**", (route) => {
-      const id = decodeURIComponent(route.request().url().split("/").pop() || "");
+      const id = decodeURIComponent(
+        route.request().url().split("/").pop() || "",
+      );
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ record_id: id, person_label: "Person " + id, assertions }),
+        body: JSON.stringify({
+          record_id: id,
+          person_label: "Person " + id,
+          assertions,
+        }),
       });
     });
     await page.goto("/genealogy");
-    await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Select Person A", exact: true })
+      .click();
     const popup = page.getByTestId("family-person-details");
     await expect(popup).toBeVisible();
 
@@ -1078,20 +1992,29 @@ test.describe("popup on a narrow screen", () => {
       (element) => getComputedStyle(element as HTMLElement).overflowY,
     );
     expect(["auto", "scroll"]).toContain(overflow);
-    expect(await popup.evaluate((element) => element.scrollHeight > element.clientHeight))
-      .toBe(true);
+    expect(
+      await popup.evaluate(
+        (element) => element.scrollHeight > element.clientHeight,
+      ),
+    ).toBe(true);
     await popup.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
-    expect(await popup.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(
+      await popup.evaluate((element) => element.scrollTop),
+    ).toBeGreaterThan(0);
   });
 });
 
-test("reduced motion removes the fade and slide and still dismisses instantly", async ({ page }) => {
+test("reduced motion removes the fade and slide and still dismisses instantly", async ({
+  page,
+}) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await stubBranches(page);
   await page.goto("/genealogy");
-  await page.getByRole("button", { name: "Select Person A", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Person A", exact: true })
+    .click();
   const popup = page.getByTestId("family-person-details");
   await expect(popup).toBeVisible();
   const motion = await popup.evaluate((element) => {

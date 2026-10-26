@@ -99,7 +99,13 @@ export function PersonalHistoryDialog({
       className="personal-history-dialog"
       aria-labelledby="personal-history-title"
       data-testid="personal-history-dialog"
-      onClose={onClose}
+      onCancel={(event) => {
+        // Escape closes the dialog through this path. Preventing the native
+        // close keeps the parent as the single owner of the open state, so a
+        // queued close event can never clear a newer open (close/reopen race).
+        event.preventDefault();
+        onClose();
+      }}
     >
       <div className="personal-history-head">
         <div>

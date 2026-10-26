@@ -10,11 +10,13 @@ import {
   ApiRequestError,
   familyProfileMediaUrl,
   getFamilyProfile,
+  type FamilyProfileDateView,
   type FamilyProfileFieldView,
   type FamilyProfilePassageView,
   type FamilyProfileResponse,
 } from "@/lib/api";
 import { formatStructuredDate, precisionLabel } from "@/lib/dates";
+import { initialLetter } from "@/lib/person-display";
 import { profileField } from "@/lib/profile-fields";
 
 // USR-006-B: the family-facing profile and biography page.
@@ -51,8 +53,6 @@ const PRESENTED_FIELDS: { key: string; section: FieldSection }[] = [
 ];
 
 type FieldSection = "about" | "story" | "memories";
-
-const SECTION_ORDER: FieldSection[] = ["about", "story", "memories"];
 
 const SECTION_COPY: Record<FieldSection, { title: string; intro: string }> = {
   about: {
@@ -124,9 +124,15 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       <>
         <PageTitle title="Family profile" />
         <PageHeader title="Family profile" />
-        <p className="hint" role="status" data-testid="family-profile-loading">
-          Loading this family profile…
-        </p>
+        <section
+          className="state-panel state-panel-loading"
+          role="status"
+          aria-busy="true"
+          data-testid="family-profile-loading"
+        >
+          <h2>Loading this family profile…</h2>
+          <p className="hint">Approved family information is on its way.</p>
+        </section>
       </>
     );
   }
@@ -136,11 +142,21 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       <>
         <PageTitle title="Family profile" />
         <PageHeader title="Family profile" subtitle="Your session has ended." />
-        <section className="card profile-empty" data-testid="family-profile-signin">
+        <section
+          className="state-panel state-panel-expired"
+          data-testid="family-profile-signin"
+        >
+          <h2>Sign in again</h2>
           <p>Sign in to view approved family profiles.</p>
-          <Link href="/signin" className="button-secondary" data-testid="family-profile-signin-button">
-            Sign in
-          </Link>
+          <div className="state-panel-actions">
+            <Link
+              href="/signin"
+              className="button-secondary"
+              data-testid="family-profile-signin-button"
+            >
+              Sign in
+            </Link>
+          </div>
         </section>
       </>
     );
@@ -167,12 +183,18 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       <>
         <PageTitle title="Family profile" />
         <PageHeader title="Family profile" />
-        <section className="card" data-testid="family-profile-not-found" role="status">
+        <section
+          className="state-panel state-panel-not-found"
+          data-testid="family-profile-not-found"
+          role="status"
+        >
           <h2>Profile not available</h2>
           <p>This family profile could not be found.</p>
-          <p className="hint">
-            <Link href="/genealogy">Back to the family tree</Link>
-          </p>
+          <div className="state-panel-actions">
+            <Link href="/genealogy" className="button-secondary">
+              Back to the family tree
+            </Link>
+          </div>
         </section>
       </>
     );
@@ -183,11 +205,19 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
       <>
         <PageTitle title="Family profile" />
         <PageHeader title="Family profile" />
-        <section className="card" data-testid="family-profile-unavailable" role="alert">
+        <section
+          className="state-panel state-panel-unavailable"
+          data-testid="family-profile-unavailable"
+          role="alert"
+        >
           <h2>Family profile unavailable</h2>
           <p>{state.message}</p>
-          <div className="review-actions">
-            <button type="button" onClick={() => void load()} data-testid="family-profile-retry">
+          <div className="state-panel-actions review-actions">
+            <button
+              type="button"
+              onClick={() => void load()}
+              data-testid="family-profile-retry"
+            >
               Try again
             </button>
             <Link href="/genealogy" className="button-secondary">
@@ -210,10 +240,22 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   // rejected, owner-private, restricted, and unprovenanced assets, and each
   // `<img>`/link below re-authorizes server-side when the browser fetches it.
   const photos = profile.media.filter((item) => item.kind === "profile_photo");
-  const documents = profile.media.filter((item) => item.kind === "personal_document");
+  const documents = profile.media.filter(
+    (item) => item.kind === "personal_document",
+  );
   const hasContent =
-    presented.length > 0 || photos.length > 0 || documents.length > 0 ||
-    dates.length > 0 || history.length > 0;
+    presented.length > 0 ||
+    photos.length > 0 ||
+    documents.length > 0 ||
+    dates.length > 0 ||
+    history.length > 0;
+  // The summary photo is the newest approved photograph, if the family shared
+  // one. No photo means the initials fallback renders and no `<img>` at all.
+  const summaryPhoto = photos[0];
+  const birth = dates.find((date) => date.kind === "birth_date");
+  const death = dates.find((date) => date.kind === "death_date");
+  const fieldsOf = (section: FieldSection) =>
+    presented.filter((field) => field.section === section);
 
   return (
     <>
@@ -228,161 +270,286 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
         subtitle="Approved family information. Only values this family member chose to share with the family appear here."
       />
 
-      <div className="profile-workspace" data-testid="family-profile">
-        {dates.length > 0 ? (
-          <section
-            className="profile-section"
-            aria-labelledby="family-profile-dates"
-            data-testid="family-profile-dates"
+      <div
+        className="profile-workspace family-profile-layout"
+        data-testid="family-profile"
+      >
+        <aside
+          className="family-profile-summary"
+          aria-labelledby="family-profile-summary-heading"
+          data-testid="family-profile-summary"
+        >
+          <div className="family-profile-summary-media">
+            {summaryPhoto ? (
+              <img
+                className="family-profile-summary-photo"
+                data-testid="family-profile-summary-photo"
+                src={familyProfileMediaUrl(
+                  profile.person.person_key,
+                  summaryPhoto.media_id,
+                )}
+                alt={`Photograph shared by ${displayName}`}
+                width={summaryPhoto.width ?? undefined}
+                height={summaryPhoto.height ?? undefined}
+              />
+            ) : (
+              <span
+                className="family-profile-summary-initial"
+                data-testid="family-profile-summary-initial"
+                aria-hidden="true"
+              >
+                {initialLetter(displayName)}
+              </span>
+            )}
+          </div>
+          <h2
+            id="family-profile-summary-heading"
+            className="family-profile-summary-name"
           >
-            <div className="profile-section-heading">
-              <h2 id="family-profile-dates">Dates</h2>
-              <p>Reviewed dates from the family archive. Each keeps the precision the source states.</p>
-            </div>
-            <dl className="family-profile-dates">
-              {dates.map((date) => (
-                <div key={date.kind} data-testid={`family-profile-date-${date.kind}`}>
-                  <dt>{date.kind === "birth_date" ? "Born" : "Died"}</dt>
-                  <dd>
-                    <span className="family-profile-date-value">
-                      {formatStructuredDate(date)}
-                    </span>
-                    <span className="meta"> · {precisionLabel(date.precision)}</span>
-                    {date.value ? (
-                      <span className="meta"> · as written: “{date.value}”</span>
-                    ) : null}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        ) : null}
-
-        {history.length > 0 ? (
-          <section
-            className="profile-section"
-            aria-labelledby="family-profile-history"
-            data-testid="family-profile-history"
+            {displayName}
+          </h2>
+          <p
+            className="meta family-profile-summary-dates"
+            data-testid="family-profile-summary-dates"
           >
-            <div className="profile-section-heading">
-              <h2 id="family-profile-history">History from the family archive</h2>
-              <p>
-                Passages from the family history, reviewed for the family archive.
-                The wording is kept exactly as written in the source.
-              </p>
-            </div>
-            {history.map((passage) => (
-              <HistoryPassage key={passage.passage_id} passage={passage} />
-            ))}
-          </section>
-        ) : null}
-
-        {photos.length > 0 ? (
-          <section
-            className="profile-section"
-            aria-labelledby="family-profile-photos"
-            data-testid="family-profile-photos"
+            {birth || death ? (
+              <span>{lifespan(birth, death)}</span>
+            ) : (
+              <span>No verified dates</span>
+            )}
+          </p>
+          <dl
+            className="family-profile-counts"
+            data-testid="family-profile-counts"
           >
-            <div className="profile-section-heading">
-              <h2 id="family-profile-photos">Photographs</h2>
-              <p>Approved photographs shared with the family.</p>
+            <div>
+              <dt>Approved facts</dt>
+              <dd data-testid="family-profile-count-fields">
+                {presented.length}
+              </dd>
             </div>
-            <ul className="family-profile-media">
-              {photos.map((photo) => (
-                <li key={photo.media_id} data-testid={`family-profile-photo-${photo.media_id}`}>
-                  <img
-                    className="family-profile-photo"
-                    src={familyProfileMediaUrl(profile.person.person_key, photo.media_id)}
-                    alt={`Photograph shared by ${displayName}`}
-                    width={photo.width ?? undefined}
-                    height={photo.height ?? undefined}
-                    loading="lazy"
-                  />
-                  <p className="meta">
-                    Approved version {photo.approved_revision_number} · {formatDate(photo.created_at)}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
+            <div>
+              <dt>Dates</dt>
+              <dd data-testid="family-profile-count-dates">{dates.length}</dd>
+            </div>
+            <div>
+              <dt>History passages</dt>
+              <dd data-testid="family-profile-count-history">
+                {history.length}
+              </dd>
+            </div>
+            <div>
+              <dt>Photographs</dt>
+              <dd data-testid="family-profile-count-photos">{photos.length}</dd>
+            </div>
+            <div>
+              <dt>Documents</dt>
+              <dd data-testid="family-profile-count-documents">
+                {documents.length}
+              </dd>
+            </div>
+          </dl>
+          <p className="hint family-profile-summary-link">
+            <Link
+              href="/genealogy"
+              data-testid="family-profile-summary-tree-link"
+            >
+              See this person in the family tree
+            </Link>
+          </p>
+        </aside>
 
-        {presented.length === 0
-          ? null
-          : SECTION_ORDER.map((section) => {
-              const fields = presented.filter((field) => field.section === section);
-              if (fields.length === 0) return null;
-              const copy = SECTION_COPY[section];
-              return (
-                <section
-                  key={section}
-                  className="profile-section"
-                  aria-labelledby={`family-profile-${section}`}
-                  data-testid={`family-profile-section-${section}`}
-                >
-                  <div className="profile-section-heading">
-                    <h2 id={`family-profile-${section}`}>{copy.title}</h2>
-                    <p>{copy.intro}</p>
+        <div className="family-profile-main">
+          {fieldsOf("about").length > 0 ? (
+            <FieldSectionBlock section="about" fields={fieldsOf("about")} />
+          ) : null}
+
+          {fieldsOf("story").length > 0 ? (
+            <FieldSectionBlock section="story" fields={fieldsOf("story")} />
+          ) : null}
+
+          {fieldsOf("memories").length > 0 ? (
+            <FieldSectionBlock
+              section="memories"
+              fields={fieldsOf("memories")}
+            />
+          ) : null}
+
+          {dates.length > 0 ? (
+            <section
+              className="profile-section"
+              aria-labelledby="family-profile-dates"
+              data-testid="family-profile-dates"
+            >
+              <div className="profile-section-heading">
+                <h2 id="family-profile-dates">Dates</h2>
+                <p>Reviewed dates from the family archive. Each keeps the precision the source states.</p>
+              </div>
+              <dl className="family-profile-dates">
+                {dates.map((date) => (
+                  <div key={date.kind} data-testid={`family-profile-date-${date.kind}`}>
+                    <dt>{date.kind === "birth_date" ? "Born" : "Died"}</dt>
+                    <dd>
+                      <span className="family-profile-date-value">{formatStructuredDate(date)}</span>
+                      <span className="meta"> · {precisionLabel(date.precision)}</span>
+                      {date.value ? (
+                        <span className="meta"> · as written: “{date.value}”</span>
+                      ) : null}
+                    </dd>
                   </div>
-                  {fields.map((field) => (
-                    <article key={field.field_key} data-testid={`family-profile-field-${field.field_key}`}>
-                      <h3>{labelOf(field.field_key)}</h3>
-                      <p className="family-profile-text">{field.value}</p>
-                      <p className="meta">
-                        Approved version {field.approved_revision_number} ·{" "}
-                        {formatDate(field.updated_at)}
-                      </p>
-                    </article>
-                  ))}
-                </section>
-              );
-            })}
+                ))}
+              </dl>
+            </section>
+          ) : null}
 
-        {documents.length > 0 ? (
-          <section
-            className="profile-section"
-            aria-labelledby="family-profile-documents"
-            data-testid="family-profile-documents"
-          >
-            <div className="profile-section-heading">
-              <h2 id="family-profile-documents">Shared documents</h2>
-              <p>Documents approved for the family archive.</p>
-            </div>
-            <ul className="family-profile-media">
-              {documents.map((document) => (
-                <li
-                  key={document.media_id}
-                  className="family-profile-document"
-                  data-testid={`family-profile-document-${document.media_id}`}
-                >
-                  <a
-                    href={familyProfileMediaUrl(profile.person.person_key, document.media_id)}
-                    target="_blank"
-                    rel="noreferrer"
+          {history.length > 0 ? (
+            <section
+              className="profile-section"
+              aria-labelledby="family-profile-history"
+              data-testid="family-profile-history"
+            >
+              <div className="profile-section-heading">
+                <h2 id="family-profile-history">
+                  History from the family archive
+                </h2>
+                <p>
+                  Passages from the family history, reviewed for the family
+                  archive. The wording is kept exactly as written in the source.
+                </p>
+              </div>
+              <div className="family-profile-prose">
+                {history.map((passage) => (
+                  <HistoryPassage key={passage.passage_id} passage={passage} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {photos.length > 0 ? (
+            <section
+              className="profile-section"
+              aria-labelledby="family-profile-photos"
+              data-testid="family-profile-photos"
+            >
+              <div className="profile-section-heading">
+                <h2 id="family-profile-photos">Photographs</h2>
+                <p>Approved photographs shared with the family.</p>
+              </div>
+              <ul className="family-profile-media">
+                {photos.map((photo) => (
+                  <li
+                    key={photo.media_id}
+                    data-testid={`family-profile-photo-${photo.media_id}`}
                   >
-                    {document.file_name}
-                  </a>
-                  <span className="meta">
-                    Approved version {document.approved_revision_number} · {formatDate(document.created_at)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
+                    <img
+                      className="family-profile-photo"
+                      src={familyProfileMediaUrl(
+                        profile.person.person_key,
+                        photo.media_id,
+                      )}
+                      alt={`Photograph shared by ${displayName}`}
+                      width={photo.width ?? undefined}
+                      height={photo.height ?? undefined}
+                      loading="lazy"
+                    />
+                    <p className="meta">
+                      Approved version {photo.approved_revision_number} ·{" "}
+                      {formatDate(photo.created_at)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
-        {hasContent ? null : (
-          <section className="card" data-testid="family-profile-empty">
-            <h2>No family information yet</h2>
-            <p>
-              {displayName} has not published any family-visible profile
-              information yet. Nothing is shown until their own approved
-              contribution is available.
-            </p>
-          </section>
-        )}
+          {documents.length > 0 ? (
+            <section
+              className="profile-section"
+              aria-labelledby="family-profile-documents"
+              data-testid="family-profile-documents"
+            >
+              <div className="profile-section-heading">
+                <h2 id="family-profile-documents">Shared documents</h2>
+                <p>Documents approved for the family archive.</p>
+              </div>
+              <ul className="family-profile-media">
+                {documents.map((document) => (
+                  <li
+                    key={document.media_id}
+                    className="family-profile-document"
+                    data-testid={`family-profile-document-${document.media_id}`}
+                  >
+                    <a
+                      href={familyProfileMediaUrl(
+                        profile.person.person_key,
+                        document.media_id,
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {document.file_name}
+                    </a>
+                    <span className="meta">
+                      Approved version {document.approved_revision_number} ·{" "}
+                      {formatDate(document.created_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {hasContent ? null : (
+            <section
+              className="state-panel state-panel-empty"
+              data-testid="family-profile-empty"
+            >
+              <h2>No family information yet</h2>
+              <p>
+                {displayName} has not published any family-visible profile
+                information yet. Nothing is shown until their own approved
+                contribution is available.
+              </p>
+            </section>
+          )}
+        </div>
       </div>
     </>
+  );
+}
+
+function FieldSectionBlock({
+  section,
+  fields,
+}: {
+  section: FieldSection;
+  fields: PresentedField[];
+}) {
+  const copy = SECTION_COPY[section];
+  return (
+    <section
+      className="profile-section"
+      aria-labelledby={`family-profile-${section}`}
+      data-testid={`family-profile-section-${section}`}
+    >
+      <div className="profile-section-heading">
+        <h2 id={`family-profile-${section}`}>{copy.title}</h2>
+        <p>{copy.intro}</p>
+      </div>
+      {fields.map((field) => (
+        <article
+          key={field.field_key}
+          data-testid={`family-profile-field-${field.field_key}`}
+        >
+          <h3>{labelOf(field.field_key)}</h3>
+          <p className="family-profile-text">{field.value}</p>
+          <p className="meta">
+            Approved version {field.approved_revision_number} ·{" "}
+            {formatDate(field.updated_at)}
+          </p>
+        </article>
+      ))}
+    </section>
   );
 }
 
@@ -405,11 +572,28 @@ function labelOf(fieldKey: string): string {
   return profileField(fieldKey)?.label ?? fieldKey;
 }
 
+/// A concise verified lifespan for the summary card.
+///
+/// Only verified dates from the payload reach this function. A missing date is
+/// omitted instead of guessed, so no relationship or status is invented.
+function lifespan(
+  birth: FamilyProfileDateView | undefined,
+  death: FamilyProfileDateView | undefined,
+): string {
+  const birthText = birth ? formatStructuredDate(birth) : "";
+  const deathText = death ? formatStructuredDate(death) : "";
+  if (birthText && deathText) return `${birthText} – ${deathText}`;
+  if (birthText) return `Born ${birthText}`;
+  if (deathText) return `Died ${deathText}`;
+  return "";
+}
+
 /// One approved archive passage: source wording, language, and PDF citation.
 function HistoryPassage({ passage }: { passage: FamilyProfilePassageView }) {
-  const pages = passage.page_start === passage.page_end
-    ? `page ${passage.page_start}`
-    : `pages ${passage.page_start}–${passage.page_end}`;
+  const pages =
+    passage.page_start === passage.page_end
+      ? `page ${passage.page_start}`
+      : `pages ${passage.page_start}–${passage.page_end}`;
   const language = passage.language === "vi" ? "Vietnamese" : "English";
   const paragraphs = passage.body.split(/\n{2,}/);
   return (
@@ -423,7 +607,9 @@ function HistoryPassage({ passage }: { passage: FamilyProfilePassageView }) {
         {passage.document_ref ? ` · ${passage.document_ref}` : ""}
       </p>
       {paragraphs.map((paragraph, index) => (
-        <p key={index} className="family-history-text">{paragraph}</p>
+        <p key={index} className="family-history-text">
+          {paragraph}
+        </p>
       ))}
     </article>
   );
