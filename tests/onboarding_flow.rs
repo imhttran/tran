@@ -154,7 +154,7 @@ fn run_flow(identity: &mut Client, genealogy: &mut Client, prefix: &str) -> Resu
     };
     let first = reserve(genealogy, person_id, &parts, "synthetic-admin")
         .map_err(|err| format!("reserve: {err}"))?;
-    if first.username != "NVAn" || first.username_key != "nvan" {
+    if first.username != "nvan" || first.username_key != "nvan" {
         return Err(format!(
             "unexpected reservation {:?}/{:?}",
             first.username, first.username_key

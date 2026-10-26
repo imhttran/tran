@@ -56,7 +56,7 @@ The product must distinguish a *genealogy person*, an *invitation*, a *verified 
 Requested format: `[lastInitial][MiddleInitial][FirstName]`.
 
 - Use verified structured family/middle/given names; for Vietnamese names, family name is usually first and given name last, but do not guess ambiguous parsing.
-- Example with **synthetic** name: `Nguyen Van An` -> display username `NVAn`, canonical case-insensitive key `nvan`.
+- Example with **synthetic** name: `Nguyen Van An` -> username `nvan`, canonical case-insensitive key `nvan`.
 - Normalize Vietnamese diacritics for the account alias, preserve the original display name, and specify deterministic treatment of `Đ/đ`. Never mutate `person_key`.
 - For multiple/missing middle components or compound given names, use a documented parse rule with an admin confirmation opportunity. Do not silently invent initials.
 - Enforce case-insensitive uniqueness in the account/invitation namespace. Use a documented, non-sensitive collision suffix such as `nvan2` with admin confirmation; never use a birth date in the suffix.

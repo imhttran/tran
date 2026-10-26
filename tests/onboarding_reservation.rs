@@ -163,9 +163,9 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
     let first_id = insert_person(client, &first_key)?;
     let first = reserve(client, first_id, &parts, "synthetic-actor")
         .map_err(|err| format!("reserve first: {err}"))?;
-    if first.username != "NVAn" {
+    if first.username != "nvan" {
         return Err(format!(
-            "first username: expected NVAn, got {}",
+            "first username: expected nvan, got {}",
             first.username
         ));
     }
@@ -186,9 +186,9 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
     let second_id = insert_person(client, &second_key)?;
     let second = reserve(client, second_id, &parts, "synthetic-actor")
         .map_err(|err| format!("reserve second: {err}"))?;
-    if second.username != "NVAn2" {
+    if second.username != "nvan2" {
         return Err(format!(
-            "second username: expected NVAn2, got {}",
+            "second username: expected nvan2, got {}",
             second.username
         ));
     }
