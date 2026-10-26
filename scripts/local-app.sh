@@ -3,7 +3,7 @@
 #
 #   scripts/local-app.sh migrate [CATALOG]
 #   scripts/local-app.sh import [CATALOG]
-#   scripts/local-app.sh restart
+#   scripts/local-app.sh restart [--force]
 #   scripts/local-app.sh update [CATALOG]
 #   scripts/local-app.sh status
 #   scripts/local-app.sh stop
@@ -16,7 +16,7 @@
 #     stored data. Only the genealogy migrations and the idempotent catalog
 #     import write data.
 #   * It only stops API/UI processes it started (recorded in .run/api.pid and
-#     web/.run/web.pid). A server it did not start is reported, never killed.
+#     web/.run/web.pid), unless restart --force explicitly requests port cleanup.
 #   * It never switches branches, pulls, stashes, resets, or discards changes.
 set -eu
 
@@ -246,11 +246,55 @@ status_app() {
 }
 
 restart_app() {
-	preflight_servers || exit 1
+	if [ "${restart_force:-0}" = 1 ]; then
+		command -v lsof >/dev/null 2>&1 || die "restart --force requires lsof"
+		validate_restart_port "$API_PORT"
+		validate_restart_port "$WEB_PORT"
+	else
+		preflight_servers || exit 1
+	fi
 	stop_api
 	stop_web
+	if [ "${restart_force:-0}" = 1 ]; then
+		clear_restart_port api "$API_PORT"
+		clear_restart_port ui "$WEB_PORT"
+	fi
 	start_api || exit 1
 	start_web || exit 1
+}
+
+validate_restart_port() {
+	case "$1" in ''|*[!0-9]*) die "invalid restart port: $1" ;; esac
+	[ "$1" -ge 1 ] && [ "$1" -le 65535 ] || die "invalid restart port: $1"
+}
+
+restart_listeners() {
+	# lsof returns 1 when no matching listener exists.
+	lsof -nP -t -iTCP:"$1" -sTCP:LISTEN || {
+		code=$?
+		[ "$code" -eq 1 ] || return "$code"
+	}
+}
+
+clear_restart_port() { # label port
+	listeners=$(restart_listeners "$2") || die "cannot inspect port $2"
+	[ -n "$listeners" ] || return 0
+	for listener in $(printf '%s\n' "$listeners" | sort -u); do
+		case "$listener" in ''|*[!0-9]*) die "invalid listener PID: $listener" ;; esac
+		[ "$listener" -gt 1 ] || die "refusing to signal PID $listener"
+		warn "$1: stopping listener PID $listener on port $2 (SIGTERM)"
+		kill -TERM "$listener" 2>/dev/null || {
+			alive "$listener" && die "cannot stop PID $listener on port $2"
+		}
+	done
+	attempt=0
+	while [ "$attempt" -lt 20 ]; do
+		remaining=$(restart_listeners "$2") || die "cannot inspect port $2"
+		[ -n "$remaining" ] || return 0
+		sleep 0.5
+		attempt=$((attempt + 1))
+	done
+	die "$1: port $2 is still occupied after SIGTERM; restart stopped"
 }
 
 cmd_migrate() {
@@ -266,6 +310,12 @@ cmd_import() {
 }
 
 cmd_restart() {
+	restart_force=0
+	case "${1:-}" in
+		'') [ "$#" -eq 0 ] || usage ;;
+		--force) [ "$#" -eq 1 ] || usage; restart_force=1 ;;
+		*) usage ;;
+	esac
 	require_databases
 	restart_app
 	status_app
@@ -293,7 +343,7 @@ usage: scripts/local-app.sh <command> [catalog]
 
   migrate            apply genealogy migrations
   import [catalog]   import the catalog (default docs/tran/Tran-Family-People-Catalog.md)
-  restart            restart only the API/UI processes these scripts own
+  restart [--force]  restart API/UI; --force also stops listeners on their ports
   update [catalog]   validate, migrate, import, rebuild, restart, and report status
   status             report API/UI state, URLs, health, and log paths
   stop               stop only the API/UI processes these scripts own
@@ -304,9 +354,10 @@ USAGE
 case "${1:-}" in
 	migrate) shift; cmd_migrate ;;
 	import) shift; cmd_import "${1:-}" ;;
-	restart) shift; cmd_restart ;;
+	restart) shift; cmd_restart "$@" ;;
 	update) shift; cmd_update "${1:-}" ;;
 	status) shift; status_app ;;
 	stop) shift; cmd_stop ;;
 	*) usage ;;
 esac
+
