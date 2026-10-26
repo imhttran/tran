@@ -15,6 +15,7 @@
 #   make genealogy-migrate  apply genealogy migrations
 #   make genealogy-import   import CATALOG (idempotent)
 #   make app-restart        restart only the API/UI processes the scripts own
+#   make app-restart FORCE=1 also stop listeners on the configured API/UI ports
 #   make app-update         validate, migrate, import, rebuild, restart, report
 #   make admin-setup        explicitly configure an administrator from Keycloak
 #
@@ -112,7 +113,7 @@ genealogy-import:
 	./scripts/local-app.sh import "$(CATALOG)"
 
 app-restart:
-	./scripts/local-app.sh restart
+	./scripts/local-app.sh restart $(if $(filter 1,$(FORCE)),--force,)
 
 app-update:
 	./scripts/local-app.sh update "$(CATALOG)"
@@ -185,3 +186,4 @@ web-e2e:
 
 # Everything: the Rust checks and the web checks.
 check: rust-check web-check
+
