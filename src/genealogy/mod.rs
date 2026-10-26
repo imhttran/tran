@@ -20,6 +20,7 @@ pub mod parser;
 pub mod person_search;
 pub mod photograph_extract;
 pub mod photograph_import;
+pub mod photograph_review;
 pub mod photograph_store;
 pub mod query;
 pub mod reimport;

@@ -267,6 +267,16 @@ Files you may change: `src/genealogy/photograph_review.rs` (new),
 - Two people with the same recorded name require an explicit choice.
 - Repeating a decision is a no-op and adds no duplicate event.
 
+### Acceptance Checks
+
+- `cargo test --locked`
+
+### Acceptance Mapping
+
+- criterion 1: check 1
+- criterion 2: check 1
+- criterion 3: check 1
+
 ## AP-106 — Authorized image routes, gallery, and profile API
 
 Add the read surfaces to `src/api.rs`:
