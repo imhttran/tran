@@ -128,6 +128,9 @@ test("a verified lifespan appears on the tree card and in the popup", async ({ p
   await dated.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("family-popup-lifespan")).toHaveText("1877–c. 1922");
+  // Let the anchored popup finish its 180ms placement/focus settle before moving
+  // focus to the next card, so the popup cannot steal the keyboard focus.
+  await page.waitForTimeout(250);
 
   const undated = page.getByRole("button", { name: "Select Synthetic Undated Person", exact: true });
   await undated.focus();
