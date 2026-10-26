@@ -67,12 +67,12 @@ The command stops at the first failure:
 
 Individual steps:
 
-| Command | Does |
-| --- | --- |
-| `make genealogy-migrate` | apply the genealogy migrations |
-| `make genealogy-import` | import `CATALOG` (idempotent; override with `CATALOG=…`) |
-| `make app-restart` | restart only the API/UI processes these scripts own |
-| `make app-update` | validate → migrate → import → rebuild → restart → report |
+| Command                  | Does                                                     |
+| ------------------------ | -------------------------------------------------------- |
+| `make genealogy-migrate` | apply the genealogy migrations                           |
+| `make genealogy-import`  | import `CATALOG` (idempotent; override with `CATALOG=…`) |
+| `make app-restart`       | restart only the API/UI processes these scripts own      |
+| `make app-update`        | validate → migrate → import → rebuild → restart → report |
 
 API process state lives in `.run/api.pid` and `.run/api.log`; the UI uses
 `web/.run/`. A server started some other way is reported with the command to
@@ -202,3 +202,30 @@ directly.
 Before answering, `cmd/rag` asks the chat model whether the kept documents can
 actually answer the question (`RAG_ANSWERABILITY_GATE`, on by default). If they
 cannot, it replies "I do not have enough information." instead of answering.
+
+## Ask the archive suggestions
+
+The web page at `/ask` no longer uses a fixed list of sample questions. It calls
+`GET /api/query/suggestions`, which reads only `approved_documents` for the
+active `RAG_CORPUS` and derives one question per approved section (or source
+when a document has no section). The response is:
+
+```json
+{
+  "ok": true,
+  "questions": ["What does the archive say about \"Section title\"?"]
+}
+```
+
+No passage body is returned, and no unapproved, restricted, removed, or
+admin-only document can supply a suggestion. If the corpus has no approved
+chunks, `questions` is empty and the page shows an explicit “No searchable
+archive content yet” state instead of offering questions the archive cannot
+answer.
+
+Indexing is separate from the genealogy catalog import. The catalog import writes
+only the genealogy database; it does not embed family Markdown or PDF files. To
+make family content available to Ask the archive, submit the document through
+the document lifecycle, approve it for family scope, and let processing complete
+so it enters `approved_documents`. Family source files that are only in
+`docs/tran/` are not searchable until that happens.

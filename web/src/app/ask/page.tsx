@@ -1,24 +1,24 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
 import { PersonAnswerView } from "@/components/PersonAnswer";
-import { ApiRequestError, askQuestion } from "@/lib/api";
+import { ApiRequestError, askQuestion, getQuerySuggestions } from "@/lib/api";
 import type { QueryResponse } from "@/lib/api";
 
 // Family-facing question page over the existing /api/query service. Rust
 // authorizes, retrieves, and refuses; this page only renders its answer and
-// citations. It makes no claim about what the archive contains.
-const EXAMPLES = [
-  "Who are the earliest recorded ancestors?",
-  "Where did the family live?",
-  "What do the sources say about the family branches?",
-  "Which family events are recorded in the register?",
-];
+// citations. Suggestions come from approved archive sections, never from a
+// hard-coded list, so an empty archive produces an explicit empty state.
+type SuggestionsState =
+  | { kind: "loading" }
+  | { kind: "ready"; questions: string[] }
+  | { kind: "empty" }
+  | { kind: "error" };
 
 type AskState =
   | { kind: "idle" }
@@ -49,7 +49,27 @@ export default function AskPage() {
 function Ask() {
   const [question, setQuestion] = useState("");
   const [state, setState] = useState<AskState>({ kind: "idle" });
+  const [suggestions, setSuggestions] = useState<SuggestionsState>({
+    kind: "loading",
+  });
   const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getQuerySuggestions(controller.signal)
+      .then((body) => {
+        if (controller.signal.aborted) return;
+        setSuggestions(
+          body.questions.length > 0
+            ? { kind: "ready", questions: body.questions }
+            : { kind: "empty" },
+        );
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSuggestions({ kind: "error" });
+      });
+    return () => controller.abort();
+  }, []);
 
   async function onAsk(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -120,22 +140,51 @@ function Ask() {
             {state.kind === "loading" ? "Asking…" : "Ask"}
           </button>
         </form>
-        <ul className="ask-examples" aria-label="Example questions">
-          {EXAMPLES.map((example) => (
-            <li key={example}>
-              <button
-                type="button"
-                data-testid="ask-example"
-                onClick={() => {
-                  setQuestion(example);
-                  input.current?.focus();
-                }}
-              >
-                {example}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {suggestions.kind === "loading" && (
+          <p
+            className="hint"
+            role="status"
+            data-testid="ask-suggestions-loading"
+          >
+            Looking for suggested questions…
+          </p>
+        )}
+        {suggestions.kind === "ready" && (
+          <>
+            <h3>Suggested from the archive</h3>
+            <ul className="ask-examples" aria-label="Suggested questions">
+              {suggestions.questions.map((suggestion) => (
+                <li key={suggestion}>
+                  <button
+                    type="button"
+                    data-testid="ask-example"
+                    onClick={() => {
+                      setQuestion(suggestion);
+                      input.current?.focus();
+                    }}
+                  >
+                    {suggestion}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {suggestions.kind === "empty" && (
+          <div className="ask-empty" data-testid="ask-suggestions-empty">
+            <h2>No searchable archive content yet</h2>
+            <p>
+              An administrator must approve and process a family document before
+              the archive can suggest or answer questions.
+            </p>
+          </div>
+        )}
+        {suggestions.kind === "error" && (
+          <p className="hint" role="status" data-testid="ask-suggestions-error">
+            Suggested questions are unavailable right now. You can still ask a
+            question.
+          </p>
+        )}
       </section>
 
       <div aria-live="polite">

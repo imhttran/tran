@@ -257,4 +257,41 @@ test.describe.serial("RUST-008A browser integration", () => {
       fullPage: true,
     });
   });
+
+  test("an approved family fixture supplies a suggested question and a cited answer", async ({
+    page,
+  }) => {
+    test.setTimeout(6 * ANSWER_TIMEOUT);
+    const version = await uploadForReview(
+      page,
+      "fixtures/family/ask-suggestions.md",
+    );
+    const outcome = await publishForRetrieval(page, version);
+    expect(outcome?.status).toBe("ready");
+
+    const response = await page.request.get(
+      `${WEB_URL}/api/query/suggestions`,
+      { headers: adminHeaders() },
+    );
+    expect(response.status()).toBe(200);
+    const body = (await response.json()) as { questions: string[] };
+    expect(body.questions).toContain(
+      'What does the archive say about "Archive Test Section"?',
+    );
+
+    await page.goto("/ask");
+    const suggestion = page
+      .getByTestId("ask-example")
+      .filter({ hasText: "Archive Test Section" });
+    await expect(suggestion).toHaveCount(1);
+    await suggestion.click();
+    await expect(page.getByTestId("question-input")).toHaveValue(
+      'What does the archive say about "Archive Test Section"?',
+    );
+    await askUntilCited(
+      page,
+      /ZX-ASK-SUGGESTION-2026/i,
+      /ask-suggestions\.md/,
+    );
+  });
 });

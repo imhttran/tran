@@ -18,6 +18,7 @@ use rag_foundation::answer::service::{
 };
 use rag_foundation::document::Chunk;
 use rag_foundation::generation::{GenerationError, Generator};
+use rag_foundation::query_service::suggested_questions;
 use rag_foundation::retrieval::{Candidate, ChunkProvenance};
 use rag_foundation::storage_pg::{PgStore, SectionKey};
 
@@ -229,6 +230,72 @@ fn identity(row: &rag_foundation::storage_pg::PublicationRow) -> PassageIdentity
         corpus: row.corpus.clone(),
         content_hash: row.content_hash.clone(),
     }
+}
+
+#[test]
+fn suggestions_come_only_from_approved_sections_and_fall_back_to_the_source() {
+    let Some(dsn) = dsn() else {
+        eprintln!("DATABASE_URL unset; skipping suggestions test");
+        return;
+    };
+    let _guard = lock();
+    let mut client = Client::connect(&dsn, NoTls).expect("connect");
+    prepare(&mut client);
+    let store = PgStore::connect(&dsn).expect("store");
+
+    assert!(
+        store
+            .suggestion_sections("empty-suggestion-corpus", 6)
+            .expect("empty suggestions")
+            .is_empty(),
+        "an empty corpus suggests nothing"
+    );
+
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "suggestion-early",
+        1,
+        "family.md",
+        "Early years",
+        "Early years evidence",
+        0.9,
+    );
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "suggestion-migration",
+        2,
+        "family-migration.md",
+        "Migration",
+        "Migration evidence",
+        0.9,
+    );
+    seed_approved(
+        &mut client,
+        CORPUS,
+        "suggestion-source-fallback",
+        3,
+        "source-only.md",
+        "",
+        "Source-only evidence",
+        0.9,
+    );
+
+    let sections = store
+        .suggestion_sections(CORPUS, 6)
+        .expect("approved sections");
+    let questions = suggested_questions(&sections, 6);
+    assert_eq!(
+        questions,
+        vec![
+            "What does the archive say about \"Early years\"?",
+            "What does the archive say about \"Migration\"?",
+            "What does the archive say about \"source-only.md\"?",
+        ]
+    );
+    assert!(!questions.iter().any(|question| question.contains("Hidden")));
+    assert_eq!(suggested_questions(&sections, 2).len(), 2);
 }
 
 #[test]

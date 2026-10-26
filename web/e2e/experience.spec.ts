@@ -48,6 +48,16 @@ async function signIn(page: Page, role: Role) {
       body: JSON.stringify(sessionPayload(role)),
     }),
   );
+  // The Ask page reads approved suggestions on mount. These UI tests have no
+  // real session cookie, so give every one a deterministic empty list instead
+  // of letting the 401 mark the mocked session expired.
+  await page.route("**/api/query/suggestions", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, questions: [] }),
+    }),
+  );
 }
 
 const CONCLUSION_CITED = {
@@ -355,6 +365,9 @@ test.describe("navigation", () => {
 test.describe("ask the archive", () => {
   async function ask(page: Page, reply: { status: number; body: unknown }, delay = 0) {
     await signIn(page, "viewer");
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ok: true, questions: ["What does the archive say about \"Synthetic register\"?"] }) }));
     await page.route("**/api/query", async (route) => {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       await route.fulfill({ status: reply.status, contentType: "application/json",
@@ -365,14 +378,45 @@ test.describe("ask the archive", () => {
     await page.getByTestId("ask-button").click();
   }
 
-  test("shows family examples and makes no empty-archive or payment claims", async ({ page }) => {
+  test("shows suggestions derived from approved archive content", async ({ page }) => {
     await signIn(page, "viewer");
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ok: true, questions: ["What does the archive say about \"Synthetic register\"?"] }) }));
     await page.goto("/ask");
     await expect(page.getByPlaceholder("Ask about your family…")).toBeVisible();
     await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeVisible();
-    await expect(page.getByTestId("ask-example")).not.toHaveCount(0);
+    await expect(page.getByTestId("ask-example")).toHaveCount(1);
+    await expect(page.getByTestId("ask-example").first()).toContainText(
+      "Synthetic register",
+    );
     const text = await page.locator("body").innerText();
     expect(text).not.toMatch(/payment|No documents ingested|Ollama|PostgreSQL|Axum/i);
+  });
+
+  test("shows an empty state when no approved content is searchable", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ok: true, questions: [] }) }));
+    await page.goto("/ask");
+    await expect(page.getByTestId("ask-suggestions-empty")).toBeVisible();
+    await expect(page.getByTestId("ask-example")).toHaveCount(0);
+    await expect(page.getByTestId("ask-suggestions-empty")).toContainText(
+      "approve and process",
+    );
+  });
+
+  test("a suggestions failure leaves the question form usable", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.route("**/api/query/suggestions", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "query_suggestions_unavailable",
+          message: "question suggestions are unavailable" }) }));
+    await page.goto("/ask");
+    await expect(page.getByTestId("ask-suggestions-error")).toBeVisible();
+    await expect(page.getByTestId("question-input")).toBeVisible();
+    await expect(page.getByTestId("ask-example")).toHaveCount(0);
   });
 
   test("renders an answer with numbered citations", async ({ page }) => {

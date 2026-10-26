@@ -882,3 +882,8 @@ textarea:focus-visible {
 @media(max-width:600px) {
   .narrative-filter-person { grid-column:span 1; }
 }
+
+/* Ask the archive: suggestions are derived from approved content. */
+.ask-empty { margin-top:14px; padding:14px 16px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+.ask-empty h2 { margin:0 0 6px; font-size:1.05rem; }
+.ask-empty p { margin:0; color:var(--muted); max-width:72ch; }
