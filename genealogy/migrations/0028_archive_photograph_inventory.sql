@@ -9,11 +9,6 @@
 -- A repeated inventory of the same version and content hash is a no-op: every
 -- table has a unique key over (version_id, content_sha256, ...) and the writer
 -- uses ON CONFLICT DO NOTHING. Every statement is safe on a second run.
---
--- AP-102 extends this file additively with the asset byte-store columns, the
--- version-scoped occurrence key, the publication state, and append-only asset
--- review events. The store keeps only a relative storage key; no absolute path
--- is recorded.
 
 -- One row per inventory run. `content_sha256` pins the run to the exact bytes
 -- that were walked, so a replaced original cannot inherit an old inventory.
@@ -152,67 +147,6 @@ CREATE TABLE IF NOT EXISTS archive_photograph_asset (
 CREATE UNIQUE INDEX IF NOT EXISTS archive_photograph_asset_key
     ON archive_photograph_asset (inventory_id, object_number, object_generation);
 
--- AP-102: asset byte-store columns. The content hash ties one asset to one
--- byte sequence; the storage key is relative to the private store root.
-ALTER TABLE archive_photograph_asset
-    ADD COLUMN IF NOT EXISTS content_sha256 TEXT;
-ALTER TABLE archive_photograph_asset
-    ADD COLUMN IF NOT EXISTS mime_type TEXT;
-ALTER TABLE archive_photograph_asset
-    ADD COLUMN IF NOT EXISTS byte_size BIGINT;
-ALTER TABLE archive_photograph_asset
-    ADD COLUMN IF NOT EXISTS storage_key TEXT;
-
--- AP-102: publication state, defaulting to unpublished.
-ALTER TABLE archive_photograph_asset
-    ADD COLUMN IF NOT EXISTS publication_state TEXT NOT NULL DEFAULT 'unpublished';
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'archive_photograph_asset_content_sha_check'
-    ) THEN
-        ALTER TABLE archive_photograph_asset
-            ADD CONSTRAINT archive_photograph_asset_content_sha_check CHECK (
-                content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'
-            );
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'archive_photograph_asset_byte_size_check'
-    ) THEN
-        ALTER TABLE archive_photograph_asset
-            ADD CONSTRAINT archive_photograph_asset_byte_size_check CHECK (
-                byte_size IS NULL OR byte_size >= 0
-            );
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'archive_photograph_asset_storage_key_check'
-    ) THEN
-        ALTER TABLE archive_photograph_asset
-            ADD CONSTRAINT archive_photograph_asset_storage_key_check CHECK (
-                storage_key IS NULL
-                OR (length(btrim(storage_key)) > 0 AND storage_key !~ '^/')
-            );
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'archive_photograph_asset_publication_state_check'
-    ) THEN
-        ALTER TABLE archive_photograph_asset
-            ADD CONSTRAINT archive_photograph_asset_publication_state_check CHECK (
-                publication_state IN ('unpublished', 'published')
-            );
-    END IF;
-END;
-$$;
-
--- A content hash is unique per asset.
-CREATE UNIQUE INDEX IF NOT EXISTS archive_photograph_asset_content_sha_key
-    ON archive_photograph_asset (content_sha256);
-
 -- Links an asset to each page and placement where it is drawn.
 CREATE TABLE IF NOT EXISTS archive_photograph_occurrence (
     occurrence_id       BIGSERIAL PRIMARY KEY,
@@ -221,21 +155,9 @@ CREATE TABLE IF NOT EXISTS archive_photograph_occurrence (
     inventory_id        BIGINT NOT NULL
                             REFERENCES archive_photograph_inventory(inventory_id)
                             ON DELETE CASCADE,
-    document_version_id BIGINT,
     page_number         INTEGER NOT NULL CHECK (page_number >= 1),
     occurrence_ordinal  INTEGER NOT NULL CHECK (occurrence_ordinal >= 1)
 );
-
--- AP-102: the occurrence row also carries the document version, so the unique
--- key is (asset, document version, page, ordinal). The column stays nullable so
--- existing rows remain valid, and the ALTER is a no-op when the table above
--- already created it.
-ALTER TABLE archive_photograph_occurrence
-    ADD COLUMN IF NOT EXISTS document_version_id BIGINT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS archive_photograph_occurrence_version_key
-    ON archive_photograph_occurrence
-        (asset_id, document_version_id, page_number, occurrence_ordinal);
 
 CREATE UNIQUE INDEX IF NOT EXISTS archive_photograph_occurrence_key
     ON archive_photograph_occurrence (asset_id, page_number, occurrence_ordinal);
@@ -304,58 +226,9 @@ CREATE TRIGGER archive_photograph_inventory_event_append_only
     BEFORE UPDATE OR DELETE ON archive_photograph_inventory_event
     FOR EACH ROW EXECUTE FUNCTION archive_photograph_inventory_event_append_only();
 
--- AP-102: append-only review events for a photograph asset.
-CREATE TABLE IF NOT EXISTS archive_photograph_asset_event (
-    event_id            BIGSERIAL PRIMARY KEY,
-    asset_id            BIGINT NOT NULL
-                            REFERENCES archive_photograph_asset(asset_id) ON DELETE CASCADE,
-    action              TEXT NOT NULL,
-    actor               TEXT NOT NULL,
-    detail              JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT archive_photograph_asset_event_action_check CHECK (
-        action IN ('registered', 'linked', 'reviewed', 'published', 'withdrawn')
-    ),
-    CONSTRAINT archive_photograph_asset_event_actor_check CHECK (
-        length(btrim(actor)) > 0
-    )
-);
-
-CREATE INDEX IF NOT EXISTS archive_photograph_asset_event_asset_idx
-    ON archive_photograph_asset_event (asset_id, event_id);
-
-CREATE OR REPLACE FUNCTION archive_photograph_asset_event_append_only()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RAISE EXCEPTION 'archive photograph asset events are append-only';
-END;
-$$;
-
-DROP TRIGGER IF EXISTS archive_photograph_asset_event_append_only
-    ON archive_photograph_asset_event;
-CREATE TRIGGER archive_photograph_asset_event_append_only
-    BEFORE UPDATE OR DELETE ON archive_photograph_asset_event
-    FOR EACH ROW EXECUTE FUNCTION archive_photograph_asset_event_append_only();
-
 COMMENT ON TABLE archive_photograph_inventory IS
     'AP-101: one deterministic per-page and per-image-object inventory of a document version original.';
 COMMENT ON COLUMN archive_photograph_inventory_image.complete IS
     'True only when the decoded stream length matches width*height*components.';
 COMMENT ON COLUMN archive_photograph_inventory_image.classification_detail IS
     'The property values the firing rule used, or the reason the object is unknown.';
-COMMENT ON COLUMN archive_photograph_asset.content_sha256 IS
-    'AP-102: lowercase hex SHA-256 of the stored bytes; unique per asset.';
-COMMENT ON COLUMN archive_photograph_asset.mime_type IS
-    'AP-102: media type of the stored bytes.';
-COMMENT ON COLUMN archive_photograph_asset.byte_size IS
-    'AP-102: byte length of the stored bytes.';
-COMMENT ON COLUMN archive_photograph_asset.storage_key IS
-    'AP-102: store key relative to the private photograph store root; never an absolute path.';
-COMMENT ON COLUMN archive_photograph_asset.publication_state IS
-    'AP-102: publication state; unpublished until the asset is published.';
-COMMENT ON COLUMN archive_photograph_occurrence.document_version_id IS
-    'AP-102: document version the occurrence belongs to.';
-COMMENT ON TABLE archive_photograph_asset_event IS
-    'AP-102: append-only review events for a photograph asset.';
