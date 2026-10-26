@@ -611,6 +611,13 @@ export function decideProfileRevision(
 export type NarrativeReviewStatus = "pending" | "approved" | "rejected" | "all";
 export type NarrativeLinkStatus =
   "resolved" | "ambiguous" | "confirmed" | "rejected";
+export type NarrativeLinkFilter =
+  | "all"
+  | "needs_confirmation"
+  | "no_accepted"
+  | "has_accepted"
+  | "no_candidates";
+export type NarrativeVisibilityFilter = "all" | "admin_only" | "family";
 export type NarrativePassageDecision = "approved" | "rejected" | "pending";
 export type NarrativePassageVisibility = "family" | "admin_only";
 
@@ -672,8 +679,17 @@ export type NarrativeReviewQueueResponse = {
   language: "vi" | "en" | null;
   person: string | null;
   unmatched: boolean;
+  link: NarrativeLinkFilter;
+  visibility: "admin_only" | "family" | null;
+  document: string | null;
+  page_from: number | null;
+  page_to: number | null;
+  search: string | null;
+  offset: number;
   limit: number;
+  total: number;
   truncated: boolean;
+  documents: string[];
   entries: NarrativeReviewQueueEntry[];
 };
 
@@ -685,11 +701,34 @@ export type NarrativeReviewDetailResponse = {
   events: NarrativeReviewEvent[];
 };
 
+export type NarrativeReviewPeopleResponse = {
+  ok: true;
+  people: NarrativeReviewPerson[];
+};
+
+export function searchNarrativeReviewPeople(
+  query: string,
+  signal?: AbortSignal,
+): Promise<NarrativeReviewPeopleResponse> {
+  const search = new URLSearchParams({ q: query, limit: "12" });
+  return request<NarrativeReviewPeopleResponse>(
+    `/api/admin/narrative/persons?${search}`,
+    { cache: "no-store", signal },
+  );
+}
+
 export function getNarrativeReviewQueue(params: {
   status: NarrativeReviewStatus;
   language: "all" | "vi" | "en";
   person?: string;
   unmatched?: boolean;
+  link?: NarrativeLinkFilter;
+  visibility?: NarrativeVisibilityFilter;
+  document?: string;
+  pageFrom?: number;
+  pageTo?: number;
+  search?: string;
+  offset?: number;
   limit?: number;
 }): Promise<NarrativeReviewQueueResponse> {
   const search = new URLSearchParams({
@@ -698,6 +737,15 @@ export function getNarrativeReviewQueue(params: {
   });
   if (params.person?.trim()) search.set("person", params.person.trim());
   if (params.unmatched) search.set("unmatched", "true");
+  if (params.link && params.link !== "all") search.set("link", params.link);
+  if (params.visibility && params.visibility !== "all") {
+    search.set("visibility", params.visibility);
+  }
+  if (params.document?.trim()) search.set("document", params.document.trim());
+  if (params.pageFrom != null) search.set("page_from", String(params.pageFrom));
+  if (params.pageTo != null) search.set("page_to", String(params.pageTo));
+  if (params.search?.trim()) search.set("search", params.search.trim());
+  if (params.offset != null) search.set("offset", String(params.offset));
   if (params.limit) search.set("limit", String(params.limit));
   return request<NarrativeReviewQueueResponse>(
     `/api/admin/narrative/passages?${search}`,

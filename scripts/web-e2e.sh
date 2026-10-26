@@ -210,7 +210,8 @@ for migration in \
 	0024_document_evidence_provenance \
 	0025_assertion_dates \
 	0026_authority_decisions \
-	0027_source_narrative; do
+	0027_source_narrative \
+	0029_narrative_review_search; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
@@ -341,7 +342,9 @@ cleanup() {
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM source_narrative_passage WHERE passage_key LIKE 'synthetic-e2e-narrative-review-%'" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM person WHERE person_key LIKE 'e2e-narrative-review-%'" >/dev/null 2>&1 || true
+		-c "DELETE FROM source_narrative_passage WHERE passage_key LIKE 'synthetic-e2e-narrative-page-%' OR passage_key = 'synthetic-e2e-narrative-accented'" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM person WHERE person_key LIKE 'e2e-narrative-review-%' OR person_key LIKE 'e2e-narrative-accent-%'" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM

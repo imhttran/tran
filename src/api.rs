@@ -317,6 +317,7 @@ impl AppState {
             )
             .route("/api/admin/reviews", get(review_queue))
             .route("/api/admin/narrative/passages", get(narrative_review_queue))
+            .route("/api/admin/narrative/persons", get(narrative_review_people))
             .route(
                 "/api/admin/narrative/passages/{id}",
                 get(narrative_review_detail),
@@ -2030,6 +2031,13 @@ struct NarrativeReviewQuery {
     language: Option<String>,
     person: Option<String>,
     unmatched: Option<bool>,
+    link: Option<String>,
+    visibility: Option<String>,
+    document: Option<String>,
+    page_from: Option<i32>,
+    page_to: Option<i32>,
+    search: Option<String>,
+    offset: Option<i64>,
     limit: Option<i64>,
 }
 
@@ -2068,6 +2076,91 @@ fn narrative_review_filters(
             "person must be an exact person key of at most 200 characters",
         ));
     }
+    let link = query.link.unwrap_or_else(|| "all".to_string());
+    if !matches!(
+        link.as_str(),
+        "all" | "needs_confirmation" | "no_accepted" | "has_accepted" | "no_candidates"
+    ) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_link",
+            "link must be all, needs_confirmation, no_accepted, has_accepted, or no_candidates",
+        ));
+    }
+    let visibility = match query.visibility.as_deref() {
+        None | Some("") | Some("all") => None,
+        Some("admin_only") => Some("admin_only".to_string()),
+        Some("family") => Some("family".to_string()),
+        Some(_) => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_visibility",
+                "visibility must be all, admin_only, or family",
+            ))
+        }
+    };
+    let document_ref = query
+        .document
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if document_ref.as_ref().is_some_and(|value| value.len() > 500) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_document",
+            "document must be a source document path of at most 500 characters",
+        ));
+    }
+    let page_from = match query.page_from {
+        Some(value) if value < 1 => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_page",
+                "page_from must be a positive PDF page number",
+            ))
+        }
+        value => value,
+    };
+    let page_to = match query.page_to {
+        Some(value) if value < 1 => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_page",
+                "page_to must be a positive PDF page number",
+            ))
+        }
+        value => value,
+    };
+    if let (Some(from), Some(to)) = (page_from, page_to) {
+        if from > to {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_page_range",
+                "page_from must be less than or equal to page_to",
+            ));
+        }
+    }
+    let search = query
+        .search
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if search
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 200)
+    {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_search",
+            "search must be at most 200 characters",
+        ));
+    }
+    let offset = query.offset.unwrap_or(0);
+    if offset < 0 {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_offset",
+            "offset must be zero or greater",
+        ));
+    }
     let limit = query.limit.unwrap_or(narrative::REVIEW_QUEUE_DEFAULT_LIMIT);
     if !(1..=narrative::REVIEW_QUEUE_MAX_LIMIT).contains(&limit) {
         return Err(error(
@@ -2081,6 +2174,13 @@ fn narrative_review_filters(
         language,
         person_key,
         unmatched_only: query.unmatched.unwrap_or(false),
+        link,
+        visibility,
+        document_ref,
+        page_from,
+        page_to,
+        search,
+        offset,
         limit,
     })
 }
@@ -2119,21 +2219,25 @@ fn narrative_review_passage_json(
     body
 }
 
+fn narrative_review_person_json(person: &narrative::ReviewPersonContext) -> serde_json::Value {
+    serde_json::json!({
+        "person_key": person.person_key,
+        "display_name": person.display_name,
+        "aliases": person.aliases,
+        "birth": person.birth,
+        "death": person.death,
+        "parents": person.parents,
+        "spouses": person.spouses,
+        "children": person.children,
+    })
+}
+
 fn narrative_review_detail_json(detail: &narrative::ReviewPassageDetail) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "passage": narrative_review_passage_json(&detail.passage, true),
         "links": detail.links.iter().map(narrative_review_link_json).collect::<Vec<_>>(),
-        "people": detail.people.iter().map(|person| serde_json::json!({
-            "person_key": person.person_key,
-            "display_name": person.display_name,
-            "aliases": person.aliases,
-            "birth": person.birth,
-            "death": person.death,
-            "parents": person.parents,
-            "spouses": person.spouses,
-            "children": person.children,
-        })).collect::<Vec<_>>(),
+        "people": detail.people.iter().map(narrative_review_person_json).collect::<Vec<_>>(),
         "events": detail.events.iter().map(|event| serde_json::json!({
             "event_id": event.event_id,
             "person_key": event.person_key,
@@ -2207,8 +2311,17 @@ async fn narrative_review_queue(
                 "language": queue.filters.language,
                 "person": queue.filters.person_key,
                 "unmatched": queue.filters.unmatched_only,
+                "link": queue.filters.link,
+                "visibility": queue.filters.visibility,
+                "document": queue.filters.document_ref,
+                "page_from": queue.filters.page_from,
+                "page_to": queue.filters.page_to,
+                "search": queue.filters.search,
+                "offset": queue.filters.offset,
                 "limit": queue.filters.limit,
+                "total": queue.total,
                 "truncated": queue.truncated,
+                "documents": queue.documents,
                 "entries": entries,
             }))
             .into_response()
@@ -2255,6 +2368,66 @@ async fn narrative_review_detail(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "narrative_review_failed",
                 "the narrative review detail could not be loaded",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NarrativePersonQuery {
+    q: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Searches people for the narrative review person selector.
+#[allow(clippy::result_large_err)]
+async fn narrative_review_people(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NarrativePersonQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::ProfileReview) {
+        return response;
+    }
+    let term = query.q.unwrap_or_default().trim().to_string();
+    if term.chars().count() > 200 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_person_search",
+            "q must be at most 200 characters",
+        );
+    }
+    let limit = query.limit.unwrap_or(10);
+    if !(1..=20).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_person_limit",
+            "limit must be between 1 and 20",
+        );
+    }
+    if term.is_empty() {
+        return Json(serde_json::json!({ "ok": true, "people": [] })).into_response();
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        narrative::search_review_people(&mut genealogy, &term, limit)
+            .map_err(narrative_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(people)) => Json(serde_json::json!({
+            "ok": true,
+            "people": people.iter().map(narrative_review_person_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: narrative person search task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narrative_review_failed",
+                "the narrative person search failed",
             )
         }
     }

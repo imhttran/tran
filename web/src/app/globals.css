@@ -846,3 +846,39 @@ textarea:focus-visible {
   .personal-history-source { grid-template-columns:minmax(0, 1fr); gap:1px 0; }
   .personal-history-source dt { margin-top:6px; }
 }
+
+/* PH-203: narrative review filters and pagination. */
+.narrative-review-filters { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin:16px 0; }
+.narrative-filter-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:end; }
+.narrative-filter-field { display:grid; gap:4px; min-width:0; color:var(--muted); font-size:.85rem; font-weight:600; }
+.narrative-filter-field select, .narrative-filter-field input { min-width:0; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--fg); font:inherit; font-weight:400; }
+.narrative-filter-search { grid-column:span 2; }
+.narrative-filter-page { max-width:150px; }
+.narrative-filter-check { display:flex; align-items:center; padding-bottom:7px; }
+.narrative-filter-check label { display:flex; align-items:center; gap:7px; margin:0; font-weight:500; }
+.narrative-filter-check input { width:auto; }
+.narrative-filter-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.narrative-filter-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 14px; }
+.narrative-filter-summary .hint { margin:0; }
+.narrative-active-filter-list { display:flex; flex-wrap:wrap; gap:6px; list-style:none; margin:0; padding:0; }
+.narrative-active-filter { background:var(--accent-soft); border:1px solid var(--line); border-radius:999px; padding:4px 9px; font-size:.8rem; color:var(--accent); }
+.narrative-pagination { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.narrative-pagination button { margin:0; }
+.narrative-empty { display:grid; justify-items:start; gap:10px; }
+@media(max-width:600px) {
+  .narrative-filter-search { grid-column:span 1; }
+  .narrative-filter-page { max-width:none; }
+  .narrative-filter-actions button { flex:1 1 auto; }
+  .narrative-pagination { justify-content:center; }
+}
+
+/* PH-203 person search selector. */
+.narrative-filter-person { grid-column:span 2; }
+.narrative-selected-person { margin:4px 0 0; padding:6px 8px; background:#eef4ed; border-radius:8px; color:var(--fg); font-size:.85rem; }
+.narrative-person-results { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:6px; max-height:240px; overflow:auto; }
+.narrative-person-option { width:100%; display:grid; gap:2px; text-align:left; margin:0; padding:8px; background:#fff; color:var(--fg); border:1px solid #e3e2d8; border-radius:8px; font-weight:400; }
+.narrative-person-option:hover, .narrative-person-option:focus { border-color:var(--accent); background:#eef4ed; }
+.narrative-person-option strong { font-weight:600; }
+@media(max-width:600px) {
+  .narrative-filter-person { grid-column:span 1; }
+}
