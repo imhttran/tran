@@ -228,6 +228,22 @@ export function getStatus(source: string): Promise<StatusResponse> {
   );
 }
 
+export type QuerySuggestionsResponse = {
+  ok: true;
+  questions: string[];
+};
+
+/// Fetches suggested questions derived from approved archive sections.
+/// An empty array means there is no searchable approved content.
+export function getQuerySuggestions(
+  signal?: AbortSignal,
+): Promise<QuerySuggestionsResponse> {
+  return request<QuerySuggestionsResponse>("/api/query/suggestions", {
+    cache: "no-store",
+    signal,
+  });
+}
+
 export function askQuestion(
   question: string,
   personKey?: string,

@@ -432,6 +432,31 @@ impl PgStore {
             .collect()
     }
 
+    /// Distinct approved topics available for question suggestions.
+    ///
+    /// This reads the same publication boundary as retrieval, so a suggestion
+    /// can only name content that a query is allowed to retrieve. A section
+    /// title is preferred; a source name is the fallback. The limit applies
+    /// after de-duplication, and only labels are returned, never bodies.
+    pub fn suggestion_sections(
+        &self,
+        corpus: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, PgStoreError> {
+        let mut conn = self.connection()?;
+        let rows = conn
+            .query(
+                "SELECT DISTINCT COALESCE(NULLIF(BTRIM(section), ''), source) AS topic
+                   FROM approved_documents
+                  WHERE corpus = $1
+                  ORDER BY 1
+                  LIMIT $2",
+                &[&corpus, &(limit as i64)],
+            )
+            .map_err(PgStoreError::Query)?;
+        Ok(rows.iter().map(|row| row.get(0)).collect())
+    }
+
     /// Revalidates that every identity is still published in `corpus`.
     ///
     /// One statement reads `approved_documents` for the requested chunk ids and

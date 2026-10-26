@@ -53,7 +53,7 @@ use crate::onboarding::{
     OwnerProfile, PreviewSummary, ProfileRevision, ProfileVisibility, ReviewDecision,
     RevisionError, RevisionStatus,
 };
-use crate::query_service::QueryService;
+use crate::query_service::{self, QueryService};
 use crate::ratelimit::RateLimiter;
 use crate::storage_pg::{PgStore, PgStoreError};
 
@@ -238,6 +238,7 @@ impl AppState {
             .route("/api/documents/jobs/{id}/retry", post(retry_document_job))
             .route("/api/documents/{source}/status", get(status))
             .route("/api/query", post(query))
+            .route("/api/query/suggestions", get(query_suggestions))
             .route("/api/account", get(account))
             .route("/api/profile", get(profile))
             .route("/api/profile/drafts", post(create_profile_draft))
@@ -3852,6 +3853,51 @@ fn person_plan(request: &QueryRequest, question: &str) -> Option<PersonPlan> {
             question: extracted,
         }),
         _ => extracted.map(PersonPlan::Named),
+    }
+}
+
+/// Lists deterministic question suggestions drawn from approved archive sections.
+///
+/// The endpoint reads only `approved_documents`, the same publication boundary
+/// retrieval uses, and returns labels rather than passage bodies. An empty
+/// archive returns an empty list so the page can show an explicit empty state.
+async fn query_suggestions(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::Query) {
+        return response;
+    }
+    let store = state.store.clone();
+    let corpus = state.corpus.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        store
+            .suggestion_sections(&corpus, query_service::SUGGESTION_LIMIT)
+            .map(|sections| {
+                query_service::suggested_questions(&sections, query_service::SUGGESTION_LIMIT)
+            })
+            .map_err(|err| err.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(questions)) => Json(serde_json::json!({
+            "ok": true,
+            "questions": questions,
+        }))
+        .into_response(),
+        Ok(Err(message)) => {
+            eprintln!("api: query suggestions failed: {message}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "query_suggestions_unavailable",
+                "question suggestions are unavailable",
+            )
+        }
+        Err(err) => {
+            eprintln!("api: query suggestions task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_suggestions_failed",
+                "the question suggestions task failed",
+            )
+        }
     }
 }
 
