@@ -420,6 +420,7 @@ function HistoryPassage({ passage }: { passage: FamilyProfilePassageView }) {
       {passage.section_title ? <h3>{passage.section_title}</h3> : null}
       <p className="meta" data-testid="family-history-source">
         {language} source · PDF {pages}
+        {passage.document_ref ? ` · ${passage.document_ref}` : ""}
       </p>
       {paragraphs.map((paragraph, index) => (
         <p key={index} className="family-history-text">{paragraph}</p>

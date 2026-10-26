@@ -454,7 +454,7 @@ fn resolved_relationship_links_import_once_and_survive_reimport() {
         "an imported relationship is never verified"
     );
 
-    let graph = tree::load_tree(&mut client).expect("tree");
+    let graph = tree::load_tree(&mut client, false).expect("tree");
     assert_eq!(graph.links.len(), 1);
     assert_eq!(graph.links[0].kind, "parent_child");
     assert_eq!(graph.links[0].from_key, "P901");
@@ -498,7 +498,7 @@ fn resolved_relationship_links_import_once_and_survive_reimport() {
         "re-import must preserve the review decision"
     );
 
-    let graph = tree::load_tree(&mut client).expect("tree after review");
+    let graph = tree::load_tree(&mut client, false).expect("tree after review");
     assert_eq!(graph.links.len(), 1, "the edge is still a single row");
     assert_eq!(graph.links[0].evidence_status, "verified");
     assert!(

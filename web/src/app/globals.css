@@ -789,3 +789,38 @@ textarea:focus-visible {
 .family-history-passage h3 { font-size: 1rem; margin: 0 0 4px; }
 .family-history-text { margin: 8px 0 0; }
 .family-history-text + .family-history-text { margin-top: 10px; }
+
+/* Personal history on a family-tree node. The link is its own control inside
+   the node group, so it never inherits the card's selection or drag action. */
+.family-node-card:focus-visible rect { stroke:#1d6f56; stroke-width:3; }
+.family-node-history { cursor:pointer; outline:none; }
+.family-node .family-node-history-hit { fill:transparent; stroke:none; filter:none; }
+.family-node:hover .family-node-history-hit,
+.family-node-history:focus-visible .family-node-history-hit { fill:#eef3ec; stroke:none; }
+.family-node-history:focus-visible .family-node-history-hit { stroke:#1d6f56; stroke-width:2; }
+.family-node-history-label { fill:#1f6a4b; font:600 11.5px system-ui, sans-serif; text-decoration:underline; }
+.family-node-history:hover .family-node-history-label,
+.family-node-history:focus-visible .family-node-history-label { fill:#113a2d; }
+
+/* The personal-history dialog fetches only when opened. Its body scrolls, so a
+   long passage stays readable on a phone without moving the page behind it. */
+.personal-history-dialog { border:1px solid var(--line); border-radius:16px; padding:0; width:min(680px, calc(100vw - 32px)); max-width:calc(100vw - 32px); max-height:min(82vh, 760px); background:var(--card); color:var(--fg); overflow:hidden; }
+.personal-history-dialog::backdrop { background:#183d3055; }
+.personal-history-dialog[open] { display:flex; flex-direction:column; }
+.personal-history-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 12px; border-bottom:1px solid var(--line); }
+.personal-history-head h2 { margin:0; font:700 20px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing:-0.02em; }
+.personal-history-head .meta { margin:4px 0 0; }
+.personal-history-close { flex:none; min-height:40px; margin:0; padding:8px 14px; border-radius:var(--radius-sm); background:linear-gradient(180deg, #1f4d3b, #173c2e); color:#fff; box-shadow:var(--shadow-sm); }
+.personal-history-body { overflow:auto; overscroll-behavior:contain; padding:16px 20px 22px; }
+.personal-history-source { display:grid; grid-template-columns:auto minmax(0, 1fr); gap:2px 12px; margin:8px 0 10px; font-size:.85rem; }
+.personal-history-source dt { color:var(--muted); font-weight:600; }
+.personal-history-source dd { margin:0; overflow-wrap:anywhere; }
+.personal-history-source-link { margin-top:10px; }
+.personal-history-passage { margin-bottom:22px; }
+@media (max-width:520px) {
+  .personal-history-dialog { width:calc(100vw - 16px); max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); }
+  .personal-history-head { padding:14px 14px 10px; }
+  .personal-history-body { padding:12px 14px 18px; }
+  .personal-history-source { grid-template-columns:minmax(0, 1fr); gap:1px 0; }
+  .personal-history-source dt { margin-top:6px; }
+}

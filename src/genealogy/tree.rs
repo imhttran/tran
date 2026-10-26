@@ -43,6 +43,10 @@ pub struct TreePerson {
     pub aliases: Vec<String>,
     pub birth: Option<TreeDate>,
     pub death: Option<TreeDate>,
+    /// How many approved, family-visible archive passages are linked to this
+    /// person. Zero for an unlinked viewer, because the caller decides whether
+    /// history is counted at all.
+    pub history_passages: i64,
 }
 
 /// One stored link, classified using a matching review assertion.
@@ -65,10 +69,15 @@ pub struct TreeGraph {
 
 /// Lists graph nodes and links without inventing relatives or applying LLM output.
 ///
+/// When `include_history` is true, each person also carries the number of
+/// published passages a family member may open. The caller must have proved the
+/// viewer is an active linked family member before passing true; otherwise the
+/// count stays zero so the tree never advertises text the viewer cannot read.
+///
 /// Only linked people within the bounded set appear in edge results. A stored
 /// link alone never produces a verified relationship. No genealogy DB fallback
 /// or RAG query is involved; callers must authorize before opening this DB.
-pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
+pub fn load_tree(client: &mut Client, include_history: bool) -> Result<TreeGraph, GenealogyError> {
     let current = super::current::CURRENT_ASSERTION;
     let sql = format!(
         "SELECT p.person_key,
@@ -113,6 +122,7 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
                 aliases: row.try_get(3)?,
                 birth: None,
                 death: None,
+                history_passages: 0,
             })
         })
         .collect::<Result<Vec<_>, postgres::Error>>()?;
@@ -134,6 +144,14 @@ pub fn load_tree(client: &mut Client) -> Result<TreeGraph, GenealogyError> {
         if let Some((births, deaths)) = lifespans.remove(&person.person_key) {
             person.birth = unambiguous(births);
             person.death = unambiguous(deaths);
+        }
+    }
+    if include_history {
+        // The count helper shares the family-history predicate, so a badge can
+        // never promise a passage the dialog will not return.
+        let counts = super::narrative::published_history_counts(client, &keys)?;
+        for person in &mut people {
+            person.history_passages = counts.get(&person.person_key).copied().unwrap_or(0);
         }
     }
     // The link and assertion must match the same person pair and relationship

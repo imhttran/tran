@@ -606,7 +606,7 @@ fn a_reordered_reference_needs_confirmation_and_becomes_an_alias() {
         Some("P300")
     );
     // The tree read now exposes the same alias, so its search can match it.
-    let graph = load_tree(&mut client).expect("tree");
+    let graph = load_tree(&mut client, false).expect("tree");
     let node = graph
         .people
         .iter()

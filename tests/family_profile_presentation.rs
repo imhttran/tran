@@ -9,8 +9,10 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
+use rag_foundation::genealogy::narrative::{self, PassageDecision, PassageVisibility};
 use rag_foundation::onboarding::{
-    read_family_profile, read_owner_profile, FamilyProfileError, IdentityAccount, ProfileVisibility,
+    has_active_family_link, read_family_history, read_family_profile, read_owner_profile,
+    FamilyProfileError, IdentityAccount, ProfileVisibility,
 };
 
 const MIGRATIONS: [&str; 27] = [
@@ -301,6 +303,12 @@ impl Drop for TestDb {
         let _ = self
             .genealogy
             .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
+        // Narrative documents created by this suite carry the same prefix; a
+        // document delete cascades its passages, links, and review events.
+        let _ = self.genealogy.execute(
+            "DELETE FROM source_document WHERE relative_path LIKE $1",
+            &[&pattern],
+        );
         let _ = self.genealogy.execute(
             "CREATE TEMP TABLE cleanup_person (person_id BIGINT PRIMARY KEY)",
             &[],
@@ -351,6 +359,78 @@ impl Drop for TestDb {
             .genealogy
             .execute("DROP TABLE IF EXISTS cleanup_person", &[]);
     }
+}
+
+#[test]
+fn family_history_read_refuses_an_unlinked_caller_and_keeps_provenance() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let reader = db.account("reader");
+    let (reader_person, _) = db.person("reader");
+    db.link(&reader, reader_person);
+    let (_subject, subject_key) = db.person("subject");
+
+    let source = format!("synthetic/{}/history.md", db.prefix);
+    let text = "## PDF page 5\n\n### Synthetic Family Person subject\n\nVerbatim paragraph.\n";
+    let parse = narrative::parse_narrative(text, &source);
+    let people = narrative::linkable_people(&mut db.genealogy).expect("people");
+    let mut tx = db.genealogy.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        &source,
+        &"a".repeat(64),
+        "translation",
+        "en",
+        &parse,
+        &people,
+    )
+    .expect("import");
+    tx.commit().expect("commit");
+
+    // Imported passages start pending and admin-only.
+    assert!(has_active_family_link(&mut db.genealogy, &reader).expect("membership"));
+    let history =
+        read_family_history(&mut db.genealogy, &reader, &subject_key).expect("authorized person");
+    assert!(history.history.is_empty());
+
+    let passage_id: i64 = db
+        .genealogy
+        .query_one(
+            "SELECT p.passage_id FROM source_narrative_passage p \
+              JOIN source_document sd ON sd.source_document_id = p.source_document_id \
+             WHERE sd.relative_path = $1",
+            &[&source],
+        )
+        .expect("passage")
+        .get(0);
+    narrative::review_passage(
+        &mut db.genealogy,
+        passage_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve");
+
+    let history =
+        read_family_history(&mut db.genealogy, &reader, &subject_key).expect("authorized person");
+    assert_eq!(history.person_key, subject_key);
+    assert_eq!(history.display_name, "Synthetic Family Person subject");
+    assert_eq!(history.history.len(), 1);
+    assert_eq!(history.history[0].language, "en");
+    assert_eq!(history.history[0].document_ref, source);
+    assert_eq!(history.history[0].page_start, 5);
+    assert_eq!(history.history[0].page_end, 5);
+    assert_eq!(history.history[0].body.trim(), "Verbatim paragraph.");
+
+    let stranger = db.account("stranger");
+    assert!(!has_active_family_link(&mut db.genealogy, &stranger).expect("membership"));
+    assert!(matches!(
+        read_family_history(&mut db.genealogy, &stranger, &subject_key),
+        Err(FamilyProfileError::NotFamilyMember)
+    ));
 }
 
 #[test]

@@ -93,6 +93,18 @@ pub struct FamilyProfile {
     pub history: Vec<FamilyPassage>,
 }
 
+/// One person's published archive history.
+///
+/// `history` may be empty for an authorized member. It never contains pending,
+/// rejected, admin-only, restricted, or superseded passages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyHistory {
+    pub person_key: String,
+    /// The shared genealogy display name, already visible in the family tree.
+    pub display_name: String,
+    pub history: Vec<FamilyPassage>,
+}
+
 /// Errors raised by family profile presentation.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FamilyProfileError {
@@ -133,27 +145,14 @@ pub fn read_family_profile(
     // Family membership: a reviewed link bound to this exact identity. A link
     // has no status column by design: revocation deletes the row, so "the row
     // exists with this fingerprint" is exactly "the membership is active".
-    let linked = tx.query_opt(
-        "SELECT person_id FROM onboarding_person_account_link \
-          WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
-        &[&requester.account_id, &requester.identity_fingerprint],
-    )?;
-    if linked.is_none() {
-        return Err(FamilyProfileError::NotFamilyMember);
-    }
+    require_active_link(&mut tx, requester)?;
 
     // `FOR SHARE` serializes this read with an owner restriction or approval,
     // which lock the person row for update. A restriction cannot commit in the
     // middle of a family read that has already decided eligibility.
-    let target = tx.query_opt(
-        "SELECT person_id, display_name FROM person WHERE person_key = $1 FOR SHARE",
-        &[&person_key],
-    )?;
-    let Some(target) = target else {
+    let Some((person_id, display_name)) = family_person(&mut tx, person_key)? else {
         return Err(FamilyProfileError::UnknownPerson);
     };
-    let person_id: i64 = target.get(0);
-    let display_name: String = target.get(1);
 
     let fields = family_visible_values(&mut tx, person_id)?;
     let media = family_visible_media(&mut tx, person_id)?;
@@ -169,6 +168,83 @@ pub fn read_family_profile(
         dates,
         history,
     })
+}
+
+/// Reads one person's published archive history for a linked member.
+///
+/// This uses the same membership check as [`read_family_profile`] in the same
+/// transaction as the read, and the same error mapping, so an unlinked caller
+/// cannot distinguish a missing person from a forbidden one. The returned list
+/// is the [`narrative::family_history`] projection: approved, family-visible,
+/// accepted-link, newest-approved-revision rows only.
+pub fn read_family_history(
+    client: &mut postgres::Client,
+    requester: &IdentityAccount,
+    person_key: &str,
+) -> Result<FamilyHistory, FamilyProfileError> {
+    let person_key = person_key.trim();
+    if person_key.is_empty() {
+        return Err(FamilyProfileError::UnknownPerson);
+    }
+    let mut tx = client.transaction()?;
+    require_active_link(&mut tx, requester)?;
+    let Some((person_id, display_name)) = family_person(&mut tx, person_key)? else {
+        return Err(FamilyProfileError::UnknownPerson);
+    };
+    let history = narrative::family_history(&mut tx, person_id)
+        .map_err(|err| FamilyProfileError::Database(err.to_string()))?;
+    tx.commit()?;
+    Ok(FamilyHistory {
+        person_key: person_key.to_string(),
+        display_name,
+        history,
+    })
+}
+
+/// Whether this identity currently holds an active linked family membership.
+///
+/// The tree uses this only to decide whether it may count published history. A
+/// false result is fail-closed: the tree still renders, with no history links.
+pub fn has_active_family_link(
+    client: &mut postgres::Client,
+    requester: &IdentityAccount,
+) -> Result<bool, FamilyProfileError> {
+    let mut tx = client.transaction()?;
+    let linked = match require_active_link(&mut tx, requester) {
+        Ok(_) => true,
+        Err(FamilyProfileError::NotFamilyMember) => false,
+        Err(err) => return Err(err),
+    };
+    tx.commit()?;
+    Ok(linked)
+}
+
+/// The shared membership check: the caller's exact identity must hold a link.
+fn require_active_link(
+    tx: &mut Transaction<'_>,
+    requester: &IdentityAccount,
+) -> Result<i64, FamilyProfileError> {
+    let linked = tx.query_opt(
+        "SELECT person_id FROM onboarding_person_account_link \
+          WHERE account_id = $1 AND identity_fingerprint = $2 FOR SHARE",
+        &[&requester.account_id, &requester.identity_fingerprint],
+    )?;
+    linked
+        .map(|row| row.get(0))
+        .ok_or(FamilyProfileError::NotFamilyMember)
+}
+
+/// Looks up the person a profile or history read targets, locking the row so a
+/// concurrent restriction cannot commit between authorization and the read.
+fn family_person(
+    tx: &mut Transaction<'_>,
+    person_key: &str,
+) -> Result<Option<(i64, String)>, FamilyProfileError> {
+    let target = tx.query_opt(
+        "SELECT person_id, display_name FROM person WHERE person_key = $1 FOR SHARE",
+        &[&person_key],
+    )?;
+    Ok(target.map(|row| (row.get(0), row.get(1))))
 }
 
 /// Reads the approved values whose effective visibility is `family`.

@@ -127,6 +127,84 @@ test("a rooted component with an attached ancestor cycle still renders every per
   await expect(page.getByTestId("genealogy-record")).toHaveCount(4);
 });
 
+test("only a node with published history shows the link, and it opens a dialog without selecting the node", async ({ page }) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
+  const tree = {
+    people: [
+      { record_id: "with-history", person_label: "Nguyễn Văn Có", evidence_status: "verified",
+        aliases: [], history_passages: 2 },
+      { record_id: "without-history", person_label: "Trần Thị Không", evidence_status: "unverified",
+        aliases: [], history_passages: 0 },
+    ],
+    links: [], truncated: false,
+  };
+  await page.route("**/api/genealogy/tree", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }));
+  let detailsRequested = 0;
+  await page.route("**/api/genealogy/person/**", (route) => {
+    detailsRequested += 1;
+    return route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ record_id: "with-history", person_label: "Nguyễn Văn Có",
+        assertions: [] }) });
+  });
+  await page.route("**/api/family/persons/**/history", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      ok: true,
+      person: { person_key: "with-history", display_name: "Nguyễn Văn Có" },
+      history: [
+        { passage_id: 1, language: "vi", document_ref: "synthetic/history-vi.md",
+          section_title: "Synthetic Vietnamese section", page_start: 8, page_end: 9,
+          body: "SYNTHETIC-VI-ONE\n\nSYNTHETIC-VI-TWO" },
+        { passage_id: 2, language: "en", document_ref: "synthetic/history-en.md",
+          section_title: "Synthetic English section", page_start: 12, page_end: 12,
+          body: "SYNTHETIC-EN-ONE" },
+      ],
+    }) }));
+
+  await page.goto("/genealogy");
+  await expect(page.getByTestId("family-person")).toHaveCount(2);
+  await expect(page.getByTestId("family-person-history")).toHaveCount(1);
+  const eligible = page.getByTestId("family-person").filter({ hasText: "Nguyễn Văn Có" });
+  const link = eligible.getByTestId("family-person-history");
+  await expect(link).toBeVisible();
+
+  await link.click();
+  const dialog = page.getByTestId("personal-history-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId("personal-history-passage")).toHaveCount(2);
+  await expect(dialog).toContainText("SYNTHETIC-VI-ONE");
+  await expect(dialog).toContainText("SYNTHETIC-EN-ONE");
+  await expect(dialog).toContainText("Vietnamese");
+  await expect(dialog).toContainText("synthetic/history-vi.md");
+  await expect(dialog).toContainText("pages 8–9");
+  await expect(dialog).toContainText("page 12");
+
+  // The link is its own control: it did not open the person popup.
+  await expect(page.getByTestId("family-person-details")).toHaveCount(0);
+  expect(detailsRequested).toBeLessThanOrEqual(1); // only the initial selected-person fetch
+
+  // Escape closes and restores focus to the invoking link.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(link).toBeFocused();
+
+  // Enter opens it again; the visible Close button closes it.
+  await link.focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("personal-history-close").click();
+  await expect(dialog).toBeHidden();
+
+  // The source control reuses the existing source-details dialog.
+  await link.click();
+  await dialog.getByTestId("personal-history-source-link").first().click();
+  const source = page.getByTestId("source-details");
+  await expect(source).toBeVisible();
+  await expect(source).toContainText("synthetic/history-vi.md");
+  await expect(source).toContainText("8");
+});
+
 test("a 403 denies the tree before any person details render", async ({ page }) => {
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) }));
@@ -159,8 +237,9 @@ test("anonymous graph request is denied by Rust API", async ({ request }) => {
 
 // --- Relationship direction, path reveal, and source drill-down -------------
 
-const p = (record_id: string, aliases: string[] = []) => ({
-  record_id, person_label: record_id, evidence_status: "unverified" as const, aliases });
+const p = (record_id: string, aliases: string[] = [], historyPassages = 0) => ({
+  record_id, person_label: record_id, evidence_status: "unverified" as const, aliases,
+  history_passages: historyPassages });
 const pc = (from_id: string, to_id: string) => ({
   from_id, to_id, kind: "parent_child" as const, evidence_status: "unverified" as const, evidence: [] });
 const shown = (g: TreeGraph, collapsed: ReadonlySet<string>) =>

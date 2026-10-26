@@ -35,6 +35,18 @@ Second paragraph mentioning Synthetic Ancestor Two by name.
 Only paragraph for the second person.
 ";
 
+const ENGLISH_TEXT: &str = "\
+# Synthetic English family history
+
+Front matter.
+
+## PDF page 12
+
+### SYNTHETIC ANCESTOR ONE
+
+English paragraph with paragraph one.\n\nAnd paragraph two.
+";
+
 fn target() -> Option<IsolatedTarget> {
     let base = base_dsn()?;
     let target = create_isolated_target(&base, "narrative");
@@ -91,6 +103,84 @@ fn passage_ids(client: &mut Client) -> Vec<(i64, i32, String)> {
         .iter()
         .map(|row| (row.get(0), row.get(1), row.get(2)))
         .collect()
+}
+
+#[test]
+fn an_english_pdf_page_marker_imports_with_its_page_range() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping English narrative test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+
+    let source = "synthetic/narrative-en.md";
+    let parse = narrative::parse_narrative(ENGLISH_TEXT, source);
+    assert_eq!(
+        parse.passages.len(),
+        1,
+        "the English page marker starts a passage"
+    );
+    assert_eq!(parse.passages[0].page_start, 12);
+    assert_eq!(parse.passages[0].page_end, 12);
+
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    let report =
+        narrative::import_narrative(&mut tx, source, SHA, "translation", "en", &parse, &people)
+            .expect("import");
+    tx.commit().expect("commit");
+    assert_eq!(report.inserted, 1);
+    assert_eq!(
+        report.links_inserted, 1,
+        "the heading names exactly one catalog person"
+    );
+
+    let rows = client
+        .query(
+            "SELECT language, page_start, page_end FROM source_narrative_passage
+              WHERE source_document_id = (
+                SELECT source_document_id FROM source_document WHERE relative_path = $1
+              )",
+            &[&source],
+        )
+        .expect("English passage");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, String>(0), "en");
+    assert_eq!(rows[0].get::<_, i32>(1), 12);
+    assert_eq!(rows[0].get::<_, i32>(2), 12);
+}
+
+#[test]
+fn published_history_counts_agree_with_the_person_read() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping history count test");
+        return;
+    };
+    let mut client = target.connect();
+    let (one, two) = seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+
+    narrative::review_passage(
+        &mut client,
+        first_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        None,
+    )
+    .expect("approve");
+
+    let keys = vec!["synthetic-one".to_string(), "synthetic-two".to_string()];
+    let counts = narrative::published_history_counts(&mut client, &keys).expect("counts");
+    assert_eq!(counts.get("synthetic-one"), Some(&1));
+    assert_eq!(counts.get("synthetic-two"), None, "no published passage");
+    assert_eq!(history(&mut client, one).len() as i64, 1);
+    assert_eq!(
+        history(&mut client, two).len() as i64,
+        counts.get("synthetic-two").copied().unwrap_or(0)
+    );
 }
 
 #[test]
@@ -198,6 +288,7 @@ fn only_an_approved_family_passage_reaches_the_person() {
     let passages = history(&mut client, one);
     assert_eq!(passages.len(), 1);
     assert_eq!(passages[0].language, "vi");
+    assert_eq!(passages[0].document_ref, SOURCE);
     assert_eq!(passages[0].page_start, 8);
     assert_eq!(passages[0].page_end, 8);
     assert!(passages[0]
