@@ -146,7 +146,7 @@ recorded in `.agent-sdlc/plan.meta.json`; see the exceptions section below.
 | [history/PRD.md](history/PRD.md)                                           | You need the archived original product requirements.                                                   |
 | [history/PRD-Phase-23b.md](history/PRD-Phase-23b.md)                       | You need the archived PDF/OCR/multilingual phase requirements.                                         |
 | [history/rust-editor-verification.md](history/rust-editor-verification.md) | You need the RUST-002 editor verification record.                                                      |
-| [history/evidence/](history/evidence/)                                     | You need a completed acceptance or recovery evidence record (RAG-025A/B/E, RQ-008, RAG-024, TRAN-002). |
+| [history/evidence/](history/evidence/)                                     | You need a completed acceptance or recovery evidence record (RAG-025A/B/E, RQ-008, RAG-024, TRAN-002, ask-archive-repair). |
 | [history/experiments/](history/experiments/)                               | You need a raw RQ-001…RQ-006 experiment capture, matrix, or decision record.                           |
 
 Raw experiment captures are preserved as measurements, not current guidance; read
