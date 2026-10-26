@@ -147,8 +147,9 @@ The queue defaults to pending passages. Reviewers can combine these filters
   parent context so same-named people remain distinguishable. Typing only
   searches; the queue is filtered by the exact person key after a result is
   selected. Text is never used to infer identity.
-- **Search passage text** — a separate accent-insensitive search over section
-  titles and passage bodies only.
+- **Search** — an accent-insensitive search over linked person names, section
+  titles, and passage bodies. The separate **Person** picker narrows the queue to
+  one exact person key after a suggestion is selected.
 - **Review status** and **language**.
 - **Person links** — `All`, `Needs confirmation` (at least one ambiguous link),
   `No accepted links` (no resolved or confirmed link), `Has accepted links` (at

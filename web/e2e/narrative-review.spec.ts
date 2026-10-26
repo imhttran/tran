@@ -120,7 +120,7 @@ test("filters combine, search ignores accents, pagination resets, and filter sta
   await page.getByTestId("narrative-search-filter").fill("nguyen van anh");
   await expect(count).toContainText("1 matching passage");
   await expect(page.getByTestId("narrative-active-filters")).toContainText(
-    "Text: “nguyen van anh”",
+    "Search: “nguyen van anh”",
   );
 
   // All active filters combine with AND.

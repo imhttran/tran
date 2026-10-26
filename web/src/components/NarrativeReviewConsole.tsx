@@ -499,7 +499,7 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
       STATUS_OPTIONS.find((option) => option.value === applied.status)?.label ??
       applied.status
     }`,
-    applied.search ? `Text: “${applied.search}”` : null,
+    applied.search ? `Search: “${applied.search}”` : null,
     applied.link !== "all"
       ? `Links: ${
           LINK_FILTER_OPTIONS.find((option) => option.value === applied.link)
@@ -572,12 +572,14 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
             </select>
           </div>
           <div className="narrative-filter-field narrative-filter-search">
-            <label htmlFor="narrative-search-filter">Search passage text</label>
+            <label htmlFor="narrative-search-filter">
+              Search names, sections, or text
+            </label>
             <input
               id="narrative-search-filter"
               type="search"
               value={filters.search}
-              placeholder="Section title or passage text"
+              placeholder="Person name, section title, or passage text"
               maxLength={200}
               onChange={(event) =>
                 updateFilters({ search: event.target.value })
