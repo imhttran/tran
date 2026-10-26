@@ -32,7 +32,9 @@ The original RAG product requirements were archived with the rest of the histori
 material: [`history/PRD.md`](history/PRD.md) and
 [`history/PRD-Phase-23b.md`](history/PRD-Phase-23b.md). They are non-normative now.
 The current family and genealogy scope is defined by the architecture contracts and
-the `PLAN-TRAN-*` plans.
+the `PLAN-TRAN-*` plans. The original RAG-template loan demo survives only as the
+`examples/` + `evals/` test and evaluation fixture (see
+[`reference/project-structure.md`](reference/project-structure.md#legacy-retrieval-demo-fixture)).
 
 ## Start here
 

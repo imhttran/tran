@@ -74,6 +74,9 @@ model.
 
 ## Quick start: retrieval
 
+The retrieval loop can be exercised against the bundled loan demo corpus
+(`examples/`, also used by the evaluation and acceptance harnesses):
+
 ```bash
 make db-up                      # start PostgreSQL + pgvector and apply the RAG schema
 make ingest                     # ingest examples/loan-policy.md

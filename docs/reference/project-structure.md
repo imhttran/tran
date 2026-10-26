@@ -57,8 +57,8 @@ implementation was removed by RUST-007C; its pinned provenance remains in
 │   └── retrieval_cli/
 ├── fixtures/                  # frozen parity inputs/outputs and the Go reference captures
 ├── migrations/                # shared PostgreSQL + pgvector schema
-├── evals/                     # frozen evaluation datasets
-├── examples/                  # sample documents
+├── evals/                     # frozen evaluation datasets (legacy demo fixture)
+├── examples/                  # sample documents (legacy loan demo corpus)
 ├── web/                       # Next.js UI and Playwright browser tests
 ├── scripts/                   # web-control.sh, web-e2e.sh
 ├── docs/                      # requirements, architecture, reference, guides, evidence
@@ -75,6 +75,16 @@ implementation was removed by RUST-007C; its pinned provenance remains in
   `QueryService` as the CLI.
 - `web/` is a Next.js App Router UI. The browser calls only same-origin
   `/api/*`; the Next.js server proxies those requests to Axum.
+
+## Legacy retrieval demo fixture
+
+`examples/` (the four English loan-policy documents and their Vietnamese
+translations) and `evals/retrieval*.json` are the original RAG-template demo and
+evaluation fixture. They are retained because the `eval`/`expbilingual`
+harnesses and several acceptance crates read them; they do **not** describe the
+family archive. The original template's requirements, lessons, and experiment
+captures are archived under [`history/`](../history/lessons.md) and
+[`reports/rust-migration/`](../reports/rust-migration/README.md).
 
 ## Generated and local state
 
