@@ -444,6 +444,19 @@ test.describe("ask the archive", () => {
       await expect(page.locator("body")).not.toContainText("retrieval or generation");
     });
   }
+
+  test("a recoverable 503 keeps the question in the input", async ({ page }) => {
+    await signIn(page, "viewer");
+    await page.route("**/api/query", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "query_unavailable", message: "retrieval or generation is unavailable" }) }));
+    await page.goto("/ask");
+    await page.getByTestId("question-input").fill("Who founded the third branch?");
+    await page.getByTestId("ask-button").click();
+    await expect(page.getByTestId("ask-error")).toBeVisible();
+    await expect(page.getByTestId("question-input")).toHaveValue("Who founded the third branch?");
+    await assertNoSensitive(page);
+  });
 });
 
 // Name questions are answered from the genealogy store, not document
