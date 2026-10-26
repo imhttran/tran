@@ -826,7 +826,7 @@ function FamilyTree() {
                     return (
                       <g key={person.record_id} className="family-node"
                         role="group" aria-label={person.person_label}
-                        data-testid="family-person">
+                        data-testid="family-person" data-record-id={person.record_id}>
                         <g className="family-node-card"
                           ref={(node) => {
                             if (node) cardRefs.current.set(person.record_id, node);
@@ -1069,7 +1069,8 @@ function FamilyTree() {
             <h2>Catalog view</h2>
             <ul className="family-catalog" data-testid="genealogy-records">
               {graph.people.map((person) => (
-                <li key={person.record_id} data-testid="genealogy-record">
+                <li key={person.record_id} data-testid="genealogy-record"
+                  data-record-id={person.record_id}>
                   <button type="button" className="family-text-button"
                     onClick={() => selectPerson(person.record_id)}>{person.person_label}</button>
                   <EvidenceBadge status={person.evidence_status} />

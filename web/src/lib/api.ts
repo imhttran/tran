@@ -606,6 +606,147 @@ export function decideProfileRevision(
   });
 }
 
+// --- source narrative review (admin) ---------------------------------------
+
+export type NarrativeReviewStatus = "pending" | "approved" | "rejected" | "all";
+export type NarrativeLinkStatus =
+  "resolved" | "ambiguous" | "confirmed" | "rejected";
+export type NarrativePassageDecision = "approved" | "rejected" | "pending";
+export type NarrativePassageVisibility = "family" | "admin_only";
+
+export type NarrativeReviewLink = {
+  person_key: string;
+  display_name: string;
+  link_status: NarrativeLinkStatus;
+  match_kind: string;
+  evidence_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+};
+
+export type NarrativeReviewPassage = {
+  passage_id: number;
+  language: "vi" | "en";
+  section_title: string | null;
+  document_ref: string;
+  page_start: number;
+  page_end: number;
+  review_status: "pending" | "approved" | "rejected";
+  visibility: "admin_only" | "family";
+  body_excerpt: string;
+  body?: string;
+  updated_at: string;
+};
+
+export type NarrativeReviewPerson = {
+  person_key: string;
+  display_name: string;
+  aliases: string[];
+  birth: string | null;
+  death: string | null;
+  parents: string[];
+  spouses: string[];
+  children: string[];
+};
+
+export type NarrativeReviewEvent = {
+  event_id: number;
+  person_key: string | null;
+  actor: string;
+  action: string;
+  from_status: string | null;
+  to_status: string;
+  visibility: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+export type NarrativeReviewQueueEntry = {
+  passage: NarrativeReviewPassage;
+  links: NarrativeReviewLink[];
+};
+
+export type NarrativeReviewQueueResponse = {
+  ok: true;
+  status: NarrativeReviewStatus;
+  language: "vi" | "en" | null;
+  person: string | null;
+  unmatched: boolean;
+  limit: number;
+  truncated: boolean;
+  entries: NarrativeReviewQueueEntry[];
+};
+
+export type NarrativeReviewDetailResponse = {
+  ok: true;
+  passage: NarrativeReviewPassage;
+  links: NarrativeReviewLink[];
+  people: NarrativeReviewPerson[];
+  events: NarrativeReviewEvent[];
+};
+
+export function getNarrativeReviewQueue(params: {
+  status: NarrativeReviewStatus;
+  language: "all" | "vi" | "en";
+  person?: string;
+  unmatched?: boolean;
+  limit?: number;
+}): Promise<NarrativeReviewQueueResponse> {
+  const search = new URLSearchParams({
+    status: params.status,
+    language: params.language,
+  });
+  if (params.person?.trim()) search.set("person", params.person.trim());
+  if (params.unmatched) search.set("unmatched", "true");
+  if (params.limit) search.set("limit", String(params.limit));
+  return request<NarrativeReviewQueueResponse>(
+    `/api/admin/narrative/passages?${search}`,
+    { cache: "no-store" },
+  );
+}
+
+export function getNarrativeReviewDetail(
+  passageId: number,
+): Promise<NarrativeReviewDetailResponse> {
+  return request<NarrativeReviewDetailResponse>(
+    `/api/admin/narrative/passages/${passageId}`,
+    { cache: "no-store" },
+  );
+}
+
+export function reviewNarrativeLink(
+  passageId: number,
+  personKey: string,
+  decision: "confirm" | "reject",
+  expectedStatus: NarrativeLinkStatus,
+  note: string,
+): Promise<NarrativeReviewDetailResponse> {
+  return postJson<NarrativeReviewDetailResponse>(
+    `/api/admin/narrative/passages/${passageId}/links`,
+    { person_key: personKey, decision, expected_status: expectedStatus, note },
+  );
+}
+
+export function reviewNarrativePassage(
+  passageId: number,
+  decision: NarrativePassageDecision,
+  visibility: NarrativePassageVisibility,
+  expectedStatus: NarrativeReviewPassage["review_status"],
+  expectedVersion: string,
+  note: string,
+): Promise<NarrativeReviewDetailResponse> {
+  return postJson<NarrativeReviewDetailResponse>(
+    `/api/admin/narrative/passages/${passageId}/review`,
+    {
+      decision,
+      visibility,
+      expected_status: expectedStatus,
+      expected_version: expectedVersion,
+      note,
+    },
+  );
+}
+
 // --- branch-scoped shared-fact review --------------------------------------
 //
 // Every call is authorized by Rust. The client never sends an account id, a

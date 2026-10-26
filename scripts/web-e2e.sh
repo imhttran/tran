@@ -336,6 +336,12 @@ cleanup() {
 		-c "DELETE FROM onboarding_person_account_link WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%')" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM onboarding_profile_value WHERE person_id IN (SELECT person_id FROM person WHERE person_key LIKE 'e2e-branch-%')" >/dev/null 2>&1 || true
+	# PH-202: synthetic narrative-review people and passage. Review events are
+	# append-only and intentionally survive; the passage and links are disposable.
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM source_narrative_passage WHERE passage_key LIKE 'synthetic-e2e-narrative-review-%'" >/dev/null 2>&1 || true
+	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+		-c "DELETE FROM person WHERE person_key LIKE 'e2e-narrative-review-%'" >/dev/null 2>&1 || true
 	rm -f "$api_log"
 }
 trap cleanup EXIT INT TERM

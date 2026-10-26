@@ -451,3 +451,52 @@ SELECT p.passage_id, pe.person_id, 'confirmed', 'section_heading', 'e2e-seed', n
      'synthetic-e2e-history-admin'
  )
 ON CONFLICT (passage_id, person_id) DO NOTHING;
+
+-- PH-202: synthetic pending passage for the personal-history review screen.
+-- Two same-named people make the match deliberately ambiguous. Review events are
+-- append-only and intentionally survive a re-seed; the passage and links are
+-- re-created so the queue starts pending on every run.
+DELETE FROM source_narrative_link
+ WHERE person_id IN (
+     SELECT person_id FROM person
+      WHERE person_key IN ('e2e-narrative-review-subject', 'e2e-narrative-review-namesake')
+ );
+DELETE FROM source_narrative_passage
+ WHERE passage_key = 'synthetic-e2e-narrative-review-pending';
+DELETE FROM person
+ WHERE person_key IN ('e2e-narrative-review-subject', 'e2e-narrative-review-namesake');
+
+INSERT INTO person (person_key, display_name)
+VALUES
+    ('e2e-narrative-review-subject', 'Synthetic Narrative Review Subject'),
+    ('e2e-narrative-review-namesake', 'Synthetic Narrative Review Subject')
+ON CONFLICT (person_key) DO NOTHING;
+
+INSERT INTO source_narrative_passage
+    (slot_key, passage_key, source_document_id, language, section_title,
+     page_start, page_end, ordinal, body, content_sha256, review_status, visibility)
+SELECT
+    'synthetic-e2e-narrative-review-pending',
+    'synthetic-e2e-narrative-review-pending',
+    sd.source_document_id,
+    'en',
+    'Synthetic narrative review section',
+    20, 20, 1,
+    'SYNTHETIC-NARRATIVE-REVIEW-PENDING paragraph one.' || chr(10) || chr(10) ||
+    'SYNTHETIC-NARRATIVE-REVIEW-PENDING paragraph two.',
+    repeat('f', 64),
+    'pending',
+    'admin_only'
+  FROM source_document sd
+ WHERE sd.relative_path = 'synthetic/e2e-branch-review-source.md'
+ON CONFLICT (passage_key) DO NOTHING;
+
+INSERT INTO source_narrative_link
+    (passage_id, person_id, link_status, match_kind, evidence_note)
+SELECT p.passage_id, pe.person_id, 'ambiguous', 'name_mention',
+       'synthetic same-name candidate'
+  FROM source_narrative_passage p
+  JOIN person pe
+    ON pe.person_key IN ('e2e-narrative-review-subject', 'e2e-narrative-review-namesake')
+ WHERE p.passage_key = 'synthetic-e2e-narrative-review-pending'
+ON CONFLICT (passage_id, person_id) DO NOTHING;

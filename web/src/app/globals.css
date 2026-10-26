@@ -277,6 +277,28 @@ a { color:var(--accent); }
   .review-actions button { flex:1 1 auto; }
 }
 
+/* Administrator narrative review (PH-202). */
+.narrative-review-body { white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto; background:#faf8f2; border:1px solid #ece7d7; border-radius:10px; padding:14px; margin:12px 0; }
+.narrative-review-body p { margin:0 0 12px; }
+.narrative-review-body p:last-child { margin-bottom:0; }
+.narrative-link-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:10px; }
+.narrative-link-candidate { border:1px solid #e3e2d8; border-radius:10px; padding:12px; background:#fffdf8; }
+.narrative-link-candidate.selected { border-color:var(--accent); background:#eef4ed; box-shadow:inset 3px 0 0 var(--accent); }
+.narrative-link-choice { display:flex; align-items:flex-start; gap:8px; margin:0; cursor:pointer; }
+.narrative-link-choice input { margin-top:3px; }
+.narrative-person-context { margin-top:8px; padding-top:8px; border-top:1px solid #ece9dc; }
+.narrative-link-confirmed { background:#e8f5ec; color:#155c35; border:1px solid #b9ddc5; }
+.narrative-link-resolved { background:#eaf1fb; color:#1f4f86; border:1px solid #c2d6ef; }
+.narrative-link-ambiguous { background:#fff3d8; color:#6b4d00; border:1px solid #e2c777; }
+.narrative-link-rejected { background:#f1f1ee; color:#5f625d; border:1px solid #d9d8d2; }
+.narrative-link-unmatched { background:#fdecec; color:#8a231b; border:1px solid #edc2bd; }
+.narrative-link-pending { background:#fff3d8; color:#6b4d00; border:1px solid #e2c777; }
+.narrative-link-approved { background:#e8f5ec; color:#155c35; border:1px solid #b9ddc5; }
+@media(max-width:600px) {
+  .narrative-review-body { max-height:none; }
+  .narrative-link-choice { align-items:flex-start; }
+}
+
 /* Family document lifecycle (FAM-003). */
 .documents-form { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; align-items:end; }
 .documents-form label, .documents-note { display:grid; gap:4px; font-size:.9rem; color:var(--muted); }

@@ -649,3 +649,293 @@ fn a_pending_revision_key_follows_its_body() {
     // still holds its single row.
     assert_eq!(total, 4, "three page-8 revisions and one page-11 passage");
 }
+
+#[test]
+fn admin_review_queue_and_detail_show_candidates_and_context() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative review read test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+
+    let queue = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: Some("vi".to_string()),
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            limit: 100,
+        },
+    )
+    .expect("review queue");
+    assert_eq!(queue.entries.len(), 1);
+    assert!(!queue.truncated);
+    let entry = &queue.entries[0];
+    assert_eq!(entry.passage.passage_id, first_id);
+    assert_eq!(entry.passage.document_ref, SOURCE);
+    assert_eq!(entry.passage.page_start, 8);
+    assert_eq!(entry.passage.page_end, 8);
+    assert!(entry
+        .passage
+        .body
+        .contains("First paragraph about the ancestor."));
+    assert_eq!(entry.links.len(), 2);
+    assert!(entry
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-one" && link.link_status == "resolved"));
+    assert!(entry
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-two" && link.link_status == "ambiguous"));
+
+    let detail = narrative::review_detail(&mut client, first_id)
+        .expect("review detail")
+        .expect("passage");
+    assert_eq!(detail.passage.review_status, "pending");
+    assert_eq!(detail.links.len(), 2);
+    assert_eq!(detail.people.len(), 2);
+    assert!(detail
+        .people
+        .iter()
+        .any(|person| person.person_key == "synthetic-one"
+            && person.display_name == "Synthetic Ancestor One"));
+    assert!(
+        detail.events.is_empty(),
+        "import alone writes no review event"
+    );
+
+    let english = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: Some("en".to_string()),
+            person_key: None,
+            unmatched_only: false,
+            limit: 100,
+        },
+    )
+    .expect("English filter");
+    assert!(english.entries.is_empty());
+
+    let no_person = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: None,
+            person_key: Some("synthetic-unknown".to_string()),
+            unmatched_only: false,
+            limit: 100,
+        },
+    )
+    .expect("unknown person filter");
+    assert!(no_person.entries.is_empty());
+
+    let unmatched_source = "## Trang PDF 20\n\n### No known person here\n\nUnmatched paragraph.\n";
+    let unmatched_parse =
+        narrative::parse_narrative(unmatched_source, "synthetic/narrative-unmatched.md");
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        "synthetic/narrative-unmatched.md",
+        &"d".repeat(64),
+        "translation",
+        "vi",
+        &unmatched_parse,
+        &people,
+    )
+    .expect("unmatched import");
+    tx.commit().expect("commit");
+
+    let unmatched = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: None,
+            person_key: None,
+            unmatched_only: true,
+            limit: 100,
+        },
+    )
+    .expect("unmatched filter");
+    assert_eq!(unmatched.entries.len(), 1);
+    assert!(unmatched.entries[0].links.is_empty());
+}
+
+#[test]
+fn admin_review_actions_are_separate_and_reject_stale_state() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative review action test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    import(&mut client, TEXT, SHA);
+    let first_id = passage_ids(&mut client)[0].0;
+    let before = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    let old_version = before.passage.updated_at.clone();
+
+    narrative::review_link_checked(
+        &mut client,
+        first_id,
+        "synthetic-two",
+        true,
+        "synthetic-reviewer",
+        Some("confirm the ambiguous mention"),
+        Some("ambiguous"),
+    )
+    .expect("confirm link");
+    let after_link = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    assert!(after_link
+        .links
+        .iter()
+        .any(|link| link.person_key == "synthetic-two" && link.link_status == "confirmed"));
+    assert_eq!(
+        after_link.passage.review_status, "pending",
+        "confirming a link must not approve the passage"
+    );
+
+    assert!(
+        narrative::review_link_checked(
+            &mut client,
+            first_id,
+            "synthetic-two",
+            false,
+            "synthetic-reviewer",
+            None,
+            Some("ambiguous"),
+        )
+        .is_err(),
+        "a stale link decision must not overwrite the confirmed link"
+    );
+
+    narrative::review_passage_checked(
+        &mut client,
+        first_id,
+        PassageDecision::Approved,
+        Some(PassageVisibility::Family),
+        "synthetic-reviewer",
+        Some("approved after source review"),
+        Some("pending"),
+        Some(&old_version),
+    )
+    .expect("approve passage");
+    let after_review = narrative::review_detail(&mut client, first_id)
+        .expect("detail")
+        .expect("passage");
+    assert_eq!(after_review.passage.review_status, "approved");
+    assert_eq!(after_review.passage.visibility, "family");
+    assert_eq!(after_review.events.len(), 2);
+    assert!(after_review
+        .events
+        .iter()
+        .any(|event| event.action == "link_review"));
+    assert!(after_review
+        .events
+        .iter()
+        .any(|event| event.action == "passage_review"));
+
+    assert!(
+        narrative::review_passage_checked(
+            &mut client,
+            first_id,
+            PassageDecision::Rejected,
+            Some(PassageVisibility::AdminOnly),
+            "synthetic-reviewer",
+            None,
+            Some("pending"),
+            Some(&old_version),
+        )
+        .is_err(),
+        "a stale passage decision must not overwrite the approved passage"
+    );
+
+    let approved = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "approved".to_string(),
+            language: None,
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            limit: 100,
+        },
+    )
+    .expect("approved queue");
+    assert_eq!(approved.entries.len(), 1);
+    let pending = narrative::review_queue(
+        &mut client,
+        &narrative::ReviewFilters {
+            status: "pending".to_string(),
+            language: None,
+            person_key: Some("synthetic-one".to_string()),
+            unmatched_only: false,
+            limit: 100,
+        },
+    )
+    .expect("pending queue");
+    assert!(pending.entries.is_empty());
+}
+
+#[test]
+fn checked_family_approval_still_requires_an_accepted_link() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is unset; skipping narrative checked publish guard test");
+        return;
+    };
+    let mut client = target.connect();
+    seed_people(&mut client);
+    let source = "synthetic/narrative-unlinked.md";
+    let text = "## Trang PDF 21\n\n### No catalog match\n\nUnlinked paragraph.\n";
+    let parse = narrative::parse_narrative(text, source);
+    let people = narrative::linkable_people(&mut client).expect("people");
+    let mut tx = client.transaction().expect("tx");
+    narrative::import_narrative(
+        &mut tx,
+        source,
+        &"e".repeat(64),
+        "translation",
+        "vi",
+        &parse,
+        &people,
+    )
+    .expect("import");
+    tx.commit().expect("commit");
+    let passage_id: i64 = client
+        .query_one(
+            "SELECT passage_id FROM source_narrative_passage LIMIT 1",
+            &[],
+        )
+        .expect("passage")
+        .get(0);
+    let detail = narrative::review_detail(&mut client, passage_id)
+        .expect("detail")
+        .expect("passage");
+    assert!(
+        narrative::review_passage_checked(
+            &mut client,
+            passage_id,
+            PassageDecision::Approved,
+            Some(PassageVisibility::Family),
+            "synthetic-reviewer",
+            None,
+            Some("pending"),
+            Some(&detail.passage.updated_at),
+        )
+        .is_err(),
+        "family approval without an accepted link must fail"
+    );
+    let after = narrative::review_detail(&mut client, passage_id)
+        .expect("detail")
+        .expect("passage");
+    assert_eq!(after.passage.review_status, "pending");
+    assert!(after.events.is_empty(), "a rejected guard writes no event");
+}

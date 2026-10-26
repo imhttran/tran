@@ -316,6 +316,19 @@ impl AppState {
                 post(revoke_branch_reviewer),
             )
             .route("/api/admin/reviews", get(review_queue))
+            .route("/api/admin/narrative/passages", get(narrative_review_queue))
+            .route(
+                "/api/admin/narrative/passages/{id}",
+                get(narrative_review_detail),
+            )
+            .route(
+                "/api/admin/narrative/passages/{id}/links",
+                post(narrative_review_link),
+            )
+            .route(
+                "/api/admin/narrative/passages/{id}/review",
+                post(narrative_review_passage),
+            )
             .route("/api/admin/reviews/media/{id}", get(review_profile_media))
             .route("/api/admin/reviews/{id}", get(review_detail))
             .route("/api/genealogy/records", get(genealogy_records))
@@ -2004,6 +2017,456 @@ async fn review_detail(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "review_detail_failed",
                 "the review detail could not be loaded",
+            )
+        }
+    }
+}
+
+const NARRATIVE_REVIEW_NOTE_MAX_CHARS: usize = 2000;
+
+#[derive(Deserialize)]
+struct NarrativeReviewQuery {
+    status: Option<String>,
+    language: Option<String>,
+    person: Option<String>,
+    unmatched: Option<bool>,
+    limit: Option<i64>,
+}
+
+#[allow(clippy::result_large_err)]
+fn narrative_review_filters(
+    query: NarrativeReviewQuery,
+) -> Result<narrative::ReviewFilters, Response> {
+    let status = query.status.unwrap_or_else(|| "pending".to_string());
+    if !matches!(status.as_str(), "pending" | "approved" | "rejected" | "all") {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_status",
+            "status must be pending, approved, rejected, or all",
+        ));
+    }
+    let language = match query.language.as_deref() {
+        None | Some("") | Some("all") => None,
+        Some("vi") => Some("vi".to_string()),
+        Some("en") => Some("en".to_string()),
+        Some(_) => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_language",
+                "language must be all, vi, or en",
+            ))
+        }
+    };
+    let person_key = query
+        .person
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if person_key.as_ref().is_some_and(|value| value.len() > 200) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_person",
+            "person must be an exact person key of at most 200 characters",
+        ));
+    }
+    let limit = query.limit.unwrap_or(narrative::REVIEW_QUEUE_DEFAULT_LIMIT);
+    if !(1..=narrative::REVIEW_QUEUE_MAX_LIMIT).contains(&limit) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_narrative_limit",
+            "limit must be between 1 and 200",
+        ));
+    }
+    Ok(narrative::ReviewFilters {
+        status,
+        language,
+        person_key,
+        unmatched_only: query.unmatched.unwrap_or(false),
+        limit,
+    })
+}
+
+fn narrative_review_link_json(link: &narrative::ReviewLink) -> serde_json::Value {
+    serde_json::json!({
+        "person_key": link.person_key,
+        "display_name": link.display_name,
+        "link_status": link.link_status,
+        "match_kind": link.match_kind,
+        "evidence_note": link.evidence_note,
+        "reviewed_by": link.reviewed_by,
+        "reviewed_at": link.reviewed_at,
+    })
+}
+
+fn narrative_review_passage_json(
+    passage: &narrative::ReviewPassage,
+    include_body: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "passage_id": passage.passage_id,
+        "language": passage.language,
+        "section_title": passage.section_title,
+        "document_ref": passage.document_ref,
+        "page_start": passage.page_start,
+        "page_end": passage.page_end,
+        "review_status": passage.review_status,
+        "visibility": passage.visibility,
+        "body_excerpt": passage.excerpt,
+        "updated_at": passage.updated_at,
+    });
+    if include_body {
+        body["body"] = serde_json::Value::String(passage.body.clone());
+    }
+    body
+}
+
+fn narrative_review_detail_json(detail: &narrative::ReviewPassageDetail) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "passage": narrative_review_passage_json(&detail.passage, true),
+        "links": detail.links.iter().map(narrative_review_link_json).collect::<Vec<_>>(),
+        "people": detail.people.iter().map(|person| serde_json::json!({
+            "person_key": person.person_key,
+            "display_name": person.display_name,
+            "aliases": person.aliases,
+            "birth": person.birth,
+            "death": person.death,
+            "parents": person.parents,
+            "spouses": person.spouses,
+            "children": person.children,
+        })).collect::<Vec<_>>(),
+        "events": detail.events.iter().map(|event| serde_json::json!({
+            "event_id": event.event_id,
+            "person_key": event.person_key,
+            "actor": event.actor,
+            "action": event.action,
+            "from_status": event.from_status,
+            "to_status": event.to_status,
+            "visibility": event.visibility,
+            "note": event.note,
+            "created_at": event.created_at,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn narrative_review_error(err: GenealogyError) -> Response {
+    eprintln!("api: narrative review failed: {err}");
+    match err {
+        GenealogyError::Review(message) | GenealogyError::Domain(message) => {
+            let status = if message.starts_with("no such") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("required") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::CONFLICT
+            };
+            error(status, "narrative_review_rejected", &message)
+        }
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "genealogy_unavailable",
+            "the genealogy store is unavailable",
+        ),
+    }
+}
+
+/// Lists passages for the administrator-only narrative review screen.
+#[allow(clippy::result_large_err)]
+async fn narrative_review_queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NarrativeReviewQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::ProfileReview) {
+        return response;
+    }
+    let filters = match narrative_review_filters(query) {
+        Ok(filters) => filters,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        narrative::review_queue(&mut genealogy, &filters).map_err(narrative_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(queue)) => {
+            let entries = queue
+                .entries
+                .iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "passage": narrative_review_passage_json(&entry.passage, false),
+                        "links": entry.links.iter().map(narrative_review_link_json).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Json(serde_json::json!({
+                "ok": true,
+                "status": queue.filters.status,
+                "language": queue.filters.language,
+                "person": queue.filters.person_key,
+                "unmatched": queue.filters.unmatched_only,
+                "limit": queue.filters.limit,
+                "truncated": queue.truncated,
+                "entries": entries,
+            }))
+            .into_response()
+        }
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: narrative review queue task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narrative_review_failed",
+                "the narrative review queue could not be loaded",
+            )
+        }
+    }
+}
+
+/// Reads one narrative passage and its complete review context.
+#[allow(clippy::result_large_err)]
+async fn narrative_review_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(passage_id): Path<i64>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::ProfileReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        narrative::review_detail(&mut genealogy, passage_id).map_err(narrative_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(detail))) => Json(narrative_review_detail_json(&detail)).into_response(),
+        Ok(Ok(None)) => error(
+            StatusCode::NOT_FOUND,
+            "narrative_passage_not_found",
+            "no such narrative passage",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: narrative review detail task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narrative_review_failed",
+                "the narrative review detail could not be loaded",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NarrativeLinkRequest {
+    person_key: String,
+    decision: String,
+    expected_status: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Confirms or rejects one person link without touching passage approval.
+#[allow(clippy::result_large_err)]
+async fn narrative_review_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(passage_id): Path<i64>,
+    Json(request): Json<NarrativeLinkRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let accept = match request.decision.trim().to_ascii_lowercase().as_str() {
+        "confirm" | "confirmed" => true,
+        "reject" | "rejected" => false,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_link_decision",
+                "decision must be confirm or reject",
+            )
+        }
+    };
+    let person_key = request.person_key.trim().to_string();
+    if person_key.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_person_key",
+            "person_key is required",
+        );
+    }
+    let expected_status = request.expected_status.trim().to_string();
+    if expected_status.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_expected_status",
+            "expected_status is required",
+        );
+    }
+    let note = request
+        .note
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if note
+        .as_ref()
+        .is_some_and(|value| value.len() > NARRATIVE_REVIEW_NOTE_MAX_CHARS)
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "note_too_long",
+            "the review note is too long",
+        );
+    }
+    let reviewer = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        narrative::review_link_checked(
+            &mut genealogy,
+            passage_id,
+            &person_key,
+            accept,
+            &reviewer,
+            note.as_deref(),
+            Some(&expected_status),
+        )
+        .map_err(narrative_review_error)?;
+        narrative::review_detail(&mut genealogy, passage_id).map_err(narrative_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(detail))) => Json(narrative_review_detail_json(&detail)).into_response(),
+        Ok(Ok(None)) => error(
+            StatusCode::NOT_FOUND,
+            "narrative_passage_not_found",
+            "no such narrative passage",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: narrative link review task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narrative_review_failed",
+                "the narrative link review failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NarrativePassageRequest {
+    decision: String,
+    #[serde(default)]
+    visibility: Option<String>,
+    expected_status: String,
+    expected_version: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Reviews one passage and its visibility without confirming any person link.
+#[allow(clippy::result_large_err)]
+async fn narrative_review_passage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(passage_id): Path<i64>,
+    Json(request): Json<NarrativePassageRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::ProfileReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
+        "approved" | "approve" => narrative::PassageDecision::Approved,
+        "rejected" | "reject" => narrative::PassageDecision::Rejected,
+        "pending" => narrative::PassageDecision::Pending,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_passage_decision",
+                "decision must be approved, rejected, or pending",
+            )
+        }
+    };
+    let visibility = match request.visibility.as_deref() {
+        None | Some("") => None,
+        Some("family") => Some(narrative::PassageVisibility::Family),
+        Some("admin_only") => Some(narrative::PassageVisibility::AdminOnly),
+        Some(_) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_passage_visibility",
+                "visibility must be family or admin_only",
+            )
+        }
+    };
+    let expected_status = request.expected_status.trim().to_string();
+    if expected_status.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_expected_status",
+            "expected_status is required",
+        );
+    }
+    let expected_version = request.expected_version.trim().to_string();
+    if expected_version.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "missing_expected_version",
+            "expected_version is required",
+        );
+    }
+    let note = request
+        .note
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if note
+        .as_ref()
+        .is_some_and(|value| value.len() > NARRATIVE_REVIEW_NOTE_MAX_CHARS)
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "note_too_long",
+            "the review note is too long",
+        );
+    }
+    let reviewer = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        narrative::review_passage_checked(
+            &mut genealogy,
+            passage_id,
+            decision,
+            visibility,
+            &reviewer,
+            note.as_deref(),
+            Some(&expected_status),
+            Some(&expected_version),
+        )
+        .map_err(narrative_review_error)?;
+        narrative::review_detail(&mut genealogy, passage_id).map_err(narrative_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(detail))) => Json(narrative_review_detail_json(&detail)).into_response(),
+        Ok(Ok(None)) => error(
+            StatusCode::NOT_FOUND,
+            "narrative_passage_not_found",
+            "no such narrative passage",
+        ),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: narrative passage review task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narrative_review_failed",
+                "the narrative passage review failed",
             )
         }
     }
