@@ -160,8 +160,9 @@ The server returns a passage only when all of these hold:
 - it is the newest approved revision in its slot.
 
 `pending`, `rejected`, `admin_only`, restricted, and superseded passages never
-appear. The caller must also be a linked family member; the existing
-authorization runs in the same transaction as the read.
+appear. The caller must be a linked family member; the existing authorization
+runs in the same transaction as the read. Administrators are not exempt from the
+profile, media, field, or date rules; their exception applies only to history.
 
 The profile page shows this under **History from the family archive**, with the
 language and the PDF page citation. It is a separate section from the member's own
@@ -176,17 +177,19 @@ opened:
 GET /api/family/persons/{person_key}/history
 ```
 
-It applies the same authorization, the same membership check in the same
-transaction, and the same published-passage predicate as the profile. The
-response is `{ person: { person_key, display_name }, history: [...] }`, where each
-passage has the same shape as the profile's `history[]`, including
-`document_ref`.
+It accepts an active linked family member, and also an administrator without a
+person link. The same membership-or-admin rule runs in the same transaction as
+the read, and the published-passage predicate is unchanged. The response is
+`{ person: { person_key, display_name }, history: [...] }`, where each passage
+has the same shape as the profile's `history[]`, including `document_ref`.
 
-The tree response adds `history_passages` to each person. The server counts only
-when the authenticated caller is an active linked family member; identity or link
-resolution fails closed to zero without failing the tree. The counts and the
-dialog use one shared SQL predicate, so a link is never shown for a person whose
-passages the dialog would not return.
+The tree response adds `history_passages` to each person. The server counts for
+an administrator or an active linked family member; identity or link resolution
+fails closed to zero without failing the tree. The counts and the dialog use one
+shared SQL predicate, so a link is never shown for a person whose passages the
+dialog would not return. The administrator exception only removes the
+account-person link requirement: `pending`, `rejected`, `admin_only`, restricted,
+and superseded passages remain excluded for everyone.
 
 On the tree, **Personal history** appears inside a node only when
 `history_passages > 0`. It is a separate focusable control, not part of the card's

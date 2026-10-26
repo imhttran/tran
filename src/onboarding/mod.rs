@@ -53,8 +53,8 @@ pub use dry_run::{
     Page, Selector, REVIEW_NEEDED_EMPTY,
 };
 pub use family_profile::{
-    has_active_family_link, read_family_history, read_family_profile, FamilyHistory, FamilyProfile,
-    FamilyProfileError, FamilyProfileField, FamilyProfileMedia,
+    can_read_family_history, read_family_history, read_family_profile, FamilyHistory,
+    FamilyProfile, FamilyProfileError, FamilyProfileField, FamilyProfileMedia,
 };
 pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
 pub use link::{
