@@ -1,92 +1,62 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
 
-// Stage-six mocked Head of Family suite.
-//
-// No database, API, OIDC issuer, or credentials are needed. Every person,
-// appointment, citation, and nomination below is synthetic.
+// UI-601 — fully mocked browser coverage for /head-of-family. Every API route is
+// intercepted; no real backend or database is used. The assertions cover the
+// hero hierarchy, the six states, keyboard operation of both confirm dialogs,
+// 390px overflow, and the viewer/editor/administrator role gates.
 
-const SESSION_ADMIN = {
-  state: "signed_in",
-  role: "admin",
-  display_name: "Synthetic admin",
-};
-const SESSION_EDITOR = {
-  state: "signed_in",
-  role: "editor",
-  display_name: "Synthetic editor",
-};
-const SESSION_VIEWER = {
-  state: "signed_in",
-  role: "viewer",
-  display_name: "Synthetic viewer",
-};
+const HEAD_URL = "/api/genealogy/head-of-family";
+const RECORDS_URL = "/api/genealogy/records";
+const NOMINATIONS_URL = "/api/genealogy/nominations";
 
-const HOF = {
+const availableBody = {
   catalog: "available",
   conclusions: [
     {
-      conclusion: "Head of Family",
-      record_id: "nguyen-van-an",
-      appointment_id: "appointment-7",
-      head_label: "Nguyễn Văn An",
+      conclusion: "Trần Văn An is the recorded head of the family.",
+      record_id: "rec-hof-0001",
+      appointment_id: "appt-hof-0009",
+      nomination_id: "3",
+      head_label: "Trần Văn An",
+      evidence_status: "verified",
       evidence: [
         {
           evidence_id: "ev-1",
-          citation: "Synthetic family register p.4",
-          document_ref: "synthetic/register.pdf",
-          page: 4,
-          locator: "entry 4",
-          excerpt: "Nguyễn Văn An giữ sổ hộ và ghi chép các thành viên.",
-        },
-        {
-          evidence_id: "ev-2",
-          citation: "Synthetic family letter",
-          document_ref: "synthetic/letters.pdf",
-          page: 2,
-          locator: null,
-          excerpt: null,
+          citation: "Gia phả họ Trần, quyển 1",
+          document_ref: "doc-1",
+          page: 12,
+          excerpt: "Trần Văn An được ghi là trưởng tộc.",
         },
       ],
-      evidence_status: "verified",
     },
   ],
 };
 
-const HOF_EMPTY = { catalog: "available", conclusions: [] };
-const HOF_UNAVAILABLE = {
-  catalog: "unavailable",
-  reason: "Synthetic catalog outage.",
-};
+const emptyBody = { catalog: "available", conclusions: [] };
 
-const RECORDS = {
-  records: [
-    { record_id: "nguyen-van-an", person_label: "Nguyễn Văn An" },
-    { record_id: "tran-thi-binh", person_label: "Trần Thị Bình" },
-  ],
-};
-
-const NOMINATIONS = {
-  nominations: [
-    { nomination_id: 11, record_id: "nguyen-van-an", status: "pending" },
-  ],
-};
-
-async function signIn(page: Page, session: unknown) {
-  await page.route("**/api/auth/session", (route) =>
+async function mockSession(
+  page: import("@playwright/test").Page,
+  role: "viewer" | "editor" | "admin" | null,
+) {
+  await page.route("/api/auth/session", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(session),
+      body: JSON.stringify(
+        role
+          ? { state: "signed_in", role, display_name: "Mock User" }
+          : { state: "anonymous" },
+      ),
     }),
   );
 }
 
-async function stubHead(
-  page: Page,
-  { status = 200, body = HOF }: { status?: number; body?: unknown } = {},
+async function mockHead(
+  page: import("@playwright/test").Page,
+  status: number,
+  body: unknown,
 ) {
-  await page.route("**/api/genealogy/head-of-family", (route) =>
+  await page.route(HEAD_URL, (route) =>
     route.fulfill({
       status,
       contentType: "application/json",
@@ -95,32 +65,42 @@ async function stubHead(
   );
 }
 
-async function stubActions(page: Page) {
-  await page.route("**/api/genealogy/records", (route) =>
+async function mockGenealogy(
+  page: import("@playwright/test").Page,
+  options: { records?: unknown[]; nominations?: unknown[] } = {},
+) {
+  await page.route(RECORDS_URL, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(RECORDS),
+      body: JSON.stringify({ records: options.records ?? [] }),
     }),
   );
-  await page.route("**/api/genealogy/nominations", (route) =>
-    route.fulfill({
+  await page.route(NOMINATIONS_URL, (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    }
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(NOMINATIONS),
-    }),
-  );
+      body: JSON.stringify({ nominations: options.nominations ?? [] }),
+    });
+  });
 }
 
-async function assertNoOverflow(page: Page) {
-  const overflow = await page.evaluate(
+function expectNoHorizontalOverflow(page: import("@playwright/test").Page) {
+  return page.evaluate(
     () =>
-      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      document.documentElement.scrollWidth <=
+      document.documentElement.clientWidth + 1,
   );
-  expect(overflow, "no horizontal overflow").toBeLessThanOrEqual(1);
 }
 
-async function assertNoSensitive(page: Page) {
+async function expectNoSensitiveLeak(page: import("@playwright/test").Page) {
   const text = (await page.locator("body").innerText()).toLowerCase();
   for (const needle of [
     "password",
@@ -134,196 +114,236 @@ async function assertNoSensitive(page: Page) {
   }
 }
 
-test.describe("Head of Family", () => {
-  test("admin sees the designation, evidence, and existing controls", async ({
+test.describe("Head of Family surface", () => {
+  test("renders the hero, metadata, and evidence hierarchy", async ({
     page,
   }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page);
-    await stubActions(page);
+    await mockSession(page, "viewer");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page);
     await page.goto("/head-of-family");
 
     await expect(page.getByTestId("hof-view")).toBeVisible();
-    await expect(page.getByTestId("hof-head-name").first()).toContainText(
-      "Nguyễn Văn An",
+    await expect(page.getByTestId("hof-head-name")).toHaveText("Trần Văn An");
+    await expect(page.getByTestId("hof-appointment-count")).toContainText(
+      "1 appointment",
+    );
+    await expect(page.getByTestId("hof-record-id")).toHaveText("rec-hof-0001");
+    await expect(page.getByTestId("hof-appointment-id")).toHaveText(
+      "appt-hof-0009",
     );
     await expect(page.getByTestId("hof-view")).toContainText(
-      /separate from (a )?system administrator/i,
+      "separate from application administrator permissions",
     );
-    await expect(page.getByTestId("hof-record-meta").first()).toContainText(
-      "nguyen-van-an",
-    );
-    await expect(page.getByTestId("hof-record-meta").first()).toContainText(
-      "appointment-7",
-    );
-    await expect(page.getByTestId("evidence-verified").first()).toBeVisible();
+    await expect(page.getByTestId("hof-conclusion")).toBeVisible();
+    await expect(page.getByTestId("evidence-verified")).toBeVisible();
 
-    await page
-      .getByTestId("citation-button")
-      .filter({ hasText: "Synthetic family register" })
-      .click();
-    await expect(page.getByTestId("source-details")).toContainText(
-      "Synthetic family register p.4",
-    );
+    await page.getByTestId("citation-button").first().click();
+    await expect(page.getByTestId("source-details")).toBeVisible();
     await expect(page.getByTestId("source-metadata-only")).toBeVisible();
     await page.getByRole("button", { name: "Close" }).click();
-
-    await expect(page.getByTestId("nomination-input").first()).toBeVisible();
-    await expect(page.getByTestId("nominate-button").first()).toBeVisible();
-    await expect(page.getByTestId("approve-button").first()).toBeVisible();
-    await expect(page.getByTestId("revoke-button").first()).toBeVisible();
-
-    await expect(page.getByTestId("hof-actions")).toBeVisible();
-    await expect(page.getByTestId("hof-record-select")).toBeVisible();
-    await expect(page.getByTestId("hof-pending-nomination")).toBeVisible();
-    await assertNoSensitive(page);
+    await expectNoSensitiveLeak(page);
   });
 
-  test("confirm dialog takes focus and Escape cancels without a request", async ({
+  test("shows the loading panel with role=status and aria-busy", async ({
     page,
   }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page);
-    await stubActions(page);
-    let approvals = 0;
-    await page.route("**/api/genealogy/nominations/**", (route) => {
-      approvals += 1;
-      return route.fulfill({ status: 200, body: "{}" });
+    await mockSession(page, "viewer");
+    await page.route(HEAD_URL, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(availableBody),
+      });
     });
+    await mockGenealogy(page);
     await page.goto("/head-of-family");
 
-    await page.getByTestId("approve-button").first().click();
-    await expect(page.getByTestId("confirm-dialog")).toBeVisible();
-    await expect(page.getByTestId("confirm-button")).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
-    expect(approvals).toBe(0);
+    const loading = page.getByTestId("hof-loading");
+    await expect(loading).toBeVisible();
+    await expect(loading).toHaveAttribute("role", "status");
+    await expect(loading).toHaveAttribute("aria-busy", "true");
+    await expect(page.getByTestId("hof-view")).toBeVisible();
   });
 
-  test("no active appointment shows an explicit empty state", async ({
+  test("shows an empty panel that names no successor", async ({ page }) => {
+    await mockSession(page, "viewer");
+    await mockHead(page, 200, emptyBody);
+    await mockGenealogy(page);
+    await page.goto("/head-of-family");
+
+    const empty = page.getByTestId("hof-empty");
+    await expect(empty).toBeVisible();
+    await expect(empty).toContainText("No active appointment");
+    await expect(empty).toContainText("No successor is");
+    await expect(page.getByTestId("hof-head-name")).not.toBeVisible();
+    await expect(page.getByTestId("hof-conclusion")).toHaveCount(0);
+  });
+
+  test("shows distinct denied and no-access panels", async ({ page }) => {
+    await mockSession(page, "viewer");
+    await mockHead(page, 403, { message: "forbidden" });
+    await mockGenealogy(page);
+    await page.goto("/head-of-family");
+    const denied = page.getByTestId("hof-denied");
+    await expect(denied).toBeVisible();
+    await expect(denied).toHaveAttribute("role", "alert");
+    await expect(
+      denied.getByRole("link", { name: "Back to the family tree" }),
+    ).toBeVisible();
+    await expect(page.getByTestId("hof-no-access")).toHaveCount(0);
+
+    await mockHead(page, 404, { message: "not found" });
+    await page.goto("/head-of-family");
+    const noAccess = page.getByTestId("hof-no-access");
+    await expect(noAccess).toBeVisible();
+    await expect(noAccess).toHaveAttribute("role", "alert");
+    await expect(
+      noAccess.getByRole("link", { name: "Back to the family tree" }),
+    ).toBeVisible();
+    await expect(page.getByTestId("hof-denied")).toHaveCount(0);
+  });
+
+  test("shows the expired panel with a sign-in action", async ({ page }) => {
+    await mockSession(page, "viewer");
+    await mockHead(page, 401, { message: "expired" });
+    await mockGenealogy(page);
+    await page.goto("/head-of-family");
+
+    const expired = page.getByTestId("hof-expired");
+    await expect(expired).toBeVisible();
+    await expect(expired).toHaveAttribute("role", "alert");
+    await expect(
+      expired.getByRole("link", { name: "Sign in again" }),
+    ).toBeVisible();
+  });
+
+  test("shows the catalog-unavailable panel with no inferred head", async ({
     page,
   }) => {
-    await signIn(page, SESSION_VIEWER);
-    await stubHead(page, { body: HOF_EMPTY });
+    await mockSession(page, "viewer");
+    await mockHead(page, 200, {
+      catalog: "unavailable",
+      reason: "The index is rebuilding.",
+    });
+    await mockGenealogy(page);
+    await page.goto("/head-of-family");
+
+    const unavailable = page.getByTestId("hof-catalog-unavailable");
+    await expect(unavailable).toBeVisible();
+    await expect(unavailable).toContainText("not available");
+    await expect(page.getByTestId("hof-head-name")).not.toBeVisible();
+  });
+
+  test("viewers see no mutation controls", async ({ page }) => {
+    await mockSession(page, "viewer");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page);
     await page.goto("/head-of-family");
 
     await expect(page.getByTestId("hof-view")).toBeVisible();
-    await expect(page.getByTestId("hof-empty")).toBeVisible();
-    await expect(page.getByTestId("hof-empty")).toContainText(
-      /no (current )?head of family/i,
-    );
-    await expect(page.getByTestId("hof-head-name")).toHaveCount(0);
-    await expect(page.getByTestId("hof-view")).not.toContainText(
-      "Nguyễn Văn An",
-    );
-  });
-
-  test("editor can nominate but cannot approve or revoke", async ({ page }) => {
-    await signIn(page, SESSION_EDITOR);
-    await stubHead(page);
-    await stubActions(page);
-    await page.goto("/head-of-family");
-
-    await expect(page.getByTestId("nominate-button").first()).toBeVisible();
-    await expect(page.getByTestId("hof-nominate-submit")).toBeVisible();
-    await expect(page.getByTestId("approve-button")).toHaveCount(0);
-    await expect(page.getByTestId("revoke-button")).toHaveCount(0);
-    await expect(page.getByTestId("hof-approve-submit")).toHaveCount(0);
-  });
-
-  test("viewer sees no mutation controls", async ({ page }) => {
-    await signIn(page, SESSION_VIEWER);
-    await stubHead(page);
-    await page.goto("/head-of-family");
-
-    await expect(page.getByTestId("hof-conclusion").first()).toBeVisible();
     await expect(page.getByTestId("nominate-button")).toHaveCount(0);
     await expect(page.getByTestId("approve-button")).toHaveCount(0);
     await expect(page.getByTestId("revoke-button")).toHaveCount(0);
     await expect(page.getByTestId("hof-actions")).toHaveCount(0);
   });
 
-  test("denied response renders the denied state", async ({ page }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page, { status: 403 });
-    await stubActions(page);
-    await page.goto("/head-of-family");
-
-    await expect(page.getByTestId("hof-denied")).toBeVisible();
-    await expect(page.getByTestId("hof-view")).toHaveCount(0);
-  });
-
-  test("no-access response renders the no-access state", async ({ page }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page, { status: 404 });
-    await stubActions(page);
-    await page.goto("/head-of-family");
-
-    await expect(page.getByTestId("hof-no-access")).toBeVisible();
-    await expect(page.getByTestId("hof-view")).toHaveCount(0);
-  });
-
-  test("expired response offers a sign-in action", async ({ page }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page, { status: 401 });
-    await stubActions(page);
-    await page.goto("/head-of-family");
-
-    await expect(page.getByTestId("hof-expired")).toBeVisible();
-    await expect(
-      page.getByTestId("hof-expired").getByRole("link", { name: /sign in/i }),
-    ).toBeVisible();
-  });
-
-  test("unavailable catalog is explicit and names no head", async ({
+  test("editors nominate with a keyboard-operable confirm dialog", async ({
     page,
   }) => {
-    await signIn(page, SESSION_VIEWER);
-    await stubHead(page, { body: HOF_UNAVAILABLE });
+    await mockSession(page, "editor");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page, {
+      records: [{ record_id: "rec-hof-0001", person_label: "Trần Văn An" }],
+    });
     await page.goto("/head-of-family");
 
-    await expect(page.getByTestId("hof-catalog-unavailable")).toBeVisible();
-    await expect(page.getByTestId("hof-catalog-unavailable")).toContainText(
-      "Synthetic catalog outage.",
-    );
-    await expect(page.getByTestId("hof-view")).toHaveCount(0);
+    await expect(page.getByTestId("hof-actions")).toBeVisible();
+    await expect(page.getByTestId("hof-approve-submit")).toHaveCount(0);
+    await expect(page.getByTestId("approve-button")).toHaveCount(0);
+
+    await page.getByTestId("nomination-input").first().fill("Trần Thị Bình");
+    await page.getByTestId("nominate-button").first().click();
+
+    const dialog = page.getByTestId("confirm-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId("confirm-button")).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByTestId("nominate-button").first()).toBeFocused();
   });
 
-  test("loading state is explicit", async ({ page }) => {
-    await signIn(page, SESSION_ADMIN);
-    await stubActions(page);
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+  test("administrators approve and revoke with confirmation", async ({
+    page,
+  }) => {
+    await mockSession(page, "admin");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page, {
+      records: [{ record_id: "rec-hof-0001", person_label: "Trần Văn An" }],
+      nominations: [
+        { nomination_id: 3, record_id: "rec-hof-0002", status: "pending" },
+      ],
     });
-    await page.route("**/api/genealogy/head-of-family", async (route) => {
-      await gate;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(HOF),
-      });
+    await page.goto("/head-of-family");
+
+    await expect(page.getByTestId("approve-button")).toBeVisible();
+    await expect(page.getByTestId("revoke-button")).toBeVisible();
+    await expect(page.getByTestId("hof-approve-submit")).toBeVisible();
+    await expect(page.getByTestId("hof-record-select")).toBeVisible();
+    await expect(page.getByTestId("hof-pending-nomination")).toBeVisible();
+
+    await page.getByTestId("approve-button").first().click();
+    const approveDialog = page.getByTestId("confirm-dialog");
+    await expect(approveDialog).toBeVisible();
+    await expect(page.getByTestId("confirm-button")).toBeFocused();
+    await page.getByTestId("cancel-button").click();
+    await expect(approveDialog).toHaveCount(0);
+    await expect(page.getByTestId("approve-button").first()).toBeFocused();
+
+    await page.getByTestId("hof-approve-submit").click();
+    const actionsDialog = page.getByTestId("hof-confirm");
+    await expect(actionsDialog).toBeVisible();
+    await expect(page.getByTestId("hof-confirm-yes")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(actionsDialog).toHaveCount(0);
+    await expect(page.getByTestId("hof-approve-submit")).toBeFocused();
+  });
+
+  test("no horizontal overflow at 390px and desktop", async ({ page }) => {
+    await mockSession(page, "admin");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page, {
+      records: [
+        {
+          record_id: "rec-hof-0001",
+          person_label: "Trần Văn An với tên rất dài để kiểm tra diacritics",
+        },
+      ],
+      nominations: [
+        { nomination_id: 3, record_id: "rec-hof-0002", status: "pending" },
+      ],
     });
-    await page.goto("/head-of-family", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("hof-loading")).toBeVisible();
-    release();
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/head-of-family");
     await expect(page.getByTestId("hof-view")).toBeVisible();
-  });
+    expect(await expectNoHorizontalOverflow(page)).toBe(true);
 
-  test("confirm dialog fits at 390px without overflow", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await signIn(page, SESSION_ADMIN);
-    await stubHead(page);
-    await stubActions(page);
-    await page.goto("/head-of-family");
+    await expect(page.getByTestId("hof-view")).toBeVisible();
+    expect(await expectNoHorizontalOverflow(page)).toBe(true);
+
     await page.getByTestId("approve-button").first().click();
     await expect(page.getByTestId("confirm-dialog")).toBeVisible();
-    await assertNoOverflow(page);
+    expect(await expectNoHorizontalOverflow(page)).toBe(true);
   });
 
   test("keeps the stage-three light and dark tokens", async ({ page }) => {
-    await signIn(page, SESSION_VIEWER);
-    await stubHead(page);
+    await mockSession(page, "viewer");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page);
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/head-of-family");
     await expect

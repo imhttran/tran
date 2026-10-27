@@ -3592,3 +3592,310 @@ footer.page-footer {
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+/* UI-601 — Head of Family surface. Reuses the stage-three neutral surfaces,
+   restrained jade accent, semantic status chips, and shared state-panel
+   pattern. Every rule below is scoped to the head-of-family page; no existing
+   selector outside this surface is changed. */
+.hof-surface,
+.hof-actions {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.hof-hero {
+    display: grid;
+    gap: var(--space-2);
+    min-width: 0;
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+}
+.hof-eyebrow {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+.hof-hero-title {
+    margin: 0;
+    font: 700 clamp(1.5rem, 2.6vw, 1.95rem)/1.2 var(--font-sans);
+    letter-spacing: normal;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.hof-hero-name {
+    margin: 0;
+    font: 600 1.15rem/1.3 var(--font-sans);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.hof-hero-name-empty {
+    color: var(--muted);
+    font-weight: 500;
+}
+.hof-hero-scope {
+    margin: 0;
+    max-width: 68ch;
+    color: var(--muted);
+    font-size: 0.92rem;
+}
+.hof-hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+.hof-chip {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    border-radius: var(--radius-pill);
+    white-space: nowrap;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--line);
+}
+.hof-conclusions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+}
+.hof-conclusion {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+}
+.hof-conclusion-text {
+    margin: 0;
+    font-size: 1.02rem;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.hof-record-meta {
+    display: grid;
+    gap: 2px 12px;
+    grid-template-columns: auto minmax(0, 1fr);
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--muted);
+}
+.hof-record-meta div {
+    display: contents;
+}
+.hof-record-meta dt {
+    font-weight: 600;
+}
+.hof-record-meta dd {
+    margin: 0;
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+}
+.hof-evidence-group {
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+}
+.hof-evidence-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.hof-evidence-head h3 {
+    margin: 0;
+    font-size: 0.9rem;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+}
+.hof-form {
+    display: grid;
+    gap: var(--space-1);
+    min-width: 0;
+}
+.hof-form button {
+    justify-self: start;
+}
+.hof-form input,
+.hof-form select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+}
+.hof-admin-controls {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+}
+.hof-form button,
+.hof-admin-controls button,
+.hof-pending-actions button {
+    min-height: 44px;
+}
+.hof-form-danger button {
+    min-height: 44px;
+}
+.hof-pending-group {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    min-width: 0;
+}
+.hof-pending-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+}
+.hof-pending-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+.hof-pending-person {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.hof-pending-person strong {
+    font-size: 0.95rem;
+}
+.hof-pending-person .hint {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+.hof-pending-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.hof-pending-actions button {
+    margin: 0;
+}
+.hof-empty {
+    margin: 0;
+}
+.hof-state {
+    margin: 18px 0;
+}
+.hof-state-denied {
+    border-left: 4px solid var(--warn);
+}
+.hof-state-no-access {
+    border-left: 4px solid var(--line-strong);
+}
+.hof-state-catalog-unavailable {
+    border-left: 4px solid var(--err);
+}
+.hof-state-expired .state-panel-actions .button-secondary {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+}
+/* Confirm dialogs: keyboard-operable, 44px targets, and readable in both
+   themes. The dialog is local to the two head-of-family components. */
+.hof-confirm-dialog {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    max-width: min(480px, calc(100vw - 32px));
+    padding: 18px 20px;
+    margin: 18px 0 0;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+}
+.hof-confirm-dialog h3 {
+    margin: 0;
+    font-size: 1.02rem;
+}
+.hof-confirm-dialog p {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.hof-confirm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.hof-confirm-actions .hof-confirm-action {
+    margin: 0;
+    min-height: 44px;
+    padding: 10px 16px;
+}
+@media (max-width: 560px) {
+    .hof-hero {
+        gap: 6px;
+    }
+    .hof-record-meta {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 1px 0;
+    }
+    .hof-record-meta dt {
+        margin-top: 4px;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .hof-evidence-head {
+        align-items: flex-start;
+    }
+    .hof-form button,
+    .hof-admin-controls button,
+    .hof-pending-actions button,
+    .hof-confirm-actions .hof-confirm-action {
+        justify-self: stretch;
+        width: 100%;
+    }
+    .hof-pending-row {
+        align-items: stretch;
+    }
+    .hof-pending-actions {
+        width: 100%;
+    }
+    .hof-confirm-dialog {
+        max-width: 100%;
+        padding: 14px;
+        border-radius: var(--radius-md);
+    }
+    .hof-surface,
+    .hof-actions {
+        padding: 14px;
+        border-radius: var(--radius-md);
+    }
+}
+@media (prefers-color-scheme: dark) {
+    /* The dark danger token is a light red, so white text would be unreadable. */
+    .hof-form-danger button,
+    .hof-pending-actions .button-danger {
+        color: var(--bg);
+    }
+}
