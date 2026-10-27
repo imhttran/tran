@@ -191,13 +191,23 @@ function ExtractionContent({ role }: { role: Role | null }) {
         subtitle="Turn an approved family document into reviewed genealogy proposals."
       />
       {error ? (
-        <p className="insufficient" role="alert" data-testid="extraction-error">
+        <p
+          className="insufficient state-panel state-panel-unavailable"
+          role="alert"
+          data-testid="extraction-error"
+        >
           {error}
         </p>
       ) : null}
       {message ? (
         <p className="form-status ok" data-testid="extraction-message">
           {message}
+        </p>
+      ) : null}
+
+      {loading && !extraction ? (
+        <p className="hint state-panel state-panel-loading" role="status">
+          Loading extraction proposals…
         </p>
       ) : null}
 
@@ -218,7 +228,10 @@ function ExtractionContent({ role }: { role: Role | null }) {
       </section>
 
       {eligible.length === 0 ? (
-        <p className="hint" data-testid="extraction-none">
+        <p
+          className="hint state-panel state-panel-empty"
+          data-testid="extraction-none"
+        >
           No document is ready for extraction. Approve and process a Markdown or
           text submission first.
         </p>
@@ -294,7 +307,7 @@ function ExtractionContent({ role }: { role: Role | null }) {
                       : proposal.subject_name}
                   </span>
                   <span
-                    className={`badge proposal-status-${proposal.status}`}
+                    className={`badge status-chip proposal-status-${proposal.status}`}
                     data-testid="proposal-status"
                   >
                     {proposal.status}

@@ -267,7 +267,11 @@ function AuthorityContent({ role }: { role: Role | null }) {
         subtitle="Designate an approved document version as authoritative for a document, a person, or selected records."
       />
       {error ? (
-        <p className="insufficient" role="alert" data-testid="authority-error">
+        <p
+          className="insufficient state-panel state-panel-unavailable"
+          role="alert"
+          data-testid="authority-error"
+        >
           {error}
         </p>
       ) : null}
@@ -298,7 +302,10 @@ function AuthorityContent({ role }: { role: Role | null }) {
       </section>
 
       {eligible.length === 0 ? (
-        <p className="hint" data-testid="authority-none">
+        <p
+          className="hint state-panel state-panel-empty"
+          data-testid="authority-none"
+        >
           No approved and processed Markdown or text document is available.
           Approve and process a submission, then extract its family records.
         </p>
@@ -580,12 +587,14 @@ function AuthorityContent({ role }: { role: Role | null }) {
           >
             <div className="proposal-head">
               <strong>Decision {decision.decision_id}</strong>
-              <span className={`badge proposal-status-${decision.status}`}>
+              <span
+                className={`badge status-chip proposal-status-${decision.status}`}
+              >
                 {decision.status}
               </span>
               {decision.needs_attention ? (
                 <span
-                  className="badge badge-feedback"
+                  className="badge status-chip badge-feedback"
                   data-testid="authority-attention-badge"
                 >
                   Needs attention

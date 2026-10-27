@@ -85,6 +85,23 @@ const LINK_LABEL: Record<NarrativeLinkStatus, string> = {
   rejected: "Rejected",
 };
 
+// Map a link/passage status onto the shared semantic chip variants. Every
+// mapped value reuses an existing stage-3 status-* token; unknown states fall
+// back to the neutral draft chip so no new primitive is invented.
+const CHIP_CLASS: Record<string, string> = {
+  confirmed: "status-approved",
+  resolved: "status-draft",
+  ambiguous: "status-pending_review",
+  rejected: "status-rejected",
+  unmatched: "status-rejected",
+  approved: "status-approved",
+  pending: "status-pending_review",
+};
+
+function chipClass(status: string): string {
+  return `status-chip ${CHIP_CLASS[status] ?? "status-draft"}`;
+}
+
 type Filters = {
   status: NarrativeReviewStatus;
   language: "all" | "vi" | "en";
@@ -547,10 +564,17 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
       />
 
       <section
-        className="narrative-review-filters"
+        className="narrative-review-filters narrative-surface"
         data-testid="narrative-review-filters"
         aria-label="Narrative review filters"
       >
+        <div className="narrative-section-head">
+          <h2>Filters</h2>
+          <p className="hint">
+            Narrow the queue by status, person, source, and pages. Filters
+            apply to the passage queue only.
+          </p>
+        </div>
         <div className="narrative-filter-grid">
           <div className="narrative-filter-field">
             <label htmlFor="narrative-status-filter">Review status</label>
@@ -842,6 +866,12 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
 
       <div className="review-workspace" data-testid="narrative-review-console">
         <section className="review-queue" aria-label="Narrative passages">
+          <div className="review-queue-heading">
+            <h2>Passage queue</h2>
+            <span className="review-queue-count" data-testid="narrative-queue-count">
+              {total} {total === 1 ? "passage" : "passages"}
+            </span>
+          </div>
           {loading && loaded ? (
             <p
               className="hint"
@@ -852,19 +882,23 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
             </p>
           ) : null}
           {loading && !loaded ? (
-            <p
-              className="hint"
+            <div
+              className="state-panel state-panel-loading"
               role="status"
               data-testid="narrative-review-loading"
             >
-              Loading narrative passages…
-            </p>
+              <h2>Loading narrative passages</h2>
+              <p className="hint">The queue is being fetched.</p>
+            </div>
           ) : entries.length === 0 ? (
             <div
-              className="narrative-empty"
+              className="state-panel state-panel-empty narrative-empty"
               data-testid="narrative-review-empty"
             >
-              <p className="hint">No passages match these filters.</p>
+              <h2>No passages match these filters</h2>
+              <p className="hint">
+                Adjust the filters, or clear them to see every status.
+              </p>
               <button
                 type="button"
                 className="button-secondary"
@@ -898,19 +932,23 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
                             `Passage ${passage.passage_id}`}
                         </strong>
                         <span
-                          className={`badge narrative-link-${summary.primary}`}
+                          className={chipClass(summary.primary)}
+                          data-testid="narrative-row-link-chip"
                         >
                           {summary.primaryLabel}
                         </span>
                       </span>
-                      <span>
+                      <span className="review-row-meta">
                         {languageLabel(passage.language)} ·{" "}
                         {passage.document_ref} · {pagesLabel(passage)}
                       </span>
-                      <span className="hint">
-                        Passage {passage.passage_id} ·{" "}
-                        {passage.review_status.replace("_", " ")} ·{" "}
-                        {passage.visibility.replace("_", " ")}
+                      <span className="review-row-chips">
+                        <span className={chipClass(passage.review_status)}>
+                          {passage.review_status.replace("_", " ")}
+                        </span>
+                        <span className="status-chip status-draft">
+                          {passage.visibility.replace("_", " ")}
+                        </span>
                       </span>
                       <span className="review-row-value">{summary.text}</span>
                       <span className="review-row-value">
@@ -959,14 +997,18 @@ export function NarrativeReviewConsole({ role }: { role: Role | null }) {
           data-testid="narrative-review-detail"
         >
           {!selectedId ? (
-            <p className="hint">
-              Select a passage to inspect its wording, source, and person
-              candidates.
-            </p>
+            <div className="review-placeholder">
+              <h2>Review detail</h2>
+              <p className="hint">
+                Select a passage to inspect its wording, source, and person
+                candidates.
+              </p>
+            </div>
           ) : detailLoading || !detail ? (
-            <p className="hint" role="status">
-              Loading passage review…
-            </p>
+            <div className="state-panel state-panel-loading" role="status">
+              <h2>Loading passage review</h2>
+              <p className="hint">The passage detail is being fetched.</p>
+            </div>
           ) : (
             <NarrativeReviewDetailPanel
               detail={detail}
@@ -1053,7 +1095,7 @@ function NarrativeReviewDetailPanel({
           </p>
         </div>
         <span
-          className={`badge narrative-link-${passage.review_status}`}
+          className={chipClass(passage.review_status)}
           data-testid="narrative-passage-status"
         >
           {passage.review_status.replace("_", " ")}
@@ -1061,10 +1103,15 @@ function NarrativeReviewDetailPanel({
       </header>
 
       <div className="review-meta">
-        <span className="badge" data-testid="narrative-passage-visibility">
+        <span
+          className="status-chip status-draft"
+          data-testid="narrative-passage-visibility"
+        >
           {passage.visibility.replace("_", " ")}
         </span>
-        <span className="badge">{languageLabel(passage.language)}</span>
+        <span className="status-chip status-draft">
+          {languageLabel(passage.language)}
+        </span>
         <button
           type="button"
           className="family-text-button"
@@ -1134,7 +1181,7 @@ function NarrativeReviewDetailPanel({
                     <span>
                       <strong>{link.display_name}</strong>{" "}
                       <span
-                        className={`badge narrative-link-${link.link_status}`}
+                        className={chipClass(link.link_status)}
                         data-testid={`narrative-link-status-${link.link_status}`}
                       >
                         {LINK_LABEL[link.link_status] ?? link.link_status}
@@ -1181,7 +1228,7 @@ function NarrativeReviewDetailPanel({
               </button>
               <button
                 type="button"
-                className="button-danger"
+                className="button-danger review-action-destructive"
                 disabled={!selectedPerson || busy}
                 onClick={onRejectLink}
                 data-testid="narrative-link-reject"
@@ -1231,6 +1278,7 @@ function NarrativeReviewDetailPanel({
           </button>
           <button
             type="button"
+            className="button-secondary"
             disabled={busy}
             onClick={onApproveAdmin}
             data-testid="narrative-approve-admin"
@@ -1239,7 +1287,7 @@ function NarrativeReviewDetailPanel({
           </button>
           <button
             type="button"
-            className="button-danger"
+            className="button-danger review-action-destructive"
             disabled={busy}
             onClick={onReject}
             data-testid="narrative-reject-passage"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AccountsAdmin } from "@/components/AccountsAdmin";
 import { DenialView } from "@/components/DenialView";
@@ -43,6 +43,113 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return error instanceof Error ? error.message : "The request failed.";
+}
+
+// Focus returns to the control that opened a confirmation. The opener records
+// itself so a cancel or confirm can restore keyboard position. Local to this
+// module: the confirmation holds no library and no shared global.
+const dialogOpener = { current: null as HTMLElement | null };
+
+function rememberOpener() {
+  if (typeof document === "undefined") return;
+  dialogOpener.current = document.activeElement as HTMLElement | null;
+}
+
+function restoreOpener() {
+  const opener = dialogOpener.current;
+  dialogOpener.current = null;
+  if (opener && typeof opener.focus === "function") opener.focus();
+}
+
+function ConfirmDialog({
+  testId,
+  title,
+  children,
+  confirmLabel,
+  confirmTestId,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  testId: string;
+  title: string;
+  children: React.ReactNode;
+  confirmLabel: string;
+  confirmTestId: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Cancel takes focus on open so Escape or Enter never commits the action.
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      restoreOpener();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  return (
+    <div
+      ref={dialogRef}
+      className="confirm fm-bulk-confirm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`${testId}-title`}
+      onKeyDown={handleKeyDown}
+      data-testid={testId}
+    >
+      <h3 id={`${testId}-title`}>{title}</h3>
+      {children}
+      <div className="fm-bulk-confirm-actions">
+        <button
+          ref={cancelRef}
+          type="button"
+          className="button-secondary"
+          disabled={busy}
+          onClick={() => {
+            onCancel();
+            restoreOpener();
+          }}
+          data-testid={`${testId}-cancel`}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onConfirm}
+          data-testid={confirmTestId}
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function BulkOnboardContent({ role }: { role: Role | null }) {
@@ -107,6 +214,16 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
     );
   }
 
+  function openPrepareConfirm() {
+    rememberOpener();
+    setConfirmPrepare(true);
+  }
+
+  function openSendConfirm() {
+    rememberOpener();
+    setConfirmSend(true);
+  }
+
   async function prepare() {
     if (selected.size === 0) return;
     setBusy(true);
@@ -119,6 +236,7 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
       });
       setPrepareResult(result);
       setConfirmPrepare(false);
+      restoreOpener();
       await refreshBatch(result.batch_id);
     } catch (err) {
       setError(errorMessage(err));
@@ -171,10 +289,12 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         `Provider confirmed ${sent} sent, ${queued} queued, ${failed} failed. No account is activated until the recipient completes the identity flow and an admin reviews the person link.`,
       );
       setConfirmSend(false);
+      restoreOpener();
       await refreshBatch(prepareResult.batch_id);
     } catch (err) {
       setError(errorMessage(err));
       setConfirmSend(false);
+      restoreOpener();
     } finally {
       setBusy(false);
     }
@@ -208,206 +328,213 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         subtitle="Preview verified living family members, prepare accounts, and send invitations only after a separate approval. Preparation never activates an account."
       />
 
-      {error ? (
-        <p className="insufficient" role="alert" data-testid="bulk-error">
-          {error}
-        </p>
-      ) : null}
-
-      <div className="bulk-actions">
-        <button type="button" onClick={() => void load()} disabled={busy || state === "loading"}>
-          Preview eligible people
-        </button>
-        <button type="button" onClick={selectEligible} disabled={!preview || busy}>
-          Select eligible
-        </button>
-        <button
-          type="button"
-          onClick={() => setConfirmPrepare(true)}
-          disabled={selected.size === 0 || busy}
-          data-testid="bulk-prepare"
-        >
-          Prepare selected ({selected.size})
-        </button>
-      </div>
-
-      {state === "loading" ? <p className="hint">Loading the private candidate set…</p> : null}
-
-      {preview ? (
-        <section className="status-panel" data-testid="bulk-preview">
-          <h2>Preview</h2>
-          <dl>
-            <div><dt>Eligible</dt><dd>{summary?.eligible_for_invite ?? 0}</dd></div>
-            <div><dt>Needs review</dt><dd>{summary?.needs_review ?? 0}</dd></div>
-            <div><dt>Already linked</dt><dd>{summary?.already_linked ?? 0}</dd></div>
-            <div><dt>Already prepared</dt><dd>{summary?.already_prepared ?? 0}</dd></div>
-            <div><dt>Invited</dt><dd>{summary?.invited ?? 0}</dd></div>
-            <div><dt>Not eligible</dt><dd>{summary?.not_eligible ?? 0}</dd></div>
-          </dl>
-          {preview.review_needed ? (
-            <p className="hint" data-testid="bulk-review-needed">{preview.review_needed}</p>
-          ) : null}
-          <p className="hint">
-            Preview is a dry run. It changes nothing: no username is reserved, no
-            invitation is created, and no email is sent.
+      <div className="fm-workspace">
+        {error ? (
+          <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="bulk-error">
+            {error}
           </p>
-          <table className="bulk-table" data-testid="bulk-table">
-            <thead>
-              <tr>
-                <th scope="col">Select</th>
-                <th scope="col">Person key</th>
-                <th scope="col">Status</th>
-                <th scope="col">Proposed username</th>
-                <th scope="col">Warnings</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.rows.map((row) => (
-                <PreviewRow
-                  key={row.person_key}
-                  row={row}
-                  checked={selected.has(row.person_key)}
-                  onToggle={() => toggle(row.person_key)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
+        ) : null}
 
-      {confirmPrepare ? (
-        <section className="status-panel" data-testid="bulk-prepare-confirm">
-          <h2>Confirm preparation</h2>
-          <p>
-            Prepare <strong>{selected.size}</strong> selected people. Preparation
-            reserves usernames and records a resumable batch.
-          </p>
-          <p className="insufficient">
-            No accounts are activated and no emails are sent by this step.
-          </p>
-          <div className="bulk-actions">
-            <button type="button" onClick={() => void prepare()} disabled={busy} data-testid="bulk-prepare-confirm-button">
-              Confirm prepare
-            </button>
-            <button type="button" onClick={() => setConfirmPrepare(false)} disabled={busy}>
-              Cancel
-            </button>
-          </div>
-        </section>
-      ) : null}
+        <div className="bulk-actions fm-action-bar">
+          <button type="button" onClick={() => void load()} disabled={busy || state === "loading"}>
+            Preview eligible people
+          </button>
+          <button type="button" onClick={selectEligible} disabled={!preview || busy}>
+            Select eligible
+          </button>
+          <button
+            type="button"
+            onClick={openPrepareConfirm}
+            disabled={selected.size === 0 || busy}
+            data-testid="bulk-prepare"
+          >
+            Prepare selected ({selected.size})
+          </button>
+        </div>
 
-      {prepareResult ? (
-        <section className="status-panel" data-testid="bulk-results">
-          <h2>Batch {prepareResult.batch_id}</h2>
-          <p className="hint">
-            Prepared {prepareResult.prepared}, needs review {prepareResult.needs_review},
-            failed {prepareResult.failed}. Duplicate submission created{" "}
-            {prepareResult.created ? "a new batch" : "no new batch"}.
-          </p>
-          {batch ? (
-            <table className="bulk-table" data-testid="bulk-status-table">
-              <thead>
-                <tr>
-                  <th scope="col">Person key</th>
-                  <th scope="col">Preparation</th>
-                  <th scope="col">Username</th>
-                  <th scope="col">Delivery</th>
-                  <th scope="col">Verified recipient</th>
-                </tr>
-              </thead>
-              <tbody>
-                {batch.items.map((item) => (
-                  <tr key={item.person_key}>
-                    <td>{item.person_key}</td>
-                    <td>
-                      {item.status}
-                      {item.reason ? <span className="hint"> ({item.reason})</span> : null}
-                    </td>
-                    <td>{item.username ?? "—"}</td>
-                    <td>
-                      {item.delivery_status}
-                      {item.invitation_status ? (
-                        <span className="hint"> ({item.invitation_status})</span>
-                      ) : null}
-                    </td>
-                    <td>
-                      {item.has_verified_contact ? (
-                        <span className="badge">Verified</span>
-                      ) : item.status === "prepared" ? (
-                        <div className="bulk-email">
-                          <input
-                            type="email"
-                            aria-label={`Verified email for ${item.person_key}`}
-                            placeholder="verified@example.test"
-                            value={emails[item.person_key] ?? ""}
-                            onChange={(event) =>
-                              setEmails((current) => ({
-                                ...current,
-                                [item.person_key]: event.target.value,
-                              }))
-                            }
-                          />
-                          <button
-                            type="button"
-                            onClick={() => void verifyEmail(item.person_key)}
-                            disabled={busy}
-                          >
-                            Verify
-                          </button>
-                        </div>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : null}
+        {state === "loading" ? (
+          <p className="state-panel state-panel-loading fm-state">Loading the private candidate set…</p>
+        ) : null}
 
-          <div className="bulk-actions">
-            <button
-              type="button"
-              onClick={() => setConfirmSend(true)}
-              disabled={busy || sendableCount === 0}
-              data-testid="bulk-send"
-            >
-              Send invitations ({sendableCount})
-            </button>
-            {sendableCount === 0 ? (
-              <span className="hint">
-                Sending stays disabled until a prepared person has a verified
-                recipient email.
-              </span>
+        {preview ? (
+          <section className="status-panel fm-preview" data-testid="bulk-preview">
+            <h2>Preview</h2>
+            <dl className="fm-stat-grid">
+              <div><dt>Eligible</dt><dd>{summary?.eligible_for_invite ?? 0}</dd></div>
+              <div><dt>Needs review</dt><dd>{summary?.needs_review ?? 0}</dd></div>
+              <div><dt>Already linked</dt><dd>{summary?.already_linked ?? 0}</dd></div>
+              <div><dt>Already prepared</dt><dd>{summary?.already_prepared ?? 0}</dd></div>
+              <div><dt>Invited</dt><dd>{summary?.invited ?? 0}</dd></div>
+              <div><dt>Not eligible</dt><dd>{summary?.not_eligible ?? 0}</dd></div>
+            </dl>
+            {preview.review_needed ? (
+              <p className="insufficient" data-testid="bulk-review-needed">{preview.review_needed}</p>
             ) : null}
-          </div>
-
-          {confirmSend ? (
-            <div className="insufficient" data-testid="bulk-send-confirm">
-              <p>
-                Send exactly <strong>{sendableCount}</strong> invitations through
-                the configured adapter. Each recipient receives a single-use,
-                expiring activation link.
-              </p>
-              <p>No account is activated until the recipient completes the identity flow and an administrator reviews the link.</p>
-              <div className="bulk-actions">
-                <button type="button" onClick={() => void sendInvitations()} disabled={busy} data-testid="bulk-send-confirm-button">
-                  Confirm send
-                </button>
-                <button type="button" onClick={() => setConfirmSend(false)} disabled={busy}>
-                  Cancel
-                </button>
-              </div>
+            <p className="hint fm-dry-run">
+              Preview is a dry run. It changes nothing: no username is reserved, no
+              invitation is created, and no email is sent.
+            </p>
+            <div className="fm-table-wrap">
+              <table className="bulk-table" data-testid="bulk-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Select</th>
+                    <th scope="col">Person key</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Proposed username</th>
+                    <th scope="col">Warnings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.map((row) => (
+                    <PreviewRow
+                      key={row.person_key}
+                      row={row}
+                      checked={selected.has(row.person_key)}
+                      onToggle={() => toggle(row.person_key)}
+                    />
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ) : null}
+          </section>
+        ) : null}
 
-          {sendMessage ? (
-            <p className="form-status ok" data-testid="bulk-send-result">{sendMessage}</p>
-          ) : null}
-        </section>
-      ) : null}
+        {confirmPrepare ? (
+          <ConfirmDialog
+            testId="bulk-prepare-confirm"
+            title="Confirm preparation"
+            confirmLabel="Confirm prepare"
+            confirmTestId="bulk-prepare-confirm-button"
+            busy={busy}
+            onConfirm={() => void prepare()}
+            onCancel={() => setConfirmPrepare(false)}
+          >
+            <p>
+              Prepare <strong>{selected.size}</strong> selected people. Preparation
+              reserves usernames and records a resumable batch.
+            </p>
+            <p className="insufficient">
+              No accounts are activated and no emails are sent by this step.
+            </p>
+          </ConfirmDialog>
+        ) : null}
 
-      <AccountsAdmin />
+        {prepareResult ? (
+          <section className="status-panel fm-results" data-testid="bulk-results">
+            <h2>Batch {prepareResult.batch_id}</h2>
+            <p className="hint">
+              Prepared {prepareResult.prepared}, needs review {prepareResult.needs_review},
+              failed {prepareResult.failed}. Duplicate submission created{" "}
+              {prepareResult.created ? "a new batch" : "no new batch"}.
+            </p>
+            {batch ? (
+              <div className="fm-table-wrap">
+                <table className="bulk-table" data-testid="bulk-status-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Person key</th>
+                      <th scope="col">Preparation</th>
+                      <th scope="col">Username</th>
+                      <th scope="col">Delivery</th>
+                      <th scope="col">Verified recipient</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batch.items.map((item) => (
+                      <tr key={item.person_key}>
+                        <td data-label="Person key">{item.person_key}</td>
+                        <td data-label="Preparation">
+                          {item.status}
+                          {item.reason ? <span className="hint"> ({item.reason})</span> : null}
+                        </td>
+                        <td data-label="Username">{item.username ?? "—"}</td>
+                        <td data-label="Delivery">
+                          {item.delivery_status}
+                          {item.invitation_status ? (
+                            <span className="hint"> ({item.invitation_status})</span>
+                          ) : null}
+                        </td>
+                        <td data-label="Verified recipient">
+                          {item.has_verified_contact ? (
+                            <span className="badge">Verified</span>
+                          ) : item.status === "prepared" ? (
+                            <div className="bulk-email">
+                              <input
+                                type="email"
+                                aria-label={`Verified email for ${item.person_key}`}
+                                placeholder="verified@example.test"
+                                value={emails[item.person_key] ?? ""}
+                                onChange={(event) =>
+                                  setEmails((current) => ({
+                                    ...current,
+                                    [item.person_key]: event.target.value,
+                                  }))
+                                }
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void verifyEmail(item.person_key)}
+                                disabled={busy}
+                              >
+                                Verify
+                              </button>
+                            </div>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            <div className="bulk-actions fm-send-bar">
+              <button
+                type="button"
+                onClick={openSendConfirm}
+                disabled={busy || sendableCount === 0}
+                data-testid="bulk-send"
+              >
+                Send invitations ({sendableCount})
+              </button>
+              {sendableCount === 0 ? (
+                <span className="hint">
+                  Sending stays disabled until a prepared person has a verified
+                  recipient email.
+                </span>
+              ) : null}
+            </div>
+
+            {confirmSend ? (
+              <ConfirmDialog
+                testId="bulk-send-confirm"
+                title="Confirm send"
+                confirmLabel="Confirm send"
+                confirmTestId="bulk-send-confirm-button"
+                busy={busy}
+                onConfirm={() => void sendInvitations()}
+                onCancel={() => setConfirmSend(false)}
+              >
+                <p>
+                  Send exactly <strong>{sendableCount}</strong> invitations through
+                  the configured adapter. Each recipient receives a single-use,
+                  expiring activation link.
+                </p>
+                <p>No account is activated until the recipient completes the identity flow and an administrator reviews the link.</p>
+              </ConfirmDialog>
+            ) : null}
+
+            {sendMessage ? (
+              <p className="form-status ok" data-testid="bulk-send-result">{sendMessage}</p>
+            ) : null}
+          </section>
+        ) : null}
+
+        <AccountsAdmin />
+      </div>
     </>
   );
 }
@@ -423,7 +550,7 @@ function PreviewRow({
 }) {
   return (
     <tr>
-      <td>
+      <td data-label="Select">
         <input
           type="checkbox"
           checked={checked}
@@ -432,15 +559,15 @@ function PreviewRow({
           aria-label={`Select ${row.person_key}`}
         />
       </td>
-      <td>{row.person_key}</td>
-      <td>
+      <td data-label="Person key">{row.person_key}</td>
+      <td data-label="Status">
         <span className="badge">{row.classification}</span>
         {row.blocked_missing_recipient ? (
           <span className="hint"> recipient missing</span>
         ) : null}
       </td>
-      <td>{row.proposed_username ?? "—"}</td>
-      <td className="hint">{row.reasons.join(", ") || "—"}</td>
+      <td data-label="Proposed username">{row.proposed_username ?? "—"}</td>
+      <td data-label="Warnings" className="hint">{row.reasons.join(", ") || "—"}</td>
     </tr>
   );
 }

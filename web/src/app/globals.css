@@ -3899,3 +3899,452 @@ footer.page-footer {
         color: var(--bg);
     }
 }
+
+/* UI-701A — family members and accounts. Reuses the stage-three neutral
+   surfaces, restrained jade accent, semantic status chips, and shared
+   state-panel pattern. Every rule below is scoped to the family-members page
+   and its accounts section; no existing selector outside this surface is
+   changed. */
+.fm-workspace {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+    max-width: 100%;
+}
+.fm-state {
+    margin: 0;
+}
+
+/* Action bar: one row on desktop, a wrapped stack on small screens. */
+.fm-action-bar {
+    margin: 0;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    min-width: 0;
+}
+.fm-action-bar button,
+.fm-send-bar button {
+    min-height: 44px;
+}
+
+/* Preview and batch tables become labelled stacked cards on small screens. */
+.fm-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+}
+.fm-preview h2,
+.fm-results h2 {
+    font-size: 1rem;
+    margin: 0 0 10px;
+}
+.fm-dry-run {
+    margin: 10px 0 0;
+    padding: 8px 10px;
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    color: var(--fg);
+}
+
+/* Preview summary as a readable stat grid. The extra specificity beats the
+   generic `.status-panel dl` flex row, which would otherwise force one line. */
+.fm-preview .fm-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin: 0 0 12px;
+}
+.fm-preview .fm-stat-grid > div {
+    display: grid;
+    gap: 2px;
+    align-items: initial;
+    padding: 10px 12px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    min-width: 0;
+}
+.fm-stat-grid dt {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.fm-stat-grid dd {
+    margin: 0;
+    font: 700 1.5rem/1.15 var(--font-sans);
+    color: var(--fg);
+}
+
+/* Confirmation dialogs: keyboard-operable, 44px targets, readable in both
+   themes. Cancel is listed first and takes focus on open. */
+.fm-bulk-confirm,
+.fm-confirm {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 18px 20px;
+    margin: 0;
+    border: 1px solid var(--line-strong);
+    border-left: 4px solid var(--accent);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+}
+.fm-bulk-confirm h3,
+.fm-confirm h3 {
+    margin: 0;
+    font-size: 1.02rem;
+}
+.fm-bulk-confirm p,
+.fm-confirm p {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.fm-bulk-confirm-actions,
+.fm-confirm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+.fm-bulk-confirm-actions button,
+.fm-confirm-actions button {
+    margin: 0;
+    min-height: 44px;
+    padding: 10px 16px;
+}
+
+/* Accounts section: filter grid, member cards, chips, actions disclosure. */
+.fm-accounts {
+    min-width: 0;
+    max-width: 100%;
+}
+.fm-section-head {
+    margin: 0 0 12px;
+}
+.fm-section-head h2 {
+    margin: 0 0 4px;
+}
+.fm-section-head .hint {
+    margin: 0;
+    max-width: 72ch;
+}
+.fm-filter-toolbar {
+    display: grid;
+    grid-template-columns:
+        minmax(180px, 2fr) minmax(120px, 1fr) minmax(120px, 1fr)
+        auto;
+    gap: 10px;
+    align-items: end;
+    border-radius: var(--radius-md);
+    margin: 0 0 12px;
+}
+.fm-filter-field {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    min-width: 0;
+    font-size: 0.82rem;
+    color: var(--muted);
+    font-weight: 600;
+}
+.fm-filter-field input,
+.fm-filter-field select {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    color: var(--fg);
+    font: inherit;
+    font-weight: 400;
+}
+.fm-filter-apply {
+    margin: 0;
+    min-height: 40px;
+}
+
+.fm-members {
+    margin: 0;
+    display: grid;
+    gap: 12px;
+}
+.fm-members li {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    background: var(--card);
+    min-width: 0;
+}
+.fm-member-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    justify-content: space-between;
+    min-width: 0;
+}
+.fm-member-name {
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+.fm-member-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.status-member-active {
+    background: var(--ok-soft);
+    color: var(--ok);
+}
+.status-member-deactivated {
+    background: var(--surface-strong);
+    color: var(--muted);
+}
+.status-role {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+.fm-member-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: 6px 0 0;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+.fm-member-scope {
+    font-family: var(--font-mono);
+}
+.fm-member-link {
+    margin: 4px 0 0;
+    font-size: 0.82rem;
+}
+.fm-actions {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+.fm-actions summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent);
+    min-height: 32px;
+}
+.fm-actions-body {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+    min-width: 0;
+}
+.fm-actions-body button,
+.fm-role-row select {
+    min-height: 40px;
+}
+.fm-role-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: stretch;
+    min-width: 0;
+}
+.fm-role-row select {
+    min-width: 0;
+    max-width: 100%;
+}
+.fm-link-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+.fm-link-form input {
+    flex: 1 1 180px;
+    min-width: 0;
+    padding: 8px 10px;
+}
+.fm-actions-body .fm-deactivate {
+    justify-self: start;
+}
+.fm-more {
+    margin-top: 12px;
+    min-height: 44px;
+}
+@media (prefers-color-scheme: dark) {
+    /* The dark danger token is a light red, so white text would be unreadable. */
+    .fm-actions-body .fm-deactivate {
+        color: var(--bg);
+    }
+}
+
+@media (max-width: 720px) {
+    .fm-filter-toolbar {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .fm-filter-apply {
+        width: 100%;
+    }
+}
+
+@media (max-width: 560px) {
+    .fm-action-bar {
+        padding: 10px;
+    }
+    .fm-action-bar button {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+    .fm-preview,
+    .fm-results,
+    .fm-accounts {
+        padding: 14px;
+        border-radius: var(--radius-md);
+    }
+    /* Wide tables become labelled stacked cards so a person keeps their
+       labels and actions without horizontal scrolling. */
+    .fm-table-wrap .bulk-table {
+        min-width: 0;
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+    .fm-table-wrap thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+    .fm-table-wrap tbody,
+    .fm-table-wrap tr,
+    .fm-table-wrap td {
+        display: block;
+        width: 100%;
+    }
+    .fm-table-wrap tr {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--card);
+        padding: 12px 14px;
+        margin-top: 10px;
+    }
+    .fm-table-wrap td {
+        border: 0;
+        padding: 5px 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .fm-table-wrap td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 2px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+    .fm-members li {
+        padding: 12px;
+    }
+    .fm-member-head {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    .fm-member-chips {
+        width: 100%;
+    }
+    .fm-actions-body button,
+    .fm-link-form button {
+        width: 100%;
+    }
+    .fm-role-row {
+        width: 100%;
+    }
+    .fm-role-row select {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+    .fm-link-form input {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+    .fm-bulk-confirm,
+    .fm-confirm {
+        max-width: 100%;
+        padding: 14px;
+    }
+    .fm-bulk-confirm-actions button,
+    .fm-confirm-actions button {
+        flex: 1 1 auto;
+        width: 100%;
+    }
+}
+
+/* UI-701B — extraction and source-of-truth status labels and form widths.
+   These complete the semantic chip set without changing any token. */
+.proposal-status-proposed,
+.proposal-status-draft {
+    background: var(--info-soft);
+    color: var(--fg);
+}
+.proposal-status-active {
+    background: var(--ok-soft);
+    color: var(--ok);
+}
+.proposal-status-superseded,
+.proposal-status-reversed {
+    background: var(--surface-strong);
+    color: var(--fg);
+}
+.proposal-value input[type="text"],
+.proposal-value textarea,
+#authority-reason {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+#authority-reason {
+    min-height: 88px;
+    resize: vertical;
+}
+@media (max-width: 600px) {
+    .proposal-card {
+        padding: 12px;
+    }
+    .proposal-actions button {
+        flex: 1 1 auto;
+        min-height: 44px;
+    }
+}
+
+/* UI-701C — keep filter fields aligned at the top so a tall help cell does not
+   push its neighbours to the bottom of the row. */
+.narrative-filter-grid {
+    align-items: start;
+}
+.narrative-section-head {
+    margin: 0 0 12px;
+}
+.narrative-section-head h2 {
+    margin: 0 0 4px;
+    font-size: 1rem;
+}
+.narrative-section-head .hint {
+    margin: 0;
+    max-width: 72ch;
+}
