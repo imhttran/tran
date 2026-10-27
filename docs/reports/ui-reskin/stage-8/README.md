@@ -1,6 +1,6 @@
 # UI reskin — stage 8 (final)
 
-**Status:** Implemented; awaiting review. **Scope:** `/signin` and the shared
+**Status:** Merged as `0c81bdb` (PR #114). **Scope:** `/signin` and the shared
 denied/no-access presentation. The stage-3 shell, top navigation, light/dark
 tokens, shared state panels, and restrained jade are reused unchanged.
 
