@@ -21,8 +21,14 @@ test("admin nominates, a second admin approves, and the admin revokes", async ({
 
   await page
     .getByTestId("hof-record-select")
-    .selectOption("synthetic-e2e-person");
-  await page.getByTestId("hof-nomination-label").fill("Synthetic E2E Person");
+    .fill("Synthetic E2E Person");
+  await expect(page.getByTestId("hof-record-option").first()).toContainText(
+    "Synthetic E2E Person",
+  );
+  await page.getByTestId("hof-record-option").first().click();
+  await expect(page.getByTestId("hof-nomination-label")).toHaveValue(
+    "Synthetic E2E Person",
+  );
   await page.getByTestId("hof-nominate-submit").click();
   await page.getByTestId("hof-confirm-yes").click();
 

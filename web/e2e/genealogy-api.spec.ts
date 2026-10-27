@@ -14,6 +14,36 @@ const APPROVER_TOKEN = process.env.E2E_APPROVER_TOKEN;
 const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
 test.describe.serial("genealogy API integration", () => {
+  test("person search is authorized and matches partial names", async ({
+    request,
+  }) => {
+    test.skip(!ADMIN_TOKEN, "admin token not provided by the harness");
+
+    const anonymous = await request.get(
+      `${API_URL}/api/genealogy/person-search?q=synthetic%20e2e`,
+    );
+    expect([401, 403]).toContain(anonymous.status());
+
+    const search = await request.get(
+      `${API_URL}/api/genealogy/person-search?q=synthetic%20e2e`,
+      { headers: auth(ADMIN_TOKEN!) },
+    );
+    expect(search.status()).toBe(200);
+    const body = (await search.json()) as {
+      candidates: Array<{
+        person_key: string;
+        display_name: string;
+        branch: string | null;
+        birth_year: number | null;
+      }>;
+    };
+    expect(
+      body.candidates.some(
+        (candidate) => candidate.person_key === "synthetic-e2e-person",
+      ),
+    ).toBeTruthy();
+  });
+
   test("admin reads synthetic records, nominates, a second admin approves, and revokes", async ({
     request,
   }) => {

@@ -383,6 +383,7 @@ impl AppState {
                 "/api/genealogy/relationship/{from}/{to}",
                 get(genealogy_relationship),
             )
+            .route("/api/genealogy/person-search", get(genealogy_person_search))
             .route(
                 "/api/genealogy/nominations",
                 get(list_nominations).post(nominate_head_of_family),
@@ -4750,6 +4751,8 @@ fn candidate_json(candidate: &person_search::Candidate) -> serde_json::Value {
         "display_name": candidate.display_name,
         "generation": candidate.generation,
         "evidence_status": candidate.evidence_status,
+        "birth_year": candidate.birth_year,
+        "branch": candidate.branch,
         "match": candidate.match_kind.map(person_search::MatchKind::as_str),
         "matched_name": candidate.matched_name,
         "profile_url": format!("/family/{}", candidate.person_key),
@@ -5806,6 +5809,67 @@ async fn reverse_authority_decision(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "authority_failed",
                 "the authority reversal failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PersonSearchQuery {
+    q: Option<String>,
+}
+
+/// Read-only ranked person search for the Head of Family selector.
+///
+/// Authorization runs before any database connection. A partial or
+/// diacritic-insensitive query searches the whole authorized catalog, so a
+/// person outside the initial result page is still found.
+async fn genealogy_person_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PersonSearchQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyRead) {
+        return response;
+    }
+    let term = query.q.unwrap_or_default().trim().to_string();
+    if term.chars().count() > 200 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_person_search",
+            "q must be at most 200 characters",
+        );
+    }
+    if term.is_empty() {
+        return Json(serde_json::json!({
+            "ok": true,
+            "candidates": [],
+            "candidates_truncated": false,
+            "catalog_truncated": false,
+        }))
+        .into_response();
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = open_genealogy(&config).map_err(GenealogyError::Guard)?;
+        person_search::search(&mut client, &term)
+    })
+    .await;
+    match result {
+        Ok(Ok((candidates, more, catalog_truncated))) => Json(serde_json::json!({
+            "ok": true,
+            "candidates": candidates.iter().map(candidate_json).collect::<Vec<_>>(),
+            "candidates_truncated": more,
+            "catalog_truncated": catalog_truncated,
+        }))
+        .into_response(),
+        Ok(Err(err)) => genealogy_error(err),
+        Err(err) => {
+            eprintln!("api: person search task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "genealogy_unavailable",
+                "the person search failed",
             )
         }
     }

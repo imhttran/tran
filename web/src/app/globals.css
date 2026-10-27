@@ -3750,6 +3750,64 @@ footer.page-footer {
     min-width: 0;
     max-width: 100%;
 }
+.hof-person-search {
+    position: relative;
+    display: grid;
+    gap: var(--space-1);
+    min-width: 0;
+}
+.hof-search-popover {
+    display: grid;
+    gap: 4px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+}
+.hof-person-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+}
+.hof-person-option {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.hof-person-option.is-active,
+.hof-person-option:hover {
+    background: var(--accent-soft);
+}
+.hof-person-name {
+    color: var(--fg);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+.hof-person-meta {
+    color: var(--muted);
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+}
+.hof-selected-person {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+}
+.hof-selected-person strong {
+    color: var(--fg);
+}
+.hof-search-popover p {
+    margin: 4px 8px;
+}
 .hof-admin-controls {
     display: grid;
     gap: 12px;

@@ -53,6 +53,12 @@ pub struct PersonNames {
     /// `verified`, `needs_review`, or `unverified`, derived exactly as the tree
     /// read derives it.
     pub evidence_status: String,
+    /// The recorded birth year, when a current verified birth assertion
+    /// records one. `None` when no such assertion exists; never a default.
+    pub birth_year: Option<i32>,
+    /// The recorded family branch label/key, when a current verified
+    /// branch claim records one. `None` otherwise.
+    pub branch: Option<String>,
 }
 
 /// The authorized catalog projection used for matching.
@@ -134,6 +140,12 @@ pub struct Candidate {
     pub matched_name: Option<String>,
     /// Recorded parents, used only to distinguish namesakes.
     pub recorded_parents: Vec<ParentRef>,
+    /// The recorded birth year, when a current verified birth assertion
+    /// records one. `None` when no such assertion exists; never a default.
+    pub birth_year: Option<i32>,
+    /// The recorded family branch label/key, when a current verified
+    /// branch claim records one. `None` otherwise.
+    pub branch: Option<String>,
 }
 
 /// How the question referred to a person.
@@ -180,7 +192,7 @@ pub enum PersonResult {
     /// Exactly one person matched, or the caller selected one.
     Found {
         query_name: String,
-        candidate: Candidate,
+        candidate: Box<Candidate>,
         detail: PersonDetail,
         /// True when the person has only name assertions, so no further
         /// detail can be stated.
@@ -402,6 +414,8 @@ pub fn rank(people: &[PersonNames], query_name: &str) -> Vec<Candidate> {
                 match_kind: Some(found.kind),
                 matched_name: Some(found.matched_name),
                 recorded_parents: Vec::new(),
+                birth_year: person.birth_year,
+                branch: person.branch.clone(),
             })
         })
         .collect();
@@ -415,6 +429,41 @@ pub fn rank(people: &[PersonNames], query_name: &str) -> Vec<Candidate> {
             .then_with(|| left.person_key.cmp(&right.person_key))
     });
     candidates
+}
+
+/// One ranked search candidate with namesake-distinguishing detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// The ranked candidate.
+    pub candidate: Candidate,
+}
+
+/// Searches the authorized catalog for a partial query and returns ranked
+/// candidates with recorded parents attached, never merged.
+///
+/// The result is bounded by `MAX_CANDIDATES`; `truncated` is true when more
+/// candidates exist than were returned. The caller authorizes before opening
+/// the genealogy database; this function only reads.
+pub fn search(
+    client: &mut Client,
+    query: &str,
+) -> Result<(Vec<Candidate>, bool, bool), GenealogyError> {
+    let catalog = load_catalog(client)?;
+    let mut ranked = rank(&catalog.people, query);
+    let more = ranked.len() > MAX_CANDIDATES;
+    ranked.truncate(MAX_CANDIDATES);
+    let keys: Vec<String> = ranked
+        .iter()
+        .map(|candidate| candidate.person_key.clone())
+        .collect();
+    let parents = recorded_parents(client, &keys)?;
+    for candidate in &mut ranked {
+        candidate.recorded_parents = parents
+            .get(&candidate.person_key)
+            .cloned()
+            .unwrap_or_default();
+    }
+    Ok((ranked, more, catalog.truncated))
 }
 
 /// The strongest match tier and every person tied at it.
@@ -467,6 +516,20 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                       AND ({current})),
                   ARRAY[]::text[]
                 ) AS aliases,
+                (SELECT MIN(SUBSTRING(a.value_date_start FROM 1 FOR 4)::int)
+                   FROM assertion a
+                  WHERE a.person_id = p.person_id
+                    AND a.assertion_kind IN ('birth', 'birth_date')
+                    AND a.review_status = 'verified'
+                    AND a.value_date_start ~ '^[0-9]{{4}}'
+                    AND ({current})) AS birth_year,
+                (SELECT MIN(COALESCE(NULLIF(BTRIM(fb.branch_label), ''), fb.branch_key))
+                   FROM assertion a
+                   JOIN family_branch fb ON fb.branch_key = a.value_text
+                  WHERE a.person_id = p.person_id
+                    AND a.assertion_kind = 'branch_claim'
+                    AND a.review_status = 'verified'
+                    AND ({current})) AS branch,
                 CASE
                   WHEN COALESCE(BOOL_OR(a.review_status IN ('needs_review', 'disputed')), false)
                     THEN 'needs_review'
@@ -492,7 +555,9 @@ pub fn load_catalog(client: &mut Client) -> Result<Catalog, GenealogyError> {
                 display_name: row.try_get(1)?,
                 generation: row.try_get(2)?,
                 aliases: row.try_get(3)?,
-                evidence_status: row.try_get(4)?,
+                birth_year: row.try_get(4)?,
+                branch: row.try_get(5)?,
+                evidence_status: row.try_get(6)?,
             })
         })
         .collect::<Result<Vec<_>, postgres::Error>>()?;
@@ -719,6 +784,8 @@ fn candidate_for(person: &PersonNames, found: Option<(MatchKind, String)>) -> Ca
         match_kind,
         matched_name,
         recorded_parents: Vec::new(),
+        birth_year: person.birth_year,
+        branch: person.branch.clone(),
     }
 }
 
@@ -765,7 +832,7 @@ pub fn resolve(
         let name_only = is_name_only(&detail.assertions);
         return Ok(PersonResult::Found {
             query_name,
-            candidate: candidate_for(person, matched),
+            candidate: Box::new(candidate_for(person, matched)),
             detail,
             name_only,
             catalog_truncated: catalog.truncated,
@@ -843,7 +910,7 @@ pub fn resolve(
     let name_only = is_name_only(&detail.assertions);
     Ok(PersonResult::Found {
         query_name: question.name.clone(),
-        candidate,
+        candidate: Box::new(candidate),
         detail,
         name_only,
         catalog_truncated: catalog.truncated,
@@ -861,6 +928,8 @@ mod tests {
             generation: None,
             aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
             evidence_status: status.to_string(),
+            birth_year: None,
+            branch: None,
         }
     }
 
@@ -1016,6 +1085,25 @@ mod tests {
                 "{question} must stay a document question"
             );
         }
+    }
+
+    #[test]
+    fn rank_carries_a_recorded_birth_year() {
+        let mut with_year = person("P030", "Trần Văn An", &[], "verified");
+        with_year.birth_year = Some(1911);
+        let without_year = person("P031", "Trần Văn Ân", &[], "verified");
+        let people = vec![with_year, without_year];
+        let candidates = rank(&people, "Tran Van An");
+        let found = candidates
+            .iter()
+            .find(|candidate| candidate.person_key == "P030")
+            .expect("the person with a birth year ranks");
+        assert_eq!(found.birth_year, Some(1911));
+        let absent = candidates
+            .iter()
+            .find(|candidate| candidate.person_key == "P031")
+            .expect("the person without a birth year ranks");
+        assert_eq!(absent.birth_year, None);
     }
 
     #[test]

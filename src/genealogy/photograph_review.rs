@@ -1078,6 +1078,8 @@ mod tests {
             generation: None,
             aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
             evidence_status: "unverified".to_string(),
+            birth_year: None,
+            branch: None,
         }
     }
 

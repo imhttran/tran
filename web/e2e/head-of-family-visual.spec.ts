@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 // 390px overflow, and the viewer/editor/administrator role gates.
 
 const HEAD_URL = "/api/genealogy/head-of-family";
-const RECORDS_URL = "/api/genealogy/records";
+const PERSON_SEARCH_URL = "**/api/genealogy/person-search*";
 const NOMINATIONS_URL = "/api/genealogy/nominations";
 
 const availableBody = {
@@ -65,17 +65,72 @@ async function mockHead(
   );
 }
 
+type MockRecord = {
+  record_id: string;
+  person_label: string;
+  branch?: string;
+  birth_year?: number;
+  generation?: number;
+};
+
+function fold(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .toLowerCase();
+}
+
 async function mockGenealogy(
   page: import("@playwright/test").Page,
-  options: { records?: unknown[]; nominations?: unknown[] } = {},
+  options: {
+    records?: MockRecord[];
+    nominations?: unknown[];
+    searchStatus?: number;
+    searchDelayMs?: number;
+  } = {},
 ) {
-  await page.route(RECORDS_URL, (route) =>
-    route.fulfill({
+  const candidates = (options.records ?? []).map((record) => ({
+    person_key: record.record_id,
+    display_name: record.person_label,
+    generation: record.generation ?? null,
+    evidence_status: "unverified",
+    birth_year: record.birth_year ?? null,
+    branch: record.branch ?? null,
+    match: "partial",
+    matched_name: record.person_label,
+    recorded_parents: [],
+  }));
+  await page.route(PERSON_SEARCH_URL, async (route) => {
+    if (options.searchDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, options.searchDelayMs));
+    }
+    const status = options.searchStatus ?? 200;
+    if (status !== 200) {
+      return route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "search unavailable" }),
+      });
+    }
+    const query = new URL(route.request().url()).searchParams.get("q") ?? "";
+    const normalized = fold(query.trim());
+    const matches = normalized
+      ? candidates.filter((candidate) =>
+          fold(candidate.display_name).includes(normalized),
+        )
+      : [];
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ records: options.records ?? [] }),
-    }),
-  );
+      body: JSON.stringify({
+        ok: true,
+        candidates: matches,
+        candidates_truncated: false,
+        catalog_truncated: false,
+      }),
+    });
+  });
   await page.route(NOMINATIONS_URL, (route) => {
     if (route.request().method() === "POST") {
       return route.fulfill({
@@ -309,6 +364,81 @@ test.describe("Head of Family surface", () => {
     await page.keyboard.press("Escape");
     await expect(actionsDialog).toHaveCount(0);
     await expect(page.getByTestId("hof-approve-submit")).toBeFocused();
+  });
+
+  test("searches all people, supports keyboard selection, and auto-fills the label", async ({
+    page,
+  }) => {
+    await mockSession(page, "editor");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page, {
+      records: [
+        {
+          record_id: "person-101",
+          person_label: "Trần Văn An",
+          branch: "Branch 1",
+          birth_year: 1911,
+        },
+        {
+          record_id: "person-102",
+          person_label: "Trần Văn Ân",
+          branch: "Branch 2",
+          birth_year: 1912,
+        },
+      ],
+    });
+    await page.goto("/head-of-family");
+
+    const input = page.getByTestId("hof-record-select");
+    await input.fill("Tran");
+    await expect(page.getByTestId("hof-record-option")).toHaveCount(2);
+    await expect(page.getByTestId("hof-record-option").first()).toContainText(
+      "Trần Văn An",
+    );
+    await expect(page.getByTestId("hof-record-option").first()).toContainText(
+      "Branch 1",
+    );
+    await expect(page.getByTestId("hof-record-option").first()).toContainText(
+      "Born 1911",
+    );
+
+    await input.press("ArrowDown");
+    await input.press("Enter");
+    await expect(page.getByTestId("hof-nomination-label")).toHaveValue(
+      "Trần Văn Ân",
+    );
+    await expect(page.getByTestId("hof-selected-person")).toContainText(
+      "Trần Văn Ân",
+    );
+    await expect(page.getByTestId("hof-nominate-submit")).toBeEnabled();
+
+    await input.fill("Trần Văn A");
+    await expect(page.getByTestId("hof-nomination-label")).toHaveValue("");
+    await expect(page.getByTestId("hof-selected-person")).toHaveCount(0);
+    await page.getByTestId("hof-nomination-label").fill("Free text only");
+    await expect(page.getByTestId("hof-nominate-submit")).toBeDisabled();
+  });
+
+  test("shows loading, empty, and error search states", async ({ page }) => {
+    await mockSession(page, "editor");
+    await mockHead(page, 200, availableBody);
+    await mockGenealogy(page, {
+      records: [],
+      searchDelayMs: 500,
+    });
+    await page.goto("/head-of-family");
+
+    const input = page.getByTestId("hof-record-select");
+    await input.fill("Unknown");
+    await expect(page.getByTestId("hof-search-loading")).toBeVisible();
+    await expect(page.getByTestId("hof-search-empty")).toBeVisible();
+
+    await mockGenealogy(page, {
+      records: [],
+      searchStatus: 500,
+    });
+    await input.fill("Another");
+    await expect(page.getByTestId("hof-search-error")).toBeVisible();
   });
 
   test("no horizontal overflow at 390px and desktop", async ({ page }) => {
