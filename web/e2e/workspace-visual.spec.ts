@@ -302,7 +302,8 @@ async function stubBranch(page: Page) {
 async function assertNoOverflow(page: Page) {
   const overflow = await page.evaluate(
     () =>
-      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth,
   );
   expect(overflow, "no horizontal overflow").toBeLessThanOrEqual(1);
 }
@@ -325,8 +326,8 @@ test.describe("documents workspace", () => {
     const approved = page.getByTestId("document-row-101");
     await expect(approved).toBeVisible();
     await expect(approved).toContainText("Synthetic family letter");
-    await expect(approved).toContainText("approved");
-    await expect(approved).toContainText("ready");
+    await expect(approved).toContainText("Approved");
+    await expect(approved).toContainText("Ready");
     await expect(approved).toContainText("family");
     await expect(
       approved.getByRole("link", { name: "Preview" }),
@@ -336,8 +337,8 @@ test.describe("documents workspace", () => {
     ).toBeVisible();
 
     const pending = page.getByTestId("document-row-102");
-    await expect(pending).toContainText("pending_review");
-    await expect(pending).toContainText("queued");
+    await expect(pending).toContainText("Pending review");
+    await expect(pending).toContainText("Queued");
     await expect(page.locator(".status-chip").first()).toBeVisible();
   });
 
@@ -403,9 +404,9 @@ test.describe("branch review console", () => {
     await expect(page.getByTestId("branch-review-branch-filter")).toContainText(
       "First Branch",
     );
-    await expect(
-      page.getByTestId("branch-review-status-filter"),
-    ).toHaveValue("pending_review");
+    await expect(page.getByTestId("branch-review-status-filter")).toHaveValue(
+      "pending_review",
+    );
     await page.getByTestId("branch-review-row-701").click();
     await expect(page.getByTestId("branch-review-detail-701")).toBeVisible();
     await expect(page.getByTestId("branch-review-current")).toContainText(

@@ -81,14 +81,15 @@ restrictions, branch scope, privacy rules, or pagination behavior.
 
 ## Deterministic acceptance checks
 
-These checks are defined before execution and must be run against the isolated
-production build:
+These checks are defined before execution. SOP's command policy permits only
+read-only `git` and `go`, so Node, build, and browser execution are operator-run
+against the isolated production build; SOP executes the whitespace check.
 
-1. `./scripts/web-control.sh typecheck` (from the repository root)
-2. `./scripts/web-control.sh build` (from the repository root)
-3. `cd web && npx playwright test e2e/workspace-visual.spec.ts`
-4. `cd web && npx playwright test e2e/experience.spec.ts e2e/family-profile-visual.spec.ts e2e/my-profile-visual.spec.ts`
-5. `git diff --check`
+1. scripts/web-control.sh typecheck (repository root)
+2. scripts/web-control.sh build (repository root)
+3. from `web/`: npx playwright test e2e/workspace-visual.spec.ts
+4. from `web/`: npx playwright test e2e/experience.spec.ts e2e/family-profile-visual.spec.ts e2e/my-profile-visual.spec.ts
+5. git diff --check (repository root)
 
 ## Acceptance Criteria
 
