@@ -37,6 +37,7 @@ import type {
   ProfileFieldDefinition,
   ProfileSection,
 } from "@/lib/profile-fields";
+import { initialLetter } from "@/lib/person-display";
 
 type LoadState =
   | { kind: "loading" }
@@ -89,9 +90,15 @@ export function MyProfile({
           title="My profile"
           subtitle="Loading your private profile…"
         />
-        <p className="hint" data-testid="profile-loading" role="status">
-          Loading your profile…
-        </p>
+        <section
+          className="state-panel state-panel-loading"
+          data-testid="profile-loading"
+          role="status"
+          aria-busy="true"
+        >
+          <h2>Loading your private profile…</h2>
+          <p>Approved profile information is on its way.</p>
+        </section>
       </>
     );
   }
@@ -106,18 +113,24 @@ export function MyProfile({
           title="My profile"
           subtitle="Sign in to contribute your story, photographs, and family memories."
         />
-        <section className="card profile-empty" data-testid="profile-signin">
+        <section
+          className="state-panel state-panel-empty profile-empty"
+          data-testid="profile-signin"
+        >
+          <h2>Sign in to see your profile</h2>
           <p>
             Sign in with your family account to view and edit your private
             profile.
           </p>
-          <a
-            className="button-link"
-            href="/signin"
-            data-testid="profile-signin-button"
-          >
-            Sign in
-          </a>
+          <div className="state-panel-actions">
+            <a
+              className="button-link"
+              href="/signin"
+              data-testid="profile-signin-button"
+            >
+              Sign in
+            </a>
+          </div>
         </section>
       </>
     );
@@ -131,9 +144,15 @@ export function MyProfile({
           title="My profile"
           subtitle="Loading your private profile…"
         />
-        <p className="hint" data-testid="profile-loading" role="status">
-          Loading your profile…
-        </p>
+        <section
+          className="state-panel state-panel-loading"
+          data-testid="profile-loading"
+          role="status"
+          aria-busy="true"
+        >
+          <h2>Loading your private profile…</h2>
+          <p>Approved profile information is on its way.</p>
+        </section>
       </>
     );
   }
@@ -143,15 +162,21 @@ export function MyProfile({
       <>
         <PageTitle title="My profile" />
         <PageHeader title="My profile" subtitle="Your session has expired." />
-        <section className="card profile-empty" data-testid="profile-expired">
-          <p>Your session expired. Sign in again to continue.</p>
-          <a
-            className="button-link"
-            href="/signin"
-            data-testid="profile-signin-button"
-          >
-            Sign in
-          </a>
+        <section
+          className="state-panel state-panel-expired"
+          data-testid="profile-expired"
+        >
+          <h2>Your session expired</h2>
+          <p>Sign in again to continue.</p>
+          <div className="state-panel-actions">
+            <a
+              className="button-link"
+              href="/signin"
+              data-testid="profile-signin-button"
+            >
+              Sign in
+            </a>
+          </div>
         </section>
       </>
     );
@@ -175,14 +200,23 @@ export function MyProfile({
           title="My profile"
           subtitle="Your profile could not be loaded."
         />
-        <FormStatus status={{ kind: "error", text: state.message }} />
-        <button
-          type="button"
-          onClick={() => void load()}
-          data-testid="profile-retry"
+        <section
+          className="state-panel state-panel-unavailable"
+          data-testid="profile-error"
+          role="alert"
         >
-          Try again
-        </button>
+          <h2>Your profile is unavailable</h2>
+          <p>{state.message}</p>
+          <div className="state-panel-actions">
+            <button
+              type="button"
+              onClick={() => void load()}
+              data-testid="profile-retry"
+            >
+              Try again
+            </button>
+          </div>
+        </section>
       </>
     );
   }
@@ -195,7 +229,10 @@ export function MyProfile({
           title="My profile"
           subtitle="Your account is signed in but not yet connected to a genealogy person."
         />
-        <section className="card profile-empty" data-testid="profile-unlinked">
+        <section
+          className="state-panel state-panel-empty profile-empty"
+          data-testid="profile-unlinked"
+        >
           <h2>Your profile is waiting for a verified family link</h2>
           <p>
             An administrator reviews and connects accounts to the correct
@@ -364,8 +401,9 @@ function ProfileHero({
           <div
             className="profile-photo profile-photo-placeholder"
             aria-hidden="true"
+            data-testid="profile-photo-initials"
           >
-            <span>☺</span>
+            <span>{initialLetter(name)}</span>
           </div>
         )}
         {photo ? <StatusChip status={photo.status} /> : null}
@@ -726,7 +764,10 @@ function ProfileFieldCard({
               <p className="hint">Not added yet.</p>
             )}
             {approved ? (
-              <span className="hint" data-testid={`profile-visibility-${field.key}`}>
+              <span
+                className="hint"
+                data-testid={`profile-visibility-${field.key}`}
+              >
                 Approved ·{" "}
                 {approved.restricted_from_family
                   ? "private (you restricted it from family pages)"
@@ -748,7 +789,10 @@ function ProfileFieldCard({
               </button>
             ) : null}
             {approved?.restricted_from_family ? (
-              <p className="hint" data-testid={`profile-restricted-${field.key}`}>
+              <p
+                className="hint"
+                data-testid={`profile-restricted-${field.key}`}
+              >
                 Hidden from family pages. To share it again, submit a new
                 family-visible revision for independent review.
               </p>

@@ -3206,3 +3206,159 @@ footer.page-footer {
 .state-panel .hint {
     margin: 0;
 }
+
+/* UI-401 — My Profile owner surface. Reuses the stage-three neutral surfaces,
+   the restrained jade accent, and the shared state-panel pattern. These rules
+   override only profile-scoped selectors; no global rule is changed. */
+.profile-hero {
+    background: var(--surface);
+    border-color: var(--line);
+}
+.profile-photo-panel {
+    align-content: start;
+}
+.profile-photo {
+    border: 3px solid var(--accent-soft);
+    box-shadow: var(--shadow-sm);
+}
+.profile-photo-placeholder {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 3px solid var(--accent-soft);
+    font: 700 44px var(--font-sans);
+    user-select: none;
+}
+.profile-hero-copy .eyebrow {
+    color: var(--accent);
+}
+.profile-status-summary .badge {
+    background: var(--card);
+}
+.profile-section,
+.profile-media-card,
+.profile-history {
+    min-width: 0;
+}
+.profile-field-card {
+    background: var(--surface);
+    border-color: var(--line);
+}
+.profile-field-heading h3 {
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.profile-value p {
+    color: var(--fg);
+    line-height: 1.6;
+    max-width: 70ch;
+}
+.profile-value .hint,
+.profile-field-card .hint {
+    overflow-wrap: anywhere;
+}
+.profile-open-revision,
+.profile-feedback,
+.profile-media-pending {
+    overflow-wrap: anywhere;
+}
+.profile-actions button,
+.profile-actions .button-secondary {
+    min-height: 44px;
+    padding: 10px 14px;
+}
+.profile-media-upload input[type="file"] {
+    min-width: 0;
+    max-width: 100%;
+}
+.profile-history-list li {
+    background: var(--surface);
+    overflow-wrap: anywhere;
+}
+.profile-history-heading strong {
+    overflow-wrap: anywhere;
+}
+.status-chip {
+    border-color: var(--line);
+}
+.status-draft {
+    background: var(--surface-strong);
+    color: var(--fg);
+}
+.status-pending_review {
+    background: var(--warn-soft);
+    color: var(--warn);
+}
+.status-approved {
+    background: var(--ok-soft);
+    color: var(--ok);
+}
+.status-rejected {
+    background: var(--err-soft);
+    color: var(--err);
+}
+.status-needs_changes {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border-color: var(--warn-line);
+}
+.profile-photo-panel .profile-photo {
+    width: 132px;
+    height: 132px;
+}
+.profile-value button,
+.profile-media-current button,
+.profile-media-pending button {
+    min-height: 44px;
+}
+.profile-progress progress {
+    height: 8px;
+    border: 0;
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    background: var(--surface-strong);
+}
+.profile-progress progress::-webkit-progress-bar {
+    background: var(--surface-strong);
+    border-radius: var(--radius-pill);
+}
+.profile-progress progress::-webkit-progress-value {
+    background: var(--accent);
+    border-radius: var(--radius-pill);
+}
+.profile-progress progress::-moz-progress-bar {
+    background: var(--accent);
+    border-radius: var(--radius-pill);
+}
+.state-panel-actions .button,
+.state-panel-actions .button-link,
+.state-panel-actions .button-secondary {
+    margin-top: 0;
+    min-height: 44px;
+}
+@media (max-width: 560px) {
+    .profile-hero {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .profile-photo {
+        width: 112px;
+        height: 112px;
+    }
+    .profile-photo-panel .profile-photo {
+        width: 112px;
+        height: 112px;
+    }
+    .profile-photo-placeholder {
+        font-size: 36px;
+    }
+    .profile-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .profile-actions button,
+    .profile-actions .button-secondary {
+        width: 100%;
+    }
+    .profile-field-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
