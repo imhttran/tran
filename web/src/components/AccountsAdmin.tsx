@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FormStatus } from "@/components/FormStatus";
 import type { FormStatusState } from "@/components/FormStatus";
@@ -77,6 +77,21 @@ function confirmText(pending: Pending): string {
   }
 }
 
+function confirmLabel(pending: Pending): string {
+  switch (pending.kind) {
+    case "reset":
+      return "Confirm reset";
+    case "deactivate":
+      return "Confirm deactivate";
+    case "role":
+      return pending.revoke ? "Remove role" : "Grant role";
+    case "link":
+      return "Confirm link";
+    case "unlink":
+      return "Remove link";
+  }
+}
+
 // Runs a confirmed action and returns the success message.
 async function run(action: Pending): Promise<string> {
   const who = label(action.member);
@@ -99,6 +114,21 @@ async function run(action: Pending): Promise<string> {
       await revokeMemberLink(action.linkId);
       return `The link for ${who} was removed.`;
   }
+}
+
+// Focus returns to the control that opened the confirmation. The opener records
+// itself here so a cancel or confirm can restore keyboard position.
+const dialogOpener = { current: null as HTMLElement | null };
+
+function rememberOpener() {
+  if (typeof document === "undefined") return;
+  dialogOpener.current = document.activeElement as HTMLElement | null;
+}
+
+function restoreOpener() {
+  const opener = dialogOpener.current;
+  dialogOpener.current = null;
+  if (opener && typeof opener.focus === "function") opener.focus();
 }
 
 export function AccountsAdmin() {
@@ -143,19 +173,32 @@ export function AccountsAdmin() {
     } finally {
       setBusy(false);
       setPending(null);
+      restoreOpener();
     }
   }
 
+  function cancelConfirm() {
+    setPending(null);
+    restoreOpener();
+  }
+
   function ask(action: Pending) {
+    rememberOpener();
     setStatus(null);
     setPending(action);
   }
 
   return (
-    <section className="status-panel" data-testid="accounts">
-      <h2>Accounts</h2>
+    <section className="status-panel fm-accounts" data-testid="accounts">
+      <div className="fm-section-head">
+        <h2>Accounts</h2>
+        <p className="hint">
+          Every member, role, and link is served by the Rust API. Actions below
+          ask for confirmation before they change anything.
+        </p>
+      </div>
       <form
-        className="family-toolbar"
+        className="family-toolbar fm-filter-toolbar"
         role="search"
         data-testid="fm-filters"
         onSubmit={(event) => {
@@ -163,8 +206,8 @@ export function AccountsAdmin() {
           void load(filter, null);
         }}
       >
-        <label>
-          Search
+        <label className="fm-filter-field fm-filter-search">
+          <span>Search</span>
           <input
             type="search"
             placeholder="Name, email, or subject"
@@ -173,8 +216,8 @@ export function AccountsAdmin() {
             data-testid="fm-search"
           />
         </label>
-        <label>
-          Status
+        <label className="fm-filter-field">
+          <span>Status</span>
           <select
             value={filter.status}
             onChange={(event) => setFilter({ ...filter, status: event.target.value as MemberFilter["status"] })}
@@ -185,8 +228,8 @@ export function AccountsAdmin() {
             <option value="deactivated">Deactivated</option>
           </select>
         </label>
-        <label>
-          Role
+        <label className="fm-filter-field">
+          <span>Role</span>
           <select
             value={filter.role}
             onChange={(event) => setFilter({ ...filter, role: event.target.value as MemberFilter["role"] })}
@@ -198,46 +241,126 @@ export function AccountsAdmin() {
             ))}
           </select>
         </label>
-        <button type="submit" data-testid="fm-apply-filters">Apply</button>
+        <button type="submit" className="fm-filter-apply" data-testid="fm-apply-filters">Apply</button>
       </form>
 
       <FormStatus status={status} />
       {loadError ? (
-        <p className="insufficient" role="alert" data-testid="fm-load-error">{loadError}</p>
+        <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="fm-load-error">{loadError}</p>
       ) : null}
       {linkage === "unavailable" ? (
-        <p className="hint" data-testid="fm-linkage-unavailable">
+        <p className="state-panel state-panel-expired fm-state" data-testid="fm-linkage-unavailable">
           The genealogy store is unavailable, so linked-person status is not shown.
         </p>
       ) : null}
 
-      <ul className="sources" data-testid="fm-members">
+      <ul className="sources fm-members" data-testid="fm-members">
         {members.map((member) => (
           <MemberRow key={member.user_id} member={member} linkage={linkage} onAction={ask} />
         ))}
       </ul>
       {!loading && members.length === 0 && !loadError ? (
-        <p className="hint" data-testid="fm-empty">No accounts match these filters.</p>
+        <p className="state-panel state-panel-empty fm-state" data-testid="fm-empty">No accounts match these filters.</p>
       ) : null}
-      {loading ? <p className="hint">Loading accounts…</p> : null}
+      {loading ? <p className="state-panel state-panel-loading fm-state">Loading accounts…</p> : null}
       {nextAfter && !loading ? (
-        <button type="button" onClick={() => void load(filter, nextAfter)} data-testid="fm-more">
+        <button type="button" className="fm-more" onClick={() => void load(filter, nextAfter)} data-testid="fm-more">
           Load more
         </button>
       ) : null}
 
       {pending ? (
-        <div className="confirm" role="dialog" aria-modal="true" data-testid="fm-confirm">
-          <p>{confirmText(pending)}</p>
-          <button type="button" disabled={busy} onClick={() => void confirm()} data-testid="fm-confirm-yes">
-            {busy ? "Working…" : "Confirm"}
-          </button>
-          <button type="button" disabled={busy} onClick={() => setPending(null)} data-testid="fm-confirm-cancel">
-            Cancel
-          </button>
-        </div>
+        <ConfirmDialog
+          text={confirmText(pending)}
+          confirmLabel={confirmLabel(pending)}
+          busy={busy}
+          onConfirm={() => void confirm()}
+          onCancel={cancelConfirm}
+        />
       ) : null}
     </section>
+  );
+}
+
+function ConfirmDialog({
+  text,
+  confirmLabel,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  text: string;
+  confirmLabel: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Cancel takes focus on open so Escape or Enter never runs the change by
+  // accident. The confirm action stays explicit and clearly labelled.
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  return (
+    <div
+      ref={dialogRef}
+      className="confirm fm-confirm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="fm-confirm-title"
+      onKeyDown={handleKeyDown}
+      data-testid="fm-confirm"
+    >
+      <h3 id="fm-confirm-title">Confirm this change</h3>
+      <p>{text}</p>
+      <div className="fm-confirm-actions">
+        <button
+          ref={cancelRef}
+          type="button"
+          className="button-secondary"
+          disabled={busy}
+          onClick={onCancel}
+          data-testid="fm-confirm-cancel"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onConfirm}
+          data-testid="fm-confirm-yes"
+        >
+          {busy ? "Working…" : confirmLabel}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -255,95 +378,117 @@ function MemberRow({
   const active = member.status === "active";
   const linked = member.linked_person;
   return (
-    <li data-testid="fm-member" data-subject={member.subject}>
-      <strong>{label(member)}</strong>{" "}
-      <span className="badge" data-testid="fm-member-status">{member.status}</span>{" "}
-      {member.roles.map((held) => (
-        <span key={held} className="badge" data-testid="fm-member-role">{held}</span>
-      ))}
-      <p className="meta">
-        {member.email ?? "No email on file"} · {member.subject} @ {member.issuer}
+    <li className="fm-member" data-testid="fm-member" data-subject={member.subject}>
+      <div className="fm-member-head">
+        <strong className="fm-member-name">{label(member)}</strong>
+        <div className="fm-member-chips">
+          <span
+            className={`status-chip status-member-${member.status}`}
+            data-testid="fm-member-status"
+          >
+            {member.status}
+          </span>
+          {member.roles.map((held) => (
+            <span
+              key={held}
+              className="status-chip status-role"
+              data-testid="fm-member-role"
+            >
+              {held}
+            </span>
+          ))}
+        </div>
+      </div>
+      <p className="meta fm-member-meta">
+        <span>{member.email ?? "No email on file"}</span>
+        <span className="fm-member-scope">
+          {member.subject} @ {member.issuer}
+        </span>
       </p>
-      <p className="meta" data-testid="fm-member-link">
+      <p className="meta fm-member-link" data-testid="fm-member-link">
         {linked
           ? `Linked to ${linked.person_key}${linked.username ? ` (${linked.username})` : ""}`
           : linkage === "available"
             ? "Not linked to a genealogy person"
             : "Link status unavailable"}
       </p>
-      <details data-testid="fm-actions">
+      <details className="fm-actions" data-testid="fm-actions">
         <summary>Actions</summary>
-        <button
-          type="button"
-          disabled={!active || !member.email}
-          onClick={() => onAction({ kind: "reset", member })}
-          data-testid="fm-reset"
-        >
-          Send password reset email
-        </button>
-        <div>
-          <select
-            aria-label="Role"
-            value={role}
-            onChange={(event) => setRole(event.target.value as Role)}
-            data-testid="fm-role-select"
-          >
-            {ROLES.map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
+        <div className="fm-actions-body">
           <button
             type="button"
-            disabled={!active || member.roles.includes(role)}
-            onClick={() => onAction({ kind: "role", member, role, revoke: false })}
-            data-testid="fm-grant-role"
+            disabled={!active || !member.email}
+            onClick={() => onAction({ kind: "reset", member })}
+            data-testid="fm-reset"
           >
-            Grant role
+            Send password reset email
           </button>
+          <div className="fm-role-row">
+            <select
+              aria-label="Role"
+              value={role}
+              onChange={(event) => setRole(event.target.value as Role)}
+              data-testid="fm-role-select"
+            >
+              {ROLES.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!active || member.roles.includes(role)}
+              onClick={() => onAction({ kind: "role", member, role, revoke: false })}
+              data-testid="fm-grant-role"
+            >
+              Grant role
+            </button>
+            <button
+              type="button"
+              disabled={!active || !member.roles.includes(role)}
+              onClick={() => onAction({ kind: "role", member, role, revoke: true })}
+              data-testid="fm-revoke-role"
+            >
+              Remove role
+            </button>
+          </div>
+          {linked ? (
+            <button
+              type="button"
+              onClick={() => onAction({ kind: "unlink", member, linkId: linked.link_id })}
+              data-testid="fm-unlink"
+            >
+              Remove person link
+            </button>
+          ) : linkage === "available" && active ? (
+            <form
+              className="fm-link-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (personKey.trim()) onAction({ kind: "link", member, personKey: personKey.trim() });
+              }}
+            >
+              <input
+                aria-label="Genealogy person key"
+                placeholder="Person key"
+                value={personKey}
+                onChange={(event) => setPersonKey(event.target.value)}
+                data-testid="fm-link-person"
+              />
+              <button type="submit" disabled={!personKey.trim()} data-testid="fm-link">
+                Link after review
+              </button>
+            </form>
+          ) : null}
           <button
             type="button"
-            disabled={!active || !member.roles.includes(role)}
-            onClick={() => onAction({ kind: "role", member, role, revoke: true })}
-            data-testid="fm-revoke-role"
+            className="button-danger fm-deactivate"
+            disabled={!active}
+            onClick={() => onAction({ kind: "deactivate", member })}
+            data-testid="fm-deactivate"
           >
-            Remove role
+            Deactivate
           </button>
         </div>
-        {linked ? (
-          <button
-            type="button"
-            onClick={() => onAction({ kind: "unlink", member, linkId: linked.link_id })}
-            data-testid="fm-unlink"
-          >
-            Remove person link
-          </button>
-        ) : linkage === "available" && active ? (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (personKey.trim()) onAction({ kind: "link", member, personKey: personKey.trim() });
-            }}
-          >
-            <input
-              aria-label="Genealogy person key"
-              placeholder="Person key"
-              value={personKey}
-              onChange={(event) => setPersonKey(event.target.value)}
-              data-testid="fm-link-person"
-            />
-            <button type="submit" disabled={!personKey.trim()} data-testid="fm-link">
-              Link after review
-            </button>
-          </form>
-        ) : null}
-        <button
-          type="button"
-          disabled={!active}
-          onClick={() => onAction({ kind: "deactivate", member })}
-          data-testid="fm-deactivate"
-        >
-          Deactivate
-        </button>
       </details>
     </li>
   );
