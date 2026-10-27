@@ -312,3 +312,28 @@ test.describe.serial("genealogy API integration", () => {
     expect(anonymous.status()).toBe(401);
   });
 });
+
+// Adapted from PR #121's person-search authorization test. Only this check is
+// copied; the endpoint under test is the nomination selector's search.
+test("nomination person search is authorized and matches the synthetic person", async ({
+  request,
+}) => {
+  test.skip(!ADMIN_TOKEN, "admin token not provided by the harness");
+
+  const anonymous = await request.get(
+    `${API_URL}/api/genealogy/nomination-persons?q=synthetic%20e2e`,
+  );
+  expect([401, 403]).toContain(anonymous.status());
+
+  const search = await request.get(
+    `${API_URL}/api/genealogy/nomination-persons?q=synthetic%20e2e`,
+    { headers: auth(ADMIN_TOKEN!) },
+  );
+  expect(search.status()).toBe(200);
+  const body = (await search.json()) as {
+    people: Array<{ record_id: string }>;
+  };
+  expect(
+    body.people.some((person) => person.record_id === "synthetic-e2e-person"),
+  ).toBeTruthy();
+});

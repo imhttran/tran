@@ -125,12 +125,7 @@ function ConfirmDialog({
   );
 }
 
-export function HeadOfFamilyView({
-  role,
-  result,
-  onApprove,
-  onRevoke,
-}: Props) {
+export function HeadOfFamilyView({ role, result, onApprove, onRevoke }: Props) {
   const [pendingApprove, setPendingApprove] = useState<string | null>(null);
   const [pendingRevoke, setPendingRevoke] = useState<{
     appointmentId: string;
@@ -331,7 +326,19 @@ export function HeadOfFamilyView({
               </div>
 
               {canNominate(role) ? (
-                <a href="#hof-record-select">Find a person to nominate</a>
+                <a
+                  href="#hof-record-select"
+                  onClick={(event) => {
+                    const input = document.getElementById("hof-record-select");
+                    if (input instanceof HTMLInputElement) {
+                      event.preventDefault();
+                      input.focus();
+                      input.scrollIntoView({ block: "center" });
+                    }
+                  }}
+                >
+                  Find a person to nominate
+                </a>
               ) : null}
 
               {canApproveOrRevoke(role) ? (

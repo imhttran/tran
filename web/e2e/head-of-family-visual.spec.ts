@@ -6,7 +6,6 @@ import { expect, test } from "@playwright/test";
 // 390px overflow, and the viewer/editor/administrator role gates.
 
 const HEAD_URL = "/api/genealogy/head-of-family";
-const RECORDS_URL = "/api/genealogy/records";
 const NOMINATIONS_URL = "/api/genealogy/nominations";
 
 const availableBody = {
@@ -67,15 +66,8 @@ async function mockHead(
 
 async function mockGenealogy(
   page: import("@playwright/test").Page,
-  options: { records?: unknown[]; nominations?: unknown[] } = {},
+  options: { nominations?: unknown[] } = {},
 ) {
-  await page.route(RECORDS_URL, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ records: options.records ?? [] }),
-    }),
-  );
   await page.route(NOMINATIONS_URL, (route) => {
     if (route.request().method() === "POST") {
       return route.fulfill({
@@ -243,7 +235,8 @@ test.describe("Head of Family surface", () => {
     await page.goto("/head-of-family");
 
     await expect(page.getByTestId("hof-view")).toBeVisible();
-    await expect(page.getByTestId("nominate-button")).toHaveCount(0);
+    await expect(page.getByRole("combobox")).toHaveCount(0);
+    await expect(page.getByTestId("hof-nominate-submit")).toHaveCount(0);
     await expect(page.getByTestId("approve-button")).toHaveCount(0);
     await expect(page.getByTestId("revoke-button")).toHaveCount(0);
     await expect(page.getByTestId("hof-actions")).toHaveCount(0);
@@ -254,9 +247,7 @@ test.describe("Head of Family surface", () => {
   }) => {
     await mockSession(page, "editor");
     await mockHead(page, 200, availableBody);
-    await mockGenealogy(page, {
-      records: [{ record_id: "rec-hof-0001", person_label: "Trần Văn An" }],
-    });
+    await mockGenealogy(page);
     await page.goto("/head-of-family");
 
     await expect(page.getByTestId("hof-actions")).toBeVisible();
@@ -264,7 +255,18 @@ test.describe("Head of Family surface", () => {
     await expect(page.getByTestId("approve-button")).toHaveCount(0);
 
     await page.route("**/api/genealogy/nomination-persons?*", (route) =>
-      route.fulfill({ json: { people: [{ record_id: "candidate-b", person_label: "Trần Thị Bình", branches: [] }] } }));
+      route.fulfill({
+        json: {
+          people: [
+            {
+              record_id: "candidate-b",
+              person_label: "Trần Thị Bình",
+              branches: [],
+            },
+          ],
+        },
+      }),
+    );
     await page.getByRole("combobox").fill("binh");
     await page.getByRole("option").click();
     await page.getByTestId("hof-nominate-submit").click();
@@ -282,9 +284,13 @@ test.describe("Head of Family surface", () => {
     await mockSession(page, "admin");
     await mockHead(page, 200, availableBody);
     await mockGenealogy(page, {
-      records: [{ record_id: "rec-hof-0001", person_label: "Trần Văn An" }],
       nominations: [
-        { nomination_id: 3, record_id: "rec-hof-0002", status: "pending" },
+        {
+          nomination_id: 3,
+          record_id: "rec-hof-0002",
+          candidate_label: "Trần Thị Bình",
+          status: "pending",
+        },
       ],
     });
     await page.goto("/head-of-family");
@@ -316,14 +322,14 @@ test.describe("Head of Family surface", () => {
     await mockSession(page, "admin");
     await mockHead(page, 200, availableBody);
     await mockGenealogy(page, {
-      records: [
-        {
-          record_id: "rec-hof-0001",
-          person_label: "Trần Văn An với tên rất dài để kiểm tra diacritics",
-        },
-      ],
       nominations: [
-        { nomination_id: 3, record_id: "rec-hof-0002", status: "pending" },
+        {
+          nomination_id: 3,
+          record_id: "rec-hof-0002",
+          candidate_label:
+            "Trần Thị Bình với tên rất dài để kiểm tra diacritics",
+          status: "pending",
+        },
       ],
     });
 
@@ -372,17 +378,30 @@ test.describe("Head of Family surface", () => {
   });
 });
 
-test("nomination search selects a stable identity outside the preloaded records", async ({ page }) => {
+test("nomination search selects a stable identity outside the preloaded records", async ({
+  page,
+}) => {
   await mockSession(page, "admin");
   await mockHead(page, 200, emptyBody);
   await mockGenealogy(page);
   const people = [
-    { record_id: "outside-100-a", person_label: "Trần Đức Hân", birth: "1942", branches: ["Branch 3"] },
-    { record_id: "outside-100-b", person_label: "Trần Đức Hân", birth: "1980", branches: ["Branch 2"] },
+    {
+      record_id: "outside-100-a",
+      person_label: "Trần Đức Hân",
+      birth: "1942",
+      branches: ["Branch 3"],
+    },
+    {
+      record_id: "outside-100-b",
+      person_label: "Trần Đức Hân",
+      birth: "1980",
+      branches: ["Branch 2"],
+    },
   ];
   await page.route("**/api/genealogy/nomination-persons?*", async (route) => {
     if (new URL(route.request().url()).searchParams.get("q") !== "duc") {
-      await route.fulfill({ json: { people: [] } }); return;
+      await route.fulfill({ json: { people: [] } });
+      return;
     }
     await route.fulfill({ json: { people } });
   });
@@ -391,7 +410,10 @@ test("nomination search selects a stable identity outside the preloaded records"
     if (route.request().method() === "POST") {
       submitted = route.request().postDataJSON();
       // Keep the page mounted so the payload can be inspected without a reload.
-      await route.fulfill({ status: 409, json: { message: "Synthetic test response" } });
+      await route.fulfill({
+        status: 409,
+        json: { message: "Synthetic test response" },
+      });
     } else await route.fulfill({ json: { nominations: [] } });
   });
   await page.goto("/head-of-family");
@@ -400,7 +422,9 @@ test("nomination search selects a stable identity outside the preloaded records"
   await expect(nominate).toBeDisabled();
   await search.fill("duc");
   await expect(page.getByRole("option")).toHaveCount(2);
-  await expect(page.getByRole("option").first()).toContainText("Branch 3 — Born 1942");
+  await expect(page.getByRole("option").first()).toContainText(
+    "Branch 3 — Born 1942",
+  );
   await expect(nominate).toBeDisabled();
   await search.press("ArrowDown");
   await search.press("ArrowDown");
@@ -408,27 +432,44 @@ test("nomination search selects a stable identity outside the preloaded records"
   await expect(nominate).toBeEnabled();
   await nominate.click();
   await page.getByTestId("hof-confirm-yes").click();
-  await expect(page.getByTestId("hof-actions-error")).toContainText("Synthetic test response");
-  expect(submitted).toEqual({ record_id: "outside-100-b", candidate_label: "Trần Đức Hân" });
+  await expect(page.getByTestId("hof-actions-error")).toContainText(
+    "Synthetic test response",
+  );
+  expect(submitted).toEqual({
+    record_id: "outside-100-b",
+    candidate_label: "Trần Đức Hân",
+  });
   await search.fill("edited name");
   await expect(nominate).toBeDisabled();
   await search.press("Enter");
   await expect(page.getByTestId("hof-confirm")).toHaveCount(0);
 });
 
-test("nomination search handles empty results, failures, and stale requests", async ({ page }) => {
+test("nomination search handles empty results, failures, and stale requests", async ({
+  page,
+}) => {
   await mockSession(page, "editor");
   await mockHead(page, 200, emptyBody);
   await mockGenealogy(page);
   let releaseOld: () => void = () => {};
-  const oldPending = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const oldPending = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
   let oldStarted = false;
   await page.route("**/api/genealogy/nomination-persons?*", async (route) => {
     const term = new URL(route.request().url()).searchParams.get("q");
     if (term === "old") {
       oldStarted = true;
       await oldPending;
-      await route.fulfill({ json: { people: [{ record_id: "old", person_label: "Old result", branches: [] }] } }).catch(() => {});
+      await route
+        .fulfill({
+          json: {
+            people: [
+              { record_id: "old", person_label: "Old result", branches: [] },
+            ],
+          },
+        })
+        .catch(() => {});
     } else if (term === "error") await route.fulfill({ status: 503, json: {} });
     else await route.fulfill({ json: { people: [] } });
   });
@@ -438,7 +479,9 @@ test("nomination search handles empty results, failures, and stale requests", as
   await expect(page.locator("#hof-person-status")).toHaveText("Searching…");
   await expect.poll(() => oldStarted).toBe(true);
   await search.fill("new");
-  await expect(page.locator("#hof-person-status")).toHaveText("No people found.");
+  await expect(page.locator("#hof-person-status")).toHaveText(
+    "No people found.",
+  );
   releaseOld();
   await expect(page.getByRole("option")).toHaveCount(0);
   await search.fill("error");

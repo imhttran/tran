@@ -2420,6 +2420,36 @@ struct NarrativePersonQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PersonSearchQuery {
+    Empty,
+    Search { term: String, limit: i64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonSearchQueryError {
+    TooLong,
+    LimitOutOfRange,
+}
+
+/// Applies the shared q/limit rules without changing either endpoint's codes.
+fn validate_person_search(
+    query: &NarrativePersonQuery,
+) -> Result<PersonSearchQuery, PersonSearchQueryError> {
+    let term = query.q.clone().unwrap_or_default().trim().to_string();
+    if term.chars().count() > 200 {
+        return Err(PersonSearchQueryError::TooLong);
+    }
+    let limit = query.limit.unwrap_or(10);
+    if !(1..=20).contains(&limit) {
+        return Err(PersonSearchQueryError::LimitOutOfRange);
+    }
+    if term.is_empty() {
+        return Ok(PersonSearchQuery::Empty);
+    }
+    Ok(PersonSearchQuery::Search { term, limit })
+}
+
 /// Searches people for the narrative review person selector.
 #[allow(clippy::result_large_err)]
 async fn narrative_review_people(
@@ -2430,25 +2460,26 @@ async fn narrative_review_people(
     if let Err(response) = authorize(&state, &headers, Operation::ProfileReview) {
         return response;
     }
-    let term = query.q.unwrap_or_default().trim().to_string();
-    if term.chars().count() > 200 {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_narrative_person_search",
-            "q must be at most 200 characters",
-        );
-    }
-    let limit = query.limit.unwrap_or(10);
-    if !(1..=20).contains(&limit) {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_narrative_person_limit",
-            "limit must be between 1 and 20",
-        );
-    }
-    if term.is_empty() {
-        return Json(serde_json::json!({ "ok": true, "people": [] })).into_response();
-    }
+    let (term, limit) = match validate_person_search(&query) {
+        Ok(PersonSearchQuery::Empty) => {
+            return Json(serde_json::json!({ "ok": true, "people": [] })).into_response()
+        }
+        Ok(PersonSearchQuery::Search { term, limit }) => (term, limit),
+        Err(PersonSearchQueryError::TooLong) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_person_search",
+                "q must be at most 200 characters",
+            )
+        }
+        Err(PersonSearchQueryError::LimitOutOfRange) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_narrative_person_limit",
+                "limit must be between 1 and 20",
+            )
+        }
+    };
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
@@ -2484,54 +2515,44 @@ async fn nomination_people(
     if let Err(response) = authorize(&state, &headers, Operation::GenealogyNominate) {
         return response;
     }
-    let term = query.q.unwrap_or_default().trim().to_string();
-    if term.chars().count() > 200 {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_nomination_person_search",
-            "q must be at most 200 characters",
-        );
-    }
-    let limit = query.limit.unwrap_or(10);
-    if !(1..=20).contains(&limit) {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_nomination_person_limit",
-            "limit must be between 1 and 20",
-        );
-    }
-    if term.is_empty() {
-        return Json(serde_json::json!({ "ok": true, "people": [] })).into_response();
-    }
+    let (term, limit) = match validate_person_search(&query) {
+        Ok(PersonSearchQuery::Empty) => {
+            return Json(serde_json::json!({ "ok": true, "people": [] })).into_response()
+        }
+        Ok(PersonSearchQuery::Search { term, limit }) => (term, limit),
+        Err(PersonSearchQueryError::TooLong) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_nomination_person_search",
+                "q must be at most 200 characters",
+            )
+        }
+        Err(PersonSearchQueryError::LimitOutOfRange) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_nomination_person_limit",
+                "limit must be between 1 and 20",
+            )
+        }
+    };
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
-        let people = narrative::search_review_people(&mut genealogy, &term, limit)
+        let people = appointments::search_nomination_people(&mut genealogy, &term, limit)
             .map_err(narrative_review_error)?;
-        let mut results = Vec::new();
-        for person in people {
-            let sql = format!(
-                "SELECT DISTINCT COALESCE(b.branch_label, a.value_text) AS label
-                   FROM assertion a JOIN person p ON p.person_id = a.person_id
-                   LEFT JOIN family_branch b ON b.branch_key = a.value_text
-                  WHERE p.person_key = $1 AND a.assertion_kind = 'branch_claim'
-                    AND a.review_status = 'verified' AND ({}) ORDER BY label",
-                crate::genealogy::current::CURRENT_ASSERTION
-            );
-            let branches: Vec<String> = genealogy
-                .query(&sql, &[&person.person_key])
-                .map_err(|err| narrative_review_error(GenealogyError::Query(err)))?
-                .iter()
-                .filter_map(|row| row.get::<_, Option<String>>(0))
-                .collect();
-            results.push(serde_json::json!({
-                "record_id": person.person_key,
-                "person_label": person.display_name,
-                "birth": person.birth,
-                "branches": branches,
-            }));
-        }
-        Ok::<_, Response>(results)
+        Ok::<_, Response>(
+            people
+                .into_iter()
+                .map(|person| {
+                    serde_json::json!({
+                        "record_id": person.person_key,
+                        "person_label": person.display_name,
+                        "birth": person.birth,
+                        "branches": person.branches,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
     })
     .await;
     match result {
@@ -5908,6 +5929,7 @@ async fn list_nominations(State(state): State<AppState>, headers: HeaderMap) -> 
                     serde_json::json!({
                         "nomination_id": row.nomination_id,
                         "record_id": row.person_key,
+                        "candidate_label": row.candidate_label,
                         "status": row.status,
                         "created_at": row.created_at,
                     })
@@ -8658,6 +8680,53 @@ mod tests {
             "bad_name__X-Injected_ yes"
         );
         assert_eq!(safe_download_name(".."), "download");
+    }
+
+    fn person_query(q: Option<&str>, limit: Option<i64>) -> NarrativePersonQuery {
+        NarrativePersonQuery {
+            q: q.map(str::to_string),
+            limit,
+        }
+    }
+
+    #[test]
+    fn person_search_query_validation_is_shared_and_bounded() {
+        assert_eq!(
+            validate_person_search(&person_query(None, None)),
+            Ok(PersonSearchQuery::Empty)
+        );
+        assert_eq!(
+            validate_person_search(&person_query(Some("   "), Some(5))),
+            Ok(PersonSearchQuery::Empty)
+        );
+        assert_eq!(
+            validate_person_search(&person_query(Some("synthetic"), None)),
+            Ok(PersonSearchQuery::Search {
+                term: "synthetic".to_string(),
+                limit: 10,
+            })
+        );
+
+        let long = "x".repeat(201);
+        assert_eq!(
+            validate_person_search(&person_query(Some(&long), None)),
+            Err(PersonSearchQueryError::TooLong)
+        );
+        for limit in [0, 21] {
+            assert_eq!(
+                validate_person_search(&person_query(Some("x"), Some(limit))),
+                Err(PersonSearchQueryError::LimitOutOfRange)
+            );
+        }
+        for limit in [1, 20] {
+            assert_eq!(
+                validate_person_search(&person_query(Some("x"), Some(limit))),
+                Ok(PersonSearchQuery::Search {
+                    term: "x".to_string(),
+                    limit,
+                })
+            );
+        }
     }
 
     #[test]

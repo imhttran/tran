@@ -7,10 +7,10 @@ import { NominationPersonSelector } from "@/components/NominationPersonSelector"
 import { canApproveOrRevoke, canNominate } from "@/lib/experience-contract";
 import type { Role } from "@/lib/experience-contract";
 
-type RecordView = { record_id: string; person_label: string };
 type NominationView = {
   nomination_id: number;
   record_id: string;
+  candidate_label?: string | null;
   status: string;
 };
 
@@ -61,7 +61,6 @@ async function post(
 // only by reloading the server state; a failed response is displayed instead of
 // pretending the mutation happened.
 export function HeadOfFamilyActions({ role }: { role: Role | null }) {
-  const [records, setRecords] = useState<RecordView[]>([]);
   const [nominations, setNominations] = useState<NominationView[]>([]);
   const [selected, setSelected] = useState("");
   const [label, setLabel] = useState("");
@@ -73,33 +72,17 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!canNominate(role) && !canApproveOrRevoke(role)) {
+    if (!canApproveOrRevoke(role)) {
       return;
     }
     let cancelled = false;
-    const requests: Array<Promise<Response>> = [
-      fetch("/api/genealogy/records", { cache: "no-store" }),
-    ];
-    if (canApproveOrRevoke(role)) {
-      requests.push(fetch("/api/genealogy/nominations", { cache: "no-store" }));
-    }
-    Promise.all(requests)
-      .then(async ([recordResponse, nominationResponse]) => {
-        if (cancelled) return;
-        if (recordResponse.ok) {
-          const body = (await recordResponse.json()) as {
-            records?: RecordView[];
-          };
-          setRecords(Array.isArray(body.records) ? body.records : []);
-        }
-        if (nominationResponse?.ok) {
-          const body = (await nominationResponse.json()) as {
-            nominations?: NominationView[];
-          };
-          setNominations(
-            Array.isArray(body.nominations) ? body.nominations : [],
-          );
-        }
+    fetch("/api/genealogy/nominations", { cache: "no-store" })
+      .then(async (response) => {
+        if (cancelled || !response.ok) return;
+        const body = (await response.json()) as {
+          nominations?: NominationView[];
+        };
+        setNominations(Array.isArray(body.nominations) ? body.nominations : []);
       })
       .catch(() => {
         if (!cancelled) setError("The genealogy service is unavailable.");
@@ -203,12 +186,18 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
             });
           }}
         >
-          <NominationPersonSelector onSelect={(person) => {
-            setSelected(person?.record_id ?? "");
-            setLabel(person?.person_label ?? "");
-            setPending(null);
-          }} />
-          <button type="submit" disabled={!selected || busy} data-testid="hof-nominate-submit">
+          <NominationPersonSelector
+            onSelect={(person) => {
+              setSelected(person?.record_id ?? "");
+              setLabel(person?.person_label ?? "");
+              setPending(null);
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!selected || busy}
+            data-testid="hof-nominate-submit"
+          >
             Nominate
           </button>
         </form>
@@ -224,9 +213,8 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
           ) : (
             <ul className="hof-pending-list">
               {nominations.map((nomination) => {
-                const recordLabel = records.find(
-                  (record) => record.record_id === nomination.record_id,
-                )?.person_label;
+                const label =
+                  nomination.candidate_label?.trim() || nomination.record_id;
                 return (
                   <li
                     key={nomination.nomination_id}
@@ -234,8 +222,8 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
                     data-testid="hof-pending-nomination"
                   >
                     <div className="hof-pending-person">
-                      <strong>{recordLabel ?? nomination.record_id}</strong>
-                      {recordLabel ? (
+                      <strong>{label}</strong>
+                      {label !== nomination.record_id ? (
                         <span className="hint">{nomination.record_id}</span>
                       ) : null}
                     </div>
