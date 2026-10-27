@@ -9,10 +9,14 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rag_foundation::config::Config;
+use rag_foundation::document_lifecycle::{self, DocumentStorage};
 use rag_foundation::genealogy::authority::{self, ApplyInput, ReverseInput, ScopeSpec};
 use rag_foundation::genealogy::migrate::{self, MIGRATIONS_DIR};
 use rag_foundation::genealogy::narrative::{self, PassageDecision, PassageVisibility};
 use rag_foundation::genealogy::parser::{self, AssertionKind, Evidence, ParseOutcome};
+use rag_foundation::genealogy::photograph_import;
+use rag_foundation::genealogy::photograph_review;
+use rag_foundation::genealogy::photograph_store::{self, PhotographStore};
 use rag_foundation::genealogy::query;
 use rag_foundation::genealogy::reimport::{
     self, ImportAssertion, ImportDocument, ImportLink, ImportPerson,
@@ -51,12 +55,13 @@ fn run(args: &[String]) -> Result<(), String> {
         ),
         Some("review") => review_cmd(&args[1..]),
         Some("narrative") => narrative_cmd(&args[1..]),
+        Some("photographs") => photographs_cmd(&args[1..]),
         Some("authority-preview") => authority_preview_cmd(&args[1..]),
         Some("authority-apply") => authority_apply_cmd(&args[1..]),
         Some("authority-reverse") => authority_reverse_cmd(&args[1..]),
         Some("authority-history") => authority_history_cmd(args.get(1).map(String::as_str)),
         _ => Err(
-            "usage: genealogy <migrate|import|unresolved|person|relationship|review|narrative> ..."
+            "usage: genealogy <migrate|import|unresolved|person|relationship|review|narrative|photographs> ..."
                 .into(),
         ),
     }
@@ -97,6 +102,162 @@ fn migrate_cmd() -> Result<(), String> {
         println!("  {version}");
     }
     println!("already applied: {}", report.already_applied.len());
+    Ok(())
+}
+
+fn photographs_cmd(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("import") => {
+            let version_id = args
+                .get(1)
+                .ok_or("usage: photographs import <version-id>")?
+                .parse::<i64>()
+                .map_err(|_| "version-id must be an integer".to_string())?;
+            photographs_import(version_id)
+        }
+        Some("propose") => {
+            let version_id = args
+                .get(1)
+                .ok_or("usage: photographs propose <version-id>")?
+                .parse::<i64>()
+                .map_err(|_| "version-id must be an integer".to_string())?;
+            photographs_propose(version_id)
+        }
+        _ => Err("usage: photographs <import|propose> <version-id>".into()),
+    }
+}
+
+/// Imports the photographs of one stored document version idempotently.
+///
+/// The original bytes come from the private document store, so the command
+/// never needs a second copy of the family PDF. A repeat run reports the
+/// assets and occurrences as unchanged and writes nothing.
+fn photographs_import(version_id: i64) -> Result<(), String> {
+    let cfg = config()?;
+    let mut rag = postgres::Client::connect(&cfg.database_url, postgres::NoTls)
+        .map_err(|err| format!("rag database: {err}"))?;
+    let corpus: String = rag
+        .query_opt(
+            "SELECT corpus FROM document_version WHERE version_id = $1",
+            &[&version_id],
+        )
+        .map_err(|err| format!("read document version: {err}"))?
+        .ok_or_else(|| format!("no document version {version_id}"))?
+        .get(0);
+    let storage = DocumentStorage::new(cfg.document_root.clone());
+    let (_, bytes) = document_lifecycle::read_original(&mut rag, &storage, version_id, &corpus)
+        .map_err(|err| format!("read original: {err}"))?;
+
+    let store = PhotographStore::default();
+    let content_sha256 = photograph_store::content_hash(&bytes);
+    let dsn = resolve_genealogy_dsn(&cfg).map_err(|err| err.to_string())?;
+    let mut genealogy = postgres::Client::connect(&dsn, postgres::NoTls)
+        .map_err(|err| format!("genealogy database: {err}"))?;
+    let summary = photograph_import::import_photographs(
+        &mut genealogy,
+        &store,
+        version_id,
+        &corpus,
+        &content_sha256,
+        &bytes,
+        "cli-operator",
+    )
+    .map_err(|err| err.to_string())?;
+
+    println!("version={} corpus={}", summary.version_id, corpus);
+    println!(
+        "assets_created={} assets_unchanged={}",
+        summary.assets_created, summary.assets_unchanged
+    );
+    println!(
+        "occurrences_created={} occurrences_unchanged={}",
+        summary.occurrences_created, summary.occurrences_unchanged
+    );
+    println!(
+        "photographs_stored={} photographs_skipped={}",
+        summary.photographs_stored, summary.photographs_skipped
+    );
+    println!(
+        "inventory_inserted={} inventory_image_rows={}",
+        summary.inventory.inserted, summary.inventory.image_rows
+    );
+    println!("unchanged={}", summary.unchanged());
+    Ok(())
+}
+
+fn photographs_propose(version_id: i64) -> Result<(), String> {
+    let cfg = config()?;
+    let mut rag = postgres::Client::connect(&cfg.database_url, postgres::NoTls)
+        .map_err(|err| format!("rag database: {err}"))?;
+    let corpus: String = rag
+        .query_opt(
+            "SELECT corpus FROM document_version WHERE version_id = $1",
+            &[&version_id],
+        )
+        .map_err(|err| format!("read document version: {err}"))?
+        .ok_or_else(|| format!("no document version {version_id}"))?
+        .get(0);
+    let storage = DocumentStorage::new(cfg.document_root.clone());
+    let (_, bytes) = document_lifecycle::read_original(&mut rag, &storage, version_id, &corpus)
+        .map_err(|err| format!("read original: {err}"))?;
+
+    let dsn = resolve_genealogy_dsn(&cfg).map_err(|err| err.to_string())?;
+    let mut genealogy = postgres::Client::connect(&dsn, postgres::NoTls)
+        .map_err(|err| format!("genealogy database: {err}"))?;
+    let asset_ids: Vec<i64> = genealogy
+        .query(
+            "SELECT a.asset_id \
+               FROM archive_photograph_asset a \
+               JOIN archive_photograph_inventory i ON i.inventory_id = a.inventory_id \
+              WHERE i.document_version_id = $1 \
+              ORDER BY a.asset_id",
+            &[&version_id],
+        )
+        .map_err(|err| format!("read photograph assets: {err}"))?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+
+    let mut processed = 0usize;
+    let mut proposed = 0usize;
+    let mut unlinked = 0usize;
+    let mut preserved = 0usize;
+    let mut failed = 0usize;
+    for asset_id in asset_ids {
+        match photograph_review::propose_layout_links_db(
+            &mut genealogy,
+            asset_id,
+            &bytes,
+            "cli-operator",
+        ) {
+            Ok(outcome) => {
+                processed += 1;
+                proposed += outcome.candidates.len();
+                if outcome.candidates.is_empty() {
+                    unlinked += 1;
+                }
+                preserved += outcome.preserved_decisions;
+                println!(
+                    "asset={} candidates={} preserved={} unlinked={}",
+                    asset_id,
+                    outcome.candidates.len(),
+                    outcome.preserved_decisions,
+                    outcome.candidates.is_empty()
+                );
+            }
+            Err(err) => {
+                failed += 1;
+                eprintln!("asset={} error={}", asset_id, err);
+            }
+        }
+    }
+    println!(
+        "version={} corpus={} processed={} proposed={} unlinked={} preserved={} failed={}",
+        version_id, corpus, processed, proposed, unlinked, preserved, failed
+    );
+    if failed > 0 {
+        return Err(format!("{failed} photograph proposals failed"));
+    }
     Ok(())
 }
 
