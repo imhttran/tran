@@ -432,6 +432,7 @@ test.describe("navigation", () => {
     const menu = page.getByTestId("more-menu");
     await expect(menu.getByRole("link")).toHaveText([
       /My profile/,
+      /Photograph gallery/,
       /Head of Family/,
       /Branch review/,
     ]);
@@ -517,11 +518,13 @@ test.describe("navigation", () => {
       /Ask the archive/,
       /Documents/,
       /My profile/,
+      /Photograph gallery/,
       /Head of Family/,
       /Branch review/,
       /Add documents/,
       /Personal history review/,
       /Reviews/,
+      /Photographs/,
       /Extractions/,
       /Source of truth/,
       /Bulk onboard/,
