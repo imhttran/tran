@@ -1521,6 +1521,114 @@ export type FamilyProfilePassageView = {
   body: string;
 };
 
+/// One published archive photograph. The bytes are fetched from the
+/// authorization-checked photograph routes; the payload carries no storage key
+/// or filesystem path.
+export type FamilyArchivePhotographView = {
+  asset_id: number;
+  caption: string | null;
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  document_version_id: number;
+  corpus: string;
+  page_number: number;
+  /// The PDF page citation, for example "PDF page 4".
+  citation: string;
+  created_at: string;
+  thumbnail_url: string;
+  original_url: string;
+};
+
+export type GalleryPhotographView = FamilyArchivePhotographView & {
+  /// Confirmed person links only. An unlinked photograph has an empty array.
+  people: { person_key: string; display_name: string }[];
+};
+
+export type PhotographGalleryResponse = {
+  ok: true;
+  photographs: GalleryPhotographView[];
+};
+
+export type AdminArchivePhotographLinkView = {
+  person_id: number;
+  person_key: string;
+  display_name: string;
+  status: "proposed" | "confirmed" | "rejected";
+  decided_by: string | null;
+  decided_at: string | null;
+  source_page: number | null;
+  supporting_text: string | null;
+  confidence: "high" | "medium" | "low" | null;
+  confidence_basis: string | null;
+  ambiguity_note: string | null;
+  match_kind: "exact" | "alias" | "reordered" | "partial" | null;
+  candidate_rank: number | null;
+  proposal_origin: "caption" | "layout" | "manual" | null;
+};
+
+export type AdminArchivePhotographView = {
+  asset_id: number;
+  caption: string | null;
+  publication_state: "unpublished" | "published";
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  object_id: string;
+  classification: string;
+  classification_rule: string;
+  document_version_id: number;
+  corpus: string;
+  page_numbers: number[];
+  citation: string;
+  created_at: string;
+  thumbnail_url: string;
+  original_url: string;
+  links: AdminArchivePhotographLinkView[];
+};
+
+export type AdminPhotographsResponse = {
+  ok: true;
+  photographs: AdminArchivePhotographView[];
+};
+
+export type PhotographProposalCandidateView = {
+  person_id: number;
+  person_key: string;
+  display_name: string;
+  match_kind: "exact" | "alias" | "reordered" | "partial";
+  confidence: "high" | "medium" | "low";
+  source_kind:
+    | "caption"
+    | "explicit_group"
+    | "section_heading"
+    | "nearby_text"
+    | "biography"
+    | "adjacent_page";
+  source_page: number;
+  supporting_text: string;
+  confidence_basis: string;
+  ambiguity: string | null;
+  candidate_rank: number;
+};
+
+export type PhotographProposalResponse = {
+  ok: true;
+  candidates: PhotographProposalCandidateView[];
+  unlinked_reason: string | null;
+  preserved_decisions: number;
+};
+
+export type PhotographReviewChangeResponse = {
+  ok: true;
+  changed: boolean;
+  prior?: string;
+  next?: string;
+  operation?: string;
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
@@ -1532,6 +1640,10 @@ export type FamilyProfileResponse = {
   dates?: FamilyProfileDateView[];
   /// Approved archive history, separate from the member's own profile fields.
   history?: FamilyProfilePassageView[];
+  /// Published archive photographs linked to this person. Separate from
+  /// `media`, which is owner-uploaded profile media. Absent on an older server
+  /// payload, so the view treats it as an empty list.
+  archive_photographs?: FamilyArchivePhotographView[];
 };
 
 /// The person-scoped history response used by the family-tree dialog. It carries
@@ -1588,4 +1700,78 @@ export function familyProfileMediaUrl(
   mediaId: number,
 ): string {
   return `/api/family/persons/${encodeURIComponent(personKey)}/media/${mediaId}`;
+}
+
+// --- archive photographs (AP-106/AP-107) ------------------------------------
+
+export function getPhotographGallery(): Promise<PhotographGalleryResponse> {
+  return request<PhotographGalleryResponse>("/api/family/photographs", {
+    cache: "no-store",
+  });
+}
+
+export function familyPhotographThumbnailUrl(assetId: number): string {
+  return `/api/family/photographs/${assetId}/thumbnail`;
+}
+
+export function familyPhotographOriginalUrl(assetId: number): string {
+  return `/api/family/photographs/${assetId}/original`;
+}
+
+export function getAdminPhotographs(): Promise<AdminPhotographsResponse> {
+  return request<AdminPhotographsResponse>("/api/admin/photographs", {
+    cache: "no-store",
+  });
+}
+
+export function setPhotographVisibility(
+  assetId: number,
+  visibility: "published" | "unpublished",
+): Promise<PhotographReviewChangeResponse> {
+  return request<PhotographReviewChangeResponse>(
+    `/api/admin/photographs/${assetId}/visibility`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ visibility }),
+    },
+  );
+}
+
+export function updatePhotographCaption(
+  assetId: number,
+  caption: string,
+): Promise<PhotographReviewChangeResponse> {
+  return request<PhotographReviewChangeResponse>(
+    `/api/admin/photographs/${assetId}/caption`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ caption }),
+    },
+  );
+}
+
+export function proposePhotographLinks(
+  assetId: number,
+): Promise<PhotographProposalResponse> {
+  return request<PhotographProposalResponse>(
+    `/api/admin/photographs/${assetId}/propose`,
+    { method: "POST" },
+  );
+}
+
+export function decidePhotographLink(
+  assetId: number,
+  personId: number,
+  decision: "confirm" | "reject",
+): Promise<PhotographReviewChangeResponse> {
+  return request<PhotographReviewChangeResponse>(
+    `/api/admin/photographs/${assetId}/links/${personId}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    },
+  );
 }

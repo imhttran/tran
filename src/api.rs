@@ -41,12 +41,17 @@ use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
     appointments, authority, branch_review, document_extraction, narrative, person_search,
-    query as genealogy_query, resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
+    photograph_review, photograph_store::PhotographStore, query as genealogy_query,
+    resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient};
+use crate::onboarding::family_profile::{
+    AdminArchivePhotograph, ArchivePhotographDownload, ArchivePhotographError,
+    FamilyArchivePhotograph, FamilyGalleryPhotograph,
+};
 use crate::onboarding::{
     self, link, AccountMapError, ApprovedProfileValue, CandidatePreview, FamilyProfileError,
     LinkDecision, LinkError, MediaAsset, MediaDownload, MediaError, MediaKind, MediaStorage,
@@ -286,6 +291,15 @@ impl AppState {
                 "/api/family/persons/{person_key}/media/{media_id}",
                 get(family_media),
             )
+            .route("/api/family/photographs", get(family_photograph_gallery))
+            .route(
+                "/api/family/photographs/{asset_id}/thumbnail",
+                get(family_photograph_thumbnail),
+            )
+            .route(
+                "/api/family/photographs/{asset_id}/original",
+                get(family_photograph_original),
+            )
             .route("/api/branch-review/grants/me", get(branch_review_grants))
             .route(
                 "/api/branch-review/submissions",
@@ -333,6 +347,31 @@ impl AppState {
             )
             .route("/api/admin/reviews/media/{id}", get(review_profile_media))
             .route("/api/admin/reviews/{id}", get(review_detail))
+            .route("/api/admin/photographs", get(admin_photograph_list))
+            .route(
+                "/api/admin/photographs/{asset_id}/thumbnail",
+                get(admin_photograph_thumbnail),
+            )
+            .route(
+                "/api/admin/photographs/{asset_id}/original",
+                get(admin_photograph_original),
+            )
+            .route(
+                "/api/admin/photographs/{asset_id}/visibility",
+                post(admin_photograph_visibility),
+            )
+            .route(
+                "/api/admin/photographs/{asset_id}/caption",
+                post(admin_photograph_caption),
+            )
+            .route(
+                "/api/admin/photographs/{asset_id}/propose",
+                post(admin_photograph_propose),
+            )
+            .route(
+                "/api/admin/photographs/{asset_id}/links/{person_id}",
+                post(admin_photograph_link),
+            )
             .route("/api/genealogy/records", get(genealogy_records))
             .route("/api/genealogy/tree", get(genealogy_tree))
             .route(
@@ -3271,16 +3310,24 @@ async fn family_profile(
     let result = tokio::task::spawn_blocking(move || {
         let account = resolve_profile_account(&config, &issuer, &subject)?;
         let mut genealogy = open_genealogy_response(&config)?;
-        onboarding::read_family_profile(&mut genealogy, &account, &person_key)
-            .map_err(family_profile_error)
+        let profile = onboarding::read_family_profile(&mut genealogy, &account, &person_key)
+            .map_err(family_profile_error)?;
+        let archive_photographs = onboarding::family_profile::read_family_archive_photographs(
+            &mut genealogy,
+            &account,
+            &person_key,
+        )
+        .map_err(family_profile_error)?;
+        Ok((profile, archive_photographs))
     })
     .await;
     match result {
-        Ok(Ok(profile)) => {
+        Ok(Ok((profile, archive_photographs))) => {
             let state_label = if profile.fields.is_empty()
                 && profile.media.is_empty()
                 && profile.dates.is_empty()
                 && profile.history.is_empty()
+                && archive_photographs.is_empty()
             {
                 "empty"
             } else {
@@ -3336,6 +3383,11 @@ async fn family_profile(
                     "approved_revision_number": item.approved_revision_number,
                     "created_at": item.created_at,
                 })).collect::<Vec<_>>(),
+                // Published archive photographs whose person link a reviewer
+                // confirmed. Separate from `media`, which is owner-uploaded
+                // profile media. The bytes are served by the archive photograph
+                // route, which applies the same publication predicate.
+                "archive_photographs": archive_photographs.iter().map(archive_photograph_json).collect::<Vec<_>>(),
             }))
             .into_response()
         }
@@ -3498,6 +3550,633 @@ fn family_media_error(err: MediaError) -> Response {
             "family_media_not_found",
             "no such family media",
         ),
+    }
+}
+
+// --- archive photograph read surfaces (AP-106) -------------------------------
+
+/// The JSON shape shared by the family profile section and the gallery.
+fn archive_photograph_json(photo: &FamilyArchivePhotograph) -> serde_json::Value {
+    serde_json::json!({
+        "asset_id": photo.asset_id,
+        "caption": photo.caption,
+        "mime_type": photo.mime_type,
+        "byte_size": photo.byte_size,
+        "width": photo.width,
+        "height": photo.height,
+        "document_version_id": photo.document_version_id,
+        "corpus": photo.corpus,
+        "page_number": photo.page_number,
+        // The PDF page citation is provenance, not a storage location.
+        "citation": format!("PDF page {}", photo.page_number),
+        "created_at": photo.created_at,
+        "thumbnail_url": format!("/api/family/photographs/{}/thumbnail", photo.asset_id),
+        "original_url": format!("/api/family/photographs/{}/original", photo.asset_id),
+    })
+}
+
+fn gallery_photograph_json(photo: &FamilyGalleryPhotograph) -> serde_json::Value {
+    let mut value = archive_photograph_json(&photo.photograph);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "people".to_string(),
+            serde_json::json!(photo
+                .people
+                .iter()
+                .map(|person| serde_json::json!({
+                    "person_key": person.person_key,
+                    "display_name": person.display_name,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    value
+}
+
+/// The administrator read model. It carries provenance and review state only:
+/// no storage key, content hash, filesystem path, or credential.
+fn admin_photograph_json(photo: &AdminArchivePhotograph) -> serde_json::Value {
+    let citation = photo
+        .page_numbers
+        .first()
+        .map(|page| format!("PDF page {page}"))
+        .unwrap_or_else(|| "PDF page unknown".to_string());
+    serde_json::json!({
+        "asset_id": photo.asset_id,
+        "caption": photo.caption,
+        "publication_state": photo.publication_state,
+        "mime_type": photo.mime_type,
+        "byte_size": photo.byte_size,
+        "width": photo.width,
+        "height": photo.height,
+        "object_id": photo.object_id,
+        "classification": photo.classification,
+        "classification_rule": photo.classification_rule,
+        "document_version_id": photo.document_version_id,
+        "corpus": photo.corpus,
+        "page_numbers": photo.page_numbers,
+        "citation": citation,
+        "created_at": photo.created_at,
+        "thumbnail_url": format!("/api/admin/photographs/{}/thumbnail", photo.asset_id),
+        "original_url": format!("/api/admin/photographs/{}/original", photo.asset_id),
+        "links": photo
+            .links
+            .iter()
+            .map(|link| serde_json::json!({
+                "person_id": link.person_id,
+                "person_key": link.person_key,
+                "display_name": link.display_name,
+                "status": link.status,
+                "decided_by": link.decided_by,
+                "decided_at": link.decided_at,
+                "source_page": link.source_page,
+                "supporting_text": link.supporting_text,
+                "confidence": link.confidence,
+                "confidence_basis": link.confidence_basis,
+                "ambiguity_note": link.ambiguity_note,
+                "match_kind": link.match_kind,
+                "candidate_rank": link.candidate_rank,
+                "proposal_origin": link.proposal_origin,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn photograph_filename(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" => "photograph.jpg",
+        "image/png" => "photograph.png",
+        "image/webp" => "photograph.webp",
+        "image/gif" => "photograph.gif",
+        _ => "photograph",
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn photograph_download_response(download: ArchivePhotographDownload) -> Response {
+    let content_disposition = format!(
+        "inline; filename=\"{}\"",
+        photograph_filename(&download.mime_type)
+    );
+    let Ok(content_type) = axum::http::HeaderValue::from_str(&download.mime_type) else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "photograph_response_failed",
+            "the photograph response could not be built",
+        );
+    };
+    let Ok(content_disposition) = axum::http::HeaderValue::from_str(&content_disposition) else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "photograph_response_failed",
+            "the photograph response could not be built",
+        );
+    };
+    let content_length = match axum::http::HeaderValue::from_str(&download.bytes.len().to_string())
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_response_failed",
+                "the photograph response could not be built",
+            )
+        }
+    };
+    let mut response = Response::new(Body::from(download.bytes));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, content_type);
+    headers.insert(CONTENT_DISPOSITION, content_disposition);
+    headers.insert(
+        CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("x-content-type-options"),
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("content-security-policy"),
+        axum::http::HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    headers.insert(CONTENT_LENGTH, content_length);
+    response
+}
+
+fn archive_photograph_error(err: ArchivePhotographError) -> Response {
+    eprintln!("api: archive photograph request refused: {err}");
+    match err {
+        ArchivePhotographError::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "photograph_not_found",
+            "no such photograph",
+        ),
+        ArchivePhotographError::NotFamilyMember => error(
+            StatusCode::FORBIDDEN,
+            "photograph_forbidden",
+            "the authenticated account may not read this photograph",
+        ),
+        ArchivePhotographError::StoreUnavailable | ArchivePhotographError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "photograph_unavailable",
+            "the archive photograph store is unavailable",
+        ),
+    }
+}
+
+fn photograph_gallery_error(err: FamilyProfileError) -> Response {
+    eprintln!("api: photograph gallery request refused: {err}");
+    match err {
+        FamilyProfileError::NotFamilyMember => error(
+            StatusCode::FORBIDDEN,
+            "photographs_forbidden",
+            "the authenticated account may not read the family photograph gallery",
+        ),
+        FamilyProfileError::UnknownPerson => error(
+            StatusCode::NOT_FOUND,
+            "photographs_not_found",
+            "no such photograph gallery",
+        ),
+        FamilyProfileError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "photographs_unavailable",
+            "the archive photograph store is unavailable",
+        ),
+    }
+}
+
+fn admin_photograph_error(err: FamilyProfileError) -> Response {
+    eprintln!("api: admin photograph read failed: {err}");
+    match err {
+        FamilyProfileError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "photographs_unavailable",
+            "the archive photograph store is unavailable",
+        ),
+        _ => error(
+            StatusCode::NOT_FOUND,
+            "photograph_not_found",
+            "no such photograph",
+        ),
+    }
+}
+
+fn photograph_review_error(err: GenealogyError) -> Response {
+    eprintln!("api: photograph review failed: {err}");
+    match err {
+        GenealogyError::Domain(_) | GenealogyError::Review(_) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_photograph_review",
+            "the photograph review request is not valid",
+        ),
+        _ => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "photograph_review_unavailable",
+            "the photograph review store is unavailable",
+        ),
+    }
+}
+
+fn review_decision_json(decision: photograph_review::Decision) -> serde_json::Value {
+    match decision {
+        photograph_review::Decision::Changed { prior, next, event } => serde_json::json!({
+            "ok": true,
+            "changed": true,
+            "prior": prior,
+            "next": next,
+            "operation": event.operation,
+        }),
+        photograph_review::Decision::NoChange => serde_json::json!({
+            "ok": true,
+            "changed": false,
+        }),
+    }
+}
+
+fn stored_layout_proposal_json(
+    proposal: &photograph_review::StoredLayoutProposal,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "candidates": proposal
+            .candidates
+            .iter()
+            .map(|candidate| serde_json::json!({
+                "person_id": candidate.person_id,
+                "person_key": candidate.person_key,
+                "display_name": candidate.display_name,
+                "match_kind": candidate.match_kind,
+                "confidence": candidate.confidence,
+                "source_kind": candidate.source_kind,
+                "source_page": candidate.source_page,
+                "supporting_text": candidate.supporting_text,
+                "confidence_basis": candidate.confidence_basis,
+                "ambiguity": candidate.ambiguity,
+                "candidate_rank": candidate.candidate_rank,
+            }))
+            .collect::<Vec<_>>(),
+        "unlinked_reason": proposal.unlinked_reason,
+        "preserved_decisions": proposal.preserved_decisions,
+    })
+}
+
+/// The family gallery. `Operation::GenealogyRead` is the family read operation;
+/// the service additionally requires an active family link.
+#[allow(clippy::result_large_err)]
+async fn family_photograph_gallery(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let identity = match authorize(&state, &headers, Operation::GenealogyRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::family_profile::read_family_gallery(&mut genealogy, &account)
+            .map_err(photograph_gallery_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(photographs)) => Json(serde_json::json!({
+            "ok": true,
+            "photographs": photographs.iter().map(gallery_photograph_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph gallery task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photographs_failed",
+                "the photograph gallery request failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn family_photograph_thumbnail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+) -> Response {
+    family_photograph_bytes(state, headers, asset_id).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn family_photograph_original(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+) -> Response {
+    family_photograph_bytes(state, headers, asset_id).await
+}
+
+/// Thumbnail and original use the same authorization and publication predicate.
+/// No derived thumbnail is stored; both routes return the stored photograph so a
+/// pending or restricted asset cannot be probed through either one.
+#[allow(clippy::result_large_err)]
+async fn family_photograph_bytes(state: AppState, headers: HeaderMap, asset_id: i64) -> Response {
+    let identity = match authorize(&state, &headers, Operation::GenealogyRead) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        let store = PhotographStore::default();
+        onboarding::family_profile::read_family_archive_photograph(
+            &mut genealogy,
+            &store,
+            &account,
+            asset_id,
+        )
+        .map_err(archive_photograph_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(download)) => photograph_download_response(download),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph download task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_download_failed",
+                "the photograph download failed",
+            )
+        }
+    }
+}
+
+/// The administrator review list. `Operation::DocumentReview` is the
+/// document-review operation; every publication state is visible to the reviewer.
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_list(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::family_profile::read_admin_archive_photographs(&mut genealogy)
+            .map_err(admin_photograph_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(photographs)) => Json(serde_json::json!({
+            "ok": true,
+            "photographs": photographs.iter().map(admin_photograph_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: admin photograph list task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photographs_failed",
+                "the photograph review list failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_thumbnail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+) -> Response {
+    admin_photograph_bytes(state, headers, asset_id).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_original(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+) -> Response {
+    admin_photograph_bytes(state, headers, asset_id).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_bytes(state: AppState, headers: HeaderMap, asset_id: i64) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::DocumentReview) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let store = PhotographStore::default();
+        onboarding::family_profile::read_admin_archive_photograph(&mut genealogy, &store, asset_id)
+            .map_err(archive_photograph_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(download)) => photograph_download_response(download),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: admin photograph download task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_download_failed",
+                "the photograph download failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PhotographVisibilityRequest {
+    visibility: String,
+}
+
+#[derive(Deserialize)]
+struct PhotographCaptionRequest {
+    caption: String,
+}
+
+#[derive(Deserialize)]
+struct PhotographLinkRequest {
+    decision: String,
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_visibility(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+    Json(request): Json<PhotographVisibilityRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let visibility = request.visibility;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut genealogy = open_genealogy_response(&config)?;
+        photograph_review::set_visibility_db(&mut genealogy, asset_id, &visibility, &actor)
+            .map(review_decision_json)
+            .map_err(photograph_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph visibility task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_review_failed",
+                "the photograph visibility change failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_caption(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+    Json(request): Json<PhotographCaptionRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let caption = request.caption;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut genealogy = open_genealogy_response(&config)?;
+        photograph_review::edit_caption_db(&mut genealogy, asset_id, &caption, &actor)
+            .map(review_decision_json)
+            .map_err(photograph_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph caption task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_review_failed",
+                "the photograph caption change failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((asset_id, person_id)): Path<(i64, i64)>,
+    Json(request): Json<PhotographLinkRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let decision = request.decision.trim().to_ascii_lowercase();
+    let confirm = match decision.as_str() {
+        "confirm" | "confirmed" => true,
+        "reject" | "rejected" => false,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_decision",
+                "decision must be confirm or reject",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let decided = if confirm {
+            photograph_review::confirm_db(&mut genealogy, asset_id, person_id, &actor)
+        } else {
+            photograph_review::reject_db(&mut genealogy, asset_id, person_id, &actor)
+        };
+        decided
+            .map(review_decision_json)
+            .map_err(photograph_review_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph link task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_review_failed",
+                "the photograph link decision failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn admin_photograph_propose(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<i64>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::DocumentReview) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut rag = open_rag(&config)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        let source =
+            onboarding::family_profile::archive_photograph_source(&mut genealogy, asset_id)
+                .map_err(admin_photograph_error)?
+                .ok_or_else(|| {
+                    error(
+                        StatusCode::NOT_FOUND,
+                        "photograph_not_found",
+                        "no such photograph",
+                    )
+                })?;
+        let storage = DocumentStorage::new(config.document_root.clone());
+        let (_, bytes) = document_lifecycle::read_original(
+            &mut rag,
+            &storage,
+            source.document_version_id,
+            &source.corpus,
+        )
+        .map_err(lifecycle_error)?;
+        let proposal =
+            photograph_review::propose_layout_links_db(&mut genealogy, asset_id, &bytes, &actor)
+                .map_err(photograph_review_error)?;
+        Ok(stored_layout_proposal_json(&proposal))
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: photograph proposal task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "photograph_review_failed",
+                "the photograph link proposal failed",
+            )
+        }
     }
 }
 
@@ -7971,6 +8650,48 @@ mod tests {
         let filter = member_filter(query("active", "admin")).ok().unwrap();
         assert_eq!(filter.status, Some(MemberStatus::Active));
         assert_eq!(filter.role, Some(Role::Admin));
+    }
+
+    #[test]
+    fn photograph_json_omits_storage_details() {
+        let photo = FamilyArchivePhotograph {
+            asset_id: 7,
+            caption: Some("Synthetic caption".to_string()),
+            mime_type: "image/jpeg".to_string(),
+            byte_size: 42,
+            width: Some(8),
+            height: Some(8),
+            document_version_id: 3,
+            corpus: "family".to_string(),
+            page_number: 4,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let family = archive_photograph_json(&photo).to_string();
+        assert!(family.contains("PDF page 4"));
+        assert!(!family.contains("storage_key"));
+        assert!(!family.contains("content_sha256"));
+
+        let admin = AdminArchivePhotograph {
+            asset_id: 7,
+            caption: Some("Synthetic caption".to_string()),
+            publication_state: "unpublished".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            byte_size: 42,
+            width: Some(8),
+            height: Some(8),
+            object_id: "12 0".to_string(),
+            classification: "photograph".to_string(),
+            classification_rule: "photograph-inset-opaque".to_string(),
+            document_version_id: 3,
+            corpus: "family".to_string(),
+            page_numbers: vec![4],
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            links: Vec::new(),
+        };
+        let admin = admin_photograph_json(&admin).to_string();
+        assert!(admin.contains("PDF page 4"));
+        assert!(!admin.contains("storage_key"));
+        assert!(!admin.contains("content_sha256"));
     }
 
     #[test]

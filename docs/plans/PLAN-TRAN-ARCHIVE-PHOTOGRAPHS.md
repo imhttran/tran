@@ -35,11 +35,15 @@ Consequences for every task below:
 
 ### Boundaries that apply to every task
 
-- **Migration number.** Use `genealogy/migrations/0028_*.sql`.
-  `0028_archive_photograph_inventory.sql` already exists from AP-101's first
-  invocation and is the file to extend. `0027` is reserved by the open
-  `feat/source-narratives` branch (`0027_source_narrative.sql`); `main` is at
-  `0026`. Do not renumber or modify `0027`.
+### Boundaries that apply to every task
+
+- **Migration number.** AP-101 shipped
+  `genealogy/migrations/0028_archive_photograph_inventory.sql`; AP-102 added the
+  asset/byte-store columns in `0031_archive_photograph_assets.sql`. The
+  layout-aware proposal provenance lives in
+  `genealogy/migrations/0032_archive_photograph_link_provenance.sql`. `0027` is
+  reserved by the narrative branch (`0027_source_narrative.sql`, now on main).
+  Do not renumber or modify `0027`, `0028`, or `0031`.
 - **Private by default.** Extracted assets and detailed inventories are family
   data. They stay outside Git, PR text, and CI artifacts. `/data/` is already
   ignored; keep extracted files under that root (or a configurable private root)
@@ -63,9 +67,12 @@ Consequences for every task below:
   logs, or the diff into the response; a later task reads the summary, not the
   transcript.
 - **Identity rules.** A person link may come only from an explicit caption in the
-  document or an administrator's explicit confirmation. Never from face
-  recognition, page proximity, ordering, or an unconfirmed name guess. Namesakes
-  stay separate.
+  document, the section heading or surrounding biography that identifies the
+  photo's subject, or an administrator's explicit confirmation. A group photo may
+  propose several people only when the source caption identifies those people; a
+  nearby or biographical name never identifies everyone in the photo. Never use
+  face recognition, and never merge namesakes. A proposal is not approval: proposed
+  links stay separate from confirmed links, and a reviewer makes the final choice.
 
 ## AP-101 — Inventory photographs by PDF page
 
@@ -289,7 +296,26 @@ Add the read surfaces to `src/api.rs`:
   administrative reads; unpublished or restricted photographs return not-found for
   both thumbnail and original.
 
-Files you may change: `src/api.rs`, `src/onboarding/family_profile.rs`.
+Operator update (2026-10-27): the administrator review path must also propose
+people from the PDF layout and nearby text, not only from an explicit caption.
+The proposal engine lives in `src/genealogy/photograph_context.rs` and uses:
+
+- an explicit caption, a section heading, text above or below the image, a unique
+  biography subject, or a biography continued on an adjacent page;
+- dates and recorded relationships to distinguish namesakes;
+- a group caption only when the source identifies each named person;
+- a bounded source page, supporting text, confidence level, confidence basis,
+  ambiguity note, and strength order stored on each proposed link;
+- proposed links refreshed without touching confirmed or rejected links.
+
+The caption-only engine in `photograph_review` remains the pure fallback used by
+AP-105's tests. The review path uses the layout engine.
+
+Files you may change: `src/api.rs`, `src/onboarding/family_profile.rs`,
+`src/genealogy/photograph_review.rs`, `src/genealogy/photograph_context.rs` (new),
+`src/genealogy/mod.rs`,
+`genealogy/migrations/0032_archive_photograph_link_provenance.sql` (new), and
+`tests/photograph_acceptance.rs`.
 
 ### Dependencies
 
@@ -299,6 +325,14 @@ Files you may change: `src/api.rs`, `src/onboarding/family_profile.rs`.
 
 - The routes and handlers.
 - Integration tests for allowed and refused access on thumbnail and original.
+- `src/genealogy/photograph_context.rs` with layout extraction and the
+  strongest-first proposal engine.
+- `genealogy/migrations/0032_archive_photograph_link_provenance.sql` with the
+  proposal provenance columns and review ordering index.
+- `src/genealogy/photograph_review.rs` persistence that refreshes only
+  `proposed` links and preserves confirmed or rejected decisions.
+- `tests/photograph_acceptance.rs` coverage for layout proposals, namesake
+  ordering, adjacent pages, and approved-link preservation.
 
 ### Acceptance Criteria
 
@@ -306,6 +340,9 @@ Files you may change: `src/api.rs`, `src/onboarding/family_profile.rs`.
   photograph.
 - An approved photograph without a link appears in the gallery.
 - No response carries a storage key, filesystem path, or credential.
+- A layout proposal stores its source page, supporting text, confidence, basis,
+  and strength order; the strongest candidate is first.
+- A confirmed or rejected link is never overwritten by a later proposal run.
 
 ## AP-107 — Web surfaces
 
@@ -329,6 +366,8 @@ Files you may change: `web/src/lib/api.ts`, `web/src/app/gallery/page.tsx` (new)
 
 - The review screen exposes caption, link, and visibility controls.
 - The profile section is visually and structurally separate from uploaded photos.
+- The review screen shows confidence, source page, supporting text, and an
+  ambiguity explanation, strongest candidate first.
 - The e2e spec passes against stubbed responses and leaks no path or credential.
 
 ## AP-108 — Acceptance verification
@@ -341,7 +380,10 @@ Files you may change: `tests/photograph_acceptance.rs` (new) and
 Cover: a single-person photograph, a group photograph, an unidentified photograph,
 a pending photograph invisible to a family viewer, a restricted photograph
 invisible for thumbnail and original, a repeated import with no duplicates, every
-page accounted for, and an extraction failure recorded.
+page accounted for, and an extraction failure recorded. Also cover layout-aware
+proposals: an explicit caption, a group caption, a namesake distinguished by a
+stated year, an adjacent-page biography fallback, and preservation of a confirmed
+link across a repeated proposal run.
 
 ### Dependencies
 

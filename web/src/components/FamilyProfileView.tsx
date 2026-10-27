@@ -8,6 +8,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
 import {
   ApiRequestError,
+  familyPhotographOriginalUrl,
+  familyPhotographThumbnailUrl,
   familyProfileMediaUrl,
   getFamilyProfile,
   type FamilyProfileDateView,
@@ -243,12 +245,17 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
   const documents = profile.media.filter(
     (item) => item.kind === "personal_document",
   );
+  // Archive photographs come from reviewed family PDFs. They are a separate
+  // section from owner-uploaded profile media: the API already excluded
+  // unpublished and restricted assets, and every image fetch re-authorizes.
+  const archivePhotographs = profile.archive_photographs ?? [];
   const hasContent =
     presented.length > 0 ||
     photos.length > 0 ||
     documents.length > 0 ||
     dates.length > 0 ||
-    history.length > 0;
+    history.length > 0 ||
+    archivePhotographs.length > 0;
   // The summary photo is the newest approved photograph, if the family shared
   // one. No photo means the initials fallback renders and no `<img>` at all.
   const summaryPhoto = photos[0];
@@ -343,6 +350,12 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
               <dd data-testid="family-profile-count-photos">{photos.length}</dd>
             </div>
             <div>
+              <dt>Archive photographs</dt>
+              <dd data-testid="family-profile-count-archive-photos">
+                {archivePhotographs.length}
+              </dd>
+            </div>
+            <div>
               <dt>Documents</dt>
               <dd data-testid="family-profile-count-documents">
                 {documents.length}
@@ -383,17 +396,31 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
             >
               <div className="profile-section-heading">
                 <h2 id="family-profile-dates">Dates</h2>
-                <p>Reviewed dates from the family archive. Each keeps the precision the source states.</p>
+                <p>
+                  Reviewed dates from the family archive. Each keeps the
+                  precision the source states.
+                </p>
               </div>
               <dl className="family-profile-dates">
                 {dates.map((date) => (
-                  <div key={date.kind} data-testid={`family-profile-date-${date.kind}`}>
+                  <div
+                    key={date.kind}
+                    data-testid={`family-profile-date-${date.kind}`}
+                  >
                     <dt>{date.kind === "birth_date" ? "Born" : "Died"}</dt>
                     <dd>
-                      <span className="family-profile-date-value">{formatStructuredDate(date)}</span>
-                      <span className="meta"> · {precisionLabel(date.precision)}</span>
+                      <span className="family-profile-date-value">
+                        {formatStructuredDate(date)}
+                      </span>
+                      <span className="meta">
+                        {" "}
+                        · {precisionLabel(date.precision)}
+                      </span>
                       {date.value ? (
-                        <span className="meta"> · as written: “{date.value}”</span>
+                        <span className="meta">
+                          {" "}
+                          · as written: “{date.value}”
+                        </span>
                       ) : null}
                     </dd>
                   </div>
@@ -493,6 +520,57 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
                       Approved version {document.approved_revision_number} ·{" "}
                       {formatDate(document.created_at)}
                     </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {archivePhotographs.length > 0 ? (
+            <section
+              className="profile-section"
+              aria-labelledby="family-profile-archive-photographs"
+              data-testid="family-profile-archive-photographs"
+            >
+              <div className="profile-section-heading">
+                <h2 id="family-profile-archive-photographs">
+                  Archive photographs
+                </h2>
+                <p>
+                  Photographs from reviewed family PDFs, approved for the family
+                  archive. Each keeps the PDF page it came from, separate from
+                  photographs uploaded to this profile.
+                </p>
+              </div>
+              <ul className="family-profile-media">
+                {archivePhotographs.map((photo) => (
+                  <li
+                    key={photo.asset_id}
+                    data-testid={`family-profile-archive-photo-${photo.asset_id}`}
+                  >
+                    <img
+                      className="family-profile-photo"
+                      src={familyPhotographThumbnailUrl(photo.asset_id)}
+                      alt={photo.caption ?? "Archive photograph"}
+                      width={photo.width ?? undefined}
+                      height={photo.height ?? undefined}
+                      loading="lazy"
+                    />
+                    {photo.caption ? (
+                      <p className="family-profile-text">“{photo.caption}”</p>
+                    ) : (
+                      <p className="meta">No recorded caption</p>
+                    )}
+                    <p className="meta">
+                      {photo.citation} ·{" "}
+                      <a
+                        href={familyPhotographOriginalUrl(photo.asset_id)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open original
+                      </a>
+                    </p>
                   </li>
                 ))}
               </ul>
