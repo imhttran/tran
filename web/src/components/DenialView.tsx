@@ -12,7 +12,7 @@ type Props = {
 export function DenialView({ kind, reason }: Props) {
   return (
     <section
-      className="card denial"
+      className="state-panel state-panel-unavailable"
       data-testid={kind === "denied" ? "denied-view" : "no-access-view"}
       role="alert"
     >
