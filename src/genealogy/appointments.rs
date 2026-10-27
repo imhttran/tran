@@ -10,6 +10,7 @@ use postgres::{Client, Transaction};
 use serde::Serialize;
 
 use super::eligibility::{self, EligibilityDecision};
+use super::narrative;
 use super::query::Citation;
 use super::GenealogyError;
 
@@ -31,11 +32,23 @@ pub struct AppointmentRow {
 pub struct NominationRow {
     pub nomination_id: i64,
     pub person_key: String,
+    /// The candidate's catalog label, falling back to the record key.
+    pub candidate_label: String,
     pub branch_key: String,
     pub nominated_by: String,
     pub status: String,
     pub evidence_assertion_ids: Vec<i64>,
     pub created_at: String,
+}
+
+/// One person a nomination search can return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NominationPerson {
+    pub person_key: String,
+    pub display_name: String,
+    pub birth: Option<String>,
+    /// Current verified family-branch labels.
+    pub branches: Vec<String>,
 }
 
 fn json_ids(value: &str) -> Vec<i64> {
@@ -97,28 +110,74 @@ pub fn list_active_appointments(
 pub fn list_pending_nominations(client: &mut Client) -> Result<Vec<NominationRow>, GenealogyError> {
     let rows = client
         .query(
-            "SELECT nomination_id, person_key, branch_key, nominated_by, status, \
-                    evidence_assertion_ids::text, created_at::text \
-               FROM head_of_family_nomination \
-              WHERE status = 'pending' ORDER BY created_at",
+            "SELECT n.nomination_id, n.person_key, \
+                    COALESCE(p.display_name, n.person_key) AS candidate_label, \
+                    n.branch_key, n.nominated_by, n.status, \
+                    n.evidence_assertion_ids::text, n.created_at::text \
+               FROM head_of_family_nomination n \
+               LEFT JOIN person p ON p.person_key = n.person_key \
+              WHERE n.status = 'pending' ORDER BY n.created_at",
             &[],
         )
         .map_err(GenealogyError::Query)?;
     Ok(rows
         .iter()
         .map(|row| {
-            let evidence: String = row.get(5);
+            let evidence: String = row.get(6);
             NominationRow {
                 nomination_id: row.get(0),
                 person_key: row.get(1),
-                branch_key: row.get(2),
-                nominated_by: row.get(3),
-                status: row.get(4),
+                candidate_label: row.get(2),
+                branch_key: row.get(3),
+                nominated_by: row.get(4),
+                status: row.get(5),
                 evidence_assertion_ids: json_ids(&evidence),
-                created_at: row.get(6),
+                created_at: row.get(7),
             }
         })
         .collect())
+}
+
+/// Searches the complete catalog for a nomination and attaches the current
+/// verified family-branch labels.
+///
+/// A branch claim is included only while it is verified and current. The
+/// `family_branch` label wins; a claim without a matching branch row falls back
+/// to the recorded claim value.
+pub fn search_nomination_people(
+    client: &mut Client,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<NominationPerson>, GenealogyError> {
+    let people = narrative::search_review_people(client, query, limit)?;
+    let current = super::current::CURRENT_ASSERTION;
+    let sql = format!(
+        "SELECT DISTINCT COALESCE(b.branch_label, a.value_text) AS label \
+           FROM assertion a \
+           JOIN person p ON p.person_id = a.person_id \
+           LEFT JOIN family_branch b ON b.branch_key = a.value_text \
+          WHERE p.person_key = $1 \
+            AND a.assertion_kind = 'branch_claim' \
+            AND a.review_status = 'verified' \
+            AND ({current}) \
+          ORDER BY label"
+    );
+    let mut out = Vec::with_capacity(people.len());
+    for person in people {
+        let branches: Vec<String> = client
+            .query(&sql, &[&person.person_key])
+            .map_err(GenealogyError::Query)?
+            .iter()
+            .filter_map(|row| row.get::<_, Option<String>>(0))
+            .collect();
+        out.push(NominationPerson {
+            person_key: person.person_key,
+            display_name: person.display_name,
+            birth: person.birth,
+            branches,
+        });
+    }
+    Ok(out)
 }
 
 /// Creates a pending nomination for an existing cataloged person.

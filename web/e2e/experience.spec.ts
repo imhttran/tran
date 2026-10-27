@@ -86,7 +86,11 @@ const CONCLUSION_NEEDS_REVIEW = {
 
 const HOF_AVAILABLE = {
   catalog: "available" as const,
-  conclusions: [CONCLUSION_CITED, CONCLUSION_UNVERIFIED, CONCLUSION_NEEDS_REVIEW],
+  conclusions: [
+    CONCLUSION_CITED,
+    CONCLUSION_UNVERIFIED,
+    CONCLUSION_NEEDS_REVIEW,
+  ],
 };
 
 async function stubHeadOfFamily(page: Page, payload: unknown, status = 200) {
@@ -113,7 +117,9 @@ test.describe("account menu", () => {
     await assertNoSensitive(page);
   });
 
-  test("sign-in expiry turns the session into a signed-out state", async ({ page }) => {
+  test("sign-in expiry turns the session into a signed-out state", async ({
+    page,
+  }) => {
     await page.route("**/api/auth/session", (route) =>
       route.fulfill({
         status: 401,
@@ -130,11 +136,15 @@ test.describe("account menu", () => {
 
 test.describe("roles", () => {
   for (const role of ["viewer", "editor", "admin"] as const) {
-    test(`${role} session renders the account menu with role`, async ({ page }) => {
+    test(`${role} session renders the account menu with role`, async ({
+      page,
+    }) => {
       await signIn(page, role);
       await page.goto("/");
       await expect(page.getByTestId("account-role")).toHaveText(role);
-      await expect(page.getByTestId("account-label")).toContainText(`Signed-in ${role}`);
+      await expect(page.getByTestId("account-label")).toContainText(
+        `Signed-in ${role}`,
+      );
       await expect(page.getByTestId("sign-out-button")).toBeVisible();
       await assertNoSensitive(page);
     });
@@ -156,7 +166,9 @@ test.describe("roles", () => {
 });
 
 test.describe("denial states", () => {
-  test("permission denial renders a denied view without record detail", async ({ page }) => {
+  test("permission denial renders a denied view without record detail", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.route("**/api/genealogy/tree**", (route) =>
       route.fulfill({
@@ -176,7 +188,11 @@ test.describe("denial states", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ state: "signed_in", role: "viewer", display_name: "No access user" }),
+        body: JSON.stringify({
+          state: "signed_in",
+          role: "viewer",
+          display_name: "No access user",
+        }),
       }),
     );
     await page.route("**/api/genealogy/tree**", (route) =>
@@ -201,9 +217,16 @@ test.describe("head of family", () => {
     const conclusions = page.getByTestId("hof-conclusion");
     await expect(conclusions).toHaveCount(3);
     // Evidence opens metadata-only source details; there is no dead /evidence link.
-    await expect(page.getByTestId("evidence-links").getByRole("link")).toHaveCount(0);
-    await page.getByTestId("citation-button").filter({ hasText: "Family Genealogy p.12" }).click();
-    await expect(page.getByTestId("source-details")).toContainText("Third Branch head after 1800");
+    await expect(
+      page.getByTestId("evidence-links").getByRole("link"),
+    ).toHaveCount(0);
+    await page
+      .getByTestId("citation-button")
+      .filter({ hasText: "Family Genealogy p.12" })
+      .click();
+    await expect(page.getByTestId("source-details")).toContainText(
+      "Third Branch head after 1800",
+    );
     await expect(page.getByTestId("source-metadata-only")).toBeVisible();
     await expect(page.getByTestId("evidence-verified").first()).toBeVisible();
     await assertNoSensitive(page);
@@ -213,7 +236,9 @@ test.describe("head of family", () => {
     await signIn(page, "viewer");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     await page.goto("/head-of-family");
-    await expect(page.getByTestId("evidence-unverified").first()).toHaveText("Unverified");
+    await expect(page.getByTestId("evidence-unverified").first()).toHaveText(
+      "Unverified",
+    );
     await assertNoSensitive(page);
   });
 
@@ -221,46 +246,77 @@ test.describe("head of family", () => {
     await signIn(page, "viewer");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     await page.goto("/head-of-family");
-    await expect(page.getByTestId("evidence-needs_review").first()).toHaveText("Needs review");
+    await expect(page.getByTestId("evidence-needs_review").first()).toHaveText(
+      "Needs review",
+    );
     await assertNoSensitive(page);
   });
 
-  test("viewer sees no nomination, approval, or revocation controls", async ({ page }) => {
+  test("viewer sees no nomination, approval, or revocation controls", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     await page.goto("/head-of-family");
     await expect(page.getByTestId("hof-conclusion").first()).toBeVisible();
-    await expect(page.getByTestId("nominate-button")).toHaveCount(0);
+    await expect(page.getByRole("combobox")).toHaveCount(0);
+    await expect(page.getByTestId("hof-nominate-submit")).toHaveCount(0);
     await expect(page.getByTestId("approve-button")).toHaveCount(0);
     await expect(page.getByTestId("revoke-button")).toHaveCount(0);
     await assertNoSensitive(page);
   });
 
-  test("editor nomination requires confirmation and cancel issues no request", async ({ page }) => {
+  test("editor nomination requires confirmation and cancel issues no request", async ({
+    page,
+  }) => {
     await signIn(page, "editor");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     let nominations = 0;
     await page.route("**/api/genealogy/nominations", (route) => {
       nominations += 1;
-      return route.fulfill({ status: 201, contentType: "application/json", body: `` });
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: ``,
+      });
     });
     await page.goto("/head-of-family");
-    await page.getByTestId("nomination-input").first().fill("Candidate X");
-    await page.getByTestId("nominate-button").first().click();
-    await expect(page.getByTestId("confirm-dialog")).toBeVisible();
-    await page.getByTestId("cancel-button").click();
-    await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
+    await page.route("**/api/genealogy/nomination-persons?*", (route) =>
+      route.fulfill({
+        json: {
+          people: [
+            {
+              record_id: "synthetic-candidate",
+              person_label: "Candidate X",
+              branches: [],
+            },
+          ],
+        },
+      }),
+    );
+    await page.getByRole("combobox").fill("Candidate X");
+    await page.getByRole("option").click();
+    await page.getByTestId("hof-nominate-submit").click();
+    await expect(page.getByTestId("hof-confirm")).toBeVisible();
+    await page.getByTestId("hof-confirm-cancel").click();
+    await expect(page.getByTestId("hof-confirm")).toHaveCount(0);
     expect(nominations).toBe(0);
     await assertNoSensitive(page);
   });
 
-  test("admin approval requires confirmation and cancel issues no request", async ({ page }) => {
+  test("admin approval requires confirmation and cancel issues no request", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     let approvals = 0;
     await page.route("**/api/genealogy/nominations/**", (route) => {
       approvals += 1;
-      return route.fulfill({ status: 200, contentType: "application/json", body: `` });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: ``,
+      });
     });
     await page.goto("/head-of-family");
     await page.getByTestId("approve-button").first().click();
@@ -271,7 +327,9 @@ test.describe("head of family", () => {
     await assertNoSensitive(page);
   });
 
-  test("admin confirmation submits the approval and shows the approved state", async ({ page }) => {
+  test("admin confirmation submits the approval and shows the approved state", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     let body: unknown = null;
@@ -290,16 +348,25 @@ test.describe("head of family", () => {
     await assertNoSensitive(page);
   });
 
-  test("admin revocation requires confirmation and cancel issues no request", async ({ page }) => {
+  test("admin revocation requires confirmation and cancel issues no request", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     let revocations = 0;
     await page.route("**/api/genealogy/appointments/**", (route) => {
       revocations += 1;
-      return route.fulfill({ status: 200, contentType: "application/json", body: `` });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: ``,
+      });
     });
     await page.goto("/head-of-family");
-    await page.getByTestId("revoke-reason-input").first().fill("Superseded by evidence");
+    await page
+      .getByTestId("revoke-reason-input")
+      .first()
+      .fill("Superseded by evidence");
     await page.getByTestId("revoke-button").first().click();
     await expect(page.getByTestId("confirm-dialog")).toBeVisible();
     await page.getByTestId("cancel-button").click();
@@ -310,7 +377,9 @@ test.describe("head of family", () => {
 });
 
 test.describe("enforcement", () => {
-  test("a direct unauthorized request is rejected by the API", async ({ request }) => {
+  test("a direct unauthorized request is rejected by the API", async ({
+    request,
+  }) => {
     const response = await request.post("/api/genealogy/nominations", {
       data: { record_id: "r-1", candidate_label: "Candidate X" },
       headers: { "x-test-role": "viewer" },
@@ -320,7 +389,9 @@ test.describe("enforcement", () => {
 });
 
 test.describe("navigation", () => {
-  test("desktop header has the three primary links and no sidebar", async ({ page }) => {
+  test("desktop header has the three primary links and no sidebar", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.goto("/ask");
 
@@ -333,22 +404,22 @@ test.describe("navigation", () => {
       /Ask the archive/,
       /Documents/,
     ]);
-    await expect(nav.getByRole("link", { name: /Ask the archive/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      nav.getByRole("link", { name: /Ask the archive/ }),
+    ).toHaveAttribute("aria-current", "page");
 
     await nav.getByRole("link", { name: /Family tree/ }).click();
     await expect(page).toHaveURL(/\/genealogy$/);
-    await expect(nav.getByRole("link", { name: /Family tree/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      nav.getByRole("link", { name: /Family tree/ }),
+    ).toHaveAttribute("aria-current", "page");
     await expect(page.getByTestId("account-role")).toHaveText("viewer");
     await assertNoSensitive(page);
   });
 
-  test("viewer More contains secondary routes and the current state is accessible", async ({ page }) => {
+  test("viewer More contains secondary routes and the current state is accessible", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
     await page.goto("/head-of-family");
@@ -361,32 +432,41 @@ test.describe("navigation", () => {
     const menu = page.getByTestId("more-menu");
     await expect(menu.getByRole("link")).toHaveText([
       /My profile/,
+      /Photograph gallery/,
       /Head of Family/,
       /Branch review/,
     ]);
-    await expect(menu.getByRole("link", { name: /Head of Family/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      menu.getByRole("link", { name: /Head of Family/ }),
+    ).toHaveAttribute("aria-current", "page");
     await expect(menu.getByRole("link", { name: /Reviews/ })).toHaveCount(0);
-    await expect(menu.getByRole("link", { name: /Bulk onboard/ })).toHaveCount(0);
+    await expect(menu.getByRole("link", { name: /Bulk onboard/ })).toHaveCount(
+      0,
+    );
     await assertNoSensitive(page);
   });
 
-  test("administrators see the permitted secondary routes", async ({ page }) => {
+  test("administrators see the permitted secondary routes", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     await page.goto("/ask");
     await page.getByTestId("more-toggle").click();
     const menu = page.getByTestId("more-menu");
-    await expect(menu.getByRole("link", { name: /Add documents/ })).toHaveAttribute(
-      "href",
-      "/",
-    );
-    await expect(menu.getByRole("link", { name: /Personal history review/ })).toBeVisible();
+    await expect(
+      menu.getByRole("link", { name: /Add documents/ }),
+    ).toHaveAttribute("href", "/");
+    await expect(
+      menu.getByRole("link", { name: /Personal history review/ }),
+    ).toBeVisible();
     await expect(menu.getByRole("link", { name: /Reviews/ })).toBeVisible();
     await expect(menu.getByRole("link", { name: /Extractions/ })).toBeVisible();
-    await expect(menu.getByRole("link", { name: /Source of truth/ })).toBeVisible();
-    await expect(menu.getByRole("link", { name: /Bulk onboard/ })).toBeVisible();
+    await expect(
+      menu.getByRole("link", { name: /Source of truth/ }),
+    ).toBeVisible();
+    await expect(
+      menu.getByRole("link", { name: /Bulk onboard/ }),
+    ).toBeVisible();
   });
 
   test("More closes on Escape and returns focus", async ({ page }) => {
@@ -429,17 +509,22 @@ test.describe("navigation", () => {
         document.documentElement.scrollWidth -
         document.documentElement.clientWidth,
     );
-    expect(overflow, "no horizontal overflow with the menu open").toBeLessThanOrEqual(1);
+    expect(
+      overflow,
+      "no horizontal overflow with the menu open",
+    ).toBeLessThanOrEqual(1);
     await expect(nav.getByRole("link")).toHaveText([
       /Family tree/,
       /Ask the archive/,
       /Documents/,
       /My profile/,
+      /Photograph gallery/,
       /Head of Family/,
       /Branch review/,
       /Add documents/,
       /Personal history review/,
       /Reviews/,
+      /Photographs/,
       /Extractions/,
       /Source of truth/,
       /Bulk onboard/,
@@ -495,42 +580,75 @@ test.describe("navigation", () => {
 });
 
 test.describe("ask the archive", () => {
-  async function ask(page: Page, reply: { status: number; body: unknown }, delay = 0) {
+  async function ask(
+    page: Page,
+    reply: { status: number; body: unknown },
+    delay = 0,
+  ) {
     await signIn(page, "viewer");
     await page.route("**/api/query/suggestions", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json",
-        body: JSON.stringify({ ok: true, questions: ["What does the archive say about \"Synthetic register\"?"] }) }));
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          questions: ['What does the archive say about "Synthetic register"?'],
+        }),
+      }),
+    );
     await page.route("**/api/query", async (route) => {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      await route.fulfill({ status: reply.status, contentType: "application/json",
-        body: JSON.stringify(reply.body) });
+      await route.fulfill({
+        status: reply.status,
+        contentType: "application/json",
+        body: JSON.stringify(reply.body),
+      });
     });
     await page.goto("/ask");
     await page.getByTestId("ask-example").first().click();
     await page.getByTestId("ask-button").click();
   }
 
-  test("shows suggestions derived from approved archive content", async ({ page }) => {
+  test("shows suggestions derived from approved archive content", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.route("**/api/query/suggestions", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json",
-        body: JSON.stringify({ ok: true, questions: ["What does the archive say about \"Synthetic register\"?"] }) }));
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          questions: ['What does the archive say about "Synthetic register"?'],
+        }),
+      }),
+    );
     await page.goto("/ask");
     await expect(page.getByPlaceholder("Ask about your family…")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Ask", exact: true }),
+    ).toBeVisible();
     await expect(page.getByTestId("ask-example")).toHaveCount(1);
     await expect(page.getByTestId("ask-example").first()).toContainText(
       "Synthetic register",
     );
     const text = await page.locator("body").innerText();
-    expect(text).not.toMatch(/payment|No documents ingested|Ollama|PostgreSQL|Axum/i);
+    expect(text).not.toMatch(
+      /payment|No documents ingested|Ollama|PostgreSQL|Axum/i,
+    );
   });
 
-  test("shows an empty state when no approved content is searchable", async ({ page }) => {
+  test("shows an empty state when no approved content is searchable", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.route("**/api/query/suggestions", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json",
-        body: JSON.stringify({ ok: true, questions: [] }) }));
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, questions: [] }),
+      }),
+    );
     await page.goto("/ask");
     await expect(page.getByTestId("ask-suggestions-empty")).toBeVisible();
     await expect(page.getByTestId("ask-example")).toHaveCount(0);
@@ -539,12 +657,21 @@ test.describe("ask the archive", () => {
     );
   });
 
-  test("a suggestions failure leaves the question form usable", async ({ page }) => {
+  test("a suggestions failure leaves the question form usable", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.route("**/api/query/suggestions", (route) =>
-      route.fulfill({ status: 503, contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "query_suggestions_unavailable",
-          message: "question suggestions are unavailable" }) }));
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: "query_suggestions_unavailable",
+          message: "question suggestions are unavailable",
+        }),
+      }),
+    );
     await page.goto("/ask");
     await expect(page.getByTestId("ask-suggestions-error")).toBeVisible();
     await expect(page.getByTestId("question-input")).toBeVisible();
@@ -552,41 +679,88 @@ test.describe("ask the archive", () => {
   });
 
   test("renders an answer with numbered citations", async ({ page }) => {
-    await ask(page, { status: 200, body: { answer: "The register lists two founders.",
-      insufficient: false, sources: [{ source: "synthetic-register.md", section: "Founders",
-        page: 3, text: "Two founders are recorded." }] } });
-    await expect(page.getByTestId("answer")).toHaveText("The register lists two founders.");
-    await expect(page.getByTestId("sources")).toContainText("[1] synthetic-register.md — Founders");
+    await ask(page, {
+      status: 200,
+      body: {
+        answer: "The register lists two founders.",
+        insufficient: false,
+        sources: [
+          {
+            source: "synthetic-register.md",
+            section: "Founders",
+            page: 3,
+            text: "Two founders are recorded.",
+          },
+        ],
+      },
+    });
+    await expect(page.getByTestId("answer")).toHaveText(
+      "The register lists two founders.",
+    );
+    await expect(page.getByTestId("sources")).toContainText(
+      "[1] synthetic-register.md — Founders",
+    );
     await expect(page.getByTestId("sources")).toContainText("page 3");
     await assertNoSensitive(page);
   });
 
   test("shows loading, then insufficient evidence", async ({ page }) => {
-    await ask(page, { status: 200, body: { answer: "", insufficient: true, sources: [] } }, 800);
+    await ask(
+      page,
+      { status: 200, body: { answer: "", insufficient: true, sources: [] } },
+      800,
+    );
     await expect(page.getByTestId("ask-loading")).toBeVisible();
     await expect(page.getByTestId("insufficient")).toBeVisible();
     await expect(page.getByTestId("answer")).toHaveCount(0);
   });
 
-  for (const [status, testId] of [[401, "ask-expired"], [403, "ask-denied"], [503, "ask-error"]] as const) {
+  for (const [status, testId] of [
+    [401, "ask-expired"],
+    [403, "ask-denied"],
+    [503, "ask-error"],
+  ] as const) {
     test(`HTTP ${status} renders ${testId}`, async ({ page }) => {
-      await ask(page, { status, body: { ok: false, error: "x", message: "retrieval or generation is unavailable" } });
+      await ask(page, {
+        status,
+        body: {
+          ok: false,
+          error: "x",
+          message: "retrieval or generation is unavailable",
+        },
+      });
       await expect(page.getByTestId(testId)).toBeVisible();
       await expect(page.getByTestId("answer")).toHaveCount(0);
-      await expect(page.locator("body")).not.toContainText("retrieval or generation");
+      await expect(page.locator("body")).not.toContainText(
+        "retrieval or generation",
+      );
     });
   }
 
-  test("a recoverable 503 keeps the question in the input", async ({ page }) => {
+  test("a recoverable 503 keeps the question in the input", async ({
+    page,
+  }) => {
     await signIn(page, "viewer");
     await page.route("**/api/query", (route) =>
-      route.fulfill({ status: 503, contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "query_unavailable", message: "retrieval or generation is unavailable" }) }));
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: "query_unavailable",
+          message: "retrieval or generation is unavailable",
+        }),
+      }),
+    );
     await page.goto("/ask");
-    await page.getByTestId("question-input").fill("Who founded the third branch?");
+    await page
+      .getByTestId("question-input")
+      .fill("Who founded the third branch?");
     await page.getByTestId("ask-button").click();
     await expect(page.getByTestId("ask-error")).toBeVisible();
-    await expect(page.getByTestId("question-input")).toHaveValue("Who founded the third branch?");
+    await expect(page.getByTestId("question-input")).toHaveValue(
+      "Who founded the third branch?",
+    );
     await assertNoSensitive(page);
   });
 });
@@ -603,7 +777,12 @@ test.describe("ask the archive: person questions", () => {
   };
 
   function personPayload(person: unknown) {
-    return { answer: "Stored assertions only.", insufficient: false, sources: [], person };
+    return {
+      answer: "Stored assertions only.",
+      insufficient: false,
+      sources: [],
+      person,
+    };
   }
 
   const FOUND = personPayload({
@@ -644,31 +823,52 @@ test.describe("ask the archive: person questions", () => {
     },
   });
 
-  async function askName(page: Page, body: unknown, question = "Who is Han Duc Tran") {
+  async function askName(
+    page: Page,
+    body: unknown,
+    question = "Who is Han Duc Tran",
+  ) {
     await signIn(page, "viewer");
     await page.route("**/api/query", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }),
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      }),
     );
     await page.goto("/ask");
     await page.getByTestId("question-input").fill(question);
     await page.getByTestId("ask-button").click();
   }
 
-  test("an accent-folded, reordered name renders stored assertions with citations", async ({ page }) => {
+  test("an accent-folded, reordered name renders stored assertions with citations", async ({
+    page,
+  }) => {
     await askName(page, FOUND);
     const card = page.getByTestId("person-found");
     await expect(card).toBeVisible();
     await expect(card).toContainText("Trần Đức Hân");
     await expect(card).toContainText("Recorded generation: 3");
     await expect(card).toContainText("different order");
-    await expect(page.getByTestId("person-assertions")).toContainText("Recorded name");
-    await expect(page.getByTestId("person-assertions")).toContainText("Verified");
-    await expect(page.getByTestId("person-assertions")).toContainText("Third branch");
-    await expect(page.getByTestId("person-assertions")).toContainText("Unverified");
+    await expect(page.getByTestId("person-assertions")).toContainText(
+      "Recorded name",
+    );
+    await expect(page.getByTestId("person-assertions")).toContainText(
+      "Verified",
+    );
+    await expect(page.getByTestId("person-assertions")).toContainText(
+      "Third branch",
+    );
+    await expect(page.getByTestId("person-assertions")).toContainText(
+      "Unverified",
+    );
     await expect(page.getByTestId("person-assertions")).toContainText(
       "not a confirmed fact",
     );
-    await expect(page.getByTestId("person-profile-link")).toHaveAttribute("href", "/family/P013");
+    await expect(page.getByTestId("person-profile-link")).toHaveAttribute(
+      "href",
+      "/family/P013",
+    );
     // The document path's refusal is not shown for a person answer.
     await expect(page.getByTestId("insufficient")).toHaveCount(0);
     await expect(page.getByTestId("answer")).toHaveCount(0);
@@ -676,11 +876,15 @@ test.describe("ask the archive: person questions", () => {
     // A stored citation opens the metadata-only dialog.
     await page.getByTestId("citation-button").first().click();
     await expect(page.getByTestId("source-details")).toBeVisible();
-    await expect(page.getByTestId("source-details")).toContainText("synthetic-catalog.md p.3");
+    await expect(page.getByTestId("source-details")).toContainText(
+      "synthetic-catalog.md p.3",
+    );
     await assertNoSensitive(page);
   });
 
-  test("namesakes require a choice and the selection answers that person", async ({ page }) => {
+  test("namesakes require a choice and the selection answers that person", async ({
+    page,
+  }) => {
     const ambiguous = personPayload({
       outcome: "ambiguous",
       catalog: "available",
@@ -697,7 +901,11 @@ test.describe("ask the archive: person questions", () => {
           matched_name: "Lê Thanh Phong",
           profile_url: "/family/P022",
           recorded_parents: [
-            { person_key: "P101", display_name: "Trần Thị Lan", evidence_status: "needs_review" },
+            {
+              person_key: "P101",
+              display_name: "Trần Thị Lan",
+              evidence_status: "needs_review",
+            },
           ],
         },
         {
@@ -709,7 +917,11 @@ test.describe("ask the archive: person questions", () => {
           matched_name: "Lê Thanh Phong",
           profile_url: "/family/P023",
           recorded_parents: [
-            { person_key: "P100", display_name: "Nguyễn Thị Mai", evidence_status: "unverified" },
+            {
+              person_key: "P100",
+              display_name: "Nguyễn Thị Mai",
+              evidence_status: "unverified",
+            },
           ],
         },
       ],
@@ -742,13 +954,19 @@ test.describe("ask the archive: person questions", () => {
     await page.route("**/api/query", async (route) => {
       const request = route.request().postDataJSON() as { person_key?: string };
       if (request.person_key === "P022") {
-        await route.fulfill({ status: 200, contentType: "application/json",
-          body: JSON.stringify(selected) });
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(selected),
+        });
         return;
       }
       sawSelection = true;
-      await route.fulfill({ status: 200, contentType: "application/json",
-        body: JSON.stringify(ambiguous) });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(ambiguous),
+      });
     });
     await page.goto("/ask");
     await page.getByTestId("question-input").fill("Who is Le Thanh Phong");
@@ -756,18 +974,27 @@ test.describe("ask the archive: person questions", () => {
 
     await expect(page.getByTestId("person-ambiguous")).toBeVisible();
     await expect(page.getByTestId("person-candidate")).toHaveCount(2);
-    await expect(page.getByTestId("person-ambiguous")).toContainText("Trần Thị Lan");
-    await expect(page.getByTestId("person-ambiguous")).toContainText("Nguyễn Thị Mai");
+    await expect(page.getByTestId("person-ambiguous")).toContainText(
+      "Trần Thị Lan",
+    );
+    await expect(page.getByTestId("person-ambiguous")).toContainText(
+      "Nguyễn Thị Mai",
+    );
 
     await page.getByTestId("person-candidate").first().click();
     await expect(page.getByTestId("person-found")).toBeVisible();
     await expect(page.getByTestId("person-name-only")).toBeVisible();
-    await expect(page.getByTestId("person-profile-link")).toHaveAttribute("href", "/family/P022");
+    await expect(page.getByTestId("person-profile-link")).toHaveAttribute(
+      "href",
+      "/family/P022",
+    );
     expect(sawSelection).toBe(true);
     await assertNoSensitive(page);
   });
 
-  test("an unknown name says no matching person instead of insufficient evidence", async ({ page }) => {
+  test("an unknown name says no matching person instead of insufficient evidence", async ({
+    page,
+  }) => {
     await askName(
       page,
       personPayload({
@@ -783,11 +1010,15 @@ test.describe("ask the archive: person questions", () => {
       "Who is Quang Vinh",
     );
     await expect(page.getByTestId("person-none")).toBeVisible();
-    await expect(page.getByTestId("person-none")).toContainText("No person matching");
+    await expect(page.getByTestId("person-none")).toContainText(
+      "No person matching",
+    );
     await expect(page.getByTestId("insufficient")).toHaveCount(0);
   });
 
-  test("an unimported catalog is reported as an operator condition", async ({ page }) => {
+  test("an unimported catalog is reported as an operator condition", async ({
+    page,
+  }) => {
     await askName(
       page,
       personPayload({
