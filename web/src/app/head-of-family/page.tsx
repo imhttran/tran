@@ -98,9 +98,18 @@ function HeadOfFamilyContent({ role }: { role: Role | null }) {
         </p>
       ) : null}
       {result === null ? (
-        <p className="hint" data-testid="hof-loading">
-          Loading the Head of Family record…
-        </p>
+        <section
+          className="state-panel state-panel-loading hof-state"
+          role="status"
+          aria-busy="true"
+          aria-live="polite"
+          data-testid="hof-loading"
+        >
+          <h2>Loading the Head of Family record…</h2>
+          <p className="hint">
+            Reading the genealogy record and its cited evidence.
+          </p>
+        </section>
       ) : (
         <HeadOfFamilyView
           role={role}

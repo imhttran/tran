@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { canApproveOrRevoke, canNominate } from "@/lib/experience-contract";
 import type { Role } from "@/lib/experience-contract";
@@ -26,7 +26,10 @@ function csrfToken(): string | null {
   return entry ? decodeURIComponent(entry.slice("rag_csrf=".length)) : null;
 }
 
-async function post(path: string, body: unknown): Promise<{ ok: boolean; message?: string }> {
+async function post(
+  path: string,
+  body: unknown,
+): Promise<{ ok: boolean; message?: string }> {
   const headers = new Headers({ "content-type": "application/json" });
   const token = csrfToken();
   if (token) headers.set("x-csrf-token", token);
@@ -63,6 +66,9 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!canNominate(role) && !canApproveOrRevoke(role)) {
@@ -79,14 +85,18 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
       .then(async ([recordResponse, nominationResponse]) => {
         if (cancelled) return;
         if (recordResponse.ok) {
-          const body = (await recordResponse.json()) as { records?: RecordView[] };
+          const body = (await recordResponse.json()) as {
+            records?: RecordView[];
+          };
           setRecords(Array.isArray(body.records) ? body.records : []);
         }
         if (nominationResponse?.ok) {
           const body = (await nominationResponse.json()) as {
             nominations?: NominationView[];
           };
-          setNominations(Array.isArray(body.nominations) ? body.nominations : []);
+          setNominations(
+            Array.isArray(body.nominations) ? body.nominations : [],
+          );
         }
       })
       .catch(() => {
@@ -96,6 +106,42 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
       cancelled = true;
     };
   }, [role]);
+
+  // Move focus to the confirm action when the dialog opens.
+  useEffect(() => {
+    if (pending) confirmRef.current?.focus();
+  }, [pending]);
+
+  function closePending() {
+    setPending(null);
+    const opener = openerRef.current;
+    openerRef.current = null;
+    if (opener && typeof opener.focus === "function") opener.focus();
+  }
+
+  function handleDialogKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePending();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function confirm() {
     if (!pending || busy) return;
@@ -124,20 +170,35 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
   if (!nominee && !approver) return null;
 
   return (
-    <section className="card" data-testid="hof-actions">
+    <section className="card hof-actions" data-testid="hof-actions">
       <h2>Nomination and approval</h2>
+      <p className="hint">
+        A nomination records a candidate for the Head of Family designation. It
+        does not appoint anyone. An administrator approves or revokes with cited
+        evidence.
+      </p>
       {error ? (
-        <p className="insufficient" role="alert" data-testid="hof-actions-error">
+        <p
+          className="insufficient"
+          role="alert"
+          data-testid="hof-actions-error"
+        >
           {error}
         </p>
       ) : null}
 
       {nominee ? (
         <form
+          className="hof-form hof-actions-form"
           onSubmit={(event) => {
             event.preventDefault();
             if (!selected || label.trim() === "") return;
-            setPending({ kind: "nominate", recordId: selected, label: label.trim() });
+            openerRef.current = document.activeElement as HTMLElement | null;
+            setPending({
+              kind: "nominate",
+              recordId: selected,
+              label: label.trim(),
+            });
           }}
         >
           <label htmlFor="hof-record-select">Catalog record</label>
@@ -168,44 +229,76 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
       ) : null}
 
       {approver ? (
-        <div>
+        <div className="hof-pending-group">
           <h3>Pending nominations</h3>
           {nominations.length === 0 ? (
             <p className="hint" data-testid="hof-no-nominations">
               No pending nominations.
             </p>
           ) : (
-            <ul>
-              {nominations.map((nomination) => (
-                <li key={nomination.nomination_id} data-testid="hof-pending-nomination">
-                  <span>{nomination.record_id}</span>
-                  <button
-                    type="button"
-                    data-testid="hof-approve-submit"
-                    onClick={() =>
-                      setPending({ kind: "approve", nominationId: nomination.nomination_id })
-                    }
+            <ul className="hof-pending-list">
+              {nominations.map((nomination) => {
+                const recordLabel = records.find(
+                  (record) => record.record_id === nomination.record_id,
+                )?.person_label;
+                return (
+                  <li
+                    key={nomination.nomination_id}
+                    className="hof-pending-row"
+                    data-testid="hof-pending-nomination"
                   >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="hof-reject-submit"
-                    onClick={() =>
-                      setPending({ kind: "reject", nominationId: nomination.nomination_id })
-                    }
-                  >
-                    Reject
-                  </button>
-                </li>
-              ))}
+                    <div className="hof-pending-person">
+                      <strong>{recordLabel ?? nomination.record_id}</strong>
+                      {recordLabel ? (
+                        <span className="hint">{nomination.record_id}</span>
+                      ) : null}
+                    </div>
+                    <div className="hof-pending-actions">
+                      <button
+                        type="button"
+                        data-testid="hof-approve-submit"
+                        onClick={(event) => {
+                          openerRef.current = event.currentTarget;
+                          setPending({
+                            kind: "approve",
+                            nominationId: nomination.nomination_id,
+                          });
+                        }}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="button-danger"
+                        data-testid="hof-reject-submit"
+                        onClick={(event) => {
+                          openerRef.current = event.currentTarget;
+                          setPending({
+                            kind: "reject",
+                            nominationId: nomination.nomination_id,
+                          });
+                        }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
       ) : null}
 
       {pending ? (
-        <div className="confirm" role="dialog" aria-modal="true" data-testid="hof-confirm">
+        <div
+          ref={dialogRef}
+          className="confirm hof-confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          onKeyDown={handleDialogKeyDown}
+          data-testid="hof-confirm"
+        >
           <p>
             {pending.kind === "nominate"
               ? `Nominate ${pending.label}?`
@@ -213,12 +306,25 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
                 ? "Approve this nomination?"
                 : "Reject this nomination?"}
           </p>
-          <button type="button" onClick={() => void confirm()} data-testid="hof-confirm-yes">
-            Confirm
-          </button>
-          <button type="button" onClick={() => setPending(null)} data-testid="hof-confirm-cancel">
-            Cancel
-          </button>
+          <div className="hof-confirm-actions">
+            <button
+              ref={confirmRef}
+              type="button"
+              className="hof-confirm-action"
+              onClick={() => void confirm()}
+              data-testid="hof-confirm-yes"
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              className="button-secondary hof-confirm-action"
+              onClick={closePending}
+              data-testid="hof-confirm-cancel"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       ) : null}
     </section>
