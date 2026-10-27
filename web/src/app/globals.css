@@ -4348,3 +4348,114 @@ footer.page-footer {
     margin: 0;
     max-width: 72ch;
 }
+
+/* UI-801 — sign-in and shared denial states. These rules reuse the stage-one
+   tokens (--surface, --card, --line, --accent, --focus-ring) and the shared
+   state-panel surface. Everything is scoped to the sign-in layout or to a
+   denial panel, so no unrelated screen changes. */
+.signin-layout {
+    display: grid;
+    gap: 18px;
+    min-width: 0;
+    max-width: 100%;
+}
+.signin-panel {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.signin-eyebrow {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+.signin-title {
+    margin: 0;
+    font: 700 clamp(1.6rem, 3vw, 2rem)/1.2 var(--font-sans);
+    letter-spacing: normal;
+    color: var(--fg);
+}
+.signin-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+    gap: 20px;
+    align-items: start;
+    min-width: 0;
+}
+.signin-main {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+.signin-lead {
+    margin: 0;
+    max-width: 68ch;
+    color: var(--fg);
+}
+.signin-action {
+    margin: 0;
+}
+.signin-cta {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 12px 20px;
+}
+.signin-cta:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+.signin-side {
+    min-width: 0;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+}
+.signin-side h2 {
+    margin: 0 0 8px;
+    font-size: 0.95rem;
+    color: var(--fg);
+}
+.signin-side ul {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 4px;
+    font-size: 0.9rem;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+.signin-error {
+    margin: 0;
+}
+@media (max-width: 640px) {
+    .signin-body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+@media (max-width: 420px) {
+    .signin-panel {
+        padding: 16px;
+        border-radius: var(--radius-md);
+    }
+    .signin-cta {
+        width: 100%;
+    }
+}
+/* Keep a long denial reason readable on a narrow screen without clipping. */
+.state-panel.state-panel-unavailable[role="alert"] {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 420px) {
+    .state-panel.state-panel-unavailable[role="alert"] {
+        padding: 14px;
+        border-radius: var(--radius-md);
+    }
+}
