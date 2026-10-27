@@ -34,6 +34,7 @@ type NavIconName =
   | "review"
   | "documents"
   | "upload"
+  | "gallery"
   | "admin-reviews"
   | "bulk-onboard";
 
@@ -87,6 +88,13 @@ function NavIcon({ name }: { name: NavIconName }) {
         </>
       )}
       {name === "upload" && <path d="M12 5v14M5 12h14" />}
+      {name === "gallery" && (
+        <>
+          <rect x="4" y="5" width="16" height="14" rx="2" />
+          <circle cx="9" cy="10" r="1.5" />
+          <path d="m4 17 5-5 4 4 3-3 4 4" />
+        </>
+      )}
       {name === "admin-reviews" && <path d="m5 12 4 4 10-10" />}
       {name === "bulk-onboard" && (
         <>
@@ -113,6 +121,7 @@ const PRIMARY_ITEMS: NavItem[] = [
 // Menu on mobile, in this order. Gating is presentation only.
 const SECONDARY_ITEMS: NavItem[] = [
   { href: "/profile", label: "My profile", icon: "profile" },
+  { href: "/gallery", label: "Photograph gallery", icon: "gallery" },
   { href: "/head-of-family", label: "Head of Family", icon: "head" },
   { href: "/branch-review", label: "Branch review", icon: "review" },
 ];
@@ -128,6 +137,11 @@ const ADMIN_ITEMS: NavItem[] = [
     icon: "admin-reviews",
   },
   { href: "/admin/reviews", label: "Reviews", icon: "admin-reviews" },
+  {
+    href: "/admin/photographs",
+    label: "Photographs",
+    icon: "gallery",
+  },
   {
     href: "/admin/document-extraction",
     label: "Extractions",

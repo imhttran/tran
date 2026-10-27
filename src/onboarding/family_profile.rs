@@ -13,11 +13,14 @@
 //! that field and no owner restriction is active; the bytes themselves are only
 //! served by the family media route.
 
+use std::collections::BTreeMap;
+
 use postgres::Transaction;
 use thiserror::Error;
 
 use crate::genealogy::dates as genealogy_dates;
 use crate::genealogy::narrative::{self, FamilyPassage};
+use crate::genealogy::photograph_store::{PhotographStore, PhotographStoreError};
 
 use super::account_map::IdentityAccount;
 use super::media::{FAMILY_VISIBLE_MEDIA_JOIN, FAMILY_VISIBLE_MEDIA_PREDICATE};
@@ -105,6 +108,120 @@ pub struct FamilyHistory {
     pub history: Vec<FamilyPassage>,
 }
 
+/// One published archive photograph.
+///
+/// The record carries only metadata and the PDF page citation. The storage key,
+/// content hash, and filesystem location stay server-side; the bytes are served
+/// by the authorized photograph route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyArchivePhotograph {
+    pub asset_id: i64,
+    pub caption: Option<String>,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub document_version_id: i64,
+    pub corpus: String,
+    pub page_number: i32,
+    pub created_at: String,
+}
+
+/// One confirmed person on a gallery photograph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GalleryPerson {
+    pub person_key: String,
+    pub display_name: String,
+}
+
+/// One published photograph in the family gallery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyGalleryPhotograph {
+    pub photograph: FamilyArchivePhotograph,
+    /// Confirmed links only. A proposed or rejected link never appears here.
+    pub people: Vec<GalleryPerson>,
+}
+
+/// One stored photograph's bytes and media type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivePhotographDownload {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+/// One person link as the administrator review screen reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminArchivePhotographLink {
+    pub person_id: i64,
+    pub person_key: String,
+    pub display_name: String,
+    pub status: String,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<String>,
+    /// The PDF page whose text supports the proposal.
+    pub source_page: Option<i32>,
+    /// The bounded supporting text.
+    pub supporting_text: Option<String>,
+    /// `high`, `medium`, or `low`.
+    pub confidence: Option<String>,
+    /// The signals that set the confidence.
+    pub confidence_basis: Option<String>,
+    /// Why an ambiguous match needs an explicit choice.
+    pub ambiguity_note: Option<String>,
+    /// `exact`, `alias`, `reordered`, or `partial`.
+    pub match_kind: Option<String>,
+    /// 1-based strength order.
+    pub candidate_rank: Option<i32>,
+    /// `caption`, `layout`, or `manual`.
+    pub proposal_origin: Option<String>,
+}
+
+/// One archive photograph as the administrator review screen reads it.
+///
+/// The read model intentionally omits the storage key and content hash. The
+/// reviewer sees provenance and review state, not the private byte location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminArchivePhotograph {
+    pub asset_id: i64,
+    pub caption: Option<String>,
+    pub publication_state: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub object_id: String,
+    pub classification: String,
+    pub classification_rule: String,
+    pub document_version_id: i64,
+    pub corpus: String,
+    pub page_numbers: Vec<i32>,
+    pub created_at: String,
+    pub links: Vec<AdminArchivePhotographLink>,
+}
+
+/// Errors raised by an archive photograph byte read.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ArchivePhotographError {
+    /// The caller is not a linked family member.
+    #[error("the account is not a linked family member")]
+    NotFamilyMember,
+    /// No published asset exists for the id, or its bytes are unknown.
+    #[error("no such archive photograph")]
+    NotFound,
+    /// The private byte store failed.
+    #[error("the archive photograph store is unavailable")]
+    StoreUnavailable,
+    /// The genealogy store failed.
+    #[error("archive photograph database operation failed: {0}")]
+    Database(String),
+}
+
+impl From<postgres::Error> for ArchivePhotographError {
+    fn from(err: postgres::Error) -> Self {
+        ArchivePhotographError::Database(err.to_string())
+    }
+}
+
 /// Errors raised by family profile presentation.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FamilyProfileError {
@@ -168,6 +285,320 @@ pub fn read_family_profile(
         dates,
         history,
     })
+}
+
+/// Reads one person's published archive photographs for a linked family member.
+///
+/// Only published assets with a confirmed link to this person are returned. A
+/// proposed or rejected link never presents a photograph, and an unpublished or
+/// reviewer-restricted asset is excluded exactly like a missing row. The PDF
+/// page citation is the photograph's first occurrence in the source document.
+pub fn read_family_archive_photographs(
+    client: &mut postgres::Client,
+    requester: &IdentityAccount,
+    person_key: &str,
+) -> Result<Vec<FamilyArchivePhotograph>, FamilyProfileError> {
+    let person_key = person_key.trim();
+    if person_key.is_empty() {
+        return Err(FamilyProfileError::UnknownPerson);
+    }
+    let mut tx = client.transaction()?;
+    require_active_link(&mut tx, requester)?;
+    let Some((person_id, _)) = family_person(&mut tx, person_key)? else {
+        return Err(FamilyProfileError::UnknownPerson);
+    };
+    let photographs = published_archive_photographs(&mut tx, Some(person_id))?;
+    tx.commit()?;
+    Ok(photographs)
+}
+
+/// Reads the family gallery of published archive photographs.
+///
+/// The gallery is family-only, so the caller must hold an active family link.
+/// Every published photograph appears, including one with no confirmed person
+/// link; only confirmed people are attached to an item.
+pub fn read_family_gallery(
+    client: &mut postgres::Client,
+    requester: &IdentityAccount,
+) -> Result<Vec<FamilyGalleryPhotograph>, FamilyProfileError> {
+    let mut tx = client.transaction()?;
+    require_active_link(&mut tx, requester)?;
+    let photographs = published_archive_photographs(&mut tx, None)?;
+    let mut people: BTreeMap<i64, Vec<GalleryPerson>> = BTreeMap::new();
+    if !photographs.is_empty() {
+        let ids: Vec<i64> = photographs.iter().map(|photo| photo.asset_id).collect();
+        let rows = tx.query(
+            "SELECT l.asset_id, p.person_key, p.display_name \
+               FROM archive_photograph_person_link l \
+               JOIN person p ON p.person_id = l.person_id \
+              WHERE l.asset_id = ANY($1) AND l.status = 'confirmed' \
+              ORDER BY l.asset_id, p.display_name, p.person_key",
+            &[&ids],
+        )?;
+        for row in rows {
+            people.entry(row.get(0)).or_default().push(GalleryPerson {
+                person_key: row.get(1),
+                display_name: row.get(2),
+            });
+        }
+    }
+    tx.commit()?;
+    Ok(photographs
+        .into_iter()
+        .map(|photograph| FamilyGalleryPhotograph {
+            people: people.remove(&photograph.asset_id).unwrap_or_default(),
+            photograph,
+        })
+        .collect())
+}
+
+/// Reads one published archive photograph's bytes for a linked family member.
+///
+/// An unpublished or reviewer-restricted asset, an unknown id, and an unknown
+/// storage key are all [`ArchivePhotographError::NotFound`], so a family reader
+/// cannot use thumbnail and original responses to probe publication state.
+pub fn read_family_archive_photograph(
+    client: &mut postgres::Client,
+    store: &PhotographStore,
+    requester: &IdentityAccount,
+    asset_id: i64,
+) -> Result<ArchivePhotographDownload, ArchivePhotographError> {
+    let mut tx = client.transaction()?;
+    match require_active_link(&mut tx, requester) {
+        Ok(_) => {}
+        Err(FamilyProfileError::NotFamilyMember) => {
+            return Err(ArchivePhotographError::NotFamilyMember)
+        }
+        Err(FamilyProfileError::UnknownPerson) => return Err(ArchivePhotographError::NotFound),
+        Err(FamilyProfileError::Database(message)) => {
+            return Err(ArchivePhotographError::Database(message))
+        }
+    }
+    let row = tx.query_opt(
+        "SELECT storage_key, mime_type \
+           FROM archive_photograph_asset \
+          WHERE asset_id = $1 \
+            AND publication_state = 'published' \
+            AND storage_key IS NOT NULL \
+            AND mime_type IS NOT NULL",
+        &[&asset_id],
+    )?;
+    let Some(row) = row else {
+        return Err(ArchivePhotographError::NotFound);
+    };
+    let key: String = row.get(0);
+    let mime_type: String = row.get(1);
+    tx.commit()?;
+    read_stored_photograph(store, &key, mime_type)
+}
+
+/// Reads one archive photograph's bytes for an administrator review read.
+///
+/// The review read deliberately ignores publication state so a reviewer can
+/// inspect a pending or restricted photograph before deciding. Authorization is
+/// the caller's `DocumentReview` operation, enforced by the API handler.
+pub fn read_admin_archive_photograph(
+    client: &mut postgres::Client,
+    store: &PhotographStore,
+    asset_id: i64,
+) -> Result<ArchivePhotographDownload, ArchivePhotographError> {
+    let mut tx = client.transaction()?;
+    let row = tx.query_opt(
+        "SELECT storage_key, mime_type \
+           FROM archive_photograph_asset \
+          WHERE asset_id = $1 \
+            AND storage_key IS NOT NULL \
+            AND mime_type IS NOT NULL",
+        &[&asset_id],
+    )?;
+    let Some(row) = row else {
+        return Err(ArchivePhotographError::NotFound);
+    };
+    let key: String = row.get(0);
+    let mime_type: String = row.get(1);
+    tx.commit()?;
+    read_stored_photograph(store, &key, mime_type)
+}
+
+/// Reads every archive photograph for the administrator review screen.
+///
+/// All publication states are included. The read model omits the storage key,
+/// content hash, and every filesystem path.
+pub fn read_admin_archive_photographs(
+    client: &mut postgres::Client,
+) -> Result<Vec<AdminArchivePhotograph>, FamilyProfileError> {
+    let mut tx = client.transaction()?;
+    let rows = tx.query(
+        "SELECT a.asset_id, \
+                COALESCE( \
+                  (SELECT NULLIF(btrim(i.caption), '') \
+                     FROM archive_photograph_inventory_image i \
+                    WHERE i.inventory_id = a.inventory_id \
+                      AND i.object_number = a.object_number \
+                      AND i.object_generation = a.object_generation \
+                      AND i.caption IS NOT NULL \
+                      AND btrim(i.caption) <> '' \
+                    ORDER BY i.page_number, i.occurrence_ordinal \
+                    LIMIT 1), \
+                  (SELECT NULLIF(btrim(p.caption), '') \
+                     FROM archive_photograph_inventory_page p \
+                    WHERE p.inventory_id = a.inventory_id \
+                      AND p.page_number = ( \
+                          SELECT o.page_number \
+                            FROM archive_photograph_occurrence o \
+                           WHERE o.asset_id = a.asset_id \
+                           ORDER BY o.page_number, o.occurrence_ordinal \
+                           LIMIT 1) \
+                  ) \
+                ) AS caption, \
+                a.publication_state, a.mime_type, a.byte_size, \
+                a.pixel_width, a.pixel_height, a.object_id, \
+                a.classification, a.classification_rule, \
+                inv.document_version_id, inv.corpus, \
+                ARRAY( \
+                  SELECT o.page_number \
+                    FROM archive_photograph_occurrence o \
+                   WHERE o.asset_id = a.asset_id \
+                   ORDER BY o.page_number, o.occurrence_ordinal \
+                ) AS page_numbers, \
+                inv.created_at::text \
+           FROM archive_photograph_asset a \
+           JOIN archive_photograph_inventory inv \
+             ON inv.inventory_id = a.inventory_id \
+          WHERE a.storage_key IS NOT NULL \
+            AND a.mime_type IS NOT NULL \
+            AND a.byte_size IS NOT NULL \
+          ORDER BY inv.created_at DESC, a.asset_id",
+        &[],
+    )?;
+    let mut photographs: Vec<AdminArchivePhotograph> = rows
+        .into_iter()
+        .map(|row| AdminArchivePhotograph {
+            asset_id: row.get(0),
+            caption: row.get(1),
+            publication_state: row.get(2),
+            mime_type: row.get(3),
+            byte_size: row.get(4),
+            width: row.get(5),
+            height: row.get(6),
+            object_id: row.get(7),
+            classification: row.get(8),
+            classification_rule: row.get(9),
+            document_version_id: row.get(10),
+            corpus: row.get(11),
+            page_numbers: row.get(12),
+            created_at: row.get(13),
+            links: Vec::new(),
+        })
+        .collect();
+    if !photographs.is_empty() {
+        let ids: Vec<i64> = photographs.iter().map(|photo| photo.asset_id).collect();
+        let rows = tx.query(
+            "SELECT l.asset_id, l.person_id, p.person_key, p.display_name, l.status, \
+                    l.decided_by, l.decided_at::text, l.source_page, \
+                    l.supporting_text, l.confidence, l.confidence_basis, \
+                    l.ambiguity_note, l.match_kind, l.candidate_rank, \
+                    l.proposal_origin \
+               FROM archive_photograph_person_link l \
+               JOIN person p ON p.person_id = l.person_id \
+              WHERE l.asset_id = ANY($1) \
+              ORDER BY l.asset_id, \
+                       CASE l.status WHEN 'confirmed' THEN 0 \
+                                     WHEN 'proposed' THEN 1 ELSE 2 END, \
+                       COALESCE(l.candidate_rank, 999), \
+                       p.display_name, p.person_key",
+            &[&ids],
+        )?;
+        let mut links: BTreeMap<i64, Vec<AdminArchivePhotographLink>> = BTreeMap::new();
+        for row in rows {
+            links
+                .entry(row.get(0))
+                .or_default()
+                .push(AdminArchivePhotographLink {
+                    person_id: row.get(1),
+                    person_key: row.get(2),
+                    display_name: row.get(3),
+                    status: row.get(4),
+                    decided_by: row.get(5),
+                    decided_at: row.get(6),
+                    source_page: row.get(7),
+                    supporting_text: row.get(8),
+                    confidence: row.get(9),
+                    confidence_basis: row.get(10),
+                    ambiguity_note: row.get(11),
+                    match_kind: row.get(12),
+                    candidate_rank: row.get(13),
+                    proposal_origin: row.get(14),
+                });
+        }
+        for photograph in &mut photographs {
+            photograph.links = links.remove(&photograph.asset_id).unwrap_or_default();
+        }
+    }
+    tx.commit()?;
+    Ok(photographs)
+}
+
+/// Reads the recorded caption for one archive photograph, or `None`.
+///
+/// Only a caption stated by the document (or written by a reviewer into the
+/// inventory image) is returned. No name or page position is inferred.
+pub fn archive_photograph_caption(
+    client: &mut postgres::Client,
+    asset_id: i64,
+) -> Result<Option<String>, FamilyProfileError> {
+    let row = client.query_opt(
+        "SELECT COALESCE( \
+                  (SELECT NULLIF(btrim(i.caption), '') \
+                     FROM archive_photograph_inventory_image i \
+                    WHERE i.inventory_id = a.inventory_id \
+                      AND i.object_number = a.object_number \
+                      AND i.object_generation = a.object_generation \
+                      AND i.caption IS NOT NULL \
+                      AND btrim(i.caption) <> '' \
+                    ORDER BY i.page_number, i.occurrence_ordinal \
+                    LIMIT 1), \
+                  (SELECT NULLIF(btrim(p.caption), '') \
+                     FROM archive_photograph_inventory_page p \
+                    WHERE p.inventory_id = a.inventory_id \
+                      AND p.page_number = ( \
+                          SELECT o.page_number \
+                            FROM archive_photograph_occurrence o \
+                           WHERE o.asset_id = a.asset_id \
+                           ORDER BY o.page_number, o.occurrence_ordinal \
+                           LIMIT 1) \
+                  ) \
+                ) \
+           FROM archive_photograph_asset a \
+          WHERE a.asset_id = $1",
+        &[&asset_id],
+    )?;
+    Ok(row.and_then(|row| row.get(0)))
+}
+
+/// The source document coordinates for one archive photograph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivePhotographSource {
+    pub document_version_id: i64,
+    pub corpus: String,
+}
+
+/// Reads the source document version and corpus for one photograph asset.
+pub fn archive_photograph_source(
+    client: &mut postgres::Client,
+    asset_id: i64,
+) -> Result<Option<ArchivePhotographSource>, FamilyProfileError> {
+    let row = client.query_opt(
+        "SELECT i.document_version_id, i.corpus \
+           FROM archive_photograph_asset a \
+           JOIN archive_photograph_inventory i ON i.inventory_id = a.inventory_id \
+          WHERE a.asset_id = $1",
+        &[&asset_id],
+    )?;
+    Ok(row.map(|row| ArchivePhotographSource {
+        document_version_id: row.get(0),
+        corpus: row.get(1),
+    }))
 }
 
 /// Reads one person's published archive history for a family reader.
@@ -342,6 +773,82 @@ fn family_visible_values(
 /// provenance, current approved value, `family` visibility, and no active owner
 /// restriction. Pending, rejected, owner-private, superseded, restricted, and
 /// unprovenanced rows are silently excluded rather than reported.
+fn published_archive_photographs(
+    tx: &mut Transaction<'_>,
+    person_id: Option<i64>,
+) -> Result<Vec<FamilyArchivePhotograph>, FamilyProfileError> {
+    let rows = tx.query(
+        "SELECT a.asset_id, \
+                COALESCE( \
+                  (SELECT NULLIF(btrim(i.caption), '') \
+                     FROM archive_photograph_inventory_image i \
+                    WHERE i.inventory_id = a.inventory_id \
+                      AND i.object_number = a.object_number \
+                      AND i.object_generation = a.object_generation \
+                      AND i.caption IS NOT NULL \
+                      AND btrim(i.caption) <> '' \
+                    ORDER BY i.page_number, i.occurrence_ordinal \
+                    LIMIT 1), \
+                  (SELECT NULLIF(btrim(p.caption), '') \
+                     FROM archive_photograph_inventory_page p \
+                    WHERE p.inventory_id = a.inventory_id \
+                      AND p.page_number = occ.page_number) \
+                ) AS caption, \
+                a.mime_type, a.byte_size, a.pixel_width, a.pixel_height, \
+                inv.document_version_id, inv.corpus, occ.page_number, \
+                inv.created_at::text \
+           FROM archive_photograph_asset a \
+           JOIN archive_photograph_inventory inv \
+             ON inv.inventory_id = a.inventory_id \
+           JOIN LATERAL ( \
+                SELECT o.page_number \
+                  FROM archive_photograph_occurrence o \
+                 WHERE o.asset_id = a.asset_id \
+                 ORDER BY o.page_number, o.occurrence_ordinal \
+                 LIMIT 1 \
+           ) occ ON TRUE \
+          WHERE a.publication_state = 'published' \
+            AND a.storage_key IS NOT NULL \
+            AND a.mime_type IS NOT NULL \
+            AND a.byte_size IS NOT NULL \
+            AND ($1::bigint IS NULL OR EXISTS ( \
+                 SELECT 1 FROM archive_photograph_person_link l \
+                  WHERE l.asset_id = a.asset_id \
+                    AND l.person_id = $1 \
+                    AND l.status = 'confirmed' \
+            )) \
+          ORDER BY inv.created_at DESC, a.asset_id",
+        &[&person_id],
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|row| FamilyArchivePhotograph {
+            asset_id: row.get(0),
+            caption: row.get(1),
+            mime_type: row.get(2),
+            byte_size: row.get(3),
+            width: row.get(4),
+            height: row.get(5),
+            document_version_id: row.get(6),
+            corpus: row.get(7),
+            page_number: row.get(8),
+            created_at: row.get(9),
+        })
+        .collect())
+}
+
+fn read_stored_photograph(
+    store: &PhotographStore,
+    key: &str,
+    mime_type: String,
+) -> Result<ArchivePhotographDownload, ArchivePhotographError> {
+    match store.read(key) {
+        Ok(bytes) => Ok(ArchivePhotographDownload { bytes, mime_type }),
+        Err(PhotographStoreError::UnknownKey(_)) => Err(ArchivePhotographError::NotFound),
+        Err(_) => Err(ArchivePhotographError::StoreUnavailable),
+    }
+}
+
 fn family_visible_media(
     tx: &mut Transaction<'_>,
     person_id: i64,

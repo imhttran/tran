@@ -23,11 +23,14 @@
 //! values live in the event detail. Caption edits update the inventory image
 //! caption, so the asset keeps its document/page/object provenance.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use postgres::{Client, GenericClient};
 
+use super::current::CURRENT_ASSERTION;
+use super::inventory;
 use super::person_search::{self, Candidate, MatchKind, PersonNames};
+use super::photograph_context::{self, LayoutProposal, PersonContext};
 use super::GenealogyError;
 
 /// The publication state of a new photograph.
@@ -421,6 +424,380 @@ pub fn set_visibility(
     })
 }
 
+/// One proposed person persisted from a layout-aware proposal run.
+///
+/// The row is still `proposed`; a confirmed or rejected decision is never
+/// overwritten by a later proposal run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLayoutCandidate {
+    /// The person the proposal names.
+    pub person_id: i64,
+    /// Stable person key.
+    pub person_key: String,
+    /// The recorded display name.
+    pub display_name: String,
+    /// `exact`, `alias`, `reordered`, or `partial`.
+    pub match_kind: String,
+    /// `high`, `medium`, or `low`.
+    pub confidence: String,
+    /// `caption`, `explicit_group`, `section_heading`, `nearby_text`,
+    /// `biography`, or `adjacent_page`.
+    pub source_kind: String,
+    /// The PDF page the supporting text is on.
+    pub source_page: i32,
+    /// The bounded supporting text.
+    pub supporting_text: String,
+    /// Why the confidence was assigned.
+    pub confidence_basis: String,
+    /// Why a reviewer must choose, when the match is ambiguous.
+    pub ambiguity: Option<String>,
+    /// 1-based strength order.
+    pub candidate_rank: i32,
+}
+
+/// The result of one persisted layout-aware proposal run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLayoutProposal {
+    /// Candidates in strength order, excluding links a reviewer already decided.
+    pub candidates: Vec<StoredLayoutCandidate>,
+    /// Why the photo is left unlinked, when no candidate is supported.
+    pub unlinked_reason: Option<String>,
+    /// Confirmed or rejected links left untouched by this run.
+    pub preserved_decisions: usize,
+}
+
+/// Loads the person catalog with the dates and relationships used to
+/// distinguish namesakes.
+///
+/// A truncated catalog fails closed: a namesake outside the loaded bound cannot
+/// be ruled out, so the caller must not propose links from a partial catalog.
+pub fn load_person_contexts(client: &mut Client) -> Result<Vec<PersonContext>, GenealogyError> {
+    let catalog = person_search::load_catalog(client)?;
+    if catalog.truncated {
+        return Err(GenealogyError::Domain(
+            "person catalog is truncated; refusing photograph link proposals".into(),
+        ));
+    }
+    let mut people: BTreeMap<String, PersonContext> = catalog
+        .people
+        .into_iter()
+        .map(|person| {
+            (
+                person.person_key.clone(),
+                PersonContext {
+                    person_key: person.person_key,
+                    display_name: person.display_name,
+                    aliases: person.aliases,
+                    generation: person.generation,
+                    evidence_status: person.evidence_status,
+                    dates: Vec::new(),
+                    parent_keys: Vec::new(),
+                    spouse_keys: Vec::new(),
+                },
+            )
+        })
+        .collect();
+
+    let sql = format!(
+        "SELECT p.person_key, a.value_date_start, a.value_date_end, a.value_text \
+           FROM person p \
+           JOIN assertion a ON a.person_id = p.person_id \
+          WHERE a.assertion_kind IN ('birth_date', 'death_date') \
+            AND ({CURRENT_ASSERTION})"
+    );
+    for row in client.query(&sql, &[])? {
+        let key: String = row.get(0);
+        let Some(person) = people.get_mut(&key) else {
+            continue;
+        };
+        let mut years: BTreeSet<String> = person.dates.iter().cloned().collect();
+        for value in [
+            row.get::<_, Option<String>>(1),
+            row.get::<_, Option<String>>(2),
+            row.get::<_, Option<String>>(3),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            years.extend(years_in(&value));
+        }
+        person.dates = years.into_iter().collect();
+    }
+
+    let parent_sql = "SELECT child.person_key, parent.person_key \
+                        FROM parent_child_link l \
+                        JOIN person child ON child.person_id = l.child_id \
+                        JOIN person parent ON parent.person_id = l.parent_id";
+    for row in client.query(parent_sql, &[])? {
+        let child: String = row.get(0);
+        let parent: String = row.get(1);
+        if let Some(person) = people.get_mut(&child) {
+            person.parent_keys.push(parent);
+        }
+    }
+
+    let spouse_sql = "SELECT p.person_key, s.person_key \
+                        FROM spouse_link l \
+                        JOIN person p ON p.person_id = l.person_id \
+                        JOIN person s ON s.person_id = l.spouse_id \
+                       UNION \
+                      SELECT s.person_key, p.person_key \
+                        FROM spouse_link l \
+                        JOIN person p ON p.person_id = l.person_id \
+                        JOIN person s ON s.person_id = l.spouse_id";
+    for row in client.query(spouse_sql, &[])? {
+        let person: String = row.get(0);
+        let spouse: String = row.get(1);
+        if let Some(entry) = people.get_mut(&person) {
+            entry.spouse_keys.push(spouse);
+        }
+    }
+
+    for person in people.values_mut() {
+        person.dates.sort();
+        person.dates.dedup();
+        person.parent_keys.sort();
+        person.parent_keys.dedup();
+        person.spouse_keys.sort();
+        person.spouse_keys.dedup();
+    }
+    Ok(people.into_values().collect())
+}
+
+/// Reads the original PDF, extracts its layout, proposes people, and persists
+/// only proposed links.
+///
+/// Confirmed and rejected links are preserved exactly: the refresh deletes only
+/// `proposed` rows and the upsert updates only `proposed` rows. A candidate whose
+/// link a reviewer already decided is left out of the returned proposal and is
+/// counted in `preserved_decisions`.
+pub fn propose_layout_links_db(
+    client: &mut Client,
+    asset_id: i64,
+    bytes: &[u8],
+    actor: &str,
+) -> Result<StoredLayoutProposal, GenealogyError> {
+    let asset = client
+        .query_opt(
+            "SELECT a.inventory_id, a.object_number, a.object_generation, i.document_version_id \
+               FROM archive_photograph_asset a \
+               JOIN archive_photograph_inventory i ON i.inventory_id = a.inventory_id \
+              WHERE a.asset_id = $1",
+            &[&asset_id],
+        )?
+        .ok_or_else(|| GenealogyError::Domain(format!("no photograph asset {asset_id}")))?;
+    let inventory_id: i64 = asset.get(0);
+    let object_number: i64 = asset.get(1);
+    let object_generation: i32 = asset.get(2);
+
+    let page_number: i32 = client
+        .query_opt(
+            "SELECT page_number FROM archive_photograph_occurrence \
+              WHERE asset_id = $1 \
+              ORDER BY page_number, occurrence_ordinal \
+              LIMIT 1",
+            &[&asset_id],
+        )?
+        .map(|row| row.get(0))
+        .unwrap_or(1);
+    let caption = caption_for_asset(client, asset_id)?;
+
+    let source =
+        inventory::inventory_bytes(bytes).map_err(|err| GenealogyError::Domain(err.to_string()))?;
+    let placement = source
+        .pages
+        .iter()
+        .find(|page| page.page_number == page_number as u32)
+        .and_then(|page| {
+            page.images.iter().find(|image| {
+                image.object_number == object_number as u32
+                    && image.generation == object_generation as u16
+            })
+        })
+        .and_then(|image| image.placement);
+    let context = photograph_context::extract_context(bytes)
+        .map_err(|err| GenealogyError::Domain(err.to_string()))?;
+    let catalog = load_person_contexts(client)?;
+    let proposal = photograph_context::propose_layout_links(
+        &context,
+        page_number as u32,
+        placement,
+        caption.as_deref(),
+        &catalog,
+    );
+    persist_layout_proposal(
+        client,
+        inventory_id,
+        asset_id,
+        caption.as_deref(),
+        &proposal,
+        actor,
+    )
+}
+
+fn persist_layout_proposal(
+    client: &mut Client,
+    inventory_id: i64,
+    asset_id: i64,
+    caption: Option<&str>,
+    proposal: &LayoutProposal,
+    actor: &str,
+) -> Result<StoredLayoutProposal, GenealogyError> {
+    let mut transaction = client.transaction()?;
+    let existing: BTreeMap<i64, String> = transaction
+        .query(
+            "SELECT person_id, status FROM archive_photograph_person_link \
+              WHERE asset_id = $1",
+            &[&asset_id],
+        )?
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+
+    let mut stored: Vec<StoredLayoutCandidate> = Vec::new();
+    let mut preserved_decisions = 0usize;
+    for candidate in &proposal.candidates {
+        let person_id: i64 = transaction
+            .query_one(
+                "SELECT person_id FROM person WHERE person_key = $1",
+                &[&candidate.person_key],
+            )?
+            .get(0);
+        if let Some(status) = existing.get(&person_id) {
+            if status.as_str() != "proposed" {
+                preserved_decisions += 1;
+                continue;
+            }
+        }
+        stored.push(StoredLayoutCandidate {
+            person_id,
+            person_key: candidate.person_key.clone(),
+            display_name: candidate.display_name.clone(),
+            match_kind: candidate.match_kind.as_str().to_string(),
+            confidence: candidate.confidence.as_str().to_string(),
+            source_kind: candidate.source_kind.as_str().to_string(),
+            source_page: candidate.source_page as i32,
+            supporting_text: candidate.supporting_text.clone(),
+            confidence_basis: candidate.confidence_basis.clone(),
+            ambiguity: candidate.ambiguity.clone(),
+            candidate_rank: candidate.candidate_rank,
+        });
+    }
+
+    let person_ids: Vec<i64> = stored.iter().map(|candidate| candidate.person_id).collect();
+    transaction.execute(
+        "DELETE FROM archive_photograph_person_link \
+          WHERE asset_id = $1 AND status = 'proposed' \
+            AND person_id <> ALL($2::bigint[])",
+        &[&asset_id, &person_ids],
+    )?;
+
+    for candidate in &stored {
+        transaction.execute(
+            "INSERT INTO archive_photograph_person_link \
+                 (asset_id, person_id, status, source_page, supporting_text, \
+                  confidence, confidence_basis, ambiguity_note, match_kind, \
+                  candidate_rank, proposal_origin) \
+             VALUES ($1, $2, 'proposed', $3, $4, $5, $6, $7, $8, $9, 'layout') \
+             ON CONFLICT (asset_id, person_id) DO UPDATE \
+                SET source_page = EXCLUDED.source_page, \
+                    supporting_text = EXCLUDED.supporting_text, \
+                    confidence = EXCLUDED.confidence, \
+                    confidence_basis = EXCLUDED.confidence_basis, \
+                    ambiguity_note = EXCLUDED.ambiguity_note, \
+                    match_kind = EXCLUDED.match_kind, \
+                    candidate_rank = EXCLUDED.candidate_rank, \
+                    proposal_origin = 'layout' \
+              WHERE archive_photograph_person_link.status = 'proposed'",
+            &[
+                &asset_id,
+                &candidate.person_id,
+                &candidate.source_page,
+                &candidate.supporting_text,
+                &candidate.confidence,
+                &candidate.confidence_basis,
+                &candidate.ambiguity,
+                &candidate.match_kind,
+                &candidate.candidate_rank,
+            ],
+        )?;
+    }
+
+    let people: Vec<String> = stored
+        .iter()
+        .map(|candidate| candidate.person_key.clone())
+        .collect();
+    append_event(
+        &mut transaction,
+        inventory_id,
+        &ReviewEvent {
+            operation: "layout_proposals",
+            actor: actor.to_string(),
+            asset_id,
+            link_id: None,
+            person_id: None,
+            prior: "none".to_string(),
+            next: format!("{} proposed", stored.len()),
+            caption: caption.map(str::to_string),
+            people,
+        },
+    )?;
+    transaction.commit()?;
+    Ok(StoredLayoutProposal {
+        candidates: stored,
+        unlinked_reason: proposal.unlinked_reason.clone(),
+        preserved_decisions,
+    })
+}
+
+fn caption_for_asset(client: &mut Client, asset_id: i64) -> Result<Option<String>, GenealogyError> {
+    let row = client.query_opt(
+        "SELECT COALESCE( \
+                  (SELECT NULLIF(btrim(i.caption), '') \
+                     FROM archive_photograph_inventory_image i \
+                    WHERE i.inventory_id = a.inventory_id \
+                      AND i.object_number = a.object_number \
+                      AND i.object_generation = a.object_generation \
+                      AND i.caption IS NOT NULL \
+                      AND btrim(i.caption) <> '' \
+                    ORDER BY i.page_number, i.occurrence_ordinal \
+                    LIMIT 1), \
+                  (SELECT NULLIF(btrim(p.caption), '') \
+                     FROM archive_photograph_inventory_page p \
+                    WHERE p.inventory_id = a.inventory_id \
+                      AND p.page_number = ( \
+                          SELECT o.page_number \
+                            FROM archive_photograph_occurrence o \
+                           WHERE o.asset_id = a.asset_id \
+                           ORDER BY o.page_number, o.occurrence_ordinal \
+                           LIMIT 1) \
+                  ) \
+                ) \
+           FROM archive_photograph_asset a \
+          WHERE a.asset_id = $1",
+        &[&asset_id],
+    )?;
+    Ok(row.and_then(|row| row.get(0)))
+}
+
+/// Extracts four-digit years from a date value.
+fn years_in(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut years = Vec::new();
+    let mut index = 0;
+    while index + 4 <= bytes.len() {
+        if bytes[index..index + 4].iter().all(u8::is_ascii_digit) {
+            let year = &text[index..index + 4];
+            if !years.iter().any(|existing: &String| existing == year) {
+                years.push(year.to_string());
+            }
+            index += 4;
+        } else {
+            index += 1;
+        }
+    }
+    years
+}
 /// Loads one link, or `None` when the pair has no row.
 pub fn load_link<C: GenericClient>(
     client: &mut C,
