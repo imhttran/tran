@@ -271,7 +271,10 @@ pub fn propose_layout_links(
     // 1. An explicit caption (or a caption-like line next to the image) is the
     // strongest source. A caption naming several people is an explicit group.
     if !caption_text.is_empty() {
-        let caption_hits = find_matches(&caption_text, catalog, true);
+        let mut caption_hits = find_matches(&caption_text, catalog, true);
+        if is_name_list_like(&caption_text) {
+            merge_hits(&mut caption_hits, suffix_matches(&caption_text, catalog));
+        }
         let group = caption_hits.len() >= 2 || is_group_phrase(&caption_text);
         let caption_count = caption_hits.len();
         for hit in caption_hits {
@@ -317,29 +320,34 @@ pub fn propose_layout_links(
     }
 
     // 3. Text immediately above or below the image. Only short, caption-like
-    // lines are used; a biography paragraph is handled by the next rule.
-    if caption_text.is_empty() {
-        for line in nearby_lines(page, placement) {
-            if !is_caption_like(&line)
-                && (line.ends_with('.')
-                    || line.ends_with('!')
-                    || line.ends_with('?')
-                    || line.chars().count() > 80
-                    || is_heading_like(&line))
-            {
-                continue;
-            }
-            for hit in find_matches(&line, catalog, false) {
-                add_hit(
-                    &mut hits,
-                    catalog,
-                    hit,
-                    SourceKind::NearbyText,
-                    Confidence::Medium,
-                    page_number,
-                    &line,
-                );
-            }
+    // lines are used; a biography paragraph is handled by the next rule. A
+    // comma-separated name list is also used when an explicit caption exists,
+    // because the list itself is the caption on many archive pages.
+    for line in nearby_lines(page, placement) {
+        let list_like = is_name_list_like(&line);
+        if !caption_text.is_empty() && !list_like {
+            continue;
+        }
+        if !is_caption_like(&line)
+            && !list_like
+            && (!is_label_like(&line) || is_heading_like(&line))
+        {
+            continue;
+        }
+        let mut line_hits = find_matches(&line, catalog, false);
+        if list_like {
+            merge_hits(&mut line_hits, suffix_matches(&line, catalog));
+        }
+        for hit in line_hits {
+            add_hit(
+                &mut hits,
+                catalog,
+                hit,
+                SourceKind::NearbyText,
+                Confidence::Medium,
+                page_number,
+                &line,
+            );
         }
     }
 
@@ -457,6 +465,10 @@ struct NameHit {
     display_name: String,
     match_kind: MatchKind,
     matched_text: String,
+    /// Why a weak or spacing-tolerant match needs care.
+    note: Option<String>,
+    /// Set when several records share the matched words.
+    ambiguity: Option<String>,
 }
 
 /// One candidate while its evidence is being assembled.
@@ -502,6 +514,14 @@ impl CandidateBuilder {
                 "the name tokens appear in a different order; verify the identity".to_string(),
             );
         }
+        if let Some(note) = &hit.note {
+            notes.push(note.clone());
+        }
+        let confidence = if hit.ambiguity.is_some() {
+            confidence.min(Confidence::Low)
+        } else {
+            confidence
+        };
         Self {
             person,
             match_kind: hit.match_kind,
@@ -510,7 +530,7 @@ impl CandidateBuilder {
             source_page,
             supporting_text: supporting_text.to_string(),
             notes,
-            ambiguity: None,
+            ambiguity: hit.ambiguity,
             score: 0,
         }
     }
@@ -738,6 +758,8 @@ fn find_matches(text: &str, catalog: &[PersonContext], allow_single_token: bool)
                             display_name: display_name.clone(),
                             match_kind: *kind,
                             matched_text: joined.clone(),
+                            note: None,
+                            ambiguity: None,
                         },
                     );
                 }
@@ -754,13 +776,157 @@ fn find_matches(text: &str, catalog: &[PersonContext], allow_single_token: bool)
                             display_name: display_name.clone(),
                             match_kind: MatchKind::Reordered,
                             matched_text: joined.clone(),
+                            note: None,
+                            ambiguity: None,
                         },
                     );
                 }
             }
         }
     }
+    // The document's text layer sometimes drops or splits word spaces. Keep the
+    // existing exact/alias/reordered matches and add a spacing-tolerant match
+    // for any recorded name the token windows missed.
+    for hit in compact_matches(text, catalog) {
+        best.entry(hit.person_key.clone()).or_insert(hit);
+    }
     best.into_values().collect()
+}
+
+/// Folds text and removes every space, so noisy PDF spacing cannot hide a name.
+fn compact_fold(text: &str) -> String {
+    person_search::fold(text).split_whitespace().collect()
+}
+
+/// Matches recorded names after ignoring word spaces.
+fn compact_matches(text: &str, catalog: &[PersonContext]) -> Vec<NameHit> {
+    let compact_text = compact_fold(text);
+    if compact_text.is_empty() {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for person in catalog {
+        for name in std::iter::once(&person.display_name).chain(person.aliases.iter()) {
+            let folded = person_search::fold(name);
+            let tokens: Vec<&str> = folded.split_whitespace().collect();
+            if tokens.len() < 2 {
+                continue;
+            }
+            let compact = tokens.join("");
+            if compact.chars().count() < 6 || !compact_text.contains(&compact) {
+                continue;
+            }
+            hits.push(NameHit {
+                person_key: person.person_key.clone(),
+                display_name: person.display_name.clone(),
+                match_kind: MatchKind::Partial,
+                matched_text: compact,
+                note: Some(
+                    "the PDF text layer loses word boundaries; the name matched after ignoring spaces"
+                        .to_string(),
+                ),
+                ambiguity: None,
+            });
+        }
+    }
+    hits
+}
+
+/// Matches the final words of a recorded name in a caption's name list.
+///
+/// Archive captions often give only `Given Middle` for `Surname Given Middle`. The
+/// final two words are used only for comma-separated name lists, never for a
+/// biography sentence. When several records share those words, each candidate
+/// carries an ambiguity note and is downgraded to low confidence.
+fn suffix_matches(text: &str, catalog: &[PersonContext]) -> Vec<NameHit> {
+    let segments: Vec<String> = text
+        .split([',', ';', '/', '&'])
+        .flat_map(|part| part.split(" và "))
+        .flat_map(|part| part.split(" and "))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(compact_fold)
+        .filter(|part| part.chars().count() >= 6)
+        .collect();
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let mut owners: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for person in catalog {
+        for name in std::iter::once(&person.display_name).chain(person.aliases.iter()) {
+            let folded = person_search::fold(name);
+            let tokens: Vec<&str> = folded.split_whitespace().collect();
+            if tokens.len() < 2 {
+                continue;
+            }
+            let suffix = tokens[tokens.len() - 2..].join("");
+            if suffix.chars().count() >= 6 {
+                owners
+                    .entry(suffix)
+                    .or_default()
+                    .insert(person.person_key.clone());
+            }
+        }
+    }
+
+    let mut hits = Vec::new();
+    for person in catalog {
+        for name in std::iter::once(&person.display_name).chain(person.aliases.iter()) {
+            let folded = person_search::fold(name);
+            let tokens: Vec<&str> = folded.split_whitespace().collect();
+            if tokens.len() < 2 {
+                continue;
+            }
+            let suffix = tokens[tokens.len() - 2..].join("");
+            if suffix.chars().count() < 6 {
+                continue;
+            }
+            if !segments.iter().any(|segment| segment.contains(&suffix)) {
+                continue;
+            }
+            let shared = owners.get(&suffix).is_some_and(|people| people.len() > 1);
+            hits.push(NameHit {
+                person_key: person.person_key.clone(),
+                display_name: person.display_name.clone(),
+                match_kind: MatchKind::Partial,
+                matched_text: suffix.clone(),
+                note: Some(
+                    "the caption gives only the final words of the recorded name; verify the identity"
+                        .to_string(),
+                ),
+                ambiguity: shared.then(|| {
+                    "several recorded people share these final name words; choose the right person"
+                        .to_string()
+                }),
+            });
+        }
+    }
+    hits
+}
+
+fn merge_hits(target: &mut Vec<NameHit>, extra: Vec<NameHit>) {
+    let mut seen: BTreeMap<String, usize> = target
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| (hit.person_key.clone(), index))
+        .collect();
+    for hit in extra {
+        match seen.get(&hit.person_key) {
+            Some(&index) => {
+                if target[index].note.is_none() {
+                    target[index].note = hit.note;
+                }
+                if target[index].ambiguity.is_none() {
+                    target[index].ambiguity = hit.ambiguity;
+                }
+            }
+            None => {
+                seen.insert(hit.person_key.clone(), target.len());
+                target.push(hit);
+            }
+        }
+    }
 }
 
 fn record_hit(best: &mut BTreeMap<String, NameHit>, hit: NameHit) {
@@ -1221,15 +1387,14 @@ fn nearby_lines(page: &PageContext, placement: Option<Placement>) -> Vec<String>
     };
     let bottom = placement.y - 150.0;
     let top = placement.y + placement.height + 150.0;
-    let mut lines: Vec<&TextLine> = page
-        .lines
+    // Placement is the whole point of the nearby rule. Do not fall back to
+    // page-wide text when nothing lies in the image's band: a caption on the
+    // other half of the page belongs to a different image.
+    page.lines
         .iter()
         .filter(|line| line.y >= bottom && line.y <= top)
-        .collect();
-    if lines.is_empty() {
-        lines = page.lines.iter().take(6).collect();
-    }
-    lines.into_iter().map(|line| line.text.clone()).collect()
+        .map(|line| line.text.clone())
+        .collect()
 }
 
 fn caption_lines(page: &PageContext, placement: Option<Placement>) -> Vec<String> {
@@ -1268,6 +1433,75 @@ fn biography_lines(page: &PageContext, heading: &Option<TextLine>, caption: &str
         })
         .map(|line| line.text.clone())
         .collect()
+}
+
+/// A short label under or beside a portrait, such as a name and its dates.
+/// A biography sentence that happens to be short is still prose, not a label.
+fn is_label_like(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 50 {
+        return false;
+    }
+    if trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?') {
+        return false;
+    }
+    if trimmed.split_whitespace().count() > 8 {
+        return false;
+    }
+    let lower = format!(" {} ", trimmed.to_lowercase());
+    const PROSE: &[&str] = &[
+        " the ",
+        " was ",
+        " were ",
+        " is ",
+        " are ",
+        " she ",
+        " he ",
+        " his ",
+        " her ",
+        " of ",
+        " in ",
+        " to ",
+        " with ",
+        " for ",
+        " from ",
+        " that ",
+        " this ",
+        " had ",
+        " has ",
+        " have ",
+        " married ",
+        " child ",
+        " children ",
+        " born ",
+        " died ",
+    ];
+    !PROSE.iter().any(|word| lower.contains(word))
+}
+
+/// A short comma- or semicolon-separated list of names, as printed under a
+/// group photograph. A biography sentence with commas is not a name list.
+fn is_name_list_like(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 160 || trimmed.ends_with('.') {
+        return false;
+    }
+    let parts: Vec<&str> = trimmed
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|part| {
+        let words = part.split_whitespace().count();
+        let starts_uppercase = part
+            .chars()
+            .find(|ch| ch.is_alphabetic())
+            .is_some_and(|ch| ch.is_uppercase());
+        (1..=6).contains(&words) && starts_uppercase
+    })
 }
 
 fn is_caption_like(text: &str) -> bool {
@@ -1714,6 +1948,65 @@ mod tests {
         assert_eq!(proposal.candidates[0].source_page, 2);
         assert_eq!(proposal.candidates[0].confidence, Confidence::Low);
     }
+    #[test]
+    fn a_caption_without_word_spaces_still_names_the_person() {
+        let pdf = context_pdf(&[(300.0, "PhotosofSyntheticAlphaFamily")], Some(400.0));
+        let context = extract_context(&pdf).expect("context");
+        let catalog = vec![person("alpha", "Synthetic Alpha", &[])];
+        let proposal = propose_layout_links(&context, 1, Some(placement(400.0)), None, &catalog);
+        assert_eq!(proposal.candidates.len(), 1);
+        assert_eq!(proposal.candidates[0].person_key, "alpha");
+        assert_eq!(proposal.candidates[0].match_kind, MatchKind::Partial);
+        assert_eq!(proposal.candidates[0].source_kind, SourceKind::Caption);
+        assert!(proposal.candidates[0]
+            .confidence_basis
+            .contains("word boundaries"));
+    }
+
+    #[test]
+    fn a_comma_separated_name_list_matches_final_name_words() {
+        let pdf = context_pdf(&[(300.0, "Synthetic Alpha, Synthetic Beta")], Some(400.0));
+        let context = extract_context(&pdf).expect("context");
+        let catalog = vec![
+            person("alpha", "Recorded Synthetic Alpha", &[]),
+            person("beta", "Recorded Synthetic Beta", &[]),
+        ];
+        let proposal = propose_layout_links(&context, 1, Some(placement(400.0)), None, &catalog);
+        assert_eq!(proposal.candidates.len(), 2);
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.source_kind == SourceKind::NearbyText));
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.match_kind == MatchKind::Partial));
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.confidence == Confidence::Medium));
+    }
+
+    #[test]
+    fn a_shared_final_name_is_ambiguous_and_low_confidence() {
+        let pdf = context_pdf(&[(300.0, "Synthetic Alpha, Other Person")], Some(400.0));
+        let context = extract_context(&pdf).expect("context");
+        let catalog = vec![
+            person("first", "Recorded Synthetic Alpha", &[]),
+            person("second", "Second Synthetic Alpha", &[]),
+        ];
+        let proposal = propose_layout_links(&context, 1, Some(placement(400.0)), None, &catalog);
+        assert_eq!(proposal.candidates.len(), 2);
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.confidence == Confidence::Low));
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.ambiguity.is_some()));
+    }
+
     #[test]
     fn separate_nearby_labels_do_not_become_a_group_link() {
         let pdf = context_pdf(
