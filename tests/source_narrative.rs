@@ -960,6 +960,20 @@ fn admin_person_search_matches_accent_alias_and_key_without_changing_names() {
         )
         .expect("alias");
 
+    // The nomination dropdown previously stopped at the first 100 person keys.
+    client
+        .execute(
+            "INSERT INTO person (person_key, display_name)
+             SELECT 'aaa-filler-' || n, 'Synthetic Filler ' || n FROM generate_series(1, 105) n",
+            &[],
+        )
+        .expect("seed initial page");
+    let first_page = rag_foundation::genealogy::query::list_records(&mut client, 100, 0)
+        .expect("initial catalog page");
+    assert!(!first_page
+        .iter()
+        .any(|person| person.person_key == "synthetic-duc-han"));
+
     for query in ["duc han", "ĐỨC HÂN", "duc-han", "tran duc"] {
         let people =
             narrative::search_review_people(&mut client, query, 10).expect("person search");

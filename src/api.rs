@@ -373,6 +373,7 @@ impl AppState {
                 post(admin_photograph_link),
             )
             .route("/api/genealogy/records", get(genealogy_records))
+            .route("/api/genealogy/nomination-persons", get(nomination_people))
             .route("/api/genealogy/tree", get(genealogy_tree))
             .route(
                 "/api/genealogy/head-of-family",
@@ -2468,6 +2469,84 @@ async fn narrative_review_people(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "narrative_review_failed",
                 "the narrative person search failed",
+            )
+        }
+    }
+}
+
+/// Searches the complete catalog with the same permission as nomination.
+#[allow(clippy::result_large_err)]
+async fn nomination_people(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NarrativePersonQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::GenealogyNominate) {
+        return response;
+    }
+    let term = query.q.unwrap_or_default().trim().to_string();
+    if term.chars().count() > 200 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_nomination_person_search",
+            "q must be at most 200 characters",
+        );
+    }
+    let limit = query.limit.unwrap_or(10);
+    if !(1..=20).contains(&limit) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_nomination_person_limit",
+            "limit must be between 1 and 20",
+        );
+    }
+    if term.is_empty() {
+        return Json(serde_json::json!({ "ok": true, "people": [] })).into_response();
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let people = narrative::search_review_people(&mut genealogy, &term, limit)
+            .map_err(narrative_review_error)?;
+        let mut results = Vec::new();
+        for person in people {
+            let sql = format!(
+                "SELECT DISTINCT COALESCE(b.branch_label, a.value_text) AS label
+                   FROM assertion a JOIN person p ON p.person_id = a.person_id
+                   LEFT JOIN family_branch b ON b.branch_key = a.value_text
+                  WHERE p.person_key = $1 AND a.assertion_kind = 'branch_claim'
+                    AND a.review_status = 'verified' AND ({}) ORDER BY label",
+                crate::genealogy::current::CURRENT_ASSERTION
+            );
+            let branches: Vec<String> = genealogy
+                .query(&sql, &[&person.person_key])
+                .map_err(|err| narrative_review_error(GenealogyError::Query(err)))?
+                .iter()
+                .filter_map(|row| row.get::<_, Option<String>>(0))
+                .collect();
+            results.push(serde_json::json!({
+                "record_id": person.person_key,
+                "person_label": person.display_name,
+                "birth": person.birth,
+                "branches": branches,
+            }));
+        }
+        Ok::<_, Response>(results)
+    })
+    .await;
+    match result {
+        Ok(Ok(people)) => Json(serde_json::json!({
+            "ok": true,
+            "people": people,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: nomination person search task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "nomination_search_failed",
+                "the nomination person search failed",
             )
         }
     }

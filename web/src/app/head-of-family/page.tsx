@@ -114,16 +114,6 @@ function HeadOfFamilyContent({ role }: { role: Role | null }) {
         <HeadOfFamilyView
           role={role}
           result={result}
-          onNominate={(recordId, candidateLabel) =>
-            void postJSON("/api/genealogy/nominations", {
-              record_id: recordId,
-              candidate_label: candidateLabel,
-            }).then((outcome) => {
-              if (!outcome.ok) {
-                setMutationError(outcome.message ?? "The nomination failed.");
-              }
-            })
-          }
           onApprove={(nominationId) =>
             void postJSON(
               `/api/genealogy/nominations/${encodeURIComponent(nominationId)}`,

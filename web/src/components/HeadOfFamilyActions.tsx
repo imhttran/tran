@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { NominationPersonSelector } from "@/components/NominationPersonSelector";
+
 import { canApproveOrRevoke, canNominate } from "@/lib/experience-contract";
 import type { Role } from "@/lib/experience-contract";
 
@@ -201,28 +203,12 @@ export function HeadOfFamilyActions({ role }: { role: Role | null }) {
             });
           }}
         >
-          <label htmlFor="hof-record-select">Catalog record</label>
-          <select
-            id="hof-record-select"
-            data-testid="hof-record-select"
-            value={selected}
-            onChange={(event) => setSelected(event.target.value)}
-          >
-            <option value="">Select a record</option>
-            {records.map((record) => (
-              <option key={record.record_id} value={record.record_id}>
-                {record.person_label}
-              </option>
-            ))}
-          </select>
-          <label htmlFor="hof-nomination-label">Candidate label</label>
-          <input
-            id="hof-nomination-label"
-            data-testid="hof-nomination-label"
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
-          />
-          <button type="submit" data-testid="hof-nominate-submit">
+          <NominationPersonSelector onSelect={(person) => {
+            setSelected(person?.record_id ?? "");
+            setLabel(person?.person_label ?? "");
+            setPending(null);
+          }} />
+          <button type="submit" disabled={!selected || busy} data-testid="hof-nominate-submit">
             Nominate
           </button>
         </form>

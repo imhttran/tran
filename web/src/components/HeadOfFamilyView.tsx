@@ -20,7 +20,6 @@ import type { HeadOfFamilyResult, Role } from "@/lib/experience-contract";
 type Props = {
   role: Role | null;
   result: HeadOfFamilyResult;
-  onNominate: (recordId: string, candidateLabel: string) => void;
   onApprove: (nominationId: string) => void;
   onRevoke: (appointmentId: string, reason: string) => void;
 };
@@ -129,25 +128,18 @@ function ConfirmDialog({
 export function HeadOfFamilyView({
   role,
   result,
-  onNominate,
   onApprove,
   onRevoke,
 }: Props) {
-  const [pendingNomination, setPendingNomination] = useState<{
-    recordId: string;
-    candidateLabel: string;
-  } | null>(null);
   const [pendingApprove, setPendingApprove] = useState<string | null>(null);
   const [pendingRevoke, setPendingRevoke] = useState<{
     appointmentId: string;
     reason: string;
   } | null>(null);
-  const [candidateLabel, setCandidateLabel] = useState("");
   const [revokeReason, setRevokeReason] = useState("");
   const [openSource, setOpenSource] = useState<OpenSource | null>(null);
 
   useEffect(() => {
-    setPendingNomination(null);
     setPendingApprove(null);
     setPendingRevoke(null);
   }, [result.kind]);
@@ -339,31 +331,7 @@ export function HeadOfFamilyView({
               </div>
 
               {canNominate(role) ? (
-                <form
-                  className="hof-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (candidateLabel.trim() === "") return;
-                    rememberOpener();
-                    setPendingNomination({
-                      recordId: conclusion.record_id ?? conclusion.conclusion,
-                      candidateLabel: candidateLabel.trim(),
-                    });
-                  }}
-                >
-                  <label htmlFor={`nominate-${index}`}>
-                    Nominate a candidate
-                  </label>
-                  <input
-                    id={`nominate-${index}`}
-                    value={candidateLabel}
-                    onChange={(event) => setCandidateLabel(event.target.value)}
-                    data-testid="nomination-input"
-                  />
-                  <button type="submit" data-testid="nominate-button">
-                    Nominate
-                  </button>
-                </form>
+                <a href="#hof-record-select">Find a person to nominate</a>
               ) : null}
 
               {canApproveOrRevoke(role) ? (
@@ -418,22 +386,6 @@ export function HeadOfFamilyView({
       )}
 
       <SourceDialog source={openSource} onClose={() => setOpenSource(null)} />
-
-      {pendingNomination ? (
-        <ConfirmDialog
-          title="Confirm nomination"
-          description={`Nominate ${pendingNomination.candidateLabel}?`}
-          confirmLabel="Confirm nomination"
-          onConfirm={() => {
-            onNominate(
-              pendingNomination.recordId,
-              pendingNomination.candidateLabel,
-            );
-            setPendingNomination(null);
-          }}
-          onCancel={() => setPendingNomination(null)}
-        />
-      ) : null}
 
       {pendingApprove ? (
         <ConfirmDialog

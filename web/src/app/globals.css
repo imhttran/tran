@@ -4471,3 +4471,9 @@ footer.page-footer {
         border-radius: var(--radius-md);
     }
 }
+
+/* Nomination search preserves focus on the combobox during keyboard selection. */
+.person-selector { min-width: 0; }
+.person-selector [role="listbox"] { list-style: none; padding: 0; max-height: 20rem; overflow-y: auto; }
+.person-selector [role="option"] { padding: 0.65rem; cursor: pointer; overflow-wrap: anywhere; }
+.person-selector [role="option"][aria-selected="true"] { outline: 2px solid currentColor; outline-offset: -2px; }

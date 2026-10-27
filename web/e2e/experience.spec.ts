@@ -245,11 +245,14 @@ test.describe("head of family", () => {
       return route.fulfill({ status: 201, contentType: "application/json", body: `` });
     });
     await page.goto("/head-of-family");
-    await page.getByTestId("nomination-input").first().fill("Candidate X");
-    await page.getByTestId("nominate-button").first().click();
-    await expect(page.getByTestId("confirm-dialog")).toBeVisible();
-    await page.getByTestId("cancel-button").click();
-    await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
+    await page.route("**/api/genealogy/nomination-persons?*", (route) =>
+      route.fulfill({ json: { people: [{ record_id: "synthetic-candidate", person_label: "Candidate X", branches: [] }] } }));
+    await page.getByRole("combobox").fill("Candidate X");
+    await page.getByRole("option").click();
+    await page.getByTestId("hof-nominate-submit").click();
+    await expect(page.getByTestId("hof-confirm")).toBeVisible();
+    await page.getByTestId("hof-confirm-cancel").click();
+    await expect(page.getByTestId("hof-confirm")).toHaveCount(0);
     expect(nominations).toBe(0);
     await assertNoSensitive(page);
   });
