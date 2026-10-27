@@ -695,7 +695,7 @@ test.describe("source of truth", () => {
   });
 });
 
-test("keeps the stage-three light and dark tokens", async ({ page }) => {
+test("keeps the shared light and dark tokens", async ({ page }) => {
   await signIn(page, ADMIN);
   await stubSubmissions(page);
   await stubExtraction(page);
@@ -710,7 +710,7 @@ test("keeps the stage-three light and dark tokens", async ({ page }) => {
           .toLowerCase(),
       ),
     )
-    .toBe("#fafafb");
+    .toBe("#f6f6f7");
 
   await page.emulateMedia({ colorScheme: "dark" });
   await expect
@@ -722,5 +722,5 @@ test("keeps the stage-three light and dark tokens", async ({ page }) => {
           .toLowerCase(),
       ),
     )
-    .toBe("#08090a");
+    .toBe("#121214");
 });

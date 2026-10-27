@@ -340,7 +340,7 @@ test.describe("Head of Family surface", () => {
     expect(await expectNoHorizontalOverflow(page)).toBe(true);
   });
 
-  test("keeps the stage-three light and dark tokens", async ({ page }) => {
+  test("keeps the shared light and dark tokens", async ({ page }) => {
     await mockSession(page, "viewer");
     await mockHead(page, 200, availableBody);
     await mockGenealogy(page);
@@ -355,7 +355,7 @@ test.describe("Head of Family surface", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#fafafb");
+      .toBe("#f6f6f7");
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expect
@@ -367,6 +367,6 @@ test.describe("Head of Family surface", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#08090a");
+      .toBe("#121214");
   });
 });
