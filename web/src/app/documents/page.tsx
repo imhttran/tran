@@ -38,6 +38,51 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The request failed.";
 }
 
+// Explicit review labels. The raw stored value stays available in the API, but
+// the workspace shows a readable chip so a status is never ambiguous.
+function reviewLabel(status: string): string {
+  switch (status) {
+    case "pending_review":
+      return "Pending review";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    default:
+      return status;
+  }
+}
+
+function processingLabel(status: string): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Failed";
+    case "processing":
+      return "Processing";
+    default:
+      return status;
+  }
+}
+
+function jobStatusLabel(status: string): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "processing":
+      return "Processing";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Failed";
+    default:
+      return status;
+  }
+}
+
 export default function DocumentsPage() {
   return (
     <ExperienceShell>
@@ -52,7 +97,8 @@ function DocumentsContent({ role }: { role: Role | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState<(typeof CATEGORIES)[number]>("other");
+  const [category, setCategory] =
+    useState<(typeof CATEGORIES)[number]>("other");
   const [scope, setScope] = useState<"family" | "admin_only">("family");
   const [reviewNote, setReviewNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -136,12 +182,23 @@ function DocumentsContent({ role }: { role: Role | null }) {
         title="Family documents"
         subtitle="Upload family stories, letters, and records. An administrator reviews each submission before it can appear in Ask the archive."
       />
-      {error ? <p className="insufficient" role="alert" data-testid="documents-error">{error}</p> : null}
-      {message ? <p className="form-status ok" data-testid="documents-message">{message}</p> : null}
+      {error ? (
+        <p className="insufficient" role="alert" data-testid="documents-error">
+          {error}
+        </p>
+      ) : null}
+      {message ? (
+        <p className="form-status ok" data-testid="documents-message">
+          {message}
+        </p>
+      ) : null}
 
       <DocumentUploadGuidance />
 
-      <section className="status-panel" data-testid="document-upload">
+      <section
+        className="status-panel documents-panel"
+        data-testid="document-upload"
+      >
         <h2>Submit a document</h2>
         <div className="documents-form">
           <label>
@@ -174,10 +231,14 @@ function DocumentsContent({ role }: { role: Role | null }) {
             Category
             <select
               value={category}
-              onChange={(event) => setCategory(event.target.value as (typeof CATEGORIES)[number])}
+              onChange={(event) =>
+                setCategory(event.target.value as (typeof CATEGORIES)[number])
+              }
             >
               {CATEGORIES.map((value) => (
-                <option key={value} value={value}>{value}</option>
+                <option key={value} value={value}>
+                  {value}
+                </option>
               ))}
             </select>
           </label>
@@ -185,13 +246,20 @@ function DocumentsContent({ role }: { role: Role | null }) {
             Visibility
             <select
               value={scope}
-              onChange={(event) => setScope(event.target.value as "family" | "admin_only")}
+              onChange={(event) =>
+                setScope(event.target.value as "family" | "admin_only")
+              }
             >
               <option value="family">family</option>
               <option value="admin_only">admin only</option>
             </select>
           </label>
-          <button type="button" onClick={() => void upload()} disabled={!file || busy} data-testid="submit-document">
+          <button
+            type="button"
+            onClick={() => void upload()}
+            disabled={!file || busy}
+            data-testid="submit-document"
+          >
             Submit for review
           </button>
         </div>
@@ -205,10 +273,14 @@ function DocumentsContent({ role }: { role: Role | null }) {
               type="button"
               disabled={busy}
               data-testid="run-document-jobs"
-              onClick={() => void act(async () => {
-                const result = await runDocumentJobs();
-                setMessage(`Processed ${result.processed.length} queued job(s).`);
-              }, "Processing queue run complete.")}
+              onClick={() =>
+                void act(async () => {
+                  const result = await runDocumentJobs();
+                  setMessage(
+                    `Processed ${result.processed.length} queued job(s).`,
+                  );
+                }, "Processing queue run complete.")
+              }
             >
               Run processing queue
             </button>
@@ -216,30 +288,57 @@ function DocumentsContent({ role }: { role: Role | null }) {
           {jobs.length === 0 ? (
             <p className="hint">No processing jobs yet.</p>
           ) : (
-            <table className="bulk-table">
-              <thead>
-                <tr><th scope="col">Job</th><th scope="col">Version</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Error</th><th scope="col">Action</th></tr>
-              </thead>
-              <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.job_id}>
-                    <td>{job.job_id}</td>
-                    <td>{job.version_id}</td>
-                    <td><span className="badge">{job.status}</span></td>
-                    <td>{job.attempts}/{job.max_attempts}</td>
-                    <td className="hint">{job.last_error ?? "—"}</td>
-                    <td>
-                      {job.status === "failed" ? (
-                        <button type="button" disabled={busy} onClick={() => void act(
-                          () => retryDocumentJob(job.job_id),
-                          `Retried job ${job.job_id}.`,
-                        )}>Retry</button>
-                      ) : "—"}
-                    </td>
+            <div className="documents-table-wrap">
+              <table className="bulk-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Job</th>
+                    <th scope="col">Version</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Attempts</th>
+                    <th scope="col">Error</th>
+                    <th scope="col">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {jobs.map((job) => (
+                    <tr key={job.job_id}>
+                      <td data-label="Job">{job.job_id}</td>
+                      <td data-label="Version">{job.version_id}</td>
+                      <td data-label="Status">
+                        <span className={`status-chip status-${job.status}`}>
+                          {jobStatusLabel(job.status)}
+                        </span>
+                      </td>
+                      <td data-label="Attempts">
+                        {job.attempts}/{job.max_attempts}
+                      </td>
+                      <td className="hint" data-label="Error">
+                        {job.last_error ?? "—"}
+                      </td>
+                      <td data-label="Action">
+                        {job.status === "failed" ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              void act(
+                                () => retryDocumentJob(job.job_id),
+                                `Retried job ${job.job_id}.`,
+                              )
+                            }
+                          >
+                            Retry
+                          </button>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       ) : null}
@@ -249,105 +348,158 @@ function DocumentsContent({ role }: { role: Role | null }) {
         {submissions.length === 0 ? (
           <p className="hint">No submissions are visible to this account.</p>
         ) : (
-          <table className="bulk-table">
-            <thead>
-              <tr>
-                <th scope="col">Document</th>
-                <th scope="col">Review</th>
-                <th scope="col">Processing</th>
-                <th scope="col">Visibility</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {submissions.map((item) => (
-                <tr key={item.version_id} data-testid={`document-row-${item.version_id}`}>
-                  <td>
-                    <strong>{item.title}</strong>
-                    <div className="hint">
-                      v{item.version_number} · {item.category} · {item.original_filename}
-                    </div>
-                  </td>
-                  <td><span className="badge">{item.review_status}</span></td>
-                  <td><span className="badge">{item.processing_status}</span></td>
-                  <td>{item.access_scope ?? "—"}</td>
-                  <td>
-                    <div className="documents-actions">
-                      <a href={`/api/documents/submissions/${item.version_id}/content`} target="_blank" rel="noreferrer">
-                        Preview
-                      </a>
-                      {admin ? (
-                        <>
-                          <button
-                            type="button"
-                            disabled={busy || item.review_status === "approved"}
-                            onClick={() => void act(
-                              () => reviewDocument(item.version_id, {
-                                approve: true,
-                                // Keep the stored scope. Omitting it when the row
-                                // has none lets the server decide instead of
-                                // silently broadening a legacy row to family.
-                                ...(item.access_scope ? { scope: item.access_scope } : {}),
-                              }),
-                              `Approved submission ${item.version_id}.`,
-                            )}
-                          >
-                            Approve
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || item.review_status === "rejected"}
-                            onClick={() => void act(
-                              () => reviewDocument(item.version_id, {
-                                approve: false,
-                                note: reviewNote.trim() || "Not suitable for publication",
-                              }),
-                              `Rejected submission ${item.version_id}.`,
-                            )}
-                          >
-                            Reject
-                          </button>
-                          <select
-                            value={item.access_scope ?? "family"}
-                            onChange={(event) => void act(
-                              () => changeDocumentScope(item.version_id, event.target.value as "family" | "admin_only"),
-                              `Changed visibility for submission ${item.version_id}.`,
-                            )}
-                            disabled={busy}
-                          >
-                            <option value="family">family</option>
-                            <option value="admin_only">admin only</option>
-                          </select>
-                          <button
-                            type="button"
-                            disabled={busy || item.processing_status === "ready" || item.review_status !== "approved"}
-                            onClick={() => void act(
-                              () => processDocument(item.version_id),
-                              item.origin === "legacy_import"
-                                ? `Promoted legacy submission ${item.version_id}.`
-                                : `Queued submission ${item.version_id} for processing.`,
-                            )}
-                          >
-                            {item.origin === "legacy_import" ? "Promote" : "Process"}
-                          </button>
-                        </>
-                      ) : null}
-                      <button
-                        type="button"
-                        disabled={busy || item.removed_at !== null}
-                        onClick={() => void act(
-                          () => removeDocument(item.version_id),
-                          `Removed submission ${item.version_id} from effective access.`,
-                        )}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </td>
+          <div className="documents-table-wrap">
+            <table className="bulk-table">
+              <thead>
+                <tr>
+                  <th scope="col">Document</th>
+                  <th scope="col">Review</th>
+                  <th scope="col">Processing</th>
+                  <th scope="col">Visibility</th>
+                  <th scope="col">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {submissions.map((item) => (
+                  <tr
+                    key={item.version_id}
+                    data-testid={`document-row-${item.version_id}`}
+                  >
+                    <td className="documents-cell-title" data-label="Document">
+                      <strong>{item.title}</strong>
+                      <div className="hint">
+                        v{item.version_number} · {item.category} ·{" "}
+                        {item.original_filename}
+                      </div>
+                    </td>
+                    <td data-label="Review">
+                      <span
+                        className={`status-chip status-${item.review_status}`}
+                      >
+                        {reviewLabel(item.review_status)}
+                      </span>
+                    </td>
+                    <td data-label="Processing">
+                      <span
+                        className={`status-chip status-${item.processing_status}`}
+                      >
+                        {processingLabel(item.processing_status)}
+                      </span>
+                    </td>
+                    <td data-label="Visibility">{item.access_scope ?? "—"}</td>
+                    <td data-label="Actions">
+                      <div className="documents-actions">
+                        <a
+                          href={`/api/documents/submissions/${item.version_id}/content`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Preview
+                        </a>
+                        {admin ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={
+                                busy || item.review_status === "approved"
+                              }
+                              onClick={() =>
+                                void act(
+                                  () =>
+                                    reviewDocument(item.version_id, {
+                                      approve: true,
+                                      // Keep the stored scope. Omitting it when the row
+                                      // has none lets the server decide instead of
+                                      // silently broadening a legacy row to family.
+                                      ...(item.access_scope
+                                        ? { scope: item.access_scope }
+                                        : {}),
+                                    }),
+                                  `Approved submission ${item.version_id}.`,
+                                )
+                              }
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={
+                                busy || item.review_status === "rejected"
+                              }
+                              onClick={() =>
+                                void act(
+                                  () =>
+                                    reviewDocument(item.version_id, {
+                                      approve: false,
+                                      note:
+                                        reviewNote.trim() ||
+                                        "Not suitable for publication",
+                                    }),
+                                  `Rejected submission ${item.version_id}.`,
+                                )
+                              }
+                            >
+                              Reject
+                            </button>
+                            <select
+                              value={item.access_scope ?? "family"}
+                              onChange={(event) =>
+                                void act(
+                                  () =>
+                                    changeDocumentScope(
+                                      item.version_id,
+                                      event.target.value as
+                                        "family" | "admin_only",
+                                    ),
+                                  `Changed visibility for submission ${item.version_id}.`,
+                                )
+                              }
+                              disabled={busy}
+                            >
+                              <option value="family">family</option>
+                              <option value="admin_only">admin only</option>
+                            </select>
+                            <button
+                              type="button"
+                              disabled={
+                                busy ||
+                                item.processing_status === "ready" ||
+                                item.review_status !== "approved"
+                              }
+                              onClick={() =>
+                                void act(
+                                  () => processDocument(item.version_id),
+                                  item.origin === "legacy_import"
+                                    ? `Promoted legacy submission ${item.version_id}.`
+                                    : `Queued submission ${item.version_id} for processing.`,
+                                )
+                              }
+                            >
+                              {item.origin === "legacy_import"
+                                ? "Promote"
+                                : "Process"}
+                            </button>
+                          </>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={busy || item.removed_at !== null}
+                          onClick={() =>
+                            void act(
+                              () => removeDocument(item.version_id),
+                              `Removed submission ${item.version_id} from effective access.`,
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {admin ? (
           <label className="documents-note">

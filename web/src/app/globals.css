@@ -3153,6 +3153,236 @@ footer.page-footer {
     }
 }
 
+/* UI-501 — documents, admin review, and branch review read as the stage-three
+   surface. All rules below are workspace-scoped additions or overrides; no
+   token value changes. */
+.documents-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+}
+.documents-table-wrap .bulk-table {
+    min-width: 560px;
+}
+.documents-cell-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.status-unprocessed,
+.status-queued,
+.status-processing {
+    background: var(--info-soft);
+    color: var(--fg);
+}
+.status-ready,
+.status-verified,
+.status-submitted {
+    background: var(--ok-soft);
+    color: var(--ok);
+}
+.status-failed {
+    background: var(--err-soft);
+    color: var(--err);
+}
+.documents-panel,
+[data-testid="document-jobs"],
+[data-testid="document-list"] {
+    min-width: 0;
+}
+.documents-panel h2,
+[data-testid="document-jobs"] h2,
+[data-testid="document-list"] h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+.documents-actions button,
+.documents-actions a {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+}
+.documents-actions select {
+    min-height: 40px;
+    max-width: 100%;
+}
+.documents-note input {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+@media (max-width: 600px) {
+    .documents-panel,
+    [data-testid="document-jobs"],
+    [data-testid="document-list"] {
+        padding: 14px;
+        border-radius: var(--radius-md);
+    }
+    .documents-form {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .documents-form input,
+    .documents-form select,
+    .documents-form textarea {
+        min-width: 0;
+        max-width: 100%;
+    }
+    /* Wide tables become stacked rows so a document keeps its labels and
+       actions without horizontal scrolling. */
+    .documents-table-wrap .bulk-table {
+        min-width: 0;
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+    .documents-table-wrap thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+    .documents-table-wrap tbody,
+    .documents-table-wrap tr,
+    .documents-table-wrap td {
+        display: block;
+        width: 100%;
+    }
+    .documents-table-wrap tr {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--card);
+        padding: 12px 14px;
+        margin-top: 10px;
+    }
+    .documents-table-wrap td {
+        border: 0;
+        padding: 5px 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .documents-table-wrap td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 2px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+    .documents-table-wrap td.documents-cell-title::before {
+        display: none;
+    }
+    .documents-table-wrap td.documents-cell-title {
+        padding-bottom: 8px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid var(--line);
+    }
+    .documents-cell-title strong {
+        font-size: 1.02rem;
+        line-height: 1.35;
+    }
+    .documents-actions {
+        margin-top: 4px;
+    }
+    .review-toolbar label,
+    .review-toolbar select {
+        width: 100%;
+        min-width: 0;
+    }
+    .review-toolbar {
+        align-items: stretch;
+    }
+    .review-list {
+        min-width: 0;
+    }
+    .review-confirm,
+    .review-blocked {
+        overflow-wrap: anywhere;
+    }
+}
+
+/* Keep the review queue and detail inside the shell at any width. */
+.review-workspace,
+.review-queue,
+.review-detail,
+.review-compare,
+.review-history {
+    min-width: 0;
+    max-width: 100%;
+}
+.review-list,
+.review-history ol {
+    min-width: 0;
+}
+.review-row {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.review-detail-heading h2 {
+    overflow-wrap: anywhere;
+}
+/* The generic `button:hover:not(:disabled)` rule out-specifies
+   `.review-row.selected`, which painted a hovered selected row with the
+   primary action background. Scope the row states so the queue stays legible. */
+.review-queue .review-row:hover {
+    background: var(--surface);
+    border-color: var(--accent);
+}
+.review-queue .review-row.selected,
+.review-queue .review-row.selected:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+    /* The dark danger token is a light red, so white text would be unreadable. */
+    .review-actions .button-danger {
+        color: var(--bg);
+    }
+}
+.review-queue-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
+.review-queue-heading h2,
+.review-queue-heading h3 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+.review-queue-count {
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+.review-detail .review-meta .status-chip {
+    margin-left: auto;
+}
+.review-action-destructive {
+    margin-left: auto;
+}
+@media (max-width: 600px) {
+    .review-action-destructive {
+        margin-left: 0;
+    }
+}
+.review-empty-panel,
+.review-placeholder {
+    background: var(--surface);
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius-md);
+    padding: 18px 16px;
+    color: var(--muted);
+    margin: 0;
+}
 /* Stage-one state panels shared by every family profile outcome. */
 .state-panel {
     padding: 18px 20px;

@@ -197,7 +197,11 @@ export function ReviewConsole({ role }: { role: Role | null }) {
       {error ? (
         <div data-testid="review-error">
           <FormStatus status={{ kind: "error", text: error }} />
-          <button type="button" onClick={() => void load(null, false)}>
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => void load(null, false)}
+          >
             Try again
           </button>
         </div>
@@ -205,12 +209,18 @@ export function ReviewConsole({ role }: { role: Role | null }) {
 
       <div className="review-workspace" data-testid="review-console">
         <section className="review-queue" aria-label="Submitted revisions">
+          <div className="review-queue-heading">
+            <h2>Submissions</h2>
+            <span className="review-queue-count">
+              {entries.length} shown{nextCursor ? " · more available" : ""}
+            </span>
+          </div>
           {loading && !loaded ? (
             <p className="hint" role="status" data-testid="review-loading">
               Loading submitted revisions…
             </p>
           ) : entries.length === 0 ? (
-            <p className="hint" data-testid="review-empty">
+            <p className="hint review-empty-panel" data-testid="review-empty">
               No submissions match this filter.
             </p>
           ) : (
@@ -270,7 +280,7 @@ export function ReviewConsole({ role }: { role: Role | null }) {
           data-testid="review-detail"
         >
           {!selectedId ? (
-            <p className="hint">
+            <p className="hint review-placeholder">
               Select a submission to compare the proposal with the last approved
               value.
             </p>
@@ -367,9 +377,8 @@ function ReviewDetailPanel({
                 {entry.current_approved.value}
               </p>
               <p className="hint">
-                {visibilityLabel(entry.current_approved.visibility)} ·
-                approved revision{" "}
-                {entry.current_approved.approved_revision_number}
+                {visibilityLabel(entry.current_approved.visibility)} · approved
+                revision {entry.current_approved.approved_revision_number}
               </p>
             </div>
           ) : (
@@ -398,7 +407,10 @@ function ReviewDetailPanel({
       </div>
 
       {entry.can_decide ? (
-        <section className="review-decision" aria-labelledby="review-decision-heading">
+        <section
+          className="review-decision"
+          aria-labelledby="review-decision-heading"
+        >
           <h3 id="review-decision-heading">Decision</h3>
           <label htmlFor="review-note">Reviewer note</label>
           <textarea
@@ -416,7 +428,11 @@ function ReviewDetailPanel({
           </p>
 
           {confirm ? (
-            <div className="review-confirm" data-testid="review-confirm" role="alert">
+            <div
+              className="review-confirm"
+              data-testid="review-confirm"
+              role="alert"
+            >
               <p>
                 {confirm === "approve"
                   ? "Approve this submission? The approved value will be replaced atomically."
@@ -465,7 +481,7 @@ function ReviewDetailPanel({
               </button>
               <button
                 type="button"
-                className="button-danger"
+                className="button-danger review-action-destructive"
                 onClick={() => onAsk("reject")}
                 data-testid="review-reject"
               >
@@ -480,7 +496,10 @@ function ReviewDetailPanel({
         </p>
       )}
 
-      <section className="review-history" aria-labelledby="review-history-heading">
+      <section
+        className="review-history"
+        aria-labelledby="review-history-heading"
+      >
         <h3 id="review-history-heading">Review history</h3>
         {events.length === 0 ? (
           <p className="hint">No review events recorded.</p>
@@ -501,7 +520,10 @@ function ReviewDetailPanel({
         {history.length > 0 ? (
           <>
             <h3>Earlier submitted versions</h3>
-            <ol className="review-history-list" data-testid="review-version-history">
+            <ol
+              className="review-history-list"
+              data-testid="review-version-history"
+            >
               {history.map((item) => (
                 <li key={item.revision_id}>
                   <div className="review-history-heading">
@@ -583,7 +605,9 @@ function MediaSummary({
   return (
     <div data-testid={testId}>
       <p>
-        <strong>{media.kind === "profile_photo" ? "Photo" : "Personal document"}</strong>
+        <strong>
+          {media.kind === "profile_photo" ? "Photo" : "Personal document"}
+        </strong>
       </p>
       <p className="hint">
         {media.file_name ?? "Unnamed file"}

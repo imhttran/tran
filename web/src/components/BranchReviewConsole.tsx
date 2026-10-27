@@ -231,9 +231,13 @@ export function BranchReviewConsole() {
       <>
         <PageTitle title="Branch review" />
         <PageHeader title="Branch review" />
-        <p className="hint" role="status" data-testid="branch-review-loading">
-          Checking your branch review authority…
-        </p>
+        <section
+          className="state-panel state-panel-loading"
+          role="status"
+          data-testid="branch-review-loading"
+        >
+          <p className="hint">Checking your branch review authority…</p>
+        </section>
       </>
     );
   }
@@ -256,7 +260,10 @@ export function BranchReviewConsole() {
           title="Branch review"
           subtitle="Review shared family information within an authorized branch."
         />
-        <section className="card" data-testid="branch-review-no-authority">
+        <section
+          className="state-panel state-panel-empty"
+          data-testid="branch-review-no-authority"
+        >
           <h2>No branch review authority</h2>
           <p>{authority.reason}</p>
           <p className="hint">
@@ -323,7 +330,11 @@ export function BranchReviewConsole() {
       {error ? (
         <div data-testid="branch-review-error">
           <FormStatus status={{ kind: "error", text: error }} />
-          <button type="button" onClick={() => void load(null, false)}>
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => void load(null, false)}
+          >
             Try again
           </button>
         </div>
@@ -331,12 +342,25 @@ export function BranchReviewConsole() {
 
       <div className="review-workspace" data-testid="branch-review-console">
         <section className="review-queue" aria-label="Shared-fact submissions">
+          <div className="review-queue-heading">
+            <h2>Submissions</h2>
+            <span className="review-queue-count">
+              {entries.length} shown{nextCursor ? " · more available" : ""}
+            </span>
+          </div>
           {loading && !loaded ? (
-            <p className="hint" role="status" data-testid="branch-review-loading">
+            <p
+              className="hint"
+              role="status"
+              data-testid="branch-review-loading"
+            >
               Loading branch submissions…
             </p>
           ) : entries.length === 0 ? (
-            <p className="hint" data-testid="branch-review-empty">
+            <p
+              className="hint review-empty-panel"
+              data-testid="branch-review-empty"
+            >
               No shared-fact submissions match this filter in your branches.
             </p>
           ) : (
@@ -360,7 +384,10 @@ export function BranchReviewConsole() {
                     </span>
                     <span>
                       {branchLabel(proposal.branch_key, authority.grants)} ·{" "}
-                      {factLabel(proposal.assertion_kind, proposal.assertion_key)}
+                      {factLabel(
+                        proposal.assertion_kind,
+                        proposal.assertion_key,
+                      )}
                     </span>
                     <span className="hint">
                       Submitted {formatDate(proposal.submitted_at)} · proposal{" "}
@@ -394,7 +421,7 @@ export function BranchReviewConsole() {
           data-testid="branch-review-detail"
         >
           {!selectedId ? (
-            <p className="hint">
+            <p className="hint review-placeholder">
               Select a submission to compare the proposed fact with the verified
               value and its sources.
             </p>
@@ -645,7 +672,7 @@ function BranchDetailPanel({
               </button>
               <button
                 type="button"
-                className="button-danger"
+                className="button-danger review-action-destructive"
                 onClick={() => onAsk("reject")}
                 data-testid="branch-review-reject"
               >
