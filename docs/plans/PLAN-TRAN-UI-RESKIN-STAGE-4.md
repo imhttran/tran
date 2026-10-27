@@ -1,6 +1,7 @@
 # Implementation Plan — Tran UI reskin, stage 4
 
-**Status:** Ready for implementation.
+**Status:** Implemented; awaiting review. Evidence is in
+[`ui-reskin/stage-4`](../reports/ui-reskin/stage-4/README.md).
 
 ## Project
 

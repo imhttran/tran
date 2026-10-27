@@ -207,6 +207,8 @@ async function newPage(
 }
 
 async function shot(page, name) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(100);
   await page.screenshot({
     path: path.join(outDir, `${name}.png`),
     fullPage: true,
