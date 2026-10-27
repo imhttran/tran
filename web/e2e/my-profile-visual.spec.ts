@@ -332,7 +332,7 @@ test.describe("owner profile visual layout", () => {
     await expect(page.getByTestId("profile-input-whatsapp")).toHaveCount(0);
   });
 
-  test("applies the stage-three light and dark tokens", async ({ page }) => {
+  test("applies the shared light and dark tokens", async ({ page }) => {
     await stub(page, PROFILE);
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/profile");
@@ -345,7 +345,7 @@ test.describe("owner profile visual layout", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#fafafb");
+      .toBe("#f6f6f7");
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expect
@@ -357,6 +357,6 @@ test.describe("owner profile visual layout", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#08090a");
+      .toBe("#121214");
   });
 });

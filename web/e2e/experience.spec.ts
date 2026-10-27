@@ -464,7 +464,7 @@ test.describe("navigation", () => {
     await expect(page.getByTestId("site-nav")).toHaveCount(0);
   });
 
-  test("light and dark themes use the stage-three tokens", async ({ page }) => {
+  test("light and dark themes use the shared tokens", async ({ page }) => {
     await signIn(page, "viewer");
     await page.goto("/ask");
 
@@ -478,7 +478,7 @@ test.describe("navigation", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#fafafb");
+      .toBe("#f6f6f7");
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expect
@@ -490,7 +490,7 @@ test.describe("navigation", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#08090a");
+      .toBe("#121214");
   });
 });
 

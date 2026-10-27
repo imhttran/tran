@@ -446,7 +446,7 @@ test.describe("branch review console", () => {
   });
 });
 
-test("keeps the stage-three light and dark tokens", async ({ page }) => {
+test("keeps the shared light and dark tokens", async ({ page }) => {
   await stubDocuments(page);
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/documents");
@@ -459,7 +459,7 @@ test("keeps the stage-three light and dark tokens", async ({ page }) => {
           .toLowerCase(),
       ),
     )
-    .toBe("#fafafb");
+    .toBe("#f6f6f7");
 
   await page.emulateMedia({ colorScheme: "dark" });
   await expect
@@ -471,5 +471,5 @@ test("keeps the stage-three light and dark tokens", async ({ page }) => {
           .toLowerCase(),
       ),
     )
-    .toBe("#08090a");
+    .toBe("#121214");
 });

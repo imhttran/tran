@@ -85,7 +85,7 @@ test.describe("sign in", () => {
     await assertNoOverflow(page);
   });
 
-  test("keeps the stage-three light and dark tokens", async ({ page }) => {
+  test("keeps the shared light and dark tokens", async ({ page }) => {
     await stubSession(page, ANONYMOUS);
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/signin");
@@ -98,7 +98,7 @@ test.describe("sign in", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#fafafb");
+      .toBe("#f6f6f7");
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expect
@@ -110,7 +110,7 @@ test.describe("sign in", () => {
             .toLowerCase(),
         ),
       )
-      .toBe("#08090a");
+      .toBe("#121214");
   });
 });
 

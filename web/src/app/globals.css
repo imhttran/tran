@@ -1,30 +1,32 @@
 :root {
     color-scheme: light dark;
 
-    /* Neutral surfaces */
-    --bg: #fafafb;
+    /* Linear-inspired palette anchors (light):
+       bg #F6F6F7 / card #FFFFFF / surface #F0F0F2 / fg #222326 / accent #4F5DB8.
+       Every other colour token derives from these five anchors. */
+    --bg: #f6f6f7;
     --card: #ffffff;
-    --surface: #f3f4f6;
-    --surface-strong: #e9eaed;
+    --surface: #f0f0f2;
+    --surface-strong: #e6e6e9;
 
     /* Text */
-    --fg: #18191b;
-    --muted: #60646c;
+    --fg: #222326;
+    --muted: #5c5f66;
 
     /* Borders */
-    --line: #e2e4e8;
-    --line-strong: #80858e;
+    --line: #e2e2e6;
+    --line-strong: #75787f;
 
-    /* Restrained jade accent */
-    --accent: #0f6b4a;
-    --accent-strong: #0b5639;
-    --accent-soft: #e8f3ed;
-    --accent-soft-strong: #d5eadd;
+    /* Muted indigo accent */
+    --accent: #4f5db8;
+    --accent-strong: #3d4a96;
+    --accent-soft: #ecedf8;
+    --accent-soft-strong: #dcdff3;
     --accent-contrast: #ffffff;
 
-    /* Neutral primary action. Green stays reserved for emphasis. */
-    --action-bg: #202124;
-    --action-hover: #34363b;
+    /* Neutral primary action. Indigo and status hues stay reserved. */
+    --action-bg: #222326;
+    --action-hover: #36373c;
     --action-fg: #ffffff;
 
     /* Status */
@@ -32,10 +34,10 @@
     --warn: #8a5b00;
     --err: #b42318;
     --warn-soft: #fdf4df;
-    --warn-line: #ecd9a8;
+    --warn-line: #e6cf9b;
     --ok-soft: #e6f4ea;
     --err-soft: #fceceb;
-    --info-soft: #eef1f0;
+    --info-soft: #eceef2;
 
     /* Radii */
     --radius-sm: 8px;
@@ -50,14 +52,17 @@
     --space-4: 16px;
     --space-5: 24px;
 
-    /* Shadows */
-    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+    /* Shadows: graphite base from the palette, theme-scoped */
+    --shadow-sm: 0 1px 2px rgba(18, 18, 20, 0.06);
     --shadow-card:
-        0 1px 2px rgba(16, 24, 40, 0.05),
-        0 8px 24px -20px rgba(16, 24, 40, 0.35);
+        0 1px 2px rgba(18, 18, 20, 0.05),
+        0 8px 24px -20px rgba(18, 18, 20, 0.3);
+
+    /* Dialog backdrop: graphite dim, theme-scoped */
+    --backdrop: rgba(18, 18, 20, 0.6);
 
     /* Focus */
-    --focus-ring: #0f6b4a;
+    --focus-ring: #4f5db8;
     --focus-offset: 2px;
 
     /* Type */
@@ -70,41 +75,48 @@
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg: #08090a;
-        --card: #111214;
-        --surface: #191b1f;
-        --surface-strong: #24272d;
+        /* Linear-inspired palette anchors (dark):
+           bg #121214 / card #1B1B1E / surface #29292D / fg #F4F5F8 /
+           accent #A0A9F8. Every other colour token derives from these. */
+        --bg: #121214;
+        --card: #1b1b1e;
+        --surface: #29292d;
+        --surface-strong: #35353a;
 
-        --fg: #f1f2f4;
-        --muted: #a2a7b0;
+        --fg: #f4f5f8;
+        --muted: #a6a8b0;
 
-        --line: #2a2d33;
-        --line-strong: #707782;
+        --line: #2e2e33;
+        --line-strong: #76787f;
 
-        --accent: #4ccf95;
-        --accent-strong: #6fe0ac;
-        --accent-soft: #122a20;
-        --accent-soft-strong: #1a3a2b;
-        --accent-contrast: #082018;
+        --accent: #a0a9f8;
+        --accent-strong: #bcc3fb;
+        --accent-soft: #23263a;
+        --accent-soft-strong: #2e3250;
+        --accent-contrast: #121214;
 
-        --action-bg: #e6e8eb;
+        --action-bg: #f4f5f8;
         --action-hover: #ffffff;
-        --action-fg: #111214;
+        --action-fg: #121214;
 
         --ok: #5ecc86;
         --warn: #e0b355;
+        /* Stays a light red so the `color: var(--bg)` danger overrides read. */
         --err: #f28b82;
         --warn-soft: #2c2413;
         --warn-line: #4a3c1c;
         --ok-soft: #16291d;
         --err-soft: #331a19;
-        --info-soft: #1b211f;
+        --info-soft: #1e1f24;
 
         --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
         --shadow-card:
             0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 26px -20px rgba(0, 0, 0, 0.8);
 
-        --focus-ring: #6fe0ac;
+        /* Dark backdrop dims harder so a light card still separates. */
+        --backdrop: rgba(0, 0, 0, 0.7);
+
+        --focus-ring: #a0a9f8;
     }
 }
 
@@ -368,7 +380,7 @@ button:disabled {
 
 .button-danger {
     background: var(--err);
-    color: #fff;
+    color: var(--accent-contrast);
 }
 .button-danger:hover:not(:disabled) {
     background: var(--err);
@@ -1025,7 +1037,7 @@ footer.page-footer {
     color: var(--fg);
 }
 .source-dialog::backdrop {
-    background: rgba(8, 20, 16, 0.55);
+    background: var(--backdrop);
 }
 .source-dialog dl {
     display: grid;
@@ -1250,7 +1262,7 @@ footer.page-footer {
     fill: var(--card);
     stroke: var(--line-strong);
     stroke-width: 1.5;
-    filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.12));
+    filter: drop-shadow(0 2px 2px rgba(18, 18, 20, 0.14));
 }
 .family-node:hover rect,
 .family-node:focus rect {
@@ -2736,7 +2748,7 @@ footer.page-footer {
     overflow: hidden;
 }
 .personal-history-dialog::backdrop {
-    background: rgba(8, 20, 16, 0.55);
+    background: var(--backdrop);
 }
 .personal-history-dialog[open] {
     display: flex;
