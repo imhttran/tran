@@ -9,9 +9,14 @@ import path from "node:path";
 // UI check, whose real backend refusal is covered by the API contract crate).
 
 const repo = path.resolve(process.cwd(), "..");
+// Screenshots refresh the tracked evidence only on request. A normal run writes
+// to the git-ignored web/test-results/evidence/ folder instead, so a test run
+// never leaves modified PNGs in git.
 const screenshots = path.join(
   repo,
-  "docs/reports/rust-migration/web-e2e",
+  process.env.E2E_UPDATE_EVIDENCE === "1"
+    ? "docs/reports/rust-migration/web-e2e"
+    : "web/test-results/evidence",
 );
 
 test.beforeAll(() => {
