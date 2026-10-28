@@ -1,8 +1,11 @@
-//! Answer prompts with a local Ollama model.
+//! Answer prompts with a local model.
 //!
-//! Ported from the Go baseline in `internal/generation/generation.go`. The
-//! endpoint path (`/api/generate`), the JSON request (`model`, `prompt`,
-//! `stream: false`), and the JSON response (`response`) mirror the baseline.
+//! [`OllamaGenerator`] is ported from the Go baseline in
+//! `internal/generation/generation.go`: the endpoint path (`/api/generate`), the
+//! JSON request (`model`, `prompt`, `stream: false`), and the JSON response
+//! (`response`) mirror the baseline. [`OpenAICompatibleGenerator`] sends the
+//! same prompt to any OpenAI-compatible server (for example oMLX) through
+//! `/v1/chat/completions`.
 
 use crate::ollama::{OllamaClient, OllamaError};
 use thiserror::Error;
@@ -11,6 +14,14 @@ use thiserror::Error;
 /// a concrete implementation, so tests can substitute a stub.
 pub trait Generator: Send + Sync {
     fn generate(&self, prompt: &str) -> Result<String, GenerationError>;
+}
+
+/// Lets a provider chosen at runtime stand wherever a concrete generator is
+/// expected.
+impl Generator for Box<dyn Generator> {
+    fn generate(&self, prompt: &str) -> Result<String, GenerationError> {
+        (**self).generate(prompt)
+    }
 }
 
 /// The Ollama endpoint used for generation.
@@ -48,6 +59,10 @@ pub enum GenerationError {
     /// The transport, status, or decode layer failed.
     #[error("generate answer: {0}")]
     Client(#[from] OllamaError),
+    /// An OpenAI-compatible reply carried no message content, or only a
+    /// thinking block.
+    #[error("generate answer: the reply had no message content")]
+    EmptyReply,
 }
 
 /// Produces text with a specific Ollama model.
@@ -73,6 +88,131 @@ impl Generator for OllamaGenerator {
         let result: GenerateResponse = self.client.post_json(GENERATE_PATH, &request)?;
         Ok(result.response)
     }
+}
+
+/// The OpenAI-compatible endpoint used for generation, relative to the server
+/// root.
+pub const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
+
+#[derive(serde::Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct ChatTemplateKwargs {
+    enable_thinking: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: [ChatMessage<'a>; 1],
+    stream: bool,
+    /// `0` keeps answers repeatable across runs.
+    temperature: f32,
+    /// Asks hybrid reasoning models (Qwen3, MiniCPM5) to answer without a
+    /// thinking pass; servers and models that do not support it ignore it.
+    chat_template_kwargs: ChatTemplateKwargs,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatResponse {
+    #[serde(default)]
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatChoice {
+    message: ChatReply,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatReply {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// Produces text with a model on an OpenAI-compatible server (for example
+/// oMLX, LM Studio, or llama.cpp's server).
+///
+/// The prompt is sent as one user message with `stream: false`, temperature
+/// `0`, and thinking disabled. If a reasoning model still emits a
+/// `<think>...</think>` block it is removed from the reply, so callers see only
+/// the answer and its citations. A reply that is empty once thinking is removed
+/// (for example a model cut off mid-thought) is [`GenerationError::EmptyReply`].
+pub struct OpenAICompatibleGenerator {
+    client: OllamaClient,
+    model: String,
+}
+
+impl OpenAICompatibleGenerator {
+    /// Returns a generator for `model` on the server behind `client`. The
+    /// client's base URL is the server root; a trailing `/v1` is accepted.
+    pub fn new(client: OllamaClient, model: impl Into<String>) -> Self {
+        Self {
+            client,
+            model: model.into(),
+        }
+    }
+
+    fn path(&self) -> &'static str {
+        if self.client.base_url().ends_with("/v1") {
+            "/chat/completions"
+        } else {
+            CHAT_COMPLETIONS_PATH
+        }
+    }
+}
+
+impl Generator for OpenAICompatibleGenerator {
+    fn generate(&self, prompt: &str) -> Result<String, GenerationError> {
+        let request = ChatRequest {
+            model: &self.model,
+            messages: [ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+            stream: false,
+            temperature: 0.0,
+            chat_template_kwargs: ChatTemplateKwargs {
+                enable_thinking: false,
+            },
+        };
+        let reply: ChatResponse = self.client.post_json(self.path(), &request)?;
+        let content = reply
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message.content)
+            .ok_or(GenerationError::EmptyReply)?;
+        let answer = strip_thinking(&content);
+        if answer.is_empty() {
+            return Err(GenerationError::EmptyReply);
+        }
+        Ok(answer)
+    }
+}
+
+/// Removes `<think>...</think>` blocks a reasoning model may put before its
+/// answer. An unclosed block means the model never reached its answer, so
+/// nothing after `<think>` is kept.
+pub fn strip_thinking(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 #[cfg(test)]
@@ -189,5 +329,119 @@ mod tests {
             timeout: Duration::from_secs(1),
         });
         assert!(err.to_string().contains("timed out"));
+    }
+
+    fn openai_generator(transport: Arc<MockTransport>, base: &str) -> OpenAICompatibleGenerator {
+        OpenAICompatibleGenerator::new(
+            OllamaClient::new(base, transport, Duration::from_secs(300)),
+            "Qwen3-4B-4bit",
+        )
+    }
+
+    #[test]
+    fn openai_compatible_request_path_and_body_match_contract() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"choices":[{"message":{"role":"assistant","content":"hi there"}}]}"#.to_vec(),
+        )));
+        let g = openai_generator(transport.clone(), "http://127.0.0.1:8000");
+
+        assert_eq!(g.generate("say hi").unwrap(), "hi there");
+
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "http://127.0.0.1:8000/v1/chat/completions");
+        let body: serde_json::Value = serde_json::from_slice(&seen[0].1).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "model": "Qwen3-4B-4bit",
+                "messages": [{"role": "user", "content": "say hi"}],
+                "stream": false,
+                "temperature": 0.0,
+                "chat_template_kwargs": {"enable_thinking": false}
+            })
+        );
+    }
+
+    #[test]
+    fn openai_compatible_accepts_a_base_url_ending_in_v1() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"choices":[{"message":{"content":"ok"}}]}"#.to_vec(),
+        )));
+        let g = openai_generator(transport.clone(), "http://localhost:8000/v1/");
+        assert_eq!(g.generate("x").unwrap(), "ok");
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "http://localhost:8000/v1/chat/completions");
+    }
+
+    #[test]
+    fn openai_compatible_removes_a_thinking_block() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"choices":[{"message":{"content":"<think>\nreasoning here\n</think>\n\nThe answer [a.md]."}}]}"#
+                .to_vec(),
+        )));
+        let g = openai_generator(transport, "http://127.0.0.1:8000");
+        assert_eq!(g.generate("q").unwrap(), "The answer [a.md].");
+    }
+
+    #[test]
+    fn openai_compatible_reply_without_content_is_an_error() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((200, "200 OK".into(), br#"{"choices":[]}"#.to_vec())));
+        let g = openai_generator(transport, "http://127.0.0.1:8000");
+        assert!(matches!(g.generate("q"), Err(GenerationError::EmptyReply)));
+    }
+
+    #[test]
+    fn openai_compatible_reply_with_only_thinking_is_an_error() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"choices":[{"message":{"content":"<think>ran out of tokens"}}]}"#.to_vec(),
+        )));
+        let g = openai_generator(transport, "http://127.0.0.1:8000");
+        assert!(matches!(g.generate("q"), Err(GenerationError::EmptyReply)));
+    }
+
+    #[test]
+    fn openai_compatible_error_status_is_reported() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            404,
+            "Not Found".into(),
+            br#"{"error":"model not found"}"#.to_vec(),
+        )));
+        let g = openai_generator(transport, "http://127.0.0.1:8000");
+        let err = g.generate("q").unwrap_err().to_string();
+        assert!(err.contains("404"), "{err}");
+        assert!(err.contains("model not found"), "{err}");
+    }
+
+    #[test]
+    fn strip_thinking_keeps_plain_text_and_drops_an_unclosed_block() {
+        assert_eq!(strip_thinking("  plain answer "), "plain answer");
+        assert_eq!(strip_thinking("<think>a</think>x<think>b</think>y"), "xy");
+        assert_eq!(strip_thinking("<think>never finished"), "");
+    }
+
+    #[test]
+    fn a_boxed_generator_delegates() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"response":"boxed"}"#.to_vec(),
+        )));
+        let boxed: Box<dyn Generator> = Box::new(generator(transport));
+        assert_eq!(boxed.generate("q").unwrap(), "boxed");
     }
 }
