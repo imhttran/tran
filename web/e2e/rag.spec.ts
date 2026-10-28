@@ -296,9 +296,10 @@ test.describe.serial("RUST-008A browser integration", () => {
     await expect(page.getByTestId("question-input")).toHaveValue(
       'What does the archive say about "Archive Test Section"?',
     );
+    // The model may paraphrase: accept any distinctive fact from the section.
     await askUntilCited(
       page,
-      /ZX-ASK-SUGGESTION-2026/i,
+      /ZX-ASK-SUGGESTION-2026|suggested questions are drawn from approved archive content/i,
       /ask-suggestions\.md/,
     );
 
@@ -312,7 +313,7 @@ test.describe.serial("RUST-008A browser integration", () => {
     await expect(page.getByTestId("question-input")).toHaveValue(
       'What does the archive say about "Marigold Ledger"?',
     );
-    await askUntilCited(page, /Willowmere/i, /ask-suggestions\.md/);
+    await askUntilCited(page, /Willowmere|harvest/i, /ask-suggestions\.md/);
   });
 });
 
