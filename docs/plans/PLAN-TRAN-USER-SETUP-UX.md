@@ -1,97 +1,379 @@
-# PLAN-TRAN-USER-SETUP-UX — A clearer member setup experience for admins and invitees
+# Implementation Plan
 
-**Status:** PROPOSED. Design only; nothing implemented.
-**Repository:** https://github.com/imhttran/tran
-**Canonical requirements:** `docs/plans/PLAN-TRAN-USER-ONBOARDING.md` and `docs/plans/PLAN-TRAN-BULK-ONBOARDING.md`. This plan changes presentation and flow only; every security, privacy and review rule in those plans still applies.
-**Builds on:** PR #127 (`docs/plans/PLAN-TRAN-BULK-ONBOARD-TABLE.md`), which added names, masked contact, a complete load, filters and a wider layout to the bulk preview table. Its approved decision lets admin-only onboarding views show a person's display name and a server-masked verified email; this plan extends that decision to the batch status table and the Accounts list.
+## Project
 
-## Problem
+Tran genealogy — Member setup experience: names everywhere, a person picker for
+linking, and editable usernames
 
-**Admin → Family Members** (`web/src/app/admin/family-members/page.tsx`) shows two separate lists:
+## Summary
 
-1. **Bulk onboard**: one row per genealogy person. Since PR #127 the preview table shows the display name, a masked contact, status, proposed username and warnings, with status/contact/search filters. After **Prepare**, the batch status table still labels each row by `person_key` only.
-2. **Accounts** (`web/src/components/AccountsAdmin.tsx`): one row per OIDC identity, labelled by `subject @ issuer`, with an Actions drawer where the admin types a raw person key to link.
+**Admin → Family Members** (`web/src/app/admin/family-members/page.tsx`) is
+where an admin sets up family members. PR #127
+(`docs/plans/PLAN-TRAN-BULK-ONBOARD-TABLE.md`) gave the bulk preview table
+names, a masked contact, a complete load and filters. Three problems remain:
 
-What goes wrong for the admin:
+1. **Two views still show IDs instead of names.** After **Prepare**, the batch
+   status table labels each row by `person_key` only. The Accounts list
+   (`web/src/components/AccountsAdmin.tsx`) shows a linked person as
+   `person_key` and leads with `subject @ issuer`.
+2. **Linking means typing a person key by hand.** The Accounts list's link form
+   is a free-text "Person key" box. A typo links the wrong person, and the
+   confirmation repeats the same key back.
+3. **The proposed username cannot be edited.** `PLAN-TRAN-USER-ONBOARDING.md`
+   requires an admin confirmation for ambiguous Vietnamese name parsing and
+   username collisions, but the preview only displays the proposal.
 
-- **Some views still show IDs instead of names.** The preview table is fixed, but the batch status table and `FamilyMember.linked_person` carry no display name, and no view shows a branch.
-- **One person appears in two places.** A person who has been prepared, invited, signed in and is waiting for link review is split across both lists. Nothing answers "where is this person in setup?"
-- **Linking means typing a person key by hand.** A typo can link the wrong person. The confirmation helps, but it repeats the same key back.
-- **The next step is hard to find.** Preview, select, prepare, verify email and send are separate controls in separate sections, and the admin has to work out the order.
-- **The proposed username cannot be edited.** The onboarding plan requires an admin confirmation for ambiguous Vietnamese name parsing and username collisions, but the UI only displays the proposal.
+This plan fixes all three. It changes presentation and flow only; every
+security, privacy and review rule in `PLAN-TRAN-USER-ONBOARDING.md` and
+`PLAN-TRAN-BULK-ONBOARDING.md` still applies.
 
-What goes wrong for the invitee:
+Approved decision (extends PR #127's): admin-only onboarding and account views
+may show a person's display name and verified branch labels. No contact detail
+beyond PR #127's masked email is added anywhere.
 
-- No invitation-landing or "awaiting review" page exists in `web/src/app`. Someone who signs in before their person link is reviewed probably sees a generic `DenialView`. **This needs a runtime check** with a synthetic unlinked user before step 5 is designed.
+### Later work (not in this plan)
 
-## Goals / explicit boundaries
+These need design input before they can be planned as tasks:
 
-- An admin can answer "who is set up, who is stuck, and what do I do next?" from one list, using names.
-- An invitee always knows what state they are in after they sign in.
-- **Out of scope:** self-signup, auto-linking by name/email/birthday match, a messaging centre, bulk password resets, and any new role or grant. A reviewed account-person link is still the only thing that grants person-level access.
-- **Public repository.** Mockups, screenshots, fixtures and tests use synthetic people only (e.g. `Nguyen Van An`).
+- **One list with a setup stage per person.** Merge the bulk table and the
+  Accounts list into one roster keyed by person, with a stage chip
+  (`Not invited → Prepared → Invited → Signed in, awaiting review → Active`) and
+  one primary button for the next step. Needs a mockup in `docs/mockups/` built
+  on PR #127's table and filters.
+- **Invitee pages.** A "You were invited as *Name*. Is this you?" page after the
+  activation link, and an "An admin is reviewing your link" page for a
+  signed-in, unlinked account. Needs a runtime check first of what an unlinked
+  synthetic user sees today; no such page exists in `web/src/app`.
 
-## Stages
+### How execution works in this repository
 
-### SETUP-001 — Show names in the remaining views
+SOP's command policy classifies `cargo` and `psql` as `REQUIRES_APPROVAL`, and
+that class cannot be loosened by project configuration. The agent therefore
+cannot run a build, a test, or a migration, and must not spend its window trying
+to. The SOP validation stage runs the configured commands after the edit,
+supplies the runtime evidence, and drives the FIX cycle when they fail.
 
-Done in PR #127: the preview table shows the display name with `person_key` as secondary text, and a masked contact column.
+Consequences for every task below:
 
-Remaining:
+- Read only the files the task names. Do not re-read a file already read in the
+  same task.
+- Write the code and the report; do not attempt to compile, test, lint, migrate,
+  or query a database.
+- State in the closing message what was changed and what the validation stage
+  must prove. Do not claim a command was run.
+- Acceptance criteria describe outcomes the validation stage verifies.
 
-- Add `display_name` to the batch status items and to `FamilyMember.linked_person`. Read it server-side from the genealogy database under the existing admin check; the browser never supplies it. Reuse the display-name read PR #127 added to `src/onboarding/candidate.rs` rather than a second query.
-- In the batch status table, render the Person cell the same way the preview table does (name in bold, key below), and use the name in the "Verified email for …" label.
-- In the Accounts list, show the linked person's name instead of the key, and move `subject @ issuer` into the expanded details.
-- Optional: a branch label in all three views, if one is cheap to read alongside the name. Drop it if it needs a new query.
-- If the genealogy store is unavailable (`linkage: "unavailable"`), fall back to the key and keep the existing notice.
+### Boundaries that apply to every task
 
-**Pass:** no admin row is labelled by `person_key` alone when the genealogy store is up; unit/E2E tests use synthetic names.
+- **No migration.** `person.display_name`, branch claims, links and username
+  reservations already exist. Do not add or change a migration.
+- **Server decides.** Names, branches, link state and username validity come
+  from the Rust API under the existing admin checks. The browser never supplies
+  a name, a branch, or an approval.
+- **Reuse, don't duplicate.** Person search reuses `validate_person_search`
+  (`src/api.rs`) and `appointments::search_nomination_people`
+  (`src/genealogy/appointments.rs`). Username validation reuses
+  `src/onboarding/username.rs`. The web picker reuses
+  `web/src/components/NominationPersonSelector.tsx`.
+- **No auto-linking.** Search only helps the admin choose; the reviewed,
+  confirmed link action stays the only thing that grants person-level access.
+- **Synthetic fixtures only.** Tests use made-up names such as `Nguyen Van An`
+  and `example.test` addresses. No real family name or address enters a
+  committed file.
+- **Isolated databases only.** Integration tests use
+  `tests/support/genealogy_isolation.rs`, never the operator database.
+- **Bounded context.** Change only the files each task names and keep each
+  task's diff small. `.agents/` stays out of every diff.
 
-### SETUP-002 — Pick the person by searching for a name
+## USX-101 — Names in the batch status and the linked person
 
-- Replace the free-text "Person key" box in the link form with a search-as-you-type picker that returns name, branch, birth year (if approved for admin view) and key.
-- Reuse the existing bounded search validation (`validate_person_search` in `src/api.rs`, already shared by the narrative and nomination person lists). Add an admin-only route and avoid a second search implementation.
-- Exclude people who already have an active link, and show why when they are excluded.
-- The confirmation dialog names the person ("Link *jane@example.test* to **Nguyen Van An** (Branch 2)?").
+Return the person's display name wherever the admin API currently returns only
+a `person_key`.
 
-**Pass:** the link form cannot be submitted with an unknown key; already-linked people cannot be chosen; non-admin requests are denied.
+Files you may change: `src/api.rs` (the `bulk_batch_status` query and JSON
+mapping only), `src/admin_members.rs` (the `LinkedPerson` struct and the
+`linked_people` query only).
 
-### SETUP-003 — Let the admin edit the username before preparing
+- In `bulk_batch_status`, the item query already joins `person`; also select
+  `person.display_name` and add `display_name` to each item's JSON.
+- In `admin_members.rs`, add `display_name: String` to `LinkedPerson` and select
+  `p.display_name` in `linked_people`, which already joins `person`.
+- Keep `person_key` in both responses; the UI still shows it as secondary text.
 
-- In the preview table, make the proposed username editable for preparable rows, prefilled with the policy proposal.
-- Send per-person username overrides with `bulkPrepare`. The server re-applies the existing username policy, normalization and case-insensitive uniqueness check; a rejected override returns the existing `username_policy` / `username_collision` reason for that row.
-- Flag ambiguous name parses visually so the admin knows which rows to look at.
+### Dependencies
 
-**Pass:** an override that breaks policy or collides is rejected per row without failing the batch; an accepted override is the reserved username.
+None
 
-### SETUP-004 — One list with a setup stage for each person
+### Deliverables
 
-Mock this up in `docs/mockups/` before coding, starting from PR #127's preview table: its name and contact columns, status-card toggles, "No contact" toggle and accent-insensitive search are the base of the merged list, not something to replace.
+- The query and struct changes above.
+- Updated unit-test fixtures in `src/admin_members.rs` so they compile with the
+  new field.
 
-- Merge the two lists into one roster keyed by genealogy person, plus a short "Unlinked accounts" section for identities that signed in without a matching invitation.
-- Each row shows a stage chip:
-  `Not invited → Prepared → Invited → Signed in, awaiting review → Active`, plus `Needs review`, `Not eligible`, and `Deactivated`.
-- Each row has one primary button for its next step: **Prepare**, **Add verified email**, **Send invitation**, **Resend**, **Review link**. Role, password reset, unlink and deactivate stay in the secondary Actions drawer.
-- Extend the existing status-card toggles to cover the new stages (e.g. "Awaiting review") and make them the default view, replacing the Accounts list's separate status/role filters. Bulk actions apply to the selected rows.
-- The server computes the stage; the UI only renders it.
+### Acceptance Criteria
 
-**Pass:** for the synthetic 6-person fixture used by BULK-005, each person appears exactly once with the correct stage, and the primary button matches the stage.
+- Each batch status item has `display_name`.
+- Each `linked_person` in the family-members list has `display_name`.
+- No other field of either response changes.
+- The crate compiles and the unit tests pass under the SOP validation stage.
 
-### SETUP-005 — Invitee pages
+## USX-102 — Admin API coverage for the names
 
-Depends on the runtime check above.
+Prove the new fields against a disposable database.
 
-- **Welcome page** reached from the activation link after sign-in: "You were invited as **Nguyen Van An**. Is this you?" with *Yes, that's me* and *No, this isn't me*. Confirming records the claim for admin review; it grants nothing by itself.
-- **Awaiting review page** for a signed-in, unlinked account: explains that an admin is reviewing the link and what the member can do in the meantime (edit their own private account profile, per the onboarding plan).
-- Replace the generic denial for this state only; real permission denials stay unchanged.
-- No existence leaks: an expired or wrong token shows a generic message.
+Files you may change: `tests/onboarding_admin_api.rs`, `tests/admin_members.rs`.
 
-**Pass:** an unlinked synthetic user sees the awaiting-review page instead of the denial; an expired token reveals nothing about the invited person.
+### Dependencies
 
-## Suggested delivery
+- USX-101
 
-- **PR 1:** the rest of SETUP-001, plus SETUP-002 and SETUP-003. Small, independent of the redesign, and removes the riskiest manual step (typing keys).
-- **PR 2:** SETUP-004 after the mockup is agreed.
-- **PR 3:** SETUP-005 after the runtime check of today's invitee experience.
+### Deliverables
 
-Each PR runs the existing Rust, migration and Playwright gates and uses synthetic data only.
+- A test that prepares a batch for one synthetic person and asserts the batch
+  status item carries that person's `display_name`.
+- A test that links a synthetic account to a synthetic person and asserts the
+  family-members list returns the person's `display_name` in `linked_person`.
+
+### Acceptance Criteria
+
+- Both tests fail if the field is removed.
+- The suites use only their own disposable databases.
+
+## USX-103 — Admin person search for linking
+
+Give the link form a server-side search that returns people the admin can
+choose, with link state.
+
+Files you may change: `src/api.rs` (a new route and handler next to
+`create_link`), `src/admin_members.rs` (one new read-only function),
+`tests/admin_members.rs`.
+
+- Add `GET /api/admin/family-members/people?q=&limit=`, authorized with
+  `Operation::OnboardingLink` (the same operation as `create_link`).
+- Validate with `validate_person_search` and search with
+  `appointments::search_nomination_people`, as `nomination_people` does. Use
+  error codes `invalid_member_person_search` and
+  `invalid_member_person_limit`.
+- Add `linked_person_keys(genealogy, &[String]) -> Result<HashSet<String>, String>`
+  to `admin_members.rs`, using the same active-link rule as `linked_people`.
+- Return the same shape as `nomination_people` (`record_id`, `person_label`,
+  `birth`, `branches`) plus `linked: bool`.
+
+### Dependencies
+
+None
+
+### Deliverables
+
+- The route, handler, and read function above.
+- Tests: an admin search finds a synthetic person by an unaccented name;
+  an already-linked person comes back with `linked: true`; a non-admin is
+  denied; an empty query returns no people; an over-long query is rejected.
+
+### Acceptance Criteria
+
+- The handler performs no write.
+- A caller without `OnboardingLink` receives the existing denial.
+- The search shares validation and query code with `nomination_people`; no
+  second search implementation exists.
+
+## USX-104 — Show names in the batch table and the Accounts list
+
+Render the names returned by USX-101.
+
+Files you may change: `web/src/lib/api.ts`,
+`web/src/app/admin/family-members/page.tsx` (the batch status table only),
+`web/src/components/AccountsAdmin.tsx`.
+
+- Types: add `display_name: string` to the batch status item type and to
+  `FamilyMember.linked_person`.
+- Batch status table: rename the "Person key" column to "Person" and render it
+  like the preview table's Person cell (name in bold, key below in smaller
+  muted text). Use the name in the "Verified email for …" label. Keep every
+  `data-label` matching its header.
+- Accounts list: show "Linked to *Name*" with the key and username as secondary
+  text. Move `subject @ issuer` out of the always-visible meta line into the
+  Actions drawer.
+- When `linkage` is `"unavailable"`, keep the existing notice and fallback.
+
+### Dependencies
+
+- USX-101
+
+### Deliverables
+
+- The type and render changes above.
+
+### Acceptance Criteria
+
+- No row in the batch status table or the Accounts list is labelled by
+  `person_key` alone when the genealogy store is up.
+- `subject @ issuer` is still reachable in the Actions drawer.
+- The TypeScript build passes.
+
+## USX-105 — Person picker in the link form
+
+Replace the free-text person key box with a search picker.
+
+Files you may change: `web/src/components/NominationPersonSelector.tsx`,
+`web/src/components/AccountsAdmin.tsx`.
+
+- Add an optional `endpoint` prop to `NominationPersonSelector`, defaulting to
+  the current `/api/genealogy/nomination-persons` URL so existing callers are
+  unchanged. Add an optional `isDisabled(person)` prop so the caller can mark
+  results that cannot be chosen.
+- In `AccountsAdmin`, use the selector with
+  `/api/admin/family-members/people`. Results with `linked: true` are shown but
+  disabled, with the text "Already linked".
+- The pending link action carries the chosen person's label and branches. The
+  confirmation reads "Confirm you reviewed the identity proof and link *who* to
+  **Name** (branches)?".
+- "Link after review" stays disabled until a person is chosen from the results;
+  typed text alone can never be submitted.
+
+### Dependencies
+
+- USX-103
+- USX-104
+
+### Deliverables
+
+- The prop additions and the link form change above.
+
+### Acceptance Criteria
+
+- The link form cannot submit a key that did not come from a search result.
+- An already-linked person cannot be chosen.
+- The nomination page's use of the selector behaves exactly as before.
+- The TypeScript build passes.
+
+## USX-106 — Admin username override at preparation
+
+Let the admin replace a proposed username when preparing, with the server
+enforcing the existing policy.
+
+Files you may change: `src/onboarding/username.rs`,
+`src/onboarding/reservation.rs`, `src/onboarding/batch.rs`, `src/api.rs` (the
+`BulkPrepareRequest` struct and the `bulk_prepare` mapping only),
+`tests/onboarding_bulk.rs`.
+
+- `username.rs`: add `validate_override(&str) -> Result<String, UsernameError>`
+  that applies the same normalization and character rules as
+  `candidate_username` and returns the display username.
+- `reservation.rs`: let `reserve` take an `Option<&str>` override. When present,
+  validate it and try it instead of `candidate_username(parts)`, with the same
+  case-insensitive uniqueness check and numeric suffix loop. An active
+  reservation is still returned unchanged; an override never replaces one.
+- `batch.rs`: pass each person's override through to `reserve`. A rejected
+  override records the existing `username_policy` or `username_collision`
+  reason for that row only.
+- `api.rs`: add an optional `usernames: HashMap<String, String>` (person key to
+  username) to `BulkPrepareRequest`. Reject the request with
+  `invalid_username_override` if it names a key that is not in `person_keys`.
+
+### Dependencies
+
+None
+
+### Deliverables
+
+- The changes above.
+- Unit tests for `validate_override`: accepted plain name, diacritics
+  normalized, empty input rejected, disallowed characters rejected.
+- Integration tests: an accepted override is the reserved username; a
+  colliding override gets a suffix or `username_collision` per the existing
+  rule; a policy-breaking override fails that row and the rest of the batch
+  still prepares; an override for a person with an active reservation leaves
+  the reservation unchanged.
+
+### Acceptance Criteria
+
+- Without `usernames`, preparation behaves exactly as before.
+- An override can never bypass the policy or the uniqueness check.
+- The crate compiles and the tests pass under the SOP validation stage.
+
+## USX-107 — Editable username in the preview
+
+Expose the override from USX-106 in the bulk preview.
+
+Files you may change: `web/src/lib/api.ts` (the `bulkPrepare` request type),
+`web/src/app/admin/family-members/page.tsx` (the preview row and `prepare`
+only).
+
+- For preparable rows, render the Proposed username cell as a text input
+  prefilled with `proposed_username`, labelled "Username for *Name*". Other rows
+  keep the read-only text.
+- Track edits per person key. On prepare, send `usernames` with only the
+  selected rows whose value differs from the proposal.
+- Highlight rows whose reasons include an ambiguous-name code so the admin
+  knows which usernames to check.
+- The prepare confirmation lists how many usernames were changed.
+
+### Dependencies
+
+- USX-106
+
+### Deliverables
+
+- The input, request, and confirmation changes above.
+
+### Acceptance Criteria
+
+- An unedited prepare sends no `usernames` field.
+- An edited, selected row sends its new username; an edited, unselected row
+  sends nothing.
+- A per-row rejection from the server appears on that row in the batch status
+  table.
+- The TypeScript build passes.
+
+## USX-108 — End-to-end coverage
+
+Update the Playwright specs for names, the picker, and username editing.
+
+Files you may change: `web/e2e/bulk-onboarding.spec.ts`,
+`web/e2e/admin-accounts.spec.ts`.
+
+### Dependencies
+
+- USX-105
+- USX-107
+
+### Deliverables
+
+- Batch status table shows names with the key as secondary text.
+- Accounts list shows the linked person's name; `subject @ issuer` is in the
+  Actions drawer.
+- Link picker: searching an unaccented name finds the accented synthetic
+  person; an already-linked result is disabled; the confirmation names the
+  person; typed text alone cannot submit.
+- Username edit: an edited username is sent on prepare and shown in the batch
+  status; an unedited prepare sends no override.
+- The mobile viewport still renders labelled cards.
+
+### Acceptance Criteria
+
+- The specs pass against stubbed responses.
+- No real family name or address appears in the specs.
+
+## USX-109 — Prepare the pull request
+
+Write `docs/reports/user-setup-ux-pr.md` from the validation evidence on disk:
+what changed, the extended privacy decision (names and branches in admin
+views), the new admin person-search route and its authorization, the username
+override rules, the verification results, and the later work listed in the
+Summary. Use `NOT RUN` for anything the evidence does not contain.
+
+### Dependencies
+
+- USX-102
+- USX-108
+
+### Deliverables
+
+- `docs/reports/user-setup-ux-pr.md`.
+
+### Acceptance Criteria
+
+- Every acceptance criterion above is listed with its evidence or `NOT RUN`.
+- No real name, email, or credential appears.
+- Nothing is merged.
