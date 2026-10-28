@@ -60,8 +60,11 @@ application database. The harness conventions are:
   point them at a disposable database. The genealogy suites already isolate
   themselves per suite. Never point the destructive tests at the development
   database (`rag`) or a database named `rag_db`.
-- **Guard for the browser suite.** `scripts/e2e-db-env.sh` refuses an
-  application database for `make web-e2e`; `cargo test` does not use it.
+- **Guard for the browser suite.** `make web-e2e` runs through
+  `scripts/test-db.sh exec`, which derives the disposable `*_test` databases from
+  `.env`, the same way `make test` does. Called directly, `scripts/web-e2e.sh`
+  still refuses an application database through `scripts/e2e-db-env.sh`;
+  `cargo test` does not use that guard.
 
 ### Setup
 
@@ -228,6 +231,33 @@ The guard itself is covered without a database:
 
 ```sh
 scripts/test-e2e-db-env.sh
+```
+
+### Real-browser E2E ports
+
+`scripts/web-e2e.sh` starts three servers on loopback: the test OIDC issuer
+(`E2E_AUTH_PORT`, default 9099), the API (`API_PORT`, default 8080), and Next.js
+(`WEB_PORT`, default 3000). Before any migration, seed, or delete it checks each
+port with `scripts/port-guard.sh` (lsof, then ss, then a connect probe, so it
+works on macOS and Linux). A port that something else already holds stops the
+run with the listener's pid and the variable to override; nothing already
+running is stopped. A Next.js server that `scripts/web-control.sh` manages is
+still stopped and restarted, as before.
+
+The readiness checks confirm the run's own process is alive before accepting a
+response, and the run pins `API_URL` (the Next.js proxy target) to its own API,
+overriding the developer value in `.env`. Without these, a developer API on 8080
+connected to the application databases answered the health check and received
+the suite's requests. To keep a developer stack running, move the run instead:
+
+```sh
+API_PORT=8081 make web-e2e
+```
+
+The guard is covered with one throwaway listener and no database:
+
+```sh
+scripts/test-port-guard.sh
 ```
 
 Because the CI role can create databases, the helper works there. An environment

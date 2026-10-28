@@ -180,9 +180,11 @@ web-build:
 web-check: web-typecheck web-build
 
 # Real-browser E2E. Starts the Axum API and Next.js, runs Playwright, and cleans
-# up only the run corpus. Needs PostgreSQL and Ollama.
+# up only the run corpus. Needs PostgreSQL and Ollama. Runs through test-db.sh,
+# like `test`, so .env's application databases become their disposable *_test
+# copies; web-e2e.sh still refuses anything that is not disposable.
 web-e2e:
-	./scripts/web-e2e.sh
+	./scripts/test-db.sh exec -- ./scripts/web-e2e.sh
 
 # Everything: the Rust checks and the web checks.
 check: rust-check web-check

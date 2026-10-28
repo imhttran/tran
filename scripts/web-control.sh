@@ -24,6 +24,8 @@ HOST="${WEB_HOST:-127.0.0.1}"
 PORT="${WEB_PORT:-3000}"
 export PORT
 URL="http://$HOST:$PORT"
+# shellcheck source=scripts/port-guard.sh
+. "$ROOT/scripts/port-guard.sh"
 
 # zed_node_dirs lists candidate Zed node bin directories (newest first is not
 # assumed; the caller takes the last match, which sorts newest by version).
@@ -157,7 +159,8 @@ cmd_run() { # $1 = npm script (typecheck|build|e2e)
 
 read_pid() { if [ -f "$PID_FILE" ]; then cat "$PID_FILE" 2>/dev/null; fi; }
 alive() { if [ -n "$1" ] && kill -0 "$1" 2>/dev/null; then return 0; fi; return 1; }
-port_in_use() { if ss -ltn 2>/dev/null | grep -qE "[:.]$PORT[[:space:]]"; then return 0; fi; return 1; }
+# lsof, ss, or a connect probe: ss alone does not exist on macOS.
+port_in_use() { port_listening "$PORT"; }
 
 cmd_start() {
 	check_env
@@ -185,6 +188,15 @@ cmd_start() {
 	fi
 	i=0
 	while [ "$i" -lt 60 ]; do
+		# Our server must still be running before a response counts; the pid
+		# file appears a moment after launch, so an absent one is not a failure.
+		started=$(read_pid)
+		if [ -n "$started" ] && ! alive "$started"; then
+			echo "server exited during startup; tail of $LOG_FILE:" >&2
+			tail -20 "$LOG_FILE" >&2
+			rm -f "$PID_FILE"
+			return 1
+		fi
 		if curl -fsS -m 2 -o /dev/null "$URL/"; then
 			echo "started (pid $(read_pid))"
 			echo "url: $URL"
