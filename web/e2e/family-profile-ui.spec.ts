@@ -38,7 +38,14 @@ const FAMILY_MARKER = process.env.E2E_FAMILY_PROFILE_MARKER || "";
 const DRAFT_MARKER = process.env.E2E_FAMILY_DRAFT_MARKER || "";
 // Synthetic screenshot for the PR and the acceptance record.
 const repo = path.resolve(process.cwd(), "..");
-const screenshots = path.join(repo, "docs/reports/rust-migration/web-e2e");
+// Refresh the tracked evidence only on request; a normal run writes to the
+// git-ignored web/test-results/evidence/ folder instead.
+const screenshots = path.join(
+  repo,
+  process.env.E2E_UPDATE_EVIDENCE === "1"
+    ? "docs/reports/rust-migration/web-e2e"
+    : "web/test-results/evidence",
+);
 
 const SUBJECT = "e2e-branch-subject";
 const SUBJECT_NAME = "Synthetic Branch Subject";

@@ -371,6 +371,8 @@ API_HOST=127.0.0.1 API_PORT="$API_PORT" target/debug/api >"$api_log" 2>&1 &
 API_PID=$!
 
 cleanup() {
+	# Capture the run status first: every command below overwrites $?.
+	status=$?
 	kill "$API_PID" 2>/dev/null || true
 	wait "$API_PID" 2>/dev/null || true
 	kill "$AUTH_PID" 2>/dev/null || true
@@ -405,7 +407,25 @@ cleanup() {
 		-c "DELETE FROM source_narrative_passage WHERE passage_key LIKE 'synthetic-e2e-narrative-page-%' OR passage_key = 'synthetic-e2e-narrative-accented'" >/dev/null 2>&1 || true
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key LIKE 'e2e-narrative-review-%' OR person_key LIKE 'e2e-narrative-accent-%'" >/dev/null 2>&1 || true
-	rm -f "$api_log"
+	# Keep the logs when the run failed so the real API error survives. The
+	# directory is git-ignored, so a kept log never shows up in git status.
+	if [ "$status" -ne 0 ]; then
+		keep_dir="$ROOT/web/test-results"
+		mkdir -p "$keep_dir"
+		if [ -f "$api_log" ]; then
+			cp "$api_log" "$keep_dir/api.log" 2>/dev/null || true
+			echo "web-e2e: API log kept at $keep_dir/api.log" >&2
+			tail -n 40 "$api_log" >&2 2>/dev/null || true
+		fi
+		if [ -f /tmp/tran-e2e-auth.log ]; then
+			cp /tmp/tran-e2e-auth.log "$keep_dir/auth.log" 2>/dev/null || true
+			echo "web-e2e: test OIDC issuer log kept at $keep_dir/auth.log" >&2
+			tail -n 40 /tmp/tran-e2e-auth.log >&2 2>/dev/null || true
+		fi
+		rm -f "$api_log"
+	else
+		rm -f "$api_log" /tmp/tran-e2e-auth.log
+	fi
 }
 trap cleanup EXIT INT TERM
 

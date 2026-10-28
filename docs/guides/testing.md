@@ -276,6 +276,18 @@ pages to three. `TRUNCATE ... RESTART IDENTITY CASCADE` bypasses the append-only
 row triggers and guarantees the fixture count on every run without changing any
 assertion or expected value.
 
+### Screenshot evidence
+
+The browser specs take screenshots for the tracked evidence folder
+`docs/reports/rust-migration/web-e2e/`. A normal run writes them to the
+git-ignored `web/test-results/evidence/` folder instead, so a run never leaves
+modified PNGs in git. Set `E2E_UPDATE_EVIDENCE=1` to write to the tracked docs
+folder and refresh that evidence on purpose:
+
+```sh
+E2E_UPDATE_EVIDENCE=1 make web-e2e
+```
+
 For a focused rerun, the harness accepts Playwright arguments through
 `PLAYWRIGHT_ARGS`; the seed and servers still run, so the fixture is complete:
 
