@@ -59,7 +59,8 @@ pub enum GenerationError {
     /// The transport, status, or decode layer failed.
     #[error("generate answer: {0}")]
     Client(#[from] OllamaError),
-    /// An OpenAI-compatible reply carried no message content.
+    /// An OpenAI-compatible reply carried no message content, or only a
+    /// thinking block.
     #[error("generate answer: the reply had no message content")]
     EmptyReply,
 }
@@ -100,10 +101,20 @@ struct ChatMessage<'a> {
 }
 
 #[derive(serde::Serialize)]
+struct ChatTemplateKwargs {
+    enable_thinking: bool,
+}
+
+#[derive(serde::Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
     messages: [ChatMessage<'a>; 1],
     stream: bool,
+    /// `0` keeps answers repeatable across runs.
+    temperature: f32,
+    /// Asks hybrid reasoning models (Qwen3, MiniCPM5) to answer without a
+    /// thinking pass; servers and models that do not support it ignore it.
+    chat_template_kwargs: ChatTemplateKwargs,
 }
 
 #[derive(serde::Deserialize)]
@@ -126,9 +137,11 @@ struct ChatReply {
 /// Produces text with a model on an OpenAI-compatible server (for example
 /// oMLX, LM Studio, or llama.cpp's server).
 ///
-/// The prompt is sent as one user message with `stream: false`. A reasoning
-/// model's `<think>...</think>` block is removed from the reply, so callers see
-/// only the answer and its citations.
+/// The prompt is sent as one user message with `stream: false`, temperature
+/// `0`, and thinking disabled. If a reasoning model still emits a
+/// `<think>...</think>` block it is removed from the reply, so callers see only
+/// the answer and its citations. A reply that is empty once thinking is removed
+/// (for example a model cut off mid-thought) is [`GenerationError::EmptyReply`].
 pub struct OpenAICompatibleGenerator {
     client: OllamaClient,
     model: String,
@@ -162,6 +175,10 @@ impl Generator for OpenAICompatibleGenerator {
                 content: prompt,
             }],
             stream: false,
+            temperature: 0.0,
+            chat_template_kwargs: ChatTemplateKwargs {
+                enable_thinking: false,
+            },
         };
         let reply: ChatResponse = self.client.post_json(self.path(), &request)?;
         let content = reply
@@ -170,7 +187,11 @@ impl Generator for OpenAICompatibleGenerator {
             .next()
             .and_then(|choice| choice.message.content)
             .ok_or(GenerationError::EmptyReply)?;
-        Ok(strip_thinking(&content))
+        let answer = strip_thinking(&content);
+        if answer.is_empty() {
+            return Err(GenerationError::EmptyReply);
+        }
+        Ok(answer)
     }
 }
 
@@ -337,7 +358,9 @@ mod tests {
             serde_json::json!({
                 "model": "Qwen3-4B-4bit",
                 "messages": [{"role": "user", "content": "say hi"}],
-                "stream": false
+                "stream": false,
+                "temperature": 0.0,
+                "chat_template_kwargs": {"enable_thinking": false}
             })
         );
     }
@@ -373,6 +396,18 @@ mod tests {
     fn openai_compatible_reply_without_content_is_an_error() {
         let transport = Arc::new(MockTransport::default());
         transport.push(Ok((200, "200 OK".into(), br#"{"choices":[]}"#.to_vec())));
+        let g = openai_generator(transport, "http://127.0.0.1:8000");
+        assert!(matches!(g.generate("q"), Err(GenerationError::EmptyReply)));
+    }
+
+    #[test]
+    fn openai_compatible_reply_with_only_thinking_is_an_error() {
+        let transport = Arc::new(MockTransport::default());
+        transport.push(Ok((
+            200,
+            "200 OK".into(),
+            br#"{"choices":[{"message":{"content":"<think>ran out of tokens"}}]}"#.to_vec(),
+        )));
         let g = openai_generator(transport, "http://127.0.0.1:8000");
         assert!(matches!(g.generate("q"), Err(GenerationError::EmptyReply)));
     }
