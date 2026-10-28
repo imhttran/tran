@@ -363,3 +363,18 @@ The commands resolve the embedder and generator through the provider registry
 (`EMBED_PROVIDER` / `GEN_PROVIDER`). An unregistered provider name fails fast at
 `config.Load`, naming the variable and value; an unset value keeps the default
 (`ollama`).
+
+`GEN_PROVIDER=openai_compatible` sends answers (and query rewriting) to any
+OpenAI-compatible server, such as oMLX, while embeddings stay on Ollama. It
+needs `OPENAI_COMPATIBLE_MODEL`; `OPENAI_COMPATIBLE_BASE_URL` defaults to
+`http://127.0.0.1:8000`, and `OPENAI_COMPATIBLE_API_KEY` is sent as a bearer
+token when set. To run the Ask browser tests against oMLX:
+
+```sh
+GEN_PROVIDER=openai_compatible OPENAI_COMPATIBLE_MODEL=Qwen3-4B-4bit \
+  OPENAI_COMPATIBLE_API_KEY=local \
+  PLAYWRIGHT_ARGS="e2e/rag.spec.ts" API_PORT=8081 make web-e2e
+```
+
+Turn off the model's thinking mode in the server's model settings for speed. A
+`<think>` block in a reply is removed, but the model still spends time on it.

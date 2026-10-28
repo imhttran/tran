@@ -121,6 +121,8 @@ pub trait Transport: Send + Sync {
 /// applied.
 pub struct HttpTransport {
     client: reqwest::blocking::Client,
+    /// Sent as `Authorization: Bearer <token>` when set; never logged.
+    bearer_token: Option<String>,
 }
 
 impl HttpTransport {
@@ -138,7 +140,17 @@ impl HttpTransport {
             .map_err(|err| OllamaError::Client {
                 message: err.to_string(),
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            bearer_token: None,
+        })
+    }
+
+    /// Returns this transport sending `token` as a bearer credential on every
+    /// request. `None` (or a blank token) sends no `Authorization` header.
+    pub fn with_bearer_token(mut self, token: Option<String>) -> Self {
+        self.bearer_token = token.filter(|token| !token.trim().is_empty());
+        self
     }
 }
 
@@ -150,10 +162,14 @@ impl std::fmt::Debug for HttpTransport {
 
 impl Transport for HttpTransport {
     fn post(&self, url: &str, body: &[u8]) -> Result<(u16, String, Vec<u8>), String> {
-        let response = self
+        let mut request = self
             .client
             .post(url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if let Some(token) = &self.bearer_token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
             .body(body.to_vec())
             .send()
             .map_err(|err| err.to_string())?;

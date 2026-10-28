@@ -22,8 +22,9 @@ use crate::config::Config;
 use crate::corpus::Corpus;
 use crate::document::Chunk;
 use crate::embedding::{Embedder, OllamaEmbedder};
-use crate::generation::OllamaGenerator;
+use crate::generation::Generator;
 use crate::ollama::{HttpTransport, OllamaClient};
+use crate::provider;
 use crate::retrieval::{candidate_id, dedup, expand, Candidate, ChunkProvenance};
 use crate::retrieval_pg;
 use crate::storage_pg::{PgStore, PublicationRow};
@@ -43,6 +44,9 @@ pub enum QueryServiceError {
     /// Answering failed.
     #[error(transparent)]
     Answer(#[from] AnswerError),
+    /// `GEN_PROVIDER` names no registered generator.
+    #[error(transparent)]
+    Provider(#[from] provider::ProviderError),
 }
 
 /// Errors from one retrieval pass, with the stage that failed.
@@ -201,7 +205,7 @@ impl PublicationGuard for StorePublicationGuard<'_> {
 pub struct QueryService {
     store: Arc<PgStore>,
     embedder: OllamaEmbedder,
-    generator: OllamaGenerator,
+    generator: Box<dyn Generator>,
     corpus: String,
     min_similarity: f64,
     final_k: usize,
@@ -232,13 +236,25 @@ impl QueryService {
         let embedder = OllamaEmbedder::new(embed_client, config.embed_model.clone())
             .with_embed_dim(config.embed_dim as usize);
 
-        let gen_transport = Arc::new(HttpTransport::new(config.request_timeout)?);
-        let gen_client = OllamaClient::new(
-            config.ollama_url.clone(),
-            gen_transport,
-            config.request_timeout,
-        );
-        let generator = OllamaGenerator::new(gen_client, config.chat_model.clone());
+        // GEN_PROVIDER picks the answer model: Ollama by default, or any
+        // OpenAI-compatible server (for example oMLX). Embeddings stay on Ollama.
+        let mut gen_transport = HttpTransport::new(config.request_timeout)?;
+        if provider::resolve_name(&config.gen_provider) == provider::OPENAI_COMPATIBLE {
+            gen_transport =
+                gen_transport.with_bearer_token(config.openai_compatible_api_key.clone());
+        }
+        let generator = provider::generator(
+            &config.gen_provider,
+            &provider::Client {
+                ollama_url: config.ollama_url.clone(),
+                embed_model: config.embed_model.clone(),
+                chat_model: config.chat_model.clone(),
+                request_timeout: config.request_timeout,
+                transport: Arc::new(gen_transport),
+                openai_compatible_url: config.openai_compatible_url.clone(),
+                openai_compatible_model: config.openai_compatible_model.clone(),
+            },
+        )?;
 
         let budget = if config.context_budget > 0 {
             config.context_budget as usize

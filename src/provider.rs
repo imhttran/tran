@@ -14,11 +14,15 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::embedding::{Embedder, OllamaEmbedder};
-use crate::generation::{Generator, OllamaGenerator};
+use crate::generation::{Generator, OllamaGenerator, OpenAICompatibleGenerator};
 use crate::ollama::{OllamaClient, Transport};
 
 /// Provider name used when none is configured, matching the Go `Default`.
 pub const DEFAULT: &str = "ollama";
+
+/// Generate provider for any OpenAI-compatible server (oMLX, LM Studio,
+/// llama.cpp's server). Answers only: embeddings stay on [`DEFAULT`].
+pub const OPENAI_COMPATIBLE: &str = "openai_compatible";
 
 /// Settings a registered constructor needs in order to build a vendor client,
 /// mirroring the Go `provider.Client` struct.
@@ -28,8 +32,12 @@ pub struct Client {
     pub embed_model: String,
     pub chat_model: String,
     pub request_timeout: Duration,
-    /// Transport used for the constructed Ollama client.
+    /// Transport used for the constructed client.
     pub transport: Arc<dyn Transport>,
+    /// Server root for [`OPENAI_COMPATIBLE`] (a trailing `/v1` is accepted).
+    pub openai_compatible_url: String,
+    /// Model name for [`OPENAI_COMPATIBLE`], as the server lists it.
+    pub openai_compatible_model: String,
 }
 
 /// Error returned when a name does not resolve to a registered provider.
@@ -61,7 +69,7 @@ pub fn has_embedder(name: &str) -> bool {
 /// Reports whether `name` resolves to a registered generate provider. An empty
 /// name resolves to [`DEFAULT`], matching [`resolve_name`].
 pub fn has_generator(name: &str) -> bool {
-    matches!(resolve_name(name), DEFAULT)
+    matches!(resolve_name(name), DEFAULT | OPENAI_COMPATIBLE)
 }
 
 /// Returns an [`Embedder`] for the named provider. An empty name resolves to
@@ -92,6 +100,14 @@ pub fn generator(name: &str, client: &Client) -> Result<Box<dyn Generator>, Prov
             ),
             client.chat_model.clone(),
         ))),
+        OPENAI_COMPATIBLE => Ok(Box::new(OpenAICompatibleGenerator::new(
+            OllamaClient::new(
+                client.openai_compatible_url.clone(),
+                Arc::clone(&client.transport),
+                client.request_timeout,
+            ),
+            client.openai_compatible_model.clone(),
+        ))),
         other => Err(ProviderError::UnknownGenerator(other.to_string())),
     }
 }
@@ -119,6 +135,8 @@ mod tests {
             chat_model: "qwen3.8:27b-mlx".into(),
             request_timeout: Duration::from_secs(300),
             transport: Arc::new(NoopTransport::default()),
+            openai_compatible_url: "http://127.0.0.1:8000".into(),
+            openai_compatible_model: "Qwen3-4B-4bit".into(),
         }
     }
 
@@ -136,6 +154,15 @@ mod tests {
         assert!(has_generator("ollama"));
         assert!(embedder("ollama", &client()).is_ok());
         assert!(generator("ollama", &client()).is_ok());
+    }
+
+    #[test]
+    fn openai_compatible_generates_but_does_not_embed() {
+        assert!(has_generator(OPENAI_COMPATIBLE));
+        assert!(generator(OPENAI_COMPATIBLE, &client()).is_ok());
+        // Embeddings stay on Ollama; this provider only answers.
+        assert!(!has_embedder(OPENAI_COMPATIBLE));
+        assert!(embedder(OPENAI_COMPATIBLE, &client()).is_err());
     }
 
     #[test]

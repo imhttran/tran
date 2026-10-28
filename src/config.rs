@@ -24,6 +24,8 @@ pub const DEFAULT_TOP_K: i64 = 4;
 pub const DEFAULT_EMBED_DIM: i64 = 768;
 pub const DEFAULT_EMBED_PROVIDER: &str = provider::DEFAULT;
 pub const DEFAULT_GEN_PROVIDER: &str = provider::DEFAULT;
+/// Default server root for `GEN_PROVIDER=openai_compatible` (oMLX's default).
+pub const DEFAULT_OPENAI_COMPATIBLE_URL: &str = "http://127.0.0.1:8000";
 pub const DEFAULT_CHUNK_SIZE: i64 = 50;
 pub const DEFAULT_CHUNK_OVERLAP: i64 = 20;
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.6;
@@ -90,6 +92,14 @@ pub struct Config {
     pub question: String,
     pub embed_provider: String,
     pub gen_provider: String,
+    /// Server root for `GEN_PROVIDER=openai_compatible`
+    /// (`OPENAI_COMPATIBLE_BASE_URL`, default `http://127.0.0.1:8000`).
+    pub openai_compatible_url: String,
+    /// Bearer key for that server (`OPENAI_COMPATIBLE_API_KEY`), if it needs one.
+    pub openai_compatible_api_key: Option<String>,
+    /// Model for that server (`OPENAI_COMPATIBLE_MODEL`); required when the
+    /// provider is selected, empty otherwise.
+    pub openai_compatible_model: String,
     pub language: String,
     pub chunk_size: i64,
     pub chunk_overlap: i64,
@@ -174,6 +184,19 @@ impl Config {
 
         validate_provider("EMBED_PROVIDER", &embed_provider)?;
         validate_provider("GEN_PROVIDER", &gen_provider)?;
+        let openai_compatible_model = get("OPENAI_COMPATIBLE_MODEL")
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        if provider::resolve_name(&gen_provider) == provider::OPENAI_COMPATIBLE
+            && openai_compatible_model.is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "OPENAI_COMPATIBLE_MODEL is required when GEN_PROVIDER=openai_compatible".into(),
+            ));
+        }
+        let openai_compatible_api_key = get("OPENAI_COMPATIBLE_API_KEY")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         let chunk_size = positive_int(&get, "CHUNK_SIZE", DEFAULT_CHUNK_SIZE)?;
         let chunk_overlap = non_negative_int(&get, "CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP)?;
@@ -292,6 +315,12 @@ impl Config {
             question: get("QUESTION").unwrap_or_default(),
             embed_provider,
             gen_provider,
+            openai_compatible_url: get("OPENAI_COMPATIBLE_BASE_URL")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| DEFAULT_OPENAI_COMPATIBLE_URL.to_string()),
+            openai_compatible_api_key,
+            openai_compatible_model,
             language: get("CORPUS_LANGUAGE").unwrap_or_else(|| DEFAULT_LANGUAGE.to_string()),
             chunk_size,
             chunk_overlap,
@@ -804,6 +833,49 @@ mod tests {
         let cfg = load(&[("EMBED_PROVIDER", "ollama"), ("GEN_PROVIDER", "ollama")]).unwrap();
         assert_eq!(cfg.embed_provider, "ollama");
         assert_eq!(cfg.gen_provider, "ollama");
+    }
+
+    #[test]
+    fn openai_compatible_generation_needs_a_model() {
+        let err = load(&[("GEN_PROVIDER", "openai_compatible")]).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::Invalid(
+                "OPENAI_COMPATIBLE_MODEL is required when GEN_PROVIDER=openai_compatible".into()
+            )
+        );
+    }
+
+    #[test]
+    fn openai_compatible_settings_load_with_defaults() {
+        let cfg = load(&[
+            ("GEN_PROVIDER", "openai_compatible"),
+            ("OPENAI_COMPATIBLE_MODEL", " Qwen3-4B-4bit "),
+            ("OPENAI_COMPATIBLE_API_KEY", " "),
+        ])
+        .unwrap();
+        assert_eq!(cfg.gen_provider, "openai_compatible");
+        assert_eq!(cfg.embed_provider, "ollama");
+        assert_eq!(cfg.openai_compatible_model, "Qwen3-4B-4bit");
+        assert_eq!(cfg.openai_compatible_url, "http://127.0.0.1:8000");
+        assert_eq!(cfg.openai_compatible_api_key, None);
+
+        let cfg = load(&[
+            ("GEN_PROVIDER", "openai_compatible"),
+            ("OPENAI_COMPATIBLE_MODEL", "m"),
+            ("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:9000/v1"),
+            ("OPENAI_COMPATIBLE_API_KEY", "local"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.openai_compatible_url, "http://localhost:9000/v1");
+        assert_eq!(cfg.openai_compatible_api_key.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn the_ollama_default_does_not_need_an_openai_model() {
+        let cfg = load(&[]).unwrap();
+        assert_eq!(cfg.gen_provider, "ollama");
+        assert_eq!(cfg.openai_compatible_model, "");
     }
 
     #[test]

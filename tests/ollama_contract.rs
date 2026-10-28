@@ -243,6 +243,8 @@ fn registered_provider_resolves_to_an_implementation() {
         chat_model: "qwen3.8:27b-mlx".into(),
         request_timeout: Duration::from_secs(300),
         transport: server.clone(),
+        openai_compatible_url: "http://127.0.0.1:8000".into(),
+        openai_compatible_model: "Qwen3-4B-4bit".into(),
     };
 
     assert!(provider::has_embedder("ollama"));
