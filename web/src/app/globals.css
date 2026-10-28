@@ -55,8 +55,7 @@
     /* Shadows: graphite base from the palette, theme-scoped */
     --shadow-sm: 0 1px 2px rgba(18, 18, 20, 0.06);
     --shadow-card:
-        0 1px 2px rgba(18, 18, 20, 0.05),
-        0 8px 24px -20px rgba(18, 18, 20, 0.3);
+        0 1px 2px rgba(18, 18, 20, 0.05), 0 8px 24px -20px rgba(18, 18, 20, 0.3);
 
     /* Dialog backdrop: graphite dim, theme-scoped */
     --backdrop: rgba(18, 18, 20, 0.6);
@@ -1764,6 +1763,130 @@ footer.page-footer {
 }
 .bulk-email button {
     margin: 0;
+}
+
+/* BOT-104 — give the bulk onboard workspace the wider review shell and stable
+   desktop column widths. Everything here is scoped to `.fm-*` selectors and to
+   the bulk preview table; the max-width 560px stacked cards are untouched. */
+.app-shell:has(.fm-workspace) {
+    max-width: 1280px;
+}
+.fm-preview-table {
+    table-layout: fixed;
+    width: 100%;
+}
+.fm-preview-table col.fm-col-select {
+    width: 48px;
+}
+.fm-preview-table col.fm-col-person {
+    width: 24%;
+}
+.fm-preview-table col.fm-col-contact {
+    width: 18%;
+}
+.fm-preview-table col.fm-col-status {
+    width: 14%;
+}
+.fm-preview-table col.fm-col-username {
+    width: 14%;
+}
+.fm-preview-table col.fm-col-warnings {
+    width: auto;
+}
+.fm-preview-table .fm-cell-person,
+.fm-preview-table .fm-cell-username {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.fm-preview-table .fm-person-name,
+.fm-preview-table .fm-person-key {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.fm-preview-table .fm-person-key small {
+    font-size: 0.82rem;
+}
+.fm-preview-table .fm-cell-warnings {
+    white-space: normal;
+}
+.fm-warnings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.fm-warning-chip {
+    background: var(--card);
+    color: var(--muted);
+    border: 1px solid var(--line);
+    white-space: nowrap;
+}
+.fm-warning-chip:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* Stat-card toggles: a clear pressed state that reuses the accent tokens. */
+.fm-preview .fm-stat-grid > button {
+    display: grid;
+    gap: 2px;
+    align-content: start;
+    margin: 0;
+    padding: 10px 12px;
+    text-align: left;
+    background: var(--card);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    box-shadow: none;
+    min-width: 0;
+}
+.fm-preview .fm-stat-grid > button:hover:not(:disabled) {
+    background: var(--surface);
+    border-color: var(--accent);
+    color: var(--fg);
+}
+.fm-preview .fm-stat-grid > button[aria-pressed="false"] {
+    background: var(--card);
+    color: var(--muted);
+}
+.fm-preview .fm-stat-grid > button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+.fm-preview .fm-stat-grid > button span:last-child {
+    font: 700 1.15rem/1.2 var(--font-sans);
+}
+
+/* Filter/search row stays a tidy single band on desktop. */
+.fm-preview .fm-action-bar {
+    padding: 10px 12px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    gap: 8px;
+}
+.fm-preview .fm-action-bar input[type="search"] {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+/* A disabled checkbox in the bulk preview must read as disabled, not merely
+   unclickable. Scope this to the preview table so another `fm-table-wrap`
+   consumer is never affected. */
+.fm-preview-table input[type="checkbox"]:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+@media (max-width: 560px) {
+    .fm-preview-table {
+        table-layout: auto;
+    }
 }
 
 /* USR-004D — My Profile. Responsive owner-scoped profile and review surface. */
@@ -4473,7 +4596,21 @@ footer.page-footer {
 }
 
 /* Nomination search preserves focus on the combobox during keyboard selection. */
-.person-selector { min-width: 0; }
-.person-selector [role="listbox"] { list-style: none; padding: 0; max-height: 20rem; overflow-y: auto; }
-.person-selector [role="option"] { padding: 0.65rem; cursor: pointer; overflow-wrap: anywhere; }
-.person-selector [role="option"][aria-selected="true"] { outline: 2px solid currentColor; outline-offset: -2px; }
+.person-selector {
+    min-width: 0;
+}
+.person-selector [role="listbox"] {
+    list-style: none;
+    padding: 0;
+    max-height: 20rem;
+    overflow-y: auto;
+}
+.person-selector [role="option"] {
+    padding: 0.65rem;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+.person-selector [role="option"][aria-selected="true"] {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+}

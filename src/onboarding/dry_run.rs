@@ -54,13 +54,19 @@ impl Default for Page {
     }
 }
 
-/// One dry-run row. Carries the opaque key, its classification, and reason
-/// codes only. The `blocked_missing_recipient` reason plus `preparable` report
-/// the missing-recipient state.
+/// One dry-run row. Carries the opaque key, the display name, the masked
+/// verified contact, its classification, and reason codes. It never carries an
+/// unmasked email address. The `blocked_missing_recipient` reason plus
+/// `preparable` report the missing-recipient state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DryRunRow {
     /// The opaque person key.
     pub person_key: String,
+    /// The person display name.
+    pub display_name: String,
+    /// The masked verified contact email, `None` when no verified contact
+    /// exists.
+    pub contact_email_masked: Option<String>,
     /// The classification. Decided server-side.
     pub classification: Classification,
     /// The ordered reason codes.
@@ -124,6 +130,8 @@ fn build_row(row: &CandidateRow) -> DryRunRow {
     let sendable = eligible && !blocked_missing_recipient;
     DryRunRow {
         person_key: row.person_key.clone(),
+        display_name: row.display_name.clone(),
+        contact_email_masked: row.contact_email_masked.clone(),
         classification: row.classification,
         reasons,
         proposed_username: row.proposed_username.clone(),
@@ -270,9 +278,11 @@ mod tests {
     fn row(key: &str, classification: Classification, reasons: Vec<Reason>) -> CandidateRow {
         CandidateRow {
             person_key: key.to_string(),
+            display_name: String::new(),
             classification,
             reasons,
             proposed_username: None,
+            contact_email_masked: None,
         }
     }
 

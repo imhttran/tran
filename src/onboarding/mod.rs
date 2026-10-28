@@ -39,7 +39,7 @@ pub use branch_review::{
     BranchSummary, GRANT_REASON_MAX_CHARS,
 };
 pub use candidate::{
-    classify, load_name_parts, name_parts, preview_candidates, reclassify_person,
+    classify, load_name_parts, mask_email, name_parts, preview_candidates, reclassify_person,
     segmentation_is_ambiguous, CandidateError, CandidatePreview, CandidateRow, Classification,
     PersonEvidence, PreviewSummary, Reason,
 };

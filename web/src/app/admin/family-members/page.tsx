@@ -15,6 +15,7 @@ import {
   bulkSend,
   bulkVerifyRecipient,
   type BulkBatchStatus,
+  type BulkClassification,
   type BulkPrepare,
   type BulkPreview,
   type BulkPreviewRow,
@@ -152,10 +153,62 @@ function ConfirmDialog({
   );
 }
 
+// Rows requested per preview page. The API caps a page at 200.
+const PAGE_LIMIT = 200;
+// A safety cap on pages; 200 rows per page covers 20,000 people.
+const MAX_PAGES = 100;
+
+// The six classifications, in the order the stat cards show them.
+const CLASSIFICATIONS: { key: BulkClassification; label: string }[] = [
+  { key: "eligible_for_invite", label: "Eligible" },
+  { key: "needs_review", label: "Needs review" },
+  { key: "already_linked", label: "Already linked" },
+  { key: "already_prepared", label: "Already prepared" },
+  { key: "invited", label: "Invited" },
+  { key: "not_eligible", label: "Not eligible" },
+];
+
+// The default view after a preview.
+const DEFAULT_CLASSIFICATIONS: BulkClassification[] = [
+  "eligible_for_invite",
+  "needs_review",
+];
+
+// The total people a preview holds. `blocked_missing_recipient` is a flag on a
+// row, not a classification, so it is not part of the sum.
+function summaryTotal(summary: BulkPreview["summary"]): number {
+  return (
+    summary.eligible_for_invite +
+    summary.needs_review +
+    summary.already_linked +
+    summary.already_prepared +
+    summary.invited +
+    summary.not_eligible
+  );
+}
+
+// Case- and accent-insensitive key: decompose with NFD and drop combining
+// marks, so "tran" matches "Trần".
+function fold(value: string): string {
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
+}
+
+// Reason codes the Contact column now carries, so the Warnings column hides
+// them instead of repeating the same state.
+const CONTACT_REASONS = new Set([
+  "missing_verified_contact",
+  "blocked_missing_recipient",
+]);
+
 function BulkOnboardContent({ role }: { role: Role | null }) {
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [state, setState] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [classifications, setClassifications] = useState<
+    Set<BulkClassification>
+  >(new Set(DEFAULT_CLASSIFICATIONS));
+  const [noContact, setNoContact] = useState(false);
+  const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmPrepare, setConfirmPrepare] = useState(false);
   const [prepareResult, setPrepareResult] = useState<BulkPrepare | null>(null);
@@ -165,12 +218,31 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
   const [emails, setEmails] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
+  // Page the preview until every person is loaded. The summary counts the full
+  // selected set before pagination, so their sum is the expected total. A short
+  // page also ends the loop. A page cap prevents an endless loop.
   const load = useCallback(async () => {
     setState("loading");
     setError(null);
     try {
-      const body = await bulkPreview({ selector: "all", limit: 200 });
-      setPreview(body);
+      const limit = PAGE_LIMIT;
+      const rows: BulkPreviewRow[] = [];
+      let merged: BulkPreview | null = null;
+      let total = Number.POSITIVE_INFINITY;
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const body = await bulkPreview({
+          selector: "all",
+          limit,
+          offset: rows.length,
+        });
+        if (!merged) merged = body;
+        total = summaryTotal(body.summary);
+        rows.push(...body.rows);
+        if (body.rows.length < limit) break;
+        if (rows.length >= total) break;
+      }
+      if (!merged) return;
+      setPreview({ ...merged, rows });
       setSelected(new Set());
       setConfirmPrepare(false);
       setState("ready");
@@ -251,7 +323,11 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
     setBusy(true);
     setError(null);
     try {
-      await bulkVerifyRecipient({ person_key: personKey, email, confirmed: true });
+      await bulkVerifyRecipient({
+        person_key: personKey,
+        email,
+        confirmed: true,
+      });
       if (prepareResult) await refreshBatch(prepareResult.batch_id);
     } catch (err) {
       setError(errorMessage(err));
@@ -283,8 +359,12 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         approve: true,
       });
       const sent = result.results.filter((row) => row.status === "sent").length;
-      const queued = result.results.filter((row) => row.status === "queued").length;
-      const failed = result.results.filter((row) => row.status === "failed").length;
+      const queued = result.results.filter(
+        (row) => row.status === "queued",
+      ).length;
+      const failed = result.results.filter(
+        (row) => row.status === "failed",
+      ).length;
       setSendMessage(
         `Provider confirmed ${sent} sent, ${queued} queued, ${failed} failed. No account is activated until the recipient completes the identity flow and an admin reviews the person link.`,
       );
@@ -310,6 +390,40 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
   }
 
   const summary = preview?.summary;
+
+  function toggleClassification(key: BulkClassification) {
+    setClassifications((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Every filter is client-side over the loaded rows. An empty classification
+  // selection means no classification filter, so all rows show.
+  const foldedQuery = fold(query.trim());
+  const allRows = preview?.rows ?? [];
+  const visibleRows = allRows.filter((row) => {
+    if (classifications.size > 0 && !classifications.has(row.classification)) {
+      return false;
+    }
+    if (noContact && row.contact?.type !== "none") {
+      return false;
+    }
+    if (foldedQuery) {
+      const haystack = [
+        row.display_name,
+        row.person_key,
+        row.proposed_username ?? "",
+      ];
+      if (!haystack.some((value) => fold(value).includes(foldedQuery))) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   const preparedItems =
     batch?.items.filter((item) => item.status === "prepared") ?? [];
   const sendableCount = preparedItems.filter(
@@ -330,16 +444,28 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
 
       <div className="fm-workspace">
         {error ? (
-          <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="bulk-error">
+          <p
+            className="state-panel state-panel-unavailable fm-state"
+            role="alert"
+            data-testid="bulk-error"
+          >
             {error}
           </p>
         ) : null}
 
         <div className="bulk-actions fm-action-bar">
-          <button type="button" onClick={() => void load()} disabled={busy || state === "loading"}>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={busy || state === "loading"}
+          >
             Preview eligible people
           </button>
-          <button type="button" onClick={selectEligible} disabled={!preview || busy}>
+          <button
+            type="button"
+            onClick={selectEligible}
+            disabled={!preview || busy}
+          >
             Select eligible
           </button>
           <button
@@ -353,40 +479,90 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         </div>
 
         {state === "loading" ? (
-          <p className="state-panel state-panel-loading fm-state">Loading the private candidate set…</p>
+          <p className="state-panel state-panel-loading fm-state">
+            Loading the private candidate set…
+          </p>
         ) : null}
 
         {preview ? (
-          <section className="status-panel fm-preview" data-testid="bulk-preview">
+          <section
+            className="status-panel fm-preview"
+            data-testid="bulk-preview"
+          >
             <h2>Preview</h2>
-            <dl className="fm-stat-grid">
-              <div><dt>Eligible</dt><dd>{summary?.eligible_for_invite ?? 0}</dd></div>
-              <div><dt>Needs review</dt><dd>{summary?.needs_review ?? 0}</dd></div>
-              <div><dt>Already linked</dt><dd>{summary?.already_linked ?? 0}</dd></div>
-              <div><dt>Already prepared</dt><dd>{summary?.already_prepared ?? 0}</dd></div>
-              <div><dt>Invited</dt><dd>{summary?.invited ?? 0}</dd></div>
-              <div><dt>Not eligible</dt><dd>{summary?.not_eligible ?? 0}</dd></div>
-            </dl>
+            <div
+              className="fm-stat-grid"
+              role="group"
+              aria-label="Filter by classification"
+            >
+              {CLASSIFICATIONS.map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  aria-pressed={classifications.has(entry.key)}
+                  onClick={() => toggleClassification(entry.key)}
+                  data-testid={`bulk-filter-${entry.key}`}
+                >
+                  <span>{entry.label}</span>{" "}
+                  <span>{(summary?.[entry.key] ?? 0).toString()}</span>
+                </button>
+              ))}
+            </div>
+            <div className="bulk-actions fm-action-bar">
+              <button
+                type="button"
+                aria-pressed={noContact}
+                onClick={() => setNoContact((current) => !current)}
+                data-testid="bulk-filter-no-contact"
+              >
+                No contact
+              </button>
+              <input
+                type="search"
+                aria-label="Search people"
+                placeholder="Search name, person key, or username"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                data-testid="bulk-filter-search"
+              />
+            </div>
+            <p className="hint fm-dry-run" data-testid="bulk-showing">
+              Showing {visibleRows.length} of {allRows.length} people
+            </p>
             {preview.review_needed ? (
-              <p className="insufficient" data-testid="bulk-review-needed">{preview.review_needed}</p>
+              <p className="insufficient" data-testid="bulk-review-needed">
+                {preview.review_needed}
+              </p>
             ) : null}
             <p className="hint fm-dry-run">
-              Preview is a dry run. It changes nothing: no username is reserved, no
-              invitation is created, and no email is sent.
+              Preview is a dry run. It changes nothing: no username is reserved,
+              no invitation is created, and no email is sent.
             </p>
             <div className="fm-table-wrap">
-              <table className="bulk-table" data-testid="bulk-table">
+              <table
+                className="bulk-table fm-preview-table"
+                data-testid="bulk-table"
+              >
+                <colgroup>
+                  <col className="fm-col-select" />
+                  <col className="fm-col-person" />
+                  <col className="fm-col-contact" />
+                  <col className="fm-col-status" />
+                  <col className="fm-col-username" />
+                  <col className="fm-col-warnings" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th scope="col">Select</th>
-                    <th scope="col">Person key</th>
+                    <th scope="col">Person</th>
+                    <th scope="col">Contact</th>
                     <th scope="col">Status</th>
                     <th scope="col">Proposed username</th>
                     <th scope="col">Warnings</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.rows.map((row) => (
+                  {visibleRows.map((row) => (
                     <PreviewRow
                       key={row.person_key}
                       row={row}
@@ -411,8 +587,8 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
             onCancel={() => setConfirmPrepare(false)}
           >
             <p>
-              Prepare <strong>{selected.size}</strong> selected people. Preparation
-              reserves usernames and records a resumable batch.
+              Prepare <strong>{selected.size}</strong> selected people.
+              Preparation reserves usernames and records a resumable batch.
             </p>
             <p className="insufficient">
               No accounts are activated and no emails are sent by this step.
@@ -421,11 +597,15 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         ) : null}
 
         {prepareResult ? (
-          <section className="status-panel fm-results" data-testid="bulk-results">
+          <section
+            className="status-panel fm-results"
+            data-testid="bulk-results"
+          >
             <h2>Batch {prepareResult.batch_id}</h2>
             <p className="hint">
-              Prepared {prepareResult.prepared}, needs review {prepareResult.needs_review},
-              failed {prepareResult.failed}. Duplicate submission created{" "}
+              Prepared {prepareResult.prepared}, needs review{" "}
+              {prepareResult.needs_review}, failed {prepareResult.failed}.
+              Duplicate submission created{" "}
               {prepareResult.created ? "a new batch" : "no new batch"}.
             </p>
             {batch ? (
@@ -446,13 +626,18 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                         <td data-label="Person key">{item.person_key}</td>
                         <td data-label="Preparation">
                           {item.status}
-                          {item.reason ? <span className="hint"> ({item.reason})</span> : null}
+                          {item.reason ? (
+                            <span className="hint"> ({item.reason})</span>
+                          ) : null}
                         </td>
                         <td data-label="Username">{item.username ?? "—"}</td>
                         <td data-label="Delivery">
                           {item.delivery_status}
                           {item.invitation_status ? (
-                            <span className="hint"> ({item.invitation_status})</span>
+                            <span className="hint">
+                              {" "}
+                              ({item.invitation_status})
+                            </span>
                           ) : null}
                         </td>
                         <td data-label="Verified recipient">
@@ -474,7 +659,9 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                               />
                               <button
                                 type="button"
-                                onClick={() => void verifyEmail(item.person_key)}
+                                onClick={() =>
+                                  void verifyEmail(item.person_key)
+                                }
                                 disabled={busy}
                               >
                                 Verify
@@ -519,16 +706,21 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                 onCancel={() => setConfirmSend(false)}
               >
                 <p>
-                  Send exactly <strong>{sendableCount}</strong> invitations through
-                  the configured adapter. Each recipient receives a single-use,
-                  expiring activation link.
+                  Send exactly <strong>{sendableCount}</strong> invitations
+                  through the configured adapter. Each recipient receives a
+                  single-use, expiring activation link.
                 </p>
-                <p>No account is activated until the recipient completes the identity flow and an administrator reviews the link.</p>
+                <p>
+                  No account is activated until the recipient completes the
+                  identity flow and an administrator reviews the link.
+                </p>
               </ConfirmDialog>
             ) : null}
 
             {sendMessage ? (
-              <p className="form-status ok" data-testid="bulk-send-result">{sendMessage}</p>
+              <p className="form-status ok" data-testid="bulk-send-result">
+                {sendMessage}
+              </p>
             ) : null}
           </section>
         ) : null}
@@ -537,6 +729,10 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
       </div>
     </>
   );
+}
+
+function warningsFor(row: BulkPreviewRow): string[] {
+  return row.reasons.filter((code) => !CONTACT_REASONS.has(code));
 }
 
 function PreviewRow({
@@ -549,7 +745,7 @@ function PreviewRow({
   onToggle: () => void;
 }) {
   return (
-    <tr>
+    <tr data-person-key={row.person_key}>
       <td data-label="Select">
         <input
           type="checkbox"
@@ -559,15 +755,43 @@ function PreviewRow({
           aria-label={`Select ${row.person_key}`}
         />
       </td>
-      <td data-label="Person key">{row.person_key}</td>
-      <td data-label="Status">
-        <span className="badge">{row.classification}</span>
-        {row.blocked_missing_recipient ? (
-          <span className="hint"> recipient missing</span>
-        ) : null}
+      <td data-label="Person" className="fm-cell-person">
+        <strong className="fm-person-name">
+          {row.display_name || row.person_key}
+        </strong>
+        <div className="hint fm-person-key">
+          <small>{row.person_key}</small>
+        </div>
       </td>
-      <td data-label="Proposed username">{row.proposed_username ?? "—"}</td>
-      <td data-label="Warnings" className="hint">{row.reasons.join(", ") || "—"}</td>
+      <td data-label="Contact" className="fm-cell-contact">
+        {row.contact?.type === "email" ? (
+          <>
+            <span>Email</span>{" "}
+            <span className="hint">{row.contact.masked}</span>
+          </>
+        ) : (
+          "None"
+        )}
+      </td>
+      <td data-label="Status" className="fm-cell-status">
+        <span className="badge">{row.classification}</span>
+      </td>
+      <td data-label="Proposed username" className="fm-cell-username">
+        {row.proposed_username ?? "—"}
+      </td>
+      <td data-label="Warnings" className="fm-cell-warnings">
+        {warningsFor(row).length > 0 ? (
+          <span className="fm-warnings">
+            {warningsFor(row).map((code) => (
+              <span key={code} className="badge hint fm-warning-chip">
+                {code}
+              </span>
+            ))}
+          </span>
+        ) : (
+          "—"
+        )}
+      </td>
     </tr>
   );
 }

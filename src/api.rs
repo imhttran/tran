@@ -7026,12 +7026,37 @@ struct BulkPreviewRequest {
 #[derive(Serialize)]
 struct BulkPreviewRowBody {
     person_key: String,
+    display_name: String,
+    contact: BulkContactBody,
     classification: &'static str,
     reasons: Vec<&'static str>,
     proposed_username: Option<String>,
     preparable: bool,
     blocked_missing_recipient: bool,
     sendable: bool,
+}
+
+/// The verified contact for one preview row. The email variant carries only the
+/// server-masked address; the full address never leaves the server.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum BulkContactBody {
+    Email {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        masked: Option<String>,
+    },
+    None,
+}
+
+impl BulkContactBody {
+    fn from_masked(masked: &Option<String>) -> Self {
+        match masked {
+            Some(masked) => BulkContactBody::Email {
+                masked: Some(masked.clone()),
+            },
+            None => BulkContactBody::None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -7112,6 +7137,8 @@ async fn bulk_preview(
                 .iter()
                 .map(|row| BulkPreviewRowBody {
                     person_key: row.person_key.clone(),
+                    display_name: row.display_name.clone(),
+                    contact: BulkContactBody::from_masked(&row.contact_email_masked),
                     classification: row.classification.as_str(),
                     reasons: row.reasons.iter().map(|reason| reason.as_str()).collect(),
                     proposed_username: row.proposed_username.clone(),
@@ -8760,6 +8787,24 @@ mod tests {
         assert_eq!(
             identity::decide(Some(&admin), Operation::OnboardingPreview),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn bulk_contact_body_serializes_only_the_masked_email() {
+        let masked = Some("a•••@example.test".to_string());
+        let email = BulkContactBody::from_masked(&masked);
+        let value = serde_json::to_value(&email).expect("serialize email contact");
+        assert_eq!(
+            value,
+            serde_json::json!({ "type": "email", "masked": "a•••@example.test" })
+        );
+        assert!(!value.to_string().contains("ada@example.test"));
+
+        let none = BulkContactBody::from_masked(&None);
+        assert_eq!(
+            serde_json::to_value(&none).expect("serialize no contact"),
+            serde_json::json!({ "type": "none" })
         );
     }
 

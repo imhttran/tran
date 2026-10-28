@@ -271,6 +271,11 @@ export type BulkClassification =
 
 export type BulkPreviewRow = {
   person_key: string;
+  display_name: string;
+  // The verified contact. The server sends only a masked address; the full
+  // address never leaves the server. An older payload may omit the field, so
+  // the page treats a missing value as `none`.
+  contact?: { type: "email"; masked: string } | { type: "none" };
   classification: BulkClassification;
   reasons: string[];
   proposed_username: string | null;
