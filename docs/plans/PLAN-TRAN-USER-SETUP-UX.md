@@ -3,17 +3,18 @@
 **Status:** PROPOSED. Design only; nothing implemented.
 **Repository:** https://github.com/imhttran/tran
 **Canonical requirements:** `docs/plans/PLAN-TRAN-USER-ONBOARDING.md` and `docs/plans/PLAN-TRAN-BULK-ONBOARDING.md`. This plan changes presentation and flow only; every security, privacy and review rule in those plans still applies.
+**Builds on:** PR #127 (`docs/plans/PLAN-TRAN-BULK-ONBOARD-TABLE.md`), which added names, masked contact, a complete load, filters and a wider layout to the bulk preview table. Its approved decision lets admin-only onboarding views show a person's display name and a server-masked verified email; this plan extends that decision to the batch status table and the Accounts list.
 
 ## Problem
 
 **Admin → Family Members** (`web/src/app/admin/family-members/page.tsx`) shows two separate lists:
 
-1. **Bulk onboard**: one row per genealogy person, labelled by `person_key`, with a classification, a proposed username and warnings.
+1. **Bulk onboard**: one row per genealogy person. Since PR #127 the preview table shows the display name, a masked contact, status, proposed username and warnings, with status/contact/search filters. After **Prepare**, the batch status table still labels each row by `person_key` only.
 2. **Accounts** (`web/src/components/AccountsAdmin.tsx`): one row per OIDC identity, labelled by `subject @ issuer`, with an Actions drawer where the admin types a raw person key to link.
 
 What goes wrong for the admin:
 
-- **Rows show IDs instead of names.** `BulkPreviewRow` and the batch items carry no display name or branch, so the admin has to know what each `person_key` refers to.
+- **Some views still show IDs instead of names.** The preview table is fixed, but the batch status table and `FamilyMember.linked_person` carry no display name, and no view shows a branch.
 - **One person appears in two places.** A person who has been prepared, invited, signed in and is waiting for link review is split across both lists. Nothing answers "where is this person in setup?"
 - **Linking means typing a person key by hand.** A typo can link the wrong person. The confirmation helps, but it repeats the same key back.
 - **The next step is hard to find.** Preview, select, prepare, verify email and send are separate controls in separate sections, and the admin has to work out the order.
@@ -32,11 +33,16 @@ What goes wrong for the invitee:
 
 ## Stages
 
-### SETUP-001 — Show names instead of keys
+### SETUP-001 — Show names in the remaining views
 
-- Add `display_name` and a branch label to the bulk preview rows, the batch status items, and `FamilyMember.linked_person`. Read them server-side from the genealogy database under the existing admin check; the browser never supplies them.
-- In both tables, show the name as the primary label and keep `person_key` as small secondary text.
-- In the Accounts list, show `display_name` / email first and move `subject @ issuer` into the expanded details.
+Done in PR #127: the preview table shows the display name with `person_key` as secondary text, and a masked contact column.
+
+Remaining:
+
+- Add `display_name` to the batch status items and to `FamilyMember.linked_person`. Read it server-side from the genealogy database under the existing admin check; the browser never supplies it. Reuse the display-name read PR #127 added to `src/onboarding/candidate.rs` rather than a second query.
+- In the batch status table, render the Person cell the same way the preview table does (name in bold, key below), and use the name in the "Verified email for …" label.
+- In the Accounts list, show the linked person's name instead of the key, and move `subject @ issuer` into the expanded details.
+- Optional: a branch label in all three views, if one is cheap to read alongside the name. Drop it if it needs a new query.
 - If the genealogy store is unavailable (`linkage: "unavailable"`), fall back to the key and keep the existing notice.
 
 **Pass:** no admin row is labelled by `person_key` alone when the genealogy store is up; unit/E2E tests use synthetic names.
@@ -60,13 +66,13 @@ What goes wrong for the invitee:
 
 ### SETUP-004 — One list with a setup stage for each person
 
-Mock this up in `docs/mockups/` before coding.
+Mock this up in `docs/mockups/` before coding, starting from PR #127's preview table: its name and contact columns, status-card toggles, "No contact" toggle and accent-insensitive search are the base of the merged list, not something to replace.
 
 - Merge the two lists into one roster keyed by genealogy person, plus a short "Unlinked accounts" section for identities that signed in without a matching invitation.
 - Each row shows a stage chip:
   `Not invited → Prepared → Invited → Signed in, awaiting review → Active`, plus `Needs review`, `Not eligible`, and `Deactivated`.
 - Each row has one primary button for its next step: **Prepare**, **Add verified email**, **Send invitation**, **Resend**, **Review link**. Role, password reset, unlink and deactivate stay in the secondary Actions drawer.
-- Filters by stage (e.g. "Awaiting review") replace the separate status/role filters as the default view. Bulk actions apply to the selected rows.
+- Extend the existing status-card toggles to cover the new stages (e.g. "Awaiting review") and make them the default view, replacing the Accounts list's separate status/role filters. Bulk actions apply to the selected rows.
 - The server computes the stage; the UI only renders it.
 
 **Pass:** for the synthetic 6-person fixture used by BULK-005, each person appears exactly once with the correct stage, and the primary button matches the stage.
@@ -84,7 +90,7 @@ Depends on the runtime check above.
 
 ## Suggested delivery
 
-- **PR 1:** SETUP-001, SETUP-002, SETUP-003 together. Small, independent of the redesign, and removes the riskiest manual step (typing keys).
+- **PR 1:** the rest of SETUP-001, plus SETUP-002 and SETUP-003. Small, independent of the redesign, and removes the riskiest manual step (typing keys).
 - **PR 2:** SETUP-004 after the mockup is agreed.
 - **PR 3:** SETUP-005 after the runtime check of today's invitee experience.
 
