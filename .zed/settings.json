@@ -1,17 +1,38 @@
 {
   "agent": {
+    "sandbox_permissions": {
+      "allow_all_hosts": true,
+      "allow_fs_write_all": true,
+    },
     "tool_permissions": {
+      "default": "allow",
       "tools": {
-        "read_file": {
-          "always_allow": [{ "pattern": "AUDIT\\.md" }]
-        },
         "edit_file": {
-          "always_allow": [{ "pattern": "AUDIT\\.md" }]
+          "default": "allow",
         },
-        "write_file": {
-          "always_allow": [{ "pattern": "AUDIT\\.md" }]
-        }
-      }
-    }
-  }
+        "terminal": {
+          "default": "allow",
+          "always_allow": [
+            { "pattern": "\\bnpm\\s+(run|test|install)" },
+            { "pattern": "\\bcargo\\s+(build|test|check)" },
+            { "pattern": "\\bgit\\s+(status|diff|log)\\b" },
+          ],
+        },
+      },
+    },
+  },
+  "languages": {
+    "Rust": {
+      "language_servers": ["rust-analyzer"],
+    },
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "rust": {
+          "analyzerTargetDir": true,
+        },
+      },
+    },
+  },
 }
