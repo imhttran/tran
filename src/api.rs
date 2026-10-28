@@ -7635,7 +7635,8 @@ async fn bulk_batch_status(
                         invitation.status,
                         EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
                                  WHERE contact.person_id = item.person_id
-                                   AND contact.verified_at IS NOT NULL) AS has_verified_contact
+                                   AND contact.verified_at IS NOT NULL) AS has_verified_contact,
+                        person.display_name
                    FROM onboarding_batch_item item
                    JOIN person ON person.person_id = item.person_id
                    LEFT JOIN onboarding_username_reservation reservation
@@ -7658,6 +7659,7 @@ async fn bulk_batch_status(
             .map(|row| {
                 serde_json::json!({
                     "person_key": row.get::<_, String>(0),
+                    "display_name": row.get::<_, String>(9),
                     "status": row.get::<_, String>(1),
                     "reason": row.get::<_, Option<String>>(2),
                     "delivery_status": row.get::<_, String>(3),

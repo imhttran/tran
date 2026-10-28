@@ -163,6 +163,7 @@ pub fn list_members(
 pub struct LinkedPerson {
     pub link_id: i64,
     pub person_key: String,
+    pub display_name: String,
     pub username: Option<String>,
 }
 
@@ -177,7 +178,7 @@ pub fn linked_people(
     }
     let rows = genealogy
         .query(
-            "SELECT l.account_id, p.person_key, r.username, l.link_id
+            "SELECT l.account_id, p.person_key, p.display_name, r.username, l.link_id
                FROM onboarding_person_account_link l
                JOIN person p ON p.person_id = l.person_id
                LEFT JOIN onboarding_username_reservation r
@@ -192,9 +193,10 @@ pub fn linked_people(
             (
                 row.get(0),
                 LinkedPerson {
-                    link_id: row.get(3),
+                    link_id: row.get(4),
                     person_key: row.get(1),
-                    username: row.get(2),
+                    display_name: row.get(2),
+                    username: row.get(3),
                 },
             )
         })
