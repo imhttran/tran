@@ -18,10 +18,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    confirm_batch, create, issue_deliverable_invitation, preview_candidates, preview_dry_run,
-    reclassify_person, send_batch, sync_invitation_status, verify_recipient, Classification,
-    DeliveryError, DeliveryStatus, DryRunFilters, FakeAdapter, ItemStatus, Page, Selector,
-    UnconfiguredAdapter,
+    batch_status_items, confirm_batch, create, issue_deliverable_invitation, preview_candidates,
+    preview_dry_run, reclassify_person, send_batch, sync_invitation_status, verify_recipient,
+    Classification, DeliveryError, DeliveryStatus, DryRunFilters, FakeAdapter, ItemStatus, Page,
+    Selector, UnconfiguredAdapter,
 };
 
 const MIGRATIONS: [&str; 27] = [
@@ -259,6 +259,15 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         .map_err(|err| db_error(&err))?
         .get(0);
     assert_eq!(reservations as usize, ids.len());
+    let status = batch_status_items(client, first.batch_id).map_err(|err| db_error(&err))?;
+    let mut names: Vec<&str> = status
+        .iter()
+        .map(|item| item.display_name.as_str())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Eligible One", "Eligible Two"]);
+    let wire = serde_json::to_value(&status[0]).map_err(|err| db_error(&err))?;
+    assert!(wire.get("display_name").is_some() && wire.get("person_key").is_some());
 
     // 4. Repeating the same batch changes no logical state.
     let second = confirm_batch(client, &actor, ids.len(), &ids).map_err(|err| db_error(&err))?;

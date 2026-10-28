@@ -184,6 +184,63 @@ pub struct BatchItem {
     pub reservation_id: Option<i64>,
 }
 
+/// One batch item as the admin status view shows it. Field names are the
+/// wire names of `GET /api/admin/family-members/bulk/batches/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BatchStatusItem {
+    pub person_key: String,
+    pub display_name: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub delivery_status: String,
+    pub provider: Option<String>,
+    pub attempts: i32,
+    pub username: Option<String>,
+    pub invitation_status: Option<String>,
+    pub has_verified_contact: bool,
+}
+
+/// Reads every item of one batch for the admin status view, in item order.
+/// Read-only.
+pub fn batch_status_items(
+    client: &mut Client,
+    batch_id: i64,
+) -> Result<Vec<BatchStatusItem>, postgres::Error> {
+    let rows = client.query(
+        "SELECT person.person_key, person.display_name, item.status, item.reason_code,
+                item.delivery_status, item.delivery_provider,
+                item.delivery_attempts, reservation.username,
+                invitation.status,
+                EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
+                         WHERE contact.person_id = item.person_id
+                           AND contact.verified_at IS NOT NULL) AS has_verified_contact
+           FROM onboarding_batch_item item
+           JOIN person ON person.person_id = item.person_id
+           LEFT JOIN onboarding_username_reservation reservation
+             ON reservation.reservation_id = item.reservation_id
+           LEFT JOIN onboarding_invitation invitation
+             ON invitation.invitation_id = item.invitation_id
+          WHERE item.batch_id = $1
+          ORDER BY item.batch_item_id",
+        &[&batch_id],
+    )?;
+    Ok(rows
+        .iter()
+        .map(|row| BatchStatusItem {
+            person_key: row.get(0),
+            display_name: row.get(1),
+            status: row.get(2),
+            reason: row.get(3),
+            delivery_status: row.get(4),
+            provider: row.get(5),
+            attempts: row.get(6),
+            username: row.get(7),
+            invitation_status: row.get(8),
+            has_verified_contact: row.get(9),
+        })
+        .collect())
+}
+
 /// The outcome of one confirmation request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchReport {

@@ -31,7 +31,8 @@ pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
 pub use batch::{
-    confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport, ItemStatus, CHUNK_SIZE,
+    batch_status_items, confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport,
+    BatchStatusItem, ItemStatus, CHUNK_SIZE,
 };
 pub use branch_review::{
     active_branch_grants, grant_branches, has_active_branch_grant, list_branches,

@@ -7627,50 +7627,13 @@ async fn bulk_batch_status(
                 )
             })?
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_batch", "no such batch"))?;
-        let items = client
-            .query(
-                "SELECT person.person_key, item.status, item.reason_code,
-                        item.delivery_status, item.delivery_provider,
-                        item.delivery_attempts, reservation.username,
-                        invitation.status,
-                        EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
-                                 WHERE contact.person_id = item.person_id
-                                   AND contact.verified_at IS NOT NULL) AS has_verified_contact,
-                        person.display_name
-                   FROM onboarding_batch_item item
-                   JOIN person ON person.person_id = item.person_id
-                   LEFT JOIN onboarding_username_reservation reservation
-                     ON reservation.reservation_id = item.reservation_id
-                   LEFT JOIN onboarding_invitation invitation
-                     ON invitation.invitation_id = item.invitation_id
-                  WHERE item.batch_id = $1
-                  ORDER BY item.batch_item_id",
-                &[&batch_id],
+        let item_rows = onboarding::batch_status_items(&mut client, batch_id).map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "status_failed",
+                "the batch status failed",
             )
-            .map_err(|_| {
-                error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "status_failed",
-                    "the batch status failed",
-                )
-            })?;
-        let item_rows: Vec<serde_json::Value> = items
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "person_key": row.get::<_, String>(0),
-                    "display_name": row.get::<_, String>(9),
-                    "status": row.get::<_, String>(1),
-                    "reason": row.get::<_, Option<String>>(2),
-                    "delivery_status": row.get::<_, String>(3),
-                    "provider": row.get::<_, Option<String>>(4),
-                    "attempts": row.get::<_, i32>(5),
-                    "username": row.get::<_, Option<String>>(6),
-                    "invitation_status": row.get::<_, Option<String>>(7),
-                    "has_verified_contact": row.get::<_, bool>(8),
-                })
-            })
-            .collect();
+        })?;
         Ok::<_, Response>(serde_json::json!({
             "ok": true,
             "batch_id": batch.get::<_, i64>(0),

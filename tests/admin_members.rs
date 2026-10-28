@@ -464,6 +464,7 @@ fn linked_people_reads_links_without_writing() {
     let link = &links[&account_id];
     assert!(link.link_id > 0);
     assert_eq!(link.person_key, format!("{prefix}-person"));
+    assert_eq!(link.display_name, "Synthetic Person");
     assert_eq!(
         link.username.as_deref(),
         Some(format!("{prefix}-user").as_str())
