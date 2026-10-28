@@ -190,10 +190,7 @@ function summaryTotal(summary: BulkPreview["summary"]): number {
 // Case- and accent-insensitive key: decompose with NFD and drop combining
 // marks, so "tran" matches "Trần".
 function fold(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "")
-    .toLocaleLowerCase();
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
 }
 
 // Reason codes the Contact column now carries, so the Warnings column hides
@@ -207,9 +204,9 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [state, setState] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [classifications, setClassifications] = useState<Set<BulkClassification>>(
-    new Set(DEFAULT_CLASSIFICATIONS),
-  );
+  const [classifications, setClassifications] = useState<
+    Set<BulkClassification>
+  >(new Set(DEFAULT_CLASSIFICATIONS));
   const [noContact, setNoContact] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -326,7 +323,11 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
     setBusy(true);
     setError(null);
     try {
-      await bulkVerifyRecipient({ person_key: personKey, email, confirmed: true });
+      await bulkVerifyRecipient({
+        person_key: personKey,
+        email,
+        confirmed: true,
+      });
       if (prepareResult) await refreshBatch(prepareResult.batch_id);
     } catch (err) {
       setError(errorMessage(err));
@@ -358,8 +359,12 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         approve: true,
       });
       const sent = result.results.filter((row) => row.status === "sent").length;
-      const queued = result.results.filter((row) => row.status === "queued").length;
-      const failed = result.results.filter((row) => row.status === "failed").length;
+      const queued = result.results.filter(
+        (row) => row.status === "queued",
+      ).length;
+      const failed = result.results.filter(
+        (row) => row.status === "failed",
+      ).length;
       setSendMessage(
         `Provider confirmed ${sent} sent, ${queued} queued, ${failed} failed. No account is activated until the recipient completes the identity flow and an admin reviews the person link.`,
       );
@@ -439,16 +444,28 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
 
       <div className="fm-workspace">
         {error ? (
-          <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="bulk-error">
+          <p
+            className="state-panel state-panel-unavailable fm-state"
+            role="alert"
+            data-testid="bulk-error"
+          >
             {error}
           </p>
         ) : null}
 
         <div className="bulk-actions fm-action-bar">
-          <button type="button" onClick={() => void load()} disabled={busy || state === "loading"}>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={busy || state === "loading"}
+          >
             Preview eligible people
           </button>
-          <button type="button" onClick={selectEligible} disabled={!preview || busy}>
+          <button
+            type="button"
+            onClick={selectEligible}
+            disabled={!preview || busy}
+          >
             Select eligible
           </button>
           <button
@@ -462,13 +479,22 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         </div>
 
         {state === "loading" ? (
-          <p className="state-panel state-panel-loading fm-state">Loading the private candidate set…</p>
+          <p className="state-panel state-panel-loading fm-state">
+            Loading the private candidate set…
+          </p>
         ) : null}
 
         {preview ? (
-          <section className="status-panel fm-preview" data-testid="bulk-preview">
+          <section
+            className="status-panel fm-preview"
+            data-testid="bulk-preview"
+          >
             <h2>Preview</h2>
-            <div className="fm-stat-grid" role="group" aria-label="Filter by classification">
+            <div
+              className="fm-stat-grid"
+              role="group"
+              aria-label="Filter by classification"
+            >
               {CLASSIFICATIONS.map((entry) => (
                 <button
                   key={entry.key}
@@ -504,14 +530,19 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
               Showing {visibleRows.length} of {allRows.length} people
             </p>
             {preview.review_needed ? (
-              <p className="insufficient" data-testid="bulk-review-needed">{preview.review_needed}</p>
+              <p className="insufficient" data-testid="bulk-review-needed">
+                {preview.review_needed}
+              </p>
             ) : null}
             <p className="hint fm-dry-run">
-              Preview is a dry run. It changes nothing: no username is reserved, no
-              invitation is created, and no email is sent.
+              Preview is a dry run. It changes nothing: no username is reserved,
+              no invitation is created, and no email is sent.
             </p>
             <div className="fm-table-wrap">
-              <table className="bulk-table fm-preview-table" data-testid="bulk-table">
+              <table
+                className="bulk-table fm-preview-table"
+                data-testid="bulk-table"
+              >
                 <colgroup>
                   <col className="fm-col-select" />
                   <col className="fm-col-person" />
@@ -556,8 +587,8 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
             onCancel={() => setConfirmPrepare(false)}
           >
             <p>
-              Prepare <strong>{selected.size}</strong> selected people. Preparation
-              reserves usernames and records a resumable batch.
+              Prepare <strong>{selected.size}</strong> selected people.
+              Preparation reserves usernames and records a resumable batch.
             </p>
             <p className="insufficient">
               No accounts are activated and no emails are sent by this step.
@@ -566,11 +597,15 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         ) : null}
 
         {prepareResult ? (
-          <section className="status-panel fm-results" data-testid="bulk-results">
+          <section
+            className="status-panel fm-results"
+            data-testid="bulk-results"
+          >
             <h2>Batch {prepareResult.batch_id}</h2>
             <p className="hint">
-              Prepared {prepareResult.prepared}, needs review {prepareResult.needs_review},
-              failed {prepareResult.failed}. Duplicate submission created{" "}
+              Prepared {prepareResult.prepared}, needs review{" "}
+              {prepareResult.needs_review}, failed {prepareResult.failed}.
+              Duplicate submission created{" "}
               {prepareResult.created ? "a new batch" : "no new batch"}.
             </p>
             {batch ? (
@@ -591,13 +626,18 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                         <td data-label="Person key">{item.person_key}</td>
                         <td data-label="Preparation">
                           {item.status}
-                          {item.reason ? <span className="hint"> ({item.reason})</span> : null}
+                          {item.reason ? (
+                            <span className="hint"> ({item.reason})</span>
+                          ) : null}
                         </td>
                         <td data-label="Username">{item.username ?? "—"}</td>
                         <td data-label="Delivery">
                           {item.delivery_status}
                           {item.invitation_status ? (
-                            <span className="hint"> ({item.invitation_status})</span>
+                            <span className="hint">
+                              {" "}
+                              ({item.invitation_status})
+                            </span>
                           ) : null}
                         </td>
                         <td data-label="Verified recipient">
@@ -619,7 +659,9 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                               />
                               <button
                                 type="button"
-                                onClick={() => void verifyEmail(item.person_key)}
+                                onClick={() =>
+                                  void verifyEmail(item.person_key)
+                                }
                                 disabled={busy}
                               >
                                 Verify
@@ -664,16 +706,21 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                 onCancel={() => setConfirmSend(false)}
               >
                 <p>
-                  Send exactly <strong>{sendableCount}</strong> invitations through
-                  the configured adapter. Each recipient receives a single-use,
-                  expiring activation link.
+                  Send exactly <strong>{sendableCount}</strong> invitations
+                  through the configured adapter. Each recipient receives a
+                  single-use, expiring activation link.
                 </p>
-                <p>No account is activated until the recipient completes the identity flow and an administrator reviews the link.</p>
+                <p>
+                  No account is activated until the recipient completes the
+                  identity flow and an administrator reviews the link.
+                </p>
               </ConfirmDialog>
             ) : null}
 
             {sendMessage ? (
-              <p className="form-status ok" data-testid="bulk-send-result">{sendMessage}</p>
+              <p className="form-status ok" data-testid="bulk-send-result">
+                {sendMessage}
+              </p>
             ) : null}
           </section>
         ) : null}
@@ -698,7 +745,7 @@ function PreviewRow({
   onToggle: () => void;
 }) {
   return (
-    <tr>
+    <tr data-person-key={row.person_key}>
       <td data-label="Select">
         <input
           type="checkbox"
@@ -709,7 +756,9 @@ function PreviewRow({
         />
       </td>
       <td data-label="Person" className="fm-cell-person">
-        <strong className="fm-person-name">{row.display_name || row.person_key}</strong>
+        <strong className="fm-person-name">
+          {row.display_name || row.person_key}
+        </strong>
         <div className="hint fm-person-key">
           <small>{row.person_key}</small>
         </div>
