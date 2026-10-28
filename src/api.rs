@@ -8791,6 +8791,24 @@ mod tests {
     }
 
     #[test]
+    fn bulk_contact_body_serializes_only_the_masked_email() {
+        let masked = Some("a•••@example.test".to_string());
+        let email = BulkContactBody::from_masked(&masked);
+        let value = serde_json::to_value(&email).expect("serialize email contact");
+        assert_eq!(
+            value,
+            serde_json::json!({ "type": "email", "masked": "a•••@example.test" })
+        );
+        assert!(!value.to_string().contains("ada@example.test"));
+
+        let none = BulkContactBody::from_masked(&None);
+        assert_eq!(
+            serde_json::to_value(&none).expect("serialize no contact"),
+            serde_json::json!({ "type": "none" })
+        );
+    }
+
+    #[test]
     fn only_an_accepted_reset_request_is_reported_as_success() {
         assert_eq!(
             reset_response(Ok(ResetState::Requested)).status(),
