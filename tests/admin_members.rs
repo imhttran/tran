@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use postgres::{Client, NoTls};
 use rag_foundation::admin_members::{
-    linked_people, list_members, request_password_reset, MemberFilter, MemberStatus, ResetError,
-    ResetProvider, ResetRequest, ResetState,
+    linked_people, linked_person_keys, list_members, request_password_reset, MemberFilter,
+    MemberStatus, ResetError, ResetProvider, ResetRequest, ResetState,
 };
-use rag_foundation::identity::Role;
+use rag_foundation::genealogy::appointments::search_nomination_people;
+use rag_foundation::identity::{decide, Decision, Operation, Role, VerifiedIdentity};
 
 const ISSUER_A: &str = "https://issuer-a.example";
 const ISSUER_B: &str = "https://issuer-b.example";
@@ -399,40 +400,7 @@ fn linked_people_reads_links_without_writing() {
     };
     // A dedicated disposable genealogy database, so no other suite's rows or
     // sequences interfere, and no real genealogy database is ever touched.
-    let database = "admin_members_genealogy_test";
-    let mut admin = postgres::Config::from_str(&base)
-        .expect("DATABASE_URL parses")
-        .dbname("postgres")
-        .connect(NoTls)
-        .expect("connect");
-    for statement in [
-        format!("DROP DATABASE IF EXISTS {database}"),
-        format!("CREATE DATABASE {database}"),
-    ] {
-        admin
-            .batch_execute(&statement)
-            .expect("recreate disposable genealogy database");
-    }
-    let mut client = postgres::Config::from_str(&base)
-        .expect("DATABASE_URL parses")
-        .dbname(database)
-        .connect(NoTls)
-        .expect("connect genealogy");
-    for path in [
-        "genealogy/migrations/0001_genealogy_schema_version.sql",
-        "genealogy/migrations/0002_catalog_keys.sql",
-        "genealogy/migrations/0003_assertions_evidence_and_links.sql",
-        "genealogy/migrations/0004_review_workflow.sql",
-        "genealogy/migrations/0005_source_kind.sql",
-        "genealogy/migrations/0006_head_of_family.sql",
-        "genealogy/migrations/0007_onboarding.sql",
-        "genealogy/migrations/0008_onboarding_identity.sql",
-        "genealogy/migrations/0009_onboarding_link_audit.sql",
-    ] {
-        client
-            .batch_execute(&std::fs::read_to_string(path).expect("read migration"))
-            .expect("migrate");
-    }
+    let mut client = genealogy_db(&base, "admin_members_genealogy_test");
     let prefix = format!("adm-test-{}", std::process::id());
     let account_id = -(std::process::id() as i64);
     let person_id: i64 = client
@@ -464,8 +432,97 @@ fn linked_people_reads_links_without_writing() {
     let link = &links[&account_id];
     assert!(link.link_id > 0);
     assert_eq!(link.person_key, format!("{prefix}-person"));
+    assert_eq!(link.display_name, "Synthetic Person");
     assert_eq!(
         link.username.as_deref(),
         Some(format!("{prefix}-user").as_str())
     );
+}
+
+/// Recreates a disposable genealogy database with every genealogy migration.
+fn genealogy_db(base: &str, database: &str) -> Client {
+    let mut admin = postgres::Config::from_str(base)
+        .expect("DATABASE_URL parses")
+        .dbname("postgres")
+        .connect(NoTls)
+        .expect("connect");
+    for statement in [
+        format!("DROP DATABASE IF EXISTS {database}"),
+        format!("CREATE DATABASE {database}"),
+    ] {
+        admin
+            .batch_execute(&statement)
+            .expect("recreate disposable genealogy database");
+    }
+    let mut client = postgres::Config::from_str(base)
+        .expect("DATABASE_URL parses")
+        .dbname(database)
+        .connect(NoTls)
+        .expect("connect genealogy");
+    let mut migrations: Vec<_> = std::fs::read_dir("genealogy/migrations")
+        .expect("read migrations")
+        .map(|entry| entry.expect("migration entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
+        .collect();
+    migrations.sort();
+    for path in migrations {
+        client
+            .batch_execute(&std::fs::read_to_string(&path).expect("read migration"))
+            .unwrap_or_else(|err| panic!("migrate {}: {err}", path.display()));
+    }
+    client
+}
+
+fn identity(role: Role) -> VerifiedIdentity {
+    VerifiedIdentity::new(
+        "synthetic-subject",
+        "https://synthetic-issuer",
+        vec![role],
+        vec![],
+    )
+}
+
+#[test]
+fn admin_person_search_requires_link_permission() {
+    assert_eq!(
+        decide(None, Operation::OnboardingLink),
+        Decision::Unauthenticated
+    );
+    assert_eq!(
+        decide(Some(&identity(Role::Viewer)), Operation::OnboardingLink),
+        Decision::Forbidden
+    );
+    assert_eq!(
+        decide(Some(&identity(Role::Admin)), Operation::OnboardingLink),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn admin_person_search_finds_unaccented_and_reports_link_state() {
+    let Some(base) = base_dsn() else {
+        eprintln!("DATABASE_URL is unset; skipping admin person search test");
+        return;
+    };
+    let mut client = genealogy_db(&base, "admin_members_people_search_test");
+    client
+        .batch_execute(
+            "INSERT INTO person (person_key, display_name) VALUES
+                 ('synthetic-unlinked', 'Synthetic Ren\u{00e9} Target'),
+                 ('synthetic-linked', 'Synthetic Linked Target');
+             INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by)
+             SELECT person_id, 42, 'test' FROM person WHERE person_key = 'synthetic-linked';",
+        )
+        .expect("seed people");
+
+    // The unaccented query matches the accented display name.
+    let people = search_nomination_people(&mut client, "synthetic rene", 10).expect("search");
+    assert!(people.iter().any(|p| p.person_key == "synthetic-unlinked"));
+
+    let keys = vec![
+        "synthetic-unlinked".to_string(),
+        "synthetic-linked".to_string(),
+    ];
+    let linked = linked_person_keys(&mut client, &keys).expect("linked keys");
+    assert_eq!(linked.into_iter().collect::<Vec<_>>(), ["synthetic-linked"]);
 }

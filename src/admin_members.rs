@@ -11,7 +11,7 @@
 //! link. This module never sees a password, reset link, token, or address in
 //! the outbound request, and an unconfigured provider fails closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::identity::Role;
@@ -201,6 +201,27 @@ pub fn linked_people(
             )
         })
         .collect())
+}
+
+/// Reads the active linked person keys for each person key.
+/// Read-only; keys without a link are absent from the set.
+pub fn linked_person_keys(
+    genealogy: &mut postgres::Client,
+    person_keys: &[String],
+) -> Result<HashSet<String>, String> {
+    if person_keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let rows = genealogy
+        .query(
+            "SELECT p.person_key
+               FROM onboarding_person_account_link l
+               JOIN person p ON p.person_id = l.person_id
+              WHERE p.person_key = ANY($1)",
+            &[&person_keys],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
 /// The outcome of a reset request. `Requested` means the provider accepted the

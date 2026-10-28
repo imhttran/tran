@@ -443,6 +443,7 @@ impl AppState {
                 post(revoke_invitation),
             )
             .route("/api/admin/family-members/links", post(create_link))
+            .route("/api/admin/family-members/people", get(admin_member_people))
             .route(
                 "/api/admin/family-members/links/{id}/revoke",
                 post(revoke_link),
@@ -2568,6 +2569,84 @@ async fn nomination_people(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "nomination_search_failed",
                 "the nomination person search failed",
+            )
+        }
+    }
+}
+
+/// Admin person search for the link form. Read-only; shares the q/limit rules
+/// and the catalog search with `nomination_people`, and adds each person's
+/// active link state.
+#[allow(clippy::result_large_err)]
+async fn admin_member_people(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NarrativePersonQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingLink) {
+        return response;
+    }
+    let (term, limit) = match validate_person_search(&query) {
+        Ok(PersonSearchQuery::Empty) => {
+            return Json(serde_json::json!({ "ok": true, "people": [] })).into_response()
+        }
+        Ok(PersonSearchQuery::Search { term, limit }) => (term, limit),
+        Err(PersonSearchQueryError::TooLong) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_member_person_search",
+                "q must be at most 200 characters",
+            )
+        }
+        Err(PersonSearchQueryError::LimitOutOfRange) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_member_person_limit",
+                "limit must be between 1 and 20",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let people = appointments::search_nomination_people(&mut genealogy, &term, limit)
+            .map_err(narrative_review_error)?;
+        let keys: Vec<String> = people
+            .iter()
+            .map(|person| person.person_key.clone())
+            .collect();
+        let linked = admin_members::linked_person_keys(&mut genealogy, &keys)
+            .map_err(genealogy_unavailable)?;
+        Ok::<_, Response>(
+            people
+                .into_iter()
+                .map(|person| {
+                    let is_linked = linked.contains(&person.person_key);
+                    serde_json::json!({
+                        "record_id": person.person_key,
+                        "person_label": person.display_name,
+                        "birth": person.birth,
+                        "branches": person.branches,
+                        "linked": is_linked,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(people)) => Json(serde_json::json!({
+            "ok": true,
+            "people": people,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: admin member person search task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "member_person_search_failed",
+                "the admin person search failed",
             )
         }
     }
@@ -7627,50 +7706,13 @@ async fn bulk_batch_status(
                 )
             })?
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_batch", "no such batch"))?;
-        let items = client
-            .query(
-                "SELECT person.person_key, item.status, item.reason_code,
-                        item.delivery_status, item.delivery_provider,
-                        item.delivery_attempts, reservation.username,
-                        invitation.status,
-                        EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
-                                 WHERE contact.person_id = item.person_id
-                                   AND contact.verified_at IS NOT NULL) AS has_verified_contact,
-                        person.display_name
-                   FROM onboarding_batch_item item
-                   JOIN person ON person.person_id = item.person_id
-                   LEFT JOIN onboarding_username_reservation reservation
-                     ON reservation.reservation_id = item.reservation_id
-                   LEFT JOIN onboarding_invitation invitation
-                     ON invitation.invitation_id = item.invitation_id
-                  WHERE item.batch_id = $1
-                  ORDER BY item.batch_item_id",
-                &[&batch_id],
+        let item_rows = onboarding::batch_status_items(&mut client, batch_id).map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "status_failed",
+                "the batch status failed",
             )
-            .map_err(|_| {
-                error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "status_failed",
-                    "the batch status failed",
-                )
-            })?;
-        let item_rows: Vec<serde_json::Value> = items
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "person_key": row.get::<_, String>(0),
-                    "display_name": row.get::<_, String>(9),
-                    "status": row.get::<_, String>(1),
-                    "reason": row.get::<_, Option<String>>(2),
-                    "delivery_status": row.get::<_, String>(3),
-                    "provider": row.get::<_, Option<String>>(4),
-                    "attempts": row.get::<_, i32>(5),
-                    "username": row.get::<_, Option<String>>(6),
-                    "invitation_status": row.get::<_, Option<String>>(7),
-                    "has_verified_contact": row.get::<_, bool>(8),
-                })
-            })
-            .collect();
+        })?;
         Ok::<_, Response>(serde_json::json!({
             "ok": true,
             "batch_id": batch.get::<_, i64>(0),
