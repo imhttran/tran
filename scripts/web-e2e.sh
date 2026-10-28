@@ -4,7 +4,7 @@
 #   scripts/web-e2e.sh
 #
 # Starts the production Axum API (real PostgreSQL + Ollama) on loopback, starts
-# the Next.js app on 127.0.0.1:3000, runs Playwright against the real browser,
+# the Next.js app on 127.0.0.1:${WEB_PORT:-3000}, runs Playwright against the real browser,
 # then stops both servers and deletes only this run's corpus.
 #
 # The E2E suite is operator-run verification: Node.js and browser execution are
@@ -15,6 +15,10 @@
 # DSNs must name a disposable database (`*_test` or `*_disposable`). Application
 # databases are refused before the first migration, seed, or delete. Isolation
 # never depends on moving .env aside.
+#
+# Ports: the API (API_PORT, default 8080), the test OIDC issuer (E2E_AUTH_PORT,
+# default 9099), and Next.js (WEB_PORT, default 3000) must be free. A taken port
+# stops the run before any database work; nothing already running is touched.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,6 +26,7 @@ cd "$ROOT"
 
 # Caller values win; .env only fills the gaps.
 . "$ROOT/scripts/e2e-db-env.sh"
+. "$ROOT/scripts/port-guard.sh"
 load_env_defaults "$ROOT/.env"
 
 if [ -z "${DATABASE_URL:-}" ]; then
@@ -55,6 +60,31 @@ export REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-180s}"
 # JWKS; the browser tests use the same cryptographically valid tokens and the
 # Next.js login flow. Keys and accounts are synthetic and disposable.
 AUTH_PORT="${E2E_AUTH_PORT:-9099}"
+WEB_PORT="${WEB_PORT:-3000}"
+export WEB_PORT
+WEB_ORIGIN="http://127.0.0.1:${WEB_PORT}"
+
+# Every server this run talks to must be one it started. A port that is already
+# taken (for example a developer API on 8080 connected to the real databases)
+# would otherwise answer the readiness checks and receive the suite's requests.
+# Check all ports before the first migration, seed, or delete.
+require_port_free "web-e2e: test OIDC issuer" "$AUTH_PORT" E2E_AUTH_PORT
+require_port_free "web-e2e: API" "$API_PORT" API_PORT
+# A Next.js server that web-control.sh itself manages is stopped and restarted
+# below, as before; any other listener on the web port is refused.
+web_pid=$(cat "$ROOT/web/.run/web.pid" 2>/dev/null || true)
+if [ -z "$web_pid" ] || ! kill -0 "$web_pid" 2>/dev/null; then
+	require_port_free "web-e2e: Next.js" "$WEB_PORT" WEB_PORT
+fi
+
+# The Next.js proxy forwards /api to API_URL. .env usually points it at the
+# developer API, so pin it to this run's API instead.
+if [ -n "${API_URL:-}" ] && [ "$API_URL" != "http://127.0.0.1:${API_PORT}" ]; then
+	echo "web-e2e: ignoring API_URL=$API_URL; the Next.js proxy uses this run's API on port $API_PORT"
+fi
+export API_URL="http://127.0.0.1:${API_PORT}"
+export E2E_BASE_URL="$WEB_ORIGIN"
+
 E2E_KEY_FILE="/tmp/tran-e2e-oidc-key-$$.pem"
 E2E_ISSUER="http://127.0.0.1:${AUTH_PORT}"
 E2E_AUDIENCE="tran-e2e"
@@ -66,7 +96,7 @@ export AUTH_CLOCK_SKEW_SECS="${AUTH_CLOCK_SKEW_SECS:-60}"
 export JWKS_CACHE_TTL_SECS="${JWKS_CACHE_TTL_SECS:-60}"
 export OIDC_ISSUER="$E2E_ISSUER"
 export OIDC_CLIENT_ID="$E2E_AUDIENCE"
-export OIDC_REDIRECT_URI="http://127.0.0.1:3000/api/auth/callback"
+export OIDC_REDIRECT_URI="${WEB_ORIGIN}/api/auth/callback"
 export OIDC_AUTHORIZATION_ENDPOINT="${E2E_ISSUER}/authorize"
 export OIDC_TOKEN_ENDPOINT="${E2E_ISSUER}/token"
 export OIDC_END_SESSION_ENDPOINT="${E2E_ISSUER}/logout"
@@ -83,14 +113,29 @@ export HOF_THIRD_BRANCH_KEY="branch-3"
 # The fake adapter proves the send gate without real email. The Rust
 # integration suite separately proves the unconfigured adapter fails closed.
 export ONBOARDING_MAIL_ADAPTER="${ONBOARDING_MAIL_ADAPTER:-fake}"
-export ONBOARDING_ACTIVATION_URL="${ONBOARDING_ACTIVATION_URL:-http://127.0.0.1:3000/activate}"
+export ONBOARDING_ACTIVATION_URL="${ONBOARDING_ACTIVATION_URL:-${WEB_ORIGIN}/activate}"
 export ONBOARDING_SEND_INTERVAL_MS="${ONBOARDING_SEND_INTERVAL_MS:-0}"
 
 echo "web-e2e: starting the test OIDC issuer"
 python3 scripts/e2e-auth.py serve --port "$AUTH_PORT" --key-file "$E2E_KEY_FILE" >/tmp/tran-e2e-auth.log 2>&1 &
 AUTH_PID=$!
+# Until the full cleanup below is installed, an early failure (for example an
+# unreachable database during seeding) must not leave the issuer running.
+early_cleanup() {
+	kill "$AUTH_PID" 2>/dev/null || true
+	wait "$AUTH_PID" 2>/dev/null || true
+	rm -f "$E2E_KEY_FILE"
+}
+trap early_cleanup EXIT INT TERM
 i=0
 while [ "$i" -lt 50 ]; do
+	# Check our own process first, so a foreign server on the port can never
+	# satisfy the readiness probe.
+	if ! kill -0 "$AUTH_PID" 2>/dev/null; then
+		echo "web-e2e: the test OIDC issuer exited during startup:" >&2
+		cat /tmp/tran-e2e-auth.log >&2 || true
+		exit 1
+	fi
 	if curl -fsS -m 1 -o /dev/null "$JWKS_URL"; then
 		break
 	fi
@@ -100,6 +145,10 @@ done
 if [ "$i" -ge 50 ]; then
 	echo "web-e2e: the test OIDC issuer did not become ready" >&2
 	cat /tmp/tran-e2e-auth.log >&2 || true
+	exit 1
+fi
+if ! require_own_listener "web-e2e: test OIDC issuer" "$AUTH_PID" "$AUTH_PORT"; then
+	kill "$AUTH_PID" 2>/dev/null || true
 	exit 1
 fi
 
@@ -363,13 +412,15 @@ trap cleanup EXIT INT TERM
 echo "web-e2e: waiting for the API health endpoint"
 i=0
 while [ "$i" -lt 60 ]; do
-	if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$API_PORT/api/health"; then
-		break
-	fi
+	# Liveness before health: if our API failed to bind, a foreign server on
+	# the same port must not pass for it.
 	if ! kill -0 "$API_PID" 2>/dev/null; then
 		echo "web-e2e: API exited during startup:" >&2
 		cat "$api_log" >&2
 		exit 1
+	fi
+	if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$API_PORT/api/health"; then
+		break
 	fi
 	sleep 1
 	i=$((i+1))
@@ -377,6 +428,9 @@ done
 if [ "$i" -ge 60 ]; then
 	echo "web-e2e: API did not become healthy" >&2
 	cat "$api_log" >&2
+	exit 1
+fi
+if ! require_own_listener "web-e2e: API" "$API_PID" "$API_PORT"; then
 	exit 1
 fi
 
