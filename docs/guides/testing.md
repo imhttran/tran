@@ -60,8 +60,11 @@ application database. The harness conventions are:
   point them at a disposable database. The genealogy suites already isolate
   themselves per suite. Never point the destructive tests at the development
   database (`rag`) or a database named `rag_db`.
-- **Guard for the browser suite.** `scripts/e2e-db-env.sh` refuses an
-  application database for `make web-e2e`; `cargo test` does not use it.
+- **Guard for the browser suite.** `make web-e2e` runs through
+  `scripts/test-db.sh exec`, which derives the disposable `*_test` databases from
+  `.env`, the same way `make test` does. Called directly, `scripts/web-e2e.sh`
+  still refuses an application database through `scripts/e2e-db-env.sh`;
+  `cargo test` does not use that guard.
 
 ### Setup
 
