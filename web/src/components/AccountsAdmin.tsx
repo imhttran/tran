@@ -401,20 +401,32 @@ function MemberRow({
       </div>
       <p className="meta fm-member-meta">
         <span>{member.email ?? "No email on file"}</span>
-        <span className="fm-member-scope">
-          {member.subject} @ {member.issuer}
-        </span>
       </p>
       <p className="meta fm-member-link" data-testid="fm-member-link">
-        {linked
-          ? `Linked to ${linked.person_key}${linked.username ? ` (${linked.username})` : ""}`
-          : linkage === "available"
-            ? "Not linked to a genealogy person"
-            : "Link status unavailable"}
+        {linked ? (
+          <>
+            <span>
+              Linked to <strong>{linked.display_name || linked.person_key}</strong>
+            </span>
+            <span className="hint fm-member-link-key">
+              <small>
+                {linked.person_key}
+                {linked.username ? ` (${linked.username})` : ""}
+              </small>
+            </span>
+          </>
+        ) : linkage === "available" ? (
+          "Not linked to a genealogy person"
+        ) : (
+          "Link status unavailable"
+        )}
       </p>
       <details className="fm-actions" data-testid="fm-actions">
         <summary>Actions</summary>
         <div className="fm-actions-body">
+          <p className="meta fm-member-scope" data-testid="fm-member-scope">
+            {member.subject} @ {member.issuer}
+          </p>
           <button
             type="button"
             disabled={!active || !member.email}

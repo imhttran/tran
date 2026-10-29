@@ -613,7 +613,7 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                 <table className="bulk-table" data-testid="bulk-status-table">
                   <thead>
                     <tr>
-                      <th scope="col">Person key</th>
+                      <th scope="col">Person</th>
                       <th scope="col">Preparation</th>
                       <th scope="col">Username</th>
                       <th scope="col">Delivery</th>
@@ -623,7 +623,14 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                   <tbody>
                     {batch.items.map((item) => (
                       <tr key={item.person_key}>
-                        <td data-label="Person key">{item.person_key}</td>
+                        <td data-label="Person" className="fm-cell-person">
+                          <strong className="fm-person-name">
+                            {item.display_name || item.person_key}
+                          </strong>
+                          <div className="hint fm-person-key">
+                            <small>{item.person_key}</small>
+                          </div>
+                        </td>
                         <td data-label="Preparation">
                           {item.status}
                           {item.reason ? (
@@ -647,7 +654,7 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                             <div className="bulk-email">
                               <input
                                 type="email"
-                                aria-label={`Verified email for ${item.person_key}`}
+                                aria-label={`Verified email for ${item.display_name || item.person_key}`}
                                 placeholder="verified@example.test"
                                 value={emails[item.person_key] ?? ""}
                                 onChange={(event) =>

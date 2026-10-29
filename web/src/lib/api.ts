@@ -320,6 +320,7 @@ export type BulkPrepare = {
 
 export type BulkBatchItem = {
   person_key: string;
+  display_name: string;
   status: string;
   reason: string | null;
   delivery_status: string;
@@ -970,6 +971,7 @@ export type FamilyMember = {
   linked_person: {
     link_id: number;
     person_key: string;
+    display_name: string;
     username: string | null;
   } | null;
 };

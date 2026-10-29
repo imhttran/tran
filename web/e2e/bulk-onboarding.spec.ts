@@ -151,7 +151,7 @@ test.describe.serial("bulk onboarding", () => {
     for (const key of ELIGIBLE) {
       const row = page.getByRole("row", { name: key });
       await row
-        .getByLabel(`Verified email for ${key}`)
+        .getByLabel(/^Verified email for /)
         .fill(`bulk-${key}@example.test`);
       await row.getByRole("button", { name: "Verify" }).click();
       await expect(row.getByText("Verified")).toBeVisible({ timeout: 30_000 });
