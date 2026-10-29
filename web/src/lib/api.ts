@@ -1782,3 +1782,54 @@ export function decidePhotographLink(
     },
   );
 }
+
+// --- Admin > Family Members: branch reviewer grants (USR-005A) ---------------
+
+export type ReviewerBranch = {
+  family_branch_id: number;
+  branch_key: string;
+  branch_label: string | null;
+};
+
+export type ReviewerGrant = ReviewerBranch & {
+  grant_id: number;
+  account_id: number;
+  active: boolean;
+  granted_reason: string | null;
+};
+
+export function listReviewerBranches(): Promise<{ ok: true; branches: ReviewerBranch[] }> {
+  return request("/api/admin/branch-reviewers/branches", { cache: "no-store" });
+}
+
+// Reads every grant page; the API caps a page at 100 rows.
+export async function listReviewerGrants(): Promise<ReviewerGrant[]> {
+  const grants: ReviewerGrant[] = [];
+  let cursor: number | null = null;
+  do {
+    const page: { grants: ReviewerGrant[]; grants_next_cursor: number | null } = await request(
+      `/api/admin/branch-reviewers?limit=100${cursor ? `&grant_cursor=${cursor}` : ""}`,
+      { cache: "no-store" },
+    );
+    grants.push(...page.grants);
+    cursor = page.grants_next_cursor;
+  } while (cursor);
+  return grants;
+}
+
+export function grantBranchReviewer(
+  member: AccountRef,
+  branchKey: string,
+  reason: string,
+): Promise<{ ok: true }> {
+  return postJson("/api/admin/branch-reviewers", {
+    issuer: member.issuer,
+    subject: member.subject,
+    branch_keys: [branchKey],
+    reason,
+  });
+}
+
+export function revokeBranchReviewer(grantId: number, reason: string): Promise<{ ok: true }> {
+  return postJson(`/api/admin/branch-reviewers/${grantId}/revoke`, { reason });
+}
