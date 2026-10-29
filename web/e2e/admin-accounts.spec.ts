@@ -94,10 +94,34 @@ test.describe.serial("admin accounts", () => {
     await expect(row.getByTestId("fm-member-link")).toContainText("Linked to Synthetic E2E Person");
     await expect(row.getByTestId("fm-member-link")).toContainText("synthetic-e2e-person");
 
+    // Branch review is an explicit grant on the linked account, with a reason.
+    await openActions(row);
+    await expect(row.getByTestId("fm-branch-none")).toBeVisible();
+    await row.getByTestId("fm-branch-select").selectOption("branch-2");
+    await expect(row.getByTestId("fm-branch-grant-submit")).toBeDisabled();
+    await row.getByTestId("fm-branch-reason").fill("Synthetic reviewer appointment");
+    await row.getByTestId("fm-branch-grant-submit").click();
+    await expect(page.getByTestId("fm-confirm")).toContainText("Second Branch");
+    await page.getByTestId("fm-confirm-yes").click();
+    await expect(page.getByRole("status")).toContainText("can now review Second Branch");
+    const grant = row.locator('[data-testid="fm-branch-grant"][data-branch="branch-2"]');
+    await expect(grant).toHaveCount(1);
+
     await openActions(row);
     await row.getByTestId("fm-unlink").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+
+    // A relink would reactivate the grant, so it stays revocable while unlinked,
+    // but an unlinked account cannot gain a new one.
+    await openActions(row);
+    await expect(grant).toHaveCount(1);
+    await expect(row.getByTestId("fm-branch-select")).toHaveCount(0);
+    await row.getByTestId("fm-branch-reason").fill("Synthetic test cleanup");
+    await grant.getByTestId("fm-branch-revoke").click();
+    await page.getByTestId("fm-confirm-yes").click();
+    await expect(page.getByRole("status")).toContainText("no longer reviews Second Branch");
+    await expect(row.getByTestId("fm-branch-review")).toHaveCount(0);
 
     // The previous choice must not survive the link form being removed and shown again.
     await openActions(row);
