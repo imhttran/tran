@@ -12,8 +12,17 @@ export type NominationPerson = {
 // Search text never becomes an identity. Only a returned record can be selected.
 export function NominationPersonSelector({
   onSelect,
+  endpoint = "/api/genealogy/nomination-persons",
+  isDisabled,
+  disabledText = "Unavailable",
+  idPrefix = "hof",
 }: {
   onSelect: (person: NominationPerson | null) => void;
+  endpoint?: string;
+  isDisabled?: (person: NominationPerson) => boolean;
+  disabledText?: string;
+  // Element ids must be unique when several selectors share a page.
+  idPrefix?: string;
 }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(false);
@@ -24,6 +33,10 @@ export function NominationPersonSelector({
   const [active, setActive] = useState(-1);
   const sequence = useRef(0);
 
+  function isBlocked(person: NominationPerson): boolean {
+    return isDisabled ? isDisabled(person) : false;
+  }
+
   useEffect(() => {
     const version = ++sequence.current;
     const controller = new AbortController();
@@ -32,7 +45,7 @@ export function NominationPersonSelector({
     const timer = setTimeout(async () => {
       try {
         const response = await fetch(
-          `/api/genealogy/nomination-persons?q=${encodeURIComponent(term)}&limit=20`,
+          `${endpoint}?q=${encodeURIComponent(term)}&limit=20`,
           {
             cache: "no-store",
             signal: controller.signal,
@@ -55,9 +68,10 @@ export function NominationPersonSelector({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query, selected]);
+  }, [query, selected, endpoint]);
 
   function choose(person: NominationPerson) {
+    if (isBlocked(person)) return;
     ++sequence.current;
     setQuery(person.person_label);
     setSelected(true);
@@ -68,18 +82,18 @@ export function NominationPersonSelector({
 
   return (
     <div className="person-selector">
-      <label htmlFor="hof-record-select">Search for a person</label>
+      <label htmlFor={`${idPrefix}-record-select`}>Search for a person</label>
       <input
-        id="hof-record-select"
+        id={`${idPrefix}-record-select`}
         data-testid="hof-record-select"
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={open}
-        aria-controls="hof-person-results"
+        aria-controls={`${idPrefix}-person-results`}
         aria-activedescendant={
-          open && active >= 0 ? `hof-person-${active}` : undefined
+          open && active >= 0 ? `${idPrefix}-person-${active}` : undefined
         }
-        aria-describedby="hof-person-help"
+        aria-describedby={`${idPrefix}-person-help`}
         autoComplete="off"
         maxLength={200}
         value={query}
@@ -125,11 +139,11 @@ export function NominationPersonSelector({
           }
         }}
       />
-      <p className="hint" id="hof-person-help">
+      <p className="hint" id={`${idPrefix}-person-help`}>
         Type part of a name, with or without Vietnamese accents, then select a
         person. Search does not establish eligibility.
       </p>
-      <p className="hint" id="hof-person-status" role="status">
+      <p className="hint" id={`${idPrefix}-person-status`} role="status">
         {loading
           ? "Searching…"
           : error
@@ -143,25 +157,31 @@ export function NominationPersonSelector({
                   : ""}
       </p>
       {open && results.length > 0 && (
-        <ul id="hof-person-results" role="listbox" aria-label="Matching people">
-          {results.map((person, index) => (
-            <li
-              key={person.record_id}
-              id={`hof-person-${index}`}
-              role="option"
-              aria-selected={active === index}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => choose(person)}
-              onMouseMove={() => setActive(index)}
-            >
-              <strong>{person.person_label}</strong>
-              {person.branches.length > 0 && (
-                <span> — {person.branches.join(", ")}</span>
-              )}
-              {person.birth && <span> — Born {person.birth}</span>}
-              <span className="hint"> — {person.record_id}</span>
-            </li>
-          ))}
+        <ul id={`${idPrefix}-person-results`} role="listbox" aria-label="Matching people">
+          {results.map((person, index) => {
+            const blocked = isBlocked(person);
+            return (
+              <li
+                key={person.record_id}
+                id={`${idPrefix}-person-${index}`}
+                role="option"
+                aria-selected={active === index}
+                aria-disabled={blocked ? true : undefined}
+                data-disabled={blocked ? "true" : undefined}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => choose(person)}
+                onMouseMove={() => setActive(index)}
+              >
+                <strong>{person.person_label}</strong>
+                {person.branches.length > 0 && (
+                  <span> — {person.branches.join(", ")}</span>
+                )}
+                {person.birth && <span> — Born {person.birth}</span>}
+                <span className="hint"> — {person.record_id}</span>
+                {blocked && <span className="hint"> — {disabledText}</span>}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

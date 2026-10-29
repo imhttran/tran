@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FormStatus } from "@/components/FormStatus";
 import type { FormStatusState } from "@/components/FormStatus";
+import { NominationPersonSelector } from "@/components/NominationPersonSelector";
+import type { NominationPerson } from "@/components/NominationPersonSelector";
 import {
   ApiRequestError,
   changeMemberRole,
@@ -22,15 +24,26 @@ import type { Role } from "@/lib/experience-contract";
 // section above. Branch reviewer grants are not offered: there is no grant API.
 type Linkage = FamilyMembersPage["linkage"];
 
+// The admin person-search endpoint extends the shared person shape with a
+// `linked` flag so already-linked people can be shown but not chosen.
+type AdminPerson = NominationPerson & { linked?: boolean };
+
 type Pending =
   | { kind: "reset"; member: FamilyMember }
   | { kind: "deactivate"; member: FamilyMember }
   | { kind: "role"; member: FamilyMember; role: Role; revoke: boolean }
-  | { kind: "link"; member: FamilyMember; personKey: string }
+  | {
+      kind: "link";
+      member: FamilyMember;
+      personKey: string;
+      personLabel: string;
+      branches: string[];
+    }
   | { kind: "unlink"; member: FamilyMember; linkId: number };
 
 const ROLES: Role[] = ["viewer", "editor", "admin"];
 const EMPTY_FILTER: MemberFilter = { q: "", status: "", role: "" };
+const ADMIN_PERSON_ENDPOINT = "/api/admin/family-members/people";
 
 // Safe, human messages for the API's stable error codes.
 const ERROR_MESSAGES: Record<string, string> = {
@@ -71,7 +84,9 @@ function confirmText(pending: Pending): string {
     case "role":
       return pending.revoke ? `Remove the ${pending.role} role from ${who}?` : `Grant the ${pending.role} role to ${who}?`;
     case "link":
-      return `Confirm you reviewed the identity proof and link ${who} to genealogy person ${pending.personKey}?`;
+      return `Confirm you reviewed the identity proof and link ${who} to ${pending.personLabel}${
+        pending.branches.length ? ` (${pending.branches.join(", ")})` : ""
+      }?`;
     case "unlink":
       return `Remove the link between ${who} and their genealogy person?`;
   }
@@ -108,7 +123,7 @@ async function run(action: Pending): Promise<string> {
     case "link": {
       const result = await linkMember(action.member, action.personKey);
       if (!result.linked) throw new Error("The link was not created.");
-      return `${who} is linked to ${action.personKey}.`;
+      return `${who} is linked to ${action.personLabel}.`;
     }
     case "unlink":
       await revokeMemberLink(action.linkId);
@@ -374,7 +389,7 @@ function MemberRow({
   onAction: (action: Pending) => void;
 }) {
   const [role, setRole] = useState<Role>("viewer");
-  const [personKey, setPersonKey] = useState("");
+  const [chosen, setChosen] = useState<NominationPerson | null>(null);
   const active = member.status === "active";
   const linked = member.linked_person;
   return (
@@ -476,17 +491,24 @@ function MemberRow({
               className="fm-link-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                if (personKey.trim()) onAction({ kind: "link", member, personKey: personKey.trim() });
+                if (!chosen) return;
+                onAction({
+                  kind: "link",
+                  member,
+                  personKey: chosen.record_id,
+                  personLabel: chosen.person_label,
+                  branches: chosen.branches,
+                });
               }}
             >
-              <input
-                aria-label="Genealogy person key"
-                placeholder="Person key"
-                value={personKey}
-                onChange={(event) => setPersonKey(event.target.value)}
-                data-testid="fm-link-person"
+              <NominationPersonSelector
+                endpoint={ADMIN_PERSON_ENDPOINT}
+                onSelect={setChosen}
+                isDisabled={(person) => (person as AdminPerson).linked === true}
+                disabledText="Already linked"
+                idPrefix={`fm-link-${member.user_id}`}
               />
-              <button type="submit" disabled={!personKey.trim()} data-testid="fm-link">
+              <button type="submit" disabled={!chosen} data-testid="fm-link">
                 Link after review
               </button>
             </form>
