@@ -200,6 +200,12 @@ const CONTACT_REASONS = new Set([
   "blocked_missing_recipient",
 ]);
 
+// An ambiguously segmented name is where the proposed username most needs a
+// second look.
+function isAmbiguousName(row: BulkPreviewRow): boolean {
+  return row.reasons.includes("ambiguous_segmentation");
+}
+
 function BulkOnboardContent({ role }: { role: Role | null }) {
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [state, setState] = useState<LoadState>("idle");
@@ -216,6 +222,9 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
   const [confirmSend, setConfirmSend] = useState(false);
   const [sendMessage, setSendMessage] = useState<string | null>(null);
   const [emails, setEmails] = useState<Record<string, string>>({});
+  const [usernameEdits, setUsernameEdits] = useState<Record<string, string>>(
+    {},
+  );
   const [busy, setBusy] = useState(false);
 
   // Page the preview until every person is loaded. The summary counts the full
@@ -244,6 +253,7 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
       if (!merged) return;
       setPreview({ ...merged, rows });
       setSelected(new Set());
+      setUsernameEdits({});
       setConfirmPrepare(false);
       setState("ready");
     } catch (err) {
@@ -296,15 +306,35 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
     setConfirmSend(true);
   }
 
+  // Overrides for the selected rows whose edited username differs from the
+  // proposal, keyed by person key. The server validates each one per row.
+  function changedUsernames(): Record<string, string> {
+    const changed: Record<string, string> = {};
+    for (const row of preview?.rows ?? []) {
+      const edit = usernameEdits[row.person_key]?.trim();
+      if (
+        selected.has(row.person_key) &&
+        edit !== undefined &&
+        edit !== (row.proposed_username ?? "")
+      ) {
+        changed[row.person_key] = edit;
+      }
+    }
+    return changed;
+  }
+  const changedCount = Object.keys(changedUsernames()).length;
+
   async function prepare() {
     if (selected.size === 0) return;
     setBusy(true);
     setError(null);
     setSendMessage(null);
     try {
+      const overrides = changedUsernames();
       const result = await bulkPrepare({
         person_keys: [...selected],
         confirmed_count: selected.size,
+        ...(Object.keys(overrides).length > 0 ? { usernames: overrides } : {}),
       });
       setPrepareResult(result);
       setConfirmPrepare(false);
@@ -568,6 +598,17 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
                       row={row}
                       checked={selected.has(row.person_key)}
                       onToggle={() => toggle(row.person_key)}
+                      username={
+                        usernameEdits[row.person_key] ??
+                        row.proposed_username ??
+                        ""
+                      }
+                      onUsername={(value) =>
+                        setUsernameEdits((current) => ({
+                          ...current,
+                          [row.person_key]: value,
+                        }))
+                      }
                     />
                   ))}
                 </tbody>
@@ -589,6 +630,11 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
             <p>
               Prepare <strong>{selected.size}</strong> selected people.
               Preparation reserves usernames and records a resumable batch.
+            </p>
+            <p data-testid="bulk-prepare-changed">
+              {changedCount === 0
+                ? "All usernames use the proposal."
+                : `${changedCount} ${changedCount === 1 ? "username was" : "usernames were"} changed from the proposal.`}
             </p>
             <p className="insufficient">
               No accounts are activated and no emails are sent by this step.
@@ -746,13 +792,21 @@ function PreviewRow({
   row,
   checked,
   onToggle,
+  username,
+  onUsername,
 }: {
   row: BulkPreviewRow;
   checked: boolean;
   onToggle: () => void;
+  username: string;
+  onUsername: (value: string) => void;
 }) {
+  const ambiguous = isAmbiguousName(row);
   return (
-    <tr data-person-key={row.person_key}>
+    <tr
+      data-person-key={row.person_key}
+      className={ambiguous ? "fm-row-ambiguous" : undefined}
+    >
       <td data-label="Select">
         <input
           type="checkbox"
@@ -784,7 +838,27 @@ function PreviewRow({
         <span className="badge">{row.classification}</span>
       </td>
       <td data-label="Proposed username" className="fm-cell-username">
-        {row.proposed_username ?? "—"}
+        {row.preparable ? (
+          <input
+            type="text"
+            className="fm-username-input"
+            aria-label={`Username for ${row.display_name || row.person_key}`}
+            aria-describedby={
+              ambiguous ? `fm-ambiguous-${row.person_key}` : undefined
+            }
+            value={username}
+            onChange={(event) => onUsername(event.target.value)}
+            spellCheck={false}
+            autoCapitalize="none"
+          />
+        ) : (
+          (row.proposed_username ?? "—")
+        )}
+        {ambiguous ? (
+          <div className="hint" id={`fm-ambiguous-${row.person_key}`}>
+            <small>Check this username: the name splits ambiguously.</small>
+          </div>
+        ) : null}
       </td>
       <td data-label="Warnings" className="fm-cell-warnings">
         {warningsFor(row).length > 0 ? (

@@ -152,7 +152,7 @@ fn run_flow(identity: &mut Client, genealogy: &mut Client, prefix: &str) -> Resu
         middle: Some("Van".to_string()),
         given: Some("An".to_string()),
     };
-    let first = reserve(genealogy, person_id, &parts, "synthetic-admin")
+    let first = reserve(genealogy, person_id, &parts, None, "synthetic-admin")
         .map_err(|err| format!("reserve: {err}"))?;
     if first.username != "nvan" || first.username_key != "nvan" {
         return Err(format!(
@@ -242,7 +242,7 @@ fn run_flow(identity: &mut Client, genealogy: &mut Client, prefix: &str) -> Resu
 
     // 6. Re-running the idempotent steps creates no duplicate rows and does not
     // silently replace the link.
-    let repeated_reservation = reserve(genealogy, person_id, &parts, "synthetic-admin")
+    let repeated_reservation = reserve(genealogy, person_id, &parts, None, "synthetic-admin")
         .map_err(|err| format!("reserve again: {err}"))?;
     if repeated_reservation.reservation_id != first.reservation_id {
         return Err("reservation was duplicated".to_string());

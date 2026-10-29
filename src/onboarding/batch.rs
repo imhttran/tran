@@ -18,6 +18,8 @@
 //! batch reselecting the same person records `skipped_already_prepared` instead
 //! of creating a second logical preparation.
 
+use std::collections::HashMap;
+
 use postgres::Client;
 use thiserror::Error;
 
@@ -314,6 +316,7 @@ pub fn confirm_batch(
     actor: &str,
     confirmed_count: usize,
     person_ids: &[i64],
+    overrides: &HashMap<i64, String>,
 ) -> Result<BatchReport, BatchError> {
     let mut distinct = person_ids.to_vec();
     distinct.sort_unstable();
@@ -391,7 +394,7 @@ pub fn confirm_batch(
             .map_err(|err| BatchError::Database(err.to_string()))?;
     }
 
-    let items = run_batch(client, batch_id, &distinct, actor)?;
+    let items = run_batch(client, batch_id, &distinct, overrides, actor)?;
 
     Ok(BatchReport {
         batch_id,
@@ -488,12 +491,13 @@ pub fn run_batch(
     client: &mut Client,
     batch_id: i64,
     person_ids: &[i64],
+    overrides: &HashMap<i64, String>,
     actor: &str,
 ) -> Result<Vec<BatchItem>, BatchError> {
     let mut items = Vec::new();
     for chunk in person_ids.chunks(CHUNK_SIZE) {
         for person_id in chunk {
-            match process_one(client, batch_id, *person_id, actor) {
+            match process_one(client, batch_id, *person_id, overrides, actor) {
                 Ok(item) => items.push(item),
                 Err(err) => {
                     let reason = match &err {
@@ -552,6 +556,7 @@ fn process_one(
     client: &mut Client,
     batch_id: i64,
     person_id: i64,
+    overrides: &HashMap<i64, String>,
     actor: &str,
 ) -> Result<BatchItem, BatchError> {
     // Read the item. A terminal item is skipped on restart.
@@ -616,7 +621,8 @@ fn process_one(
         }
 
         let parts = load_name_parts(client, person_id)?;
-        match reserve(client, person_id, &parts, actor) {
+        let override_name = overrides.get(&person_id).map(String::as_str);
+        match reserve(client, person_id, &parts, override_name, actor) {
             Ok(reservation) => record_item(
                 client,
                 batch_id,

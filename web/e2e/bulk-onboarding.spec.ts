@@ -661,8 +661,8 @@ test.describe("stubbed preview filters", () => {
       "eligible_for_invite",
     );
     await expect(
-      row.locator('td[data-label="Proposed username"]'),
-    ).toContainText("synthetic_bulk_eligible_for_invite_1");
+      row.locator('td[data-label="Proposed username"] input'),
+    ).toHaveValue("synthetic_bulk_eligible_for_invite_1");
     await expect(row.locator('td[data-label="Warnings"]')).toHaveText("—");
 
     const noneRow = previewRow(page, "synthetic-bulk-eligible_for_invite-2");
