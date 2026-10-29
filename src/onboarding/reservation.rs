@@ -108,7 +108,8 @@ const MAX_SUFFIX_ATTEMPTS: u64 = 10_000;
 /// The function confirms the person exists and returns any active reservation
 /// unchanged, both inside one transaction so a concurrent reservation cannot
 /// race the checks. It otherwise builds the display candidate with
-/// [`username::candidate_username`] and the canonical key with
+/// [`username::validate_override`] when an override is supplied, or with
+/// [`username::candidate_username`] otherwise, and the canonical key with
 /// [`username::key`]. It then inserts in the same transaction, trying the base
 /// key and then each numeric suffix until one insert succeeds. The first
 /// inserted row is returned.
@@ -116,10 +117,16 @@ pub fn reserve(
     client: &mut Client,
     person_id: i64,
     parts: &NameParts,
+    override_name: Option<&str>,
     actor: &str,
 ) -> Result<Reservation, ReservationError> {
-    let display = username::candidate_username(parts)
-        .map_err(|err| ReservationError::Policy(err.to_string()))?;
+    // An override replaces the generated candidate under the same policy; it
+    // never replaces an active reservation, which is returned unchanged below.
+    let display = match override_name {
+        Some(name) => username::validate_override(name),
+        None => username::candidate_username(parts),
+    }
+    .map_err(|err| ReservationError::Policy(err.to_string()))?;
 
     let mut transaction = client
         .transaction()

@@ -7258,6 +7258,10 @@ async fn bulk_preview(
 struct BulkPrepareRequest {
     person_keys: Vec<String>,
     confirmed_count: usize,
+    /// Optional admin-supplied username override, keyed by person key. A key
+    /// that is absent from `person_keys` rejects the whole request.
+    #[serde(default)]
+    usernames: std::collections::HashMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -7334,6 +7338,25 @@ async fn bulk_prepare(
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    // An override may only name a selected person. This check runs before any
+    // database connection or write, so a bad key writes nothing at all.
+    let usernames: std::collections::HashMap<String, String> = request
+        .usernames
+        .iter()
+        .map(|(key, name)| (key.trim().to_string(), name.clone()))
+        .collect();
+    if usernames.keys().any(|key| {
+        !request
+            .person_keys
+            .iter()
+            .any(|selected| selected.trim() == key)
+    }) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_username_override",
+            "a username override names a person that is not selected",
+        );
+    }
     let config = state.config.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
@@ -7346,8 +7369,18 @@ async fn bulk_prepare(
         })?;
         let resolved = resolve_person_keys(&mut client, &request.person_keys)?;
         let ids: Vec<i64> = resolved.iter().map(|(_, id)| *id).collect();
-        let report = onboarding::confirm_batch(&mut client, &actor, request.confirmed_count, &ids)
-            .map_err(batch_error)?;
+        let overrides: std::collections::HashMap<i64, String> = resolved
+            .iter()
+            .filter_map(|(key, id)| usernames.get(key).map(|name| (*id, name.clone())))
+            .collect();
+        let report = onboarding::confirm_batch(
+            &mut client,
+            &actor,
+            request.confirmed_count,
+            &ids,
+            &overrides,
+        )
+        .map_err(batch_error)?;
         let mut key_by_id: std::collections::BTreeMap<i64, String> =
             std::collections::BTreeMap::new();
         for (key, id) in resolved {

@@ -11,6 +11,7 @@
 //! preservation, an unconfigured delivery adapter that creates no invitation,
 //! an explicitly approved fake send, retry idempotency, and lifecycle sync.
 
+use std::collections::HashMap;
 use std::fs;
 use std::str::FromStr;
 use std::sync::{Arc, Barrier};
@@ -18,10 +19,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    batch_status_items, confirm_batch, create, issue_deliverable_invitation, preview_candidates,
-    preview_dry_run, reclassify_person, send_batch, sync_invitation_status, verify_recipient,
-    Classification, DeliveryError, DeliveryStatus, DryRunFilters, FakeAdapter, ItemStatus, Page,
-    Selector, UnconfiguredAdapter,
+    batch_status_items, confirm_batch, create, issue_deliverable_invitation, load_name_parts,
+    preview_candidates, preview_dry_run, reclassify_person, reserve, send_batch,
+    sync_invitation_status, verify_recipient, Classification, DeliveryError, DeliveryStatus,
+    DryRunFilters, FakeAdapter, ItemStatus, Page, Selector, UnconfiguredAdapter,
 };
 
 const MIGRATIONS: [&str; 27] = [
@@ -247,7 +248,8 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
     // run's idempotency key.
     let actor = format!("synthetic-admin-{prefix}");
     let ids = seeded.eligible.clone();
-    let first = confirm_batch(client, &actor, ids.len(), &ids).map_err(|err| db_error(&err))?;
+    let first = confirm_batch(client, &actor, ids.len(), &ids, &no_overrides())
+        .map_err(|err| db_error(&err))?;
     assert!(first.created);
     assert_eq!(first.count(ItemStatus::Prepared), ids.len());
     let reservations: i64 = client
@@ -270,7 +272,8 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
     assert!(wire.get("display_name").is_some() && wire.get("person_key").is_some());
 
     // 4. Repeating the same batch changes no logical state.
-    let second = confirm_batch(client, &actor, ids.len(), &ids).map_err(|err| db_error(&err))?;
+    let second = confirm_batch(client, &actor, ids.len(), &ids, &no_overrides())
+        .map_err(|err| db_error(&err))?;
     assert_eq!(second.batch_id, first.batch_id);
     assert!(!second.created);
     let item_count: i64 = client
@@ -303,7 +306,13 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         handles.push(std::thread::spawn(move || {
             let mut thread_client = connect(&dsn);
             barrier.wait();
-            confirm_batch(&mut thread_client, &concurrent_actor, ids.len(), &ids)
+            confirm_batch(
+                &mut thread_client,
+                &concurrent_actor,
+                ids.len(),
+                &ids,
+                &no_overrides(),
+            )
         }));
     }
     let mut batch_ids = Vec::new();
@@ -326,8 +335,14 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
     assert_eq!(concurrent_reservations as usize, ids.len());
 
     // 6. A different batch reselecting an already prepared person is skipped.
-    let reselected = confirm_batch(client, &format!("other-admin-{prefix}"), ids.len(), &ids)
-        .map_err(|err| db_error(&err))?;
+    let reselected = confirm_batch(
+        client,
+        &format!("other-admin-{prefix}"),
+        ids.len(),
+        &ids,
+        &no_overrides(),
+    )
+    .map_err(|err| db_error(&err))?;
     assert_eq!(
         reselected.count(ItemStatus::SkippedAlreadyPrepared),
         ids.len()
@@ -339,6 +354,7 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         &format!("collision-admin-{prefix}"),
         seeded.collision.len(),
         &seeded.collision,
+        &no_overrides(),
     )
     .map_err(|err| db_error(&err))?;
     assert_eq!(
@@ -364,6 +380,86 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         usernames.len()
     );
 
+    // 6c. Admin username overrides go through the same policy and uniqueness.
+    let tag: String = prefix
+        .chars()
+        .filter(char::is_ascii_digit)
+        .rev()
+        .take(12)
+        .collect();
+    let chosen = format!("Override{tag}");
+    let first_override = insert_person(client, prefix, "Override First", Some(1980))?;
+    mark_living(client, prefix, first_override, true, false)?;
+    let accepted = confirm_batch(
+        client,
+        &format!("override-admin-{prefix}"),
+        1,
+        &[first_override],
+        &HashMap::from([(first_override, chosen.clone())]),
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(accepted.count(ItemStatus::Prepared), 1);
+    let stored = format!("override{tag}");
+    assert_eq!(reserved_username(client, first_override)?, stored);
+
+    // A colliding override takes the next numeric suffix, like a generated one.
+    let second_override = insert_person(client, prefix, "Override Second", Some(1980))?;
+    mark_living(client, prefix, second_override, true, false)?;
+    let collided = confirm_batch(
+        client,
+        &format!("override-collision-admin-{prefix}"),
+        1,
+        &[second_override],
+        &HashMap::from([(second_override, chosen.clone())]),
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(collided.count(ItemStatus::Prepared), 1);
+    assert_eq!(
+        reserved_username(client, second_override)?,
+        format!("{stored}2")
+    );
+
+    // A policy-breaking override fails only its own row.
+    let bad_override = insert_person(client, prefix, "Override Bad", Some(1980))?;
+    mark_living(client, prefix, bad_override, true, false)?;
+    let plain = insert_person(client, prefix, "Override Plain", Some(1980))?;
+    mark_living(client, prefix, plain, true, false)?;
+    let mixed_overrides = confirm_batch(
+        client,
+        &format!("override-policy-admin-{prefix}"),
+        2,
+        &[bad_override, plain],
+        &HashMap::from([(bad_override, "not allowed!".to_string())]),
+    )
+    .map_err(|err| db_error(&err))?;
+    let bad_item = mixed_overrides
+        .items
+        .iter()
+        .find(|item| item.person_id == bad_override)
+        .ok_or("bad override item")?;
+    assert_eq!(bad_item.status, ItemStatus::Failed);
+    assert_eq!(bad_item.reason_code.as_deref(), Some("username_policy"));
+    assert_eq!(bad_item.reservation_id, None);
+    let plain_item = mixed_overrides
+        .items
+        .iter()
+        .find(|item| item.person_id == plain)
+        .ok_or("plain item")?;
+    assert_eq!(plain_item.status, ItemStatus::Prepared);
+
+    // An override never replaces an active reservation.
+    let parts = load_name_parts(client, first_override).map_err(|err| db_error(&err))?;
+    let kept = reserve(
+        client,
+        first_override,
+        &parts,
+        Some(&format!("Different{tag}")),
+        "synthetic-admin",
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(kept.username, stored);
+    assert_eq!(reserved_username(client, first_override)?, stored);
+
     // 7. Partial failure preserves the successful row.
     let fresh = insert_person(client, prefix, "Fresh Eligible", Some(1990))?;
     mark_living(client, prefix, fresh, true, false)?;
@@ -375,6 +471,7 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         &format!("recovery-admin-{prefix}"),
         2,
         &[partial, fresh],
+        &no_overrides(),
     )
     .map_err(|err| db_error(&err))?;
     assert_eq!(mixed.count(ItemStatus::Prepared), 1);
@@ -549,8 +646,14 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
     // 16. An expired pending invitation leaves `pending` and allows a safe retry.
     let expiring = insert_person(client, prefix, "Expiring Person", Some(1985))?;
     mark_living(client, prefix, expiring, true, false)?;
-    let expiry_batch = confirm_batch(client, &format!("expiry-admin-{prefix}"), 1, &[expiring])
-        .map_err(|err| db_error(&err))?;
+    let expiry_batch = confirm_batch(
+        client,
+        &format!("expiry-admin-{prefix}"),
+        1,
+        &[expiring],
+        &no_overrides(),
+    )
+    .map_err(|err| db_error(&err))?;
     verify_recipient(client, expiring, "expiry@example.test", "synthetic-admin")
         .map_err(|err| db_error(&err))?;
     let expiry_adapter = FakeAdapter::accepting();
@@ -737,6 +840,21 @@ fn insert_person(
         .map_err(|err| db_error(&err))?
         .get(0);
     Ok(id)
+}
+
+fn reserved_username(client: &mut Client, person_id: i64) -> Result<String, String> {
+    client
+        .query_one(
+            "SELECT username FROM onboarding_username_reservation
+              WHERE person_id = $1 AND status <> 'released'",
+            &[&person_id],
+        )
+        .map(|row| row.get(0))
+        .map_err(|err| db_error(&err))
+}
+
+fn no_overrides() -> HashMap<i64, String> {
+    HashMap::new()
 }
 
 fn unique_suffix() -> u64 {
