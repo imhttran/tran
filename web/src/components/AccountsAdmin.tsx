@@ -392,6 +392,11 @@ function MemberRow({
   const [chosen, setChosen] = useState<NominationPerson | null>(null);
   const active = member.status === "active";
   const linked = member.linked_person;
+  const linkFormShown = !linked && linkage === "available" && active;
+  // The selector loses its selection when the form unmounts; drop ours with it.
+  useEffect(() => {
+    if (!linkFormShown) setChosen(null);
+  }, [linkFormShown]);
   return (
     <li className="fm-member" data-testid="fm-member" data-subject={member.subject}>
       <div className="fm-member-head">

@@ -98,6 +98,11 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-unlink").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+
+    // The previous choice must not survive the link form being removed and shown again.
+    await openActions(row);
+    await expect(row.getByTestId("hof-record-select")).toHaveValue("");
+    await expect(row.getByTestId("fm-link")).toBeDisabled();
   });
 
   test("admin grants a role, cancels, then deactivates", async ({ page }) => {
