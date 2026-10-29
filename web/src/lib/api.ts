@@ -369,6 +369,10 @@ export function bulkPreview(body: {
 export function bulkPrepare(body: {
   person_keys: string[];
   confirmed_count: number;
+  // USX-106 username overrides. Each key must also appear in `person_keys`; the
+  // server rejects the whole request if a key is not selected. The value is the
+  // override username. Omit the field entirely when no username changed.
+  usernames?: Record<string, string>;
 }): Promise<BulkPrepare> {
   return request<BulkPrepare>("/api/admin/family-members/bulk/prepare", {
     method: "POST",

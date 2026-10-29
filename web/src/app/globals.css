@@ -1817,6 +1817,17 @@ footer.page-footer {
     flex-wrap: wrap;
     gap: 4px;
 }
+/* USX-107 — the editable username and the rows whose name needs a check. */
+.fm-preview-table .fm-username-input {
+    width: 100%;
+    padding: 4px 6px;
+}
+.fm-preview-table tr.fm-row-ambiguous {
+    background: var(--accent-soft);
+}
+.fm-preview-table tr.fm-row-ambiguous .fm-cell-username {
+    white-space: normal;
+}
 .fm-warning-chip {
     background: var(--card);
     color: var(--muted);
