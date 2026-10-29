@@ -87,7 +87,8 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-link-person").fill("synthetic-e2e-person");
     await row.getByTestId("fm-link").click();
     await page.getByTestId("fm-confirm-yes").click();
-    await expect(row.getByTestId("fm-member-link")).toContainText("Linked to synthetic-e2e-person");
+    await expect(row.getByTestId("fm-member-link")).toContainText("Linked to Synthetic E2E Person");
+    await expect(row.getByTestId("fm-member-link")).toContainText("synthetic-e2e-person");
 
     await openActions(row);
     await row.getByTestId("fm-unlink").click();
