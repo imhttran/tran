@@ -75,8 +75,8 @@ test.describe.serial("admin accounts", () => {
     await openActions(row);
     await row.getByTestId("fm-reset").click();
     await page.getByTestId("fm-confirm-yes").click();
-    await expect(page.getByRole("status")).toContainText("not configured");
-    await expect(page.getByRole("status")).not.toContainText("accepted");
+    await expect(page.locator(".form-status")).toContainText("not configured");
+    await expect(page.locator(".form-status")).not.toContainText("accepted");
   });
 
   test("admin links a reviewed account to a person and removes the link", async ({ page }) => {
@@ -84,8 +84,12 @@ test.describe.serial("admin accounts", () => {
     const row = await openMember(page);
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
     await openActions(row);
-    await row.getByTestId("fm-link-person").fill("synthetic-e2e-person");
+    await expect(row.getByTestId("fm-link")).toBeDisabled();
+    await row.getByTestId("hof-record-select").fill("synthetic e2e person");
+    await expect(row.getByTestId("fm-link")).toBeDisabled();
+    await row.getByRole("option", { name: /Synthetic E2E Person/ }).first().click();
     await row.getByTestId("fm-link").click();
+    await expect(page.getByTestId("fm-confirm")).toContainText("Synthetic E2E Person");
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toContainText("Linked to Synthetic E2E Person");
     await expect(row.getByTestId("fm-member-link")).toContainText("synthetic-e2e-person");
@@ -94,6 +98,11 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-unlink").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+
+    // The previous choice must not survive the link form being removed and shown again.
+    await openActions(row);
+    await expect(row.getByTestId("hof-record-select")).toHaveValue("");
+    await expect(row.getByTestId("fm-link")).toBeDisabled();
   });
 
   test("admin grants a role, cancels, then deactivates", async ({ page }) => {
@@ -103,7 +112,7 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-role-select").selectOption("editor");
     await row.getByTestId("fm-grant-role").click();
     await page.getByTestId("fm-confirm-yes").click();
-    await expect(page.getByRole("status")).toContainText("Granted editor");
+    await expect(page.locator(".form-status")).toContainText("Granted editor");
     await expect(row.getByTestId("fm-member-role")).toContainText(["editor"]);
 
     await openActions(row);
