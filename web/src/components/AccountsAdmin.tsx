@@ -586,9 +586,12 @@ function MemberRow({
               </button>
             </form>
           ) : null}
-          {linked && active ? (
-            <BranchReviewerControls member={member} reviewer={reviewer} onAction={onAction} />
-          ) : null}
+          <BranchReviewerControls
+            member={member}
+            reviewer={reviewer}
+            canGrant={Boolean(linked) && active}
+            onAction={onAction}
+          />
           <button
             type="button"
             className="button-danger fm-deactivate"
@@ -604,15 +607,19 @@ function MemberRow({
   );
 }
 
-// Explicit branch review grants for one linked, active account. Every change
-// needs a reason, which the API records in the immutable grant history.
+// Explicit branch review grants for one account. Every change needs a reason,
+// which the API records in the immutable grant history. Only a linked, active
+// account can gain a grant, but held grants stay revocable after an unlink or
+// deactivation, since relinking the same identity would reactivate them.
 function BranchReviewerControls({
   member,
   reviewer,
+  canGrant,
   onAction,
 }: {
   member: FamilyMember;
   reviewer: Reviewer;
+  canGrant: boolean;
   onAction: (action: Pending) => void;
 }) {
   const [branchKey, setBranchKey] = useState("");
@@ -623,6 +630,9 @@ function BranchReviewerControls({
   );
   const branch = grantable.find((option) => option.branch_key === branchKey);
   const why = reason.trim();
+  if (!canGrant && held.length === 0) {
+    return null;
+  }
   return (
     <fieldset className="fm-branch-review" data-testid="fm-branch-review">
       <legend>Branch reviewer</legend>
@@ -654,25 +664,29 @@ function BranchReviewerControls({
         onChange={(event) => setReason(event.target.value)}
         data-testid="fm-branch-reason"
       />
-      <select
-        aria-label="Branch to review"
-        value={branchKey}
-        onChange={(event) => setBranchKey(event.target.value)}
-        data-testid="fm-branch-select"
-      >
-        <option value="">Choose a branch</option>
-        {grantable.map((option) => (
-          <option key={option.branch_key} value={option.branch_key}>{branchName(option)}</option>
-        ))}
-      </select>
-      <button
-        type="button"
-        disabled={!branch || !why}
-        onClick={() => branch && onAction({ kind: "grant", member, branch, reason: why })}
-        data-testid="fm-branch-grant-submit"
-      >
-        Grant branch review
-      </button>
+      {canGrant ? (
+        <>
+          <select
+            aria-label="Branch to review"
+            value={branchKey}
+            onChange={(event) => setBranchKey(event.target.value)}
+            data-testid="fm-branch-select"
+          >
+            <option value="">Choose a branch</option>
+            {grantable.map((option) => (
+              <option key={option.branch_key} value={option.branch_key}>{branchName(option)}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!branch || !why}
+            onClick={() => branch && onAction({ kind: "grant", member, branch, reason: why })}
+            data-testid="fm-branch-grant-submit"
+          >
+            Grant branch review
+          </button>
+        </>
+      ) : null}
     </fieldset>
   );
 }

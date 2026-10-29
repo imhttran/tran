@@ -108,16 +108,20 @@ test.describe.serial("admin accounts", () => {
     await expect(grant).toHaveCount(1);
 
     await openActions(row);
+    await row.getByTestId("fm-unlink").click();
+    await page.getByTestId("fm-confirm-yes").click();
+    await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+
+    // A relink would reactivate the grant, so it stays revocable while unlinked,
+    // but an unlinked account cannot gain a new one.
+    await openActions(row);
+    await expect(grant).toHaveCount(1);
+    await expect(row.getByTestId("fm-branch-select")).toHaveCount(0);
     await row.getByTestId("fm-branch-reason").fill("Synthetic test cleanup");
     await grant.getByTestId("fm-branch-revoke").click();
     await page.getByTestId("fm-confirm-yes").click();
     await expect(page.getByRole("status")).toContainText("no longer reviews Second Branch");
-    await expect(grant).toHaveCount(0);
-
-    await openActions(row);
-    await row.getByTestId("fm-unlink").click();
-    await page.getByTestId("fm-confirm-yes").click();
-    await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+    await expect(row.getByTestId("fm-branch-review")).toHaveCount(0);
 
     // The previous choice must not survive the link form being removed and shown again.
     await openActions(row);
