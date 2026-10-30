@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DenialView } from "@/components/DenialView";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
+import { ProfileInvitationPanel } from "@/components/ProfileInvitationPanel";
 import {
   ApiRequestError,
   familyPhotographOriginalUrl,
@@ -576,6 +577,11 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
               </ul>
             </section>
           ) : null}
+
+          <ProfileInvitationPanel
+            personKey={profile.person.person_key}
+            personName={displayName}
+          />
 
           {hasContent ? null : (
             <section

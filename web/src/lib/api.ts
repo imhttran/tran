@@ -1691,6 +1691,161 @@ export function getFamilyProfile(
   );
 }
 
+/// PIR-005: the server-authorized invitation state for one person.
+///
+/// Every field is already safe to render: the contact is masked and the blockers
+/// carry a plain-language message. The panel must not derive an address or a
+/// token from this response.
+export type ProfileInvitationBlocker = {
+  code: string;
+  message: string;
+};
+
+export type ProfileInvitationStateResponse = {
+  ok: true;
+  person_key: string;
+  /// Why the family-admin rule allowed this caller: `system_admin`,
+  /// `family_head_branch`, or `self_link`.
+  authorization: string;
+  /// `eligible_for_invite`, `needs_review`, `not_eligible`, `invited`, ...
+  eligibility: string;
+  invitation: {
+    pending: boolean;
+    invitation_id: number | null;
+    expires_at: string | null;
+    /// `not_sent`, `pending`, `queued`, `sent`, `failed`, `expired`,
+    /// `accepted`, or `revoked`.
+    delivery_state: string;
+  };
+  linked_account: boolean;
+  proposed_username: string | null;
+  masked_contact: string | null;
+  blockers: ProfileInvitationBlocker[];
+};
+
+/// The review payload returned by `prepare`. It never carries an address.
+export type ProfileInvitationPrepareResponse = {
+  ok: true;
+  person_key: string;
+  masked_contact: string;
+  proposed_username: string | null;
+  access: string;
+  invitation_id: number;
+  invitation_reused: boolean;
+  invitation_created: boolean;
+};
+
+/// The recorded invitation lifecycle and delivery attempt for one person.
+export type ProfileInvitationStatusResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number | null;
+  invitation_status: string | null;
+  delivery_state: string;
+  delivery_provider: string | null;
+  last_delivery_error: string | null;
+  delivery_attempts: number;
+  expires_at: string | null;
+  accepted_at: string | null;
+};
+
+export type ProfileInvitationSendResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number;
+  delivery_state: string;
+  provider: string | null;
+  /// True only when the mail provider confirmed the message was sent.
+  delivered: boolean;
+  masked_contact: string;
+};
+
+export type ProfileInvitationRevokeResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number | null;
+  delivery_state: string;
+  revoked: boolean;
+  reason: string | null;
+};
+
+export function getProfileInvitationState(
+  personKey: string,
+): Promise<ProfileInvitationStateResponse> {
+  return request<ProfileInvitationStateResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation`,
+    { cache: "no-store" },
+  );
+}
+
+export function getProfileInvitationStatus(
+  personKey: string,
+): Promise<ProfileInvitationStatusResponse> {
+  return request<ProfileInvitationStatusResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/status`,
+    { cache: "no-store" },
+  );
+}
+
+/// Saves the draft contact. The server stores it privately and sends nothing.
+export function saveProfileInvitationContact(
+  personKey: string,
+  email: string,
+): Promise<{
+  ok: true;
+  person_key: string;
+  masked_contact: string;
+  sent: false;
+}> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+  );
+}
+
+/// Builds the review payload. It reuses a pending invitation and never sends.
+export function prepareProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationPrepareResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/prepare`,
+    { method: "POST" },
+  );
+}
+
+/// Sends only after an explicit operator action.
+export function sendProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationSendResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/send`,
+    { method: "POST" },
+  );
+}
+
+/// Resends by revoking the previous link first.
+export function resendProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationSendResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/resend`,
+    { method: "POST" },
+  );
+}
+
+export function revokeProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationRevokeResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/revoke`,
+    { method: "POST" },
+  );
+}
+
 /// Fetches the published archive history for one person. Used by the family-tree
 /// dialog when it opens; a failure must replace, never preserve, prior content.
 export function getFamilyHistory(
@@ -1802,7 +1957,10 @@ export type ReviewerGrant = ReviewerBranch & {
   granted_reason: string | null;
 };
 
-export function listReviewerBranches(): Promise<{ ok: true; branches: ReviewerBranch[] }> {
+export function listReviewerBranches(): Promise<{
+  ok: true;
+  branches: ReviewerBranch[];
+}> {
   return request("/api/admin/branch-reviewers/branches", { cache: "no-store" });
 }
 
@@ -1811,10 +1969,11 @@ export async function listReviewerGrants(): Promise<ReviewerGrant[]> {
   const grants: ReviewerGrant[] = [];
   let cursor: number | null = null;
   do {
-    const page: { grants: ReviewerGrant[]; grants_next_cursor: number | null } = await request(
-      `/api/admin/branch-reviewers?limit=100${cursor ? `&grant_cursor=${cursor}` : ""}`,
-      { cache: "no-store" },
-    );
+    const page: { grants: ReviewerGrant[]; grants_next_cursor: number | null } =
+      await request(
+        `/api/admin/branch-reviewers?limit=100${cursor ? `&grant_cursor=${cursor}` : ""}`,
+        { cache: "no-store" },
+      );
     grants.push(...page.grants);
     cursor = page.grants_next_cursor;
   } while (cursor);
@@ -1834,6 +1993,9 @@ export function grantBranchReviewer(
   });
 }
 
-export function revokeBranchReviewer(grantId: number, reason: string): Promise<{ ok: true }> {
+export function revokeBranchReviewer(
+  grantId: number,
+  reason: string,
+): Promise<{ ok: true }> {
   return postJson(`/api/admin/branch-reviewers/${grantId}/revoke`, { reason });
 }
