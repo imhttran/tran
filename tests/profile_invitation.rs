@@ -392,12 +392,16 @@ fn explicit_send_reports_delivery_and_never_duplicates() {
 
     let messages = adapter.messages();
     assert_eq!(messages.len(), 1, "one explicit send delivers one message");
-    let token = messages[0]
+    let link = messages[0]
         .body
-        .rsplit("token=")
-        .next()
-        .expect("message carries a link")
-        .trim()
+        .split_whitespace()
+        .find(|part| part.contains("/activate/"))
+        .expect("message carries a link");
+    let token = link
+        .split("/activate/")
+        .nth(1)
+        .expect("link carries a token")
+        .trim_end_matches(['.', ')', ']', '"', '\''])
         .to_string();
     assert!(!token.is_empty());
     let rendered = format!("{outcome:?}");

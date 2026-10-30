@@ -331,6 +331,119 @@ impl MailAdapter for HttpMailAdapter {
     }
 }
 
+/// The explicit transport security mode for the SMTP adapter.
+///
+/// The mode is fixed by configuration. The adapter never retries with a lower
+/// mode after a connection or TLS failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTlsMode {
+    /// Plaintext. Permitted only for a loopback host through explicit local
+    /// configuration.
+    None,
+    /// Implicit TLS (for example port 465).
+    Implicit,
+    /// Connect in plaintext, then upgrade with STARTTLS before credentials.
+    StartTls,
+}
+
+impl SmtpTlsMode {
+    /// Parses a configured mode. `None` when the value is unknown.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(SmtpTlsMode::None),
+            "implicit" | "tls" => Some(SmtpTlsMode::Implicit),
+            "starttls" | "start_tls" => Some(SmtpTlsMode::StartTls),
+            _ => None,
+        }
+    }
+}
+
+/// The validated SMTP settings handed to the adapter.
+///
+/// Configuration code performs the loopback rule and the credential pairing
+/// checks before it builds an adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpSettings {
+    /// The SMTP server host name or address.
+    pub host: String,
+    /// The SMTP server port.
+    pub port: u16,
+    /// The explicit transport security mode.
+    pub tls: SmtpTlsMode,
+    /// The envelope sender address.
+    pub from: String,
+    /// The optional authentication user name. Present only together with
+    /// `password`.
+    pub username: Option<String>,
+    /// The optional authentication password. Present only together with
+    /// `username`.
+    pub password: Option<String>,
+    /// The bounded per-send timeout.
+    pub timeout: Duration,
+}
+
+/// Returns true when `host` names a loopback interface.
+///
+/// Plaintext SMTP is permitted only for these hosts, and only through explicit
+/// local configuration.
+pub fn smtp_host_is_loopback(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+}
+
+/// An SMTP adapter that sends one message per call over a fresh connection.
+///
+/// The adapter uses the configured transport security mode and never downgrades
+/// it after a connection or TLS failure. It reports `accepted` only when the SMTP
+/// server accepts the message after DATA: that is server acceptance, never a
+/// claim of delivery to a real inbox. Error messages carry a safe provider code
+/// only; they never carry the host, a credential, the token, or the body.
+pub struct SmtpMailAdapter {
+    settings: SmtpSettings,
+}
+
+impl SmtpMailAdapter {
+    /// Builds an adapter from validated settings.
+    pub fn new(settings: SmtpSettings) -> Self {
+        Self { settings }
+    }
+}
+
+impl MailAdapter for SmtpMailAdapter {
+    fn name(&self) -> &'static str {
+        "smtp"
+    }
+
+    fn is_configured(&self) -> bool {
+        !self.settings.host.trim().is_empty() && !self.settings.from.trim().is_empty()
+    }
+
+    fn deliver(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if !self.is_configured() {
+            return Err(DeliveryError::NotConfigured);
+        }
+        // The mode comes from configuration and is never lowered here.
+        crate::onboarding::smtp_delivery::send(&self.settings, to, subject, body)
+            .map_err(|code| DeliveryError::Provider(code.to_string()))?;
+        // SMTP acceptance only. This is server acceptance of the message, not a
+        // claim that it reached a real inbox.
+        Ok(DeliveryReceipt {
+            provider: "smtp".to_string(),
+            accepted: true,
+            message_id: None,
+        })
+    }
+}
+
 /// The safe result of one send attempt. It carries no token and no address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendOutcome {
@@ -392,10 +505,13 @@ fn contact_for(client: &mut Client, person_id: i64) -> Result<Option<String>, De
     Ok(row.map(|row| row.get(0)))
 }
 
-/// Builds the activation link. The token appears only in the message body.
+/// Builds the activation link in the path-based `/activate/<token>` form.
+///
+/// The token appears only in the message body. Both `send_batch` (bulk) and
+/// `deliver_invitation` (individual send and resend) call this one builder, so
+/// every flow produces the same link shape.
 pub(crate) fn activation_link(base: &str, token: &str) -> String {
-    let separator = if base.contains('?') { '&' } else { '?' };
-    format!("{base}{separator}token={token}")
+    format!("{}/{}", base.trim_end_matches('/'), token)
 }
 
 /// Issues an invitation whose plaintext token can be delivered.
@@ -780,11 +896,11 @@ mod tests {
     }
 
     #[test]
-    fn activation_link_uses_query_or_ampersand() {
-        assert_eq!(activation_link("/activate", "abc"), "/activate?token=abc");
+    fn activation_link_uses_the_path_form() {
+        assert_eq!(activation_link("/activate", "abc"), "/activate/abc");
         assert_eq!(
-            activation_link("/activate?locale=en", "abc"),
-            "/activate?locale=en&token=abc"
+            activation_link("http://localhost:3000/activate/", "abc"),
+            "http://localhost:3000/activate/abc"
         );
     }
 
@@ -895,5 +1011,192 @@ mod tests {
             adapter.deliver("synthetic@example.test", "s", "b"),
             Err(DeliveryError::NotConfigured)
         );
+    }
+
+    fn smtp_settings(tls: SmtpTlsMode) -> SmtpSettings {
+        SmtpSettings {
+            host: "127.0.0.1".to_string(),
+            port: 1025,
+            tls,
+            from: "tran@example.test".to_string(),
+            username: None,
+            password: None,
+            timeout: Duration::from_secs(2),
+        }
+    }
+
+    /// A one-shot plaintext SMTP server that answers with the given final reply.
+    fn smtp_server(final_reply: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind smtp stub");
+        let port = listener.local_addr().expect("smtp address").port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept smtp client");
+            let _ = stream.write_all(b"220 stub ESMTP\r\n");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut transcript = String::new();
+            let mut in_data = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                transcript.push_str(&line);
+                if in_data {
+                    // Body lines (including one starting with a dot) are not
+                    // commands; the client sends exactly one reply for the
+                    // terminating dot. Replying to each body line would leave
+                    // extra replies in the client's buffer.
+                    if line.trim_end() == "." {
+                        let _ = stream.write_all(final_reply.as_bytes());
+                        let _ = stream.flush();
+                        break;
+                    }
+                    continue;
+                }
+                let upper = line.trim().to_ascii_uppercase();
+                let reply = if upper.starts_with("EHLO") || upper.starts_with("HELO") {
+                    "250 stub\r\n"
+                } else if upper.starts_with("MAIL FROM") || upper.starts_with("RCPT TO") {
+                    "250 ok\r\n"
+                } else if upper.starts_with("DATA") {
+                    in_data = true;
+                    "354 send data\r\n"
+                } else if upper.starts_with("QUIT") {
+                    "221 bye\r\n"
+                } else {
+                    "250 ok\r\n"
+                };
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }
+            transcript
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn smtp_adapter_reports_acceptance_only_on_a_2xx_final_reply() {
+        let (port, handle) = smtp_server("250 2.0.0 accepted\r\n");
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        let adapter = SmtpMailAdapter::new(settings);
+        assert!(adapter.is_configured());
+        let receipt = adapter
+            .deliver(
+                "synthetic@example.test",
+                "Activate",
+                "/activate/secret-token",
+            )
+            .expect("smtp acceptance");
+        assert!(receipt.accepted);
+        assert_eq!(receipt.provider, "smtp");
+        let transcript = handle.join().expect("smtp thread");
+        assert!(transcript.contains("MAIL FROM:<tran@example.test>"));
+        assert!(transcript.contains("RCPT TO:<synthetic@example.test>"));
+    }
+
+    #[test]
+    fn smtp_adapter_reports_a_rejection_as_failure_without_leaking() {
+        let (port, handle) = smtp_server("550 5.7.1 rejected\r\n");
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        let adapter = SmtpMailAdapter::new(settings);
+        let error = adapter
+            .deliver(
+                "synthetic@example.test",
+                "Activate",
+                "/activate/secret-token",
+            )
+            .expect_err("smtp rejection");
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains("secret-token"), "leaked a token");
+        assert!(
+            !rendered.contains("synthetic@example.test"),
+            "leaked an address"
+        );
+        assert!(!rendered.contains("tran@example.test"), "leaked the sender");
+        handle.join().expect("smtp thread");
+    }
+
+    #[test]
+    fn smtp_adapter_does_not_downgrade_a_tls_mode() {
+        use std::io::Write as _;
+
+        // A plaintext stub that would happily accept MAIL FROM/RCPT TO makes a
+        // downgrade observable: a TLS mode must fail during the handshake and
+        // never send the envelope in plaintext.
+        for tls in [SmtpTlsMode::Implicit, SmtpTlsMode::StartTls] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stub");
+            let port = listener.local_addr().expect("address").port();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let _ = stream.write_all(b"220 plaintext stub\r\n");
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buffer = [0u8; 4096];
+                let read = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                String::from_utf8_lossy(&buffer[..read]).into_owned()
+            });
+            let mut settings = smtp_settings(tls);
+            settings.port = port;
+            settings.timeout = Duration::from_secs(1);
+            let adapter = SmtpMailAdapter::new(settings);
+            let error = adapter
+                .deliver("synthetic@example.test", "s", "b")
+                .expect_err("a TLS mode must not fall back to plaintext");
+            assert!(
+                matches!(error, DeliveryError::Provider(_)),
+                "unexpected error: {error:?}"
+            );
+            let transcript = handle.join().expect("stub thread");
+            assert!(
+                !transcript.contains("MAIL FROM"),
+                "the adapter downgraded TLS and sent the envelope in plaintext"
+            );
+        }
+    }
+
+    #[test]
+    fn smtp_adapter_times_out_on_a_silent_server() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind silent stub");
+        let port = listener.local_addr().expect("address").port();
+        let handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept");
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        settings.timeout = Duration::from_millis(300);
+        let adapter = SmtpMailAdapter::new(settings);
+        let started = std::time::Instant::now();
+        let error = adapter
+            .deliver("synthetic@example.test", "s", "b")
+            .expect_err("timeout");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            matches!(error, DeliveryError::Provider(ref code) if code == "smtp_timeout"),
+            "unexpected timeout error: {error:?}"
+        );
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn smtp_adapter_fails_closed_when_unconfigured() {
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.host = "  ".to_string();
+        let adapter = SmtpMailAdapter::new(settings);
+        assert!(!adapter.is_configured());
+        assert_eq!(
+            adapter.deliver("a@example.test", "s", "b"),
+            Err(DeliveryError::NotConfigured)
+        );
+    }
+
+    #[test]
+    fn smtp_loopback_detection() {
+        assert!(smtp_host_is_loopback("127.0.0.1"));
+        assert!(smtp_host_is_loopback("localhost"));
+        assert!(smtp_host_is_loopback("[::1]"));
+        assert!(!smtp_host_is_loopback("mail.example.test"));
     }
 }

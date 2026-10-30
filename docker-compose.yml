@@ -16,5 +16,27 @@ services:
       timeout: 5s
       retries: 15
 
+  # Optional local test inbox. Starts only with the `mail` profile:
+  #   docker compose --profile mail up -d mailpit
+  #   docker compose --profile mail stop mailpit
+  # Loopback-only publication. No relay, forwarding, or public binding.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    profiles: ["mail"]
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    ports:
+      - "127.0.0.1:1025:1025"  # SMTP for host callers (mailpit:1025 inside the network)
+      - "127.0.0.1:8025:8025"  # browser inbox: http://127.0.0.1:8025
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
 volumes:
   rag_postgres_data:
+  mailpit_data:
