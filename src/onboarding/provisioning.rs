@@ -1,34 +1,52 @@
-//! Audited member provisioning for an invited identity.
+//! Audited identity provisioning and member access for an invitation.
 //!
-//! Invitation acceptance must not require an operator to provision the account by
-//! hand. [`provision_invited_member`] creates (or reactivates) the identity row
-//! for the immutable `(issuer, subject)` pair and grants exactly the member
-//! access an invitation implies: the `viewer` role and one archive corpus grant.
+//! Two separate steps keep the archive closed until a person link is approved:
 //!
-//! It never grants `editor` or `admin`. Every write goes through the identity
-//! store's audited, idempotent operations, so a retried activation neither
-//! duplicates a role nor removes one, and each attempt leaves an audit event.
+//! * [`provision_identity_account`] creates (or reactivates) the identity row so
+//!   the invitee can sign in. It grants no role and no corpus access.
+//! * [`grant_member_access`] grants the viewer role and the archive corpus grant
+//!   after an administrator approves the reviewed person link.
+//!
+//! Both are audited and idempotent. Neither grants `editor` or `admin`. An
+//! unapproved invitation holder can therefore sign in and see their own account
+//! and the pending-review state, but cannot read protected archive content.
 
 use crate::identity::Role;
 use crate::identity_store::identity_client::Client as IdentityClient;
 use crate::identity_store::IdentityStoreError;
 use crate::identity_store_pg::PgIdentityClient;
 
-/// Provisions member access for one invited identity.
+/// Creates or reactivates the identity row for one invited identity.
 ///
-/// Returns the opaque identity account id. Repeated calls are safe: the user row
-/// is reused (or reactivated), the viewer role is granted only when absent, and
-/// the corpus grant is added only when absent.
-pub fn provision_invited_member(
+/// Returns the opaque identity account id. No role or corpus grant is written;
+/// archive access stays closed until [`grant_member_access`] runs after review.
+pub fn provision_identity_account(
     client: &mut PgIdentityClient,
     subject: &str,
     issuer: &str,
-    corpus: &str,
     actor: &str,
 ) -> Result<i64, IdentityStoreError> {
-    let user_id = client.provision_user(subject, issuer, actor)?;
-    // The trait method writes the role and its audit row in one transaction.
-    IdentityClient::change_role(client, subject, issuer, Role::Viewer, actor, true)?;
-    client.grant_corpus(subject, issuer, corpus, actor)?;
-    Ok(user_id)
+    client.provision_user(subject, issuer, actor)
+}
+
+/// Grants the member access an approved link implies, by opaque account id.
+///
+/// The genealogy database stores only the account id and a one-way fingerprint,
+/// so the identity pair is read back here before the audited role and corpus
+/// writes. A deactivated or unknown account is refused. Repeated calls are safe:
+/// the viewer role and the corpus grant are added only when absent.
+pub fn grant_member_access(
+    client: &mut PgIdentityClient,
+    account_id: i64,
+    corpus: &str,
+    actor: &str,
+) -> Result<(), IdentityStoreError> {
+    let Some((subject, issuer)) = client.active_identity_by_id(account_id)? else {
+        return Err(IdentityStoreError::UnknownUser(format!(
+            "account {account_id}"
+        )));
+    };
+    IdentityClient::change_role(client, &subject, &issuer, Role::Viewer, actor, true)?;
+    client.grant_corpus(&subject, &issuer, corpus, actor)?;
+    Ok(())
 }

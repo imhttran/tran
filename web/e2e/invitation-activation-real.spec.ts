@@ -89,7 +89,7 @@ test.describe.serial("invitation activation against the real API", () => {
     expect(unauth.status).toBe(401);
   });
 
-  test("signing in provisions Member access without an operator", async ({
+  test("signing in creates an account without archive access", async ({
     request,
   }) => {
     const provisioned = await api(
@@ -103,12 +103,11 @@ test.describe.serial("invitation activation against the real API", () => {
 
     const account = await api(request, "GET", "/api/account", INVITEE);
     expect(account.status).toBe(200);
-    const roles = account.body?.roles as string[];
-    expect(roles).toContain("viewer");
-    expect(roles).not.toContain("admin");
-    expect(roles).not.toContain("editor");
-    const grants = account.body?.corpus_grants as string[];
-    expect(grants).toContain(CORPUS);
+    // Signing in creates the account; access follows the approved link.
+    expect(account.body?.roles).toEqual([]);
+    expect(account.body?.corpus_grants).toEqual([]);
+    const tree = await api(request, "GET", "/api/genealogy/tree", INVITEE);
+    expect(tree.status).toBe(403);
   });
 
   test("accepting records a link request instead of approving it", async ({
@@ -166,6 +165,16 @@ test.describe.serial("invitation activation against the real API", () => {
       INVITEE,
     );
     expect(profile.status).toBe(200);
+
+    // Approval is what grants the member access, not the invitation token.
+    const account = await api(request, "GET", "/api/account", INVITEE);
+    const roles = account.body?.roles as string[];
+    expect(roles).toContain("viewer");
+    expect(roles).not.toContain("admin");
+    const grants = account.body?.corpus_grants as string[];
+    expect(grants).toContain(CORPUS);
+    const tree = await api(request, "GET", "/api/genealogy/tree", INVITEE);
+    expect(tree.status).toBe(200);
   });
 
   test("the browser accepts a second invitation and shows pending review", async ({
@@ -218,5 +227,9 @@ test.describe.serial("invitation activation against the real API", () => {
       "href",
       `/family/${PERSON_TWO_KEY}`,
     );
+
+    // The console approval is what opened archive access.
+    const tree = await api(request, "GET", "/api/genealogy/tree", INVITEE_TWO);
+    expect(tree.status).toBe(200);
   });
 });

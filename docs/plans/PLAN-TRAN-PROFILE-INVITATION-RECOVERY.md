@@ -142,8 +142,8 @@ Create `src/onboarding/family_admin.rs` and declare it in
 - resolves the caller's current `head_of_family_appointment` with
   `status = 'active'` and `current_eligibility = Eligible`;
 - requires the appointment's `branch_key` to equal the target person's current
-  verified branch claim, or the target person to be the caller's own linked
-  person;
+  verified branch claim; there is no separate self-invitation permission, so a
+  caller may invite their own person only when it falls inside that branch;
 - refuses a missing link, no active appointment, an ineligible appointment, a
   different branch, an ambiguous branch, a revoked appointment, or a revoked
   link;
@@ -152,8 +152,9 @@ Create `src/onboarding/family_admin.rs` and declare it in
   caller's operation when the caller supplies a transaction-compatible client.
 
 Add unit tests in the module for allowed admin, allowed family head in the same
-branch, allowed self, wrong branch, unrelated person, revoked appointment,
-revoked link, missing link, and ineligible appointment.
+branch, a linked caller without an appointment who cannot invite themselves,
+wrong branch, unrelated person, revoked appointment, revoked link, missing link,
+and ineligible appointment.
 
 ### Dependencies
 
@@ -169,7 +170,7 @@ PIR-001
 - The rule is server-side and uses the exact appointment branch and reviewed
   link; no title/name/client-role path exists.
 - System admin is allowed; a family head is allowed only for the appointment's
-  branch or their own linked person.
+  branch, which is also the only way a family head may invite their own person.
 - Every refusal is distinct enough for the API to return a safe plain-language
   reason.
 - Revoked or ineligible authority cannot authorize a later operation.

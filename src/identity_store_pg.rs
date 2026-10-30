@@ -50,6 +50,27 @@ impl PgIdentityClient {
         }
     }
 
+    /// Reads the immutable identity pair for one opaque account id.
+    ///
+    /// The reviewed-link approval stores only the account id and a one-way
+    /// fingerprint in the genealogy database, so the identity pair is read back
+    /// here before an audited role or corpus write. A deactivated or unknown
+    /// account yields `None`.
+    pub fn active_identity_by_id(
+        &mut self,
+        user_id: i64,
+    ) -> Result<Option<(String, String)>, IdentityStoreError> {
+        let mut guard = self.client.borrow_mut();
+        let row = guard
+            .query_opt(
+                "SELECT subject, issuer FROM users \
+                  WHERE id = $1 AND deactivated_at IS NULL",
+                &[&user_id],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(row.map(|row| (row.get(0), row.get(1))))
+    }
+
     /// Grants one corpus to an existing user and records the audit event.
     ///
     /// The user is resolved by immutable (issuer, subject). There is no

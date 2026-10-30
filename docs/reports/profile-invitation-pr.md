@@ -74,6 +74,24 @@ Makes the flow usable by a real new family member:
   the admin approval in the console, and the resulting family-profile access
   against the running API and PostgreSQL.
 
+## Latest revision
+
+- **Access follows the approved link, not the token.** Signing in and accepting
+  create only the identity row, the accepted invitation, and a pending link
+  request. Viewer and the archive corpus grant are written at approval. Until
+  then `/api/genealogy/tree` and the other archive reads return `403`.
+- **OIDC round trip verified.** A new browser spec signs in a subject the
+  application has never seen through the real authorization-code redirect chain;
+  the callback provisions the account, the invitation survives sign-in, and
+  acceptance reaches Pending review.
+- **Mail adapter contract documented.** `docs/architecture/PROFILE-INVITATION-MAIL-ADAPTER.md`
+  defines the request/response contract and records that the only existing
+  outbound provider (`PASSWORD_RESET_URL`) is not compatible: it receives
+  `{issuer, subject}` and resolves the address itself.
+- **Plan updated.** The recovery plan's PIR-002 text no longer describes a
+  self-invitation permission. SOP reports the source change against the executed
+  task; accepting it is an operator decision.
+
 ## Validation
 
 Run with disposable `*_test` databases:
@@ -85,27 +103,32 @@ Run with disposable `*_test` databases:
 - `sop validate` — PASS (BUILD, UNIT_TEST, LINT)
 - `cargo test --locked --test profile_invitation` — PASS, 23 tests
 - `cargo test --locked --test onboarding_activation` — PASS, 9 tests
-- `cargo test --locked --test onboarding_provisioning` — PASS, 1 test
+- `cargo test --locked --test onboarding_provisioning` — PASS, 1 test (no access on sign-in; viewer + corpus only after approval)
 - `cargo test --locked --test onboarding_bulk` — PASS
 - `make web-check` — PASS (TypeScript + production build)
 - `PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts"` — PASS, 16 tests (stubbed UI states)
-- `PLAYWRIGHT_ARGS="e2e/invitation-activation-real.spec.ts"` — PASS, 5 tests (real API + browser)
+- `PLAYWRIGHT_ARGS="e2e/invitation-activation-real.spec.ts e2e/invitation-oidc-round-trip.spec.ts"` — PASS, 6 tests (real API + real OIDC round trip)
 
-Not run: the full `make web-e2e` suite, the OIDC authorization-code round trip in a
-browser, and any delivery through a real mail provider (no provider credentials in
-this environment).
+Not run: the full `make web-e2e` suite and delivery through a real mail provider
+(no provider endpoint or credential in this environment).
 
 ## Known limitations
 
-- Email is the only delivery channel, and no provider is configured here. A
-  deployment needs `ONBOARDING_MAIL_ADAPTER=http`, `ONBOARDING_MAIL_URL=https://…`
-  and an optional bearer. A 2xx is provider acceptance, not inbox delivery.
+- No mail provider is configured here. Required: `ONBOARDING_MAIL_ADAPTER=http`,
+  `ONBOARDING_MAIL_URL=https://…` (loopback `http://` for local testing), optional
+  `ONBOARDING_MAIL_BEARER`, and `ONBOARDING_ACTIVATION_URL` for the public link.
+  A 2xx is provider acceptance only. The existing `PASSWORD_RESET_URL` contract is
+  not compatible.
+- The family's identity provider must authenticate the person. The application
+  needs no pre-existing account (verified by the round-trip test), but the IdP
+  still has to issue a token for them.
 - Provisioning trusts the verified identity, not the invited address, so the
   administrator's link review is the human gate.
-- The admin decision is an API plus a panel on `/admin/family-members`; there is no
+- The admin decision is an API plus a panel on `/admin/family-members`; no
   dedicated queue page.
 - Expired invitations are not resent automatically.
-- Browser tests stub the panel states; the real-API spec covers the integrated
-  flow but not the OIDC redirect itself.
+- Browser suites stub some panel states; the real-API and round-trip specs cover
+  the integrated flow, but the full `make web-e2e` suite was not run.
 
-Full evidence: `docs/architecture/PROFILE-INVITATION-ACCEPTANCE.md`.
+Full evidence: `docs/architecture/PROFILE-INVITATION-ACCEPTANCE.md` and
+`docs/architecture/PROFILE-INVITATION-MAIL-ADAPTER.md`.
