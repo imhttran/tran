@@ -477,6 +477,28 @@ export type ProfileResponse = {
   media?: ProfileMediaAsset[];
 };
 
+/**
+ * Fields whose newest revision was rejected or sent back for changes: the
+ * member's to-do list. An older decision a later revision superseded is not
+ * counted. Revision ids only grow, so the highest id is the newest revision.
+ */
+export function decisionsNeedingAction(revisions: {
+  pending: ProfileRevision[];
+  history: ProfileRevision[];
+}): ProfileRevision[] {
+  const newest = new Map<string, ProfileRevision>();
+  for (const revision of [...revisions.history, ...revisions.pending]) {
+    const seen = newest.get(revision.field_key);
+    if (!seen || revision.revision_id > seen.revision_id) {
+      newest.set(revision.field_key, revision);
+    }
+  }
+  return [...newest.values()].filter(
+    (revision) =>
+      revision.status === "rejected" || revision.status === "needs_changes",
+  );
+}
+
 export function getProfile(): Promise<ProfileResponse> {
   return request<ProfileResponse>("/api/profile");
 }

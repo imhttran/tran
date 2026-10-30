@@ -557,6 +557,28 @@ footer.page-footer {
     font-size: 10px;
     opacity: 0.7;
 }
+.nav-badge {
+    display: inline-grid;
+    place-items: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.35rem;
+    margin-left: 0.35rem;
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+}
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
 .current-dot {
     width: 6px;
     height: 6px;
