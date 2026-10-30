@@ -289,6 +289,16 @@ impl AppState {
                 get(family_history),
             )
             .route(
+                "/api/family/persons/{person_key}/invitation",
+                get(person_invitation_state)
+                    .put(save_person_invitation_contact)
+                    .post(save_person_invitation_contact),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/prepare",
+                post(prepare_person_invitation),
+            )
+            .route(
                 "/api/family/persons/{person_key}/media/{media_id}",
                 get(family_media),
             )
@@ -3640,6 +3650,212 @@ fn family_history_json(passages: &[narrative::FamilyPassage]) -> Vec<serde_json:
             })
         })
         .collect()
+}
+
+// --- family person invitation draft and preparation (PIR-003) -----------
+
+#[derive(Deserialize)]
+struct InvitationDraftRequest {
+    email: String,
+}
+
+/// Maps a profile-invitation failure to a safe status and body.
+///
+/// No branch here logs or returns an address. Refusal codes keep their stable
+/// snake_case name, so the UI can offer a plain-language message.
+fn profile_invitation_error(err: onboarding::ProfileInvitationError) -> Response {
+    eprintln!("api: profile invitation refused: {err}");
+    match err {
+        onboarding::ProfileInvitationError::Refused(code) => error(
+            StatusCode::FORBIDDEN,
+            code,
+            "the authenticated account may not invite this person",
+        ),
+        onboarding::ProfileInvitationError::UnknownPerson => {
+            error(StatusCode::NOT_FOUND, "unknown_person", "no such person")
+        }
+        onboarding::ProfileInvitationError::InvalidAddress => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_contact",
+            "the contact address is not valid",
+        ),
+        onboarding::ProfileInvitationError::MissingContact => error(
+            StatusCode::CONFLICT,
+            "missing_contact",
+            "save a draft contact before preparing the invitation",
+        ),
+        onboarding::ProfileInvitationError::AlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "already_linked",
+            "the person is already linked to an account",
+        ),
+        onboarding::ProfileInvitationError::NotEligible => error(
+            StatusCode::CONFLICT,
+            "not_invitable",
+            "the person is not eligible for an invitation",
+        ),
+        onboarding::ProfileInvitationError::Invitation(_)
+        | onboarding::ProfileInvitationError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invitation_unavailable",
+            "the invitation store is unavailable",
+        ),
+    }
+}
+
+fn invitation_state_json(state: &onboarding::InvitationState) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": state.person_key,
+        "authorization": state.authorization,
+        "eligibility": state.eligibility,
+        "invitation": {
+            "pending": state.invitation.pending,
+            "invitation_id": state.invitation.invitation_id,
+            "expires_at": state.invitation.expires_at,
+            "delivery_state": state.invitation.delivery_state,
+        },
+        "linked_account": state.linked_account,
+        "proposed_username": state.proposed_username,
+        "masked_contact": state.masked_contact,
+        "blockers": state.blockers.iter().map(|blocker| serde_json::json!({
+            "code": blocker.code,
+            "message": blocker.message,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn prepare_review_json(review: &onboarding::PrepareReview) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": review.person_key,
+        "masked_contact": review.masked_contact,
+        "proposed_username": review.proposed_username,
+        "access": review.access,
+        "invitation_id": review.invitation_id,
+        "invitation_reused": review.invitation_reused,
+        "invitation_created": review.invitation_created,
+    })
+}
+
+/// Reads the draft/prepare state for one person. Reads only.
+#[allow(clippy::result_large_err)]
+async fn person_invitation_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_invitation_state(&mut genealogy, &identity, &account, &person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(state_view)) => Json(invitation_state_json(&state_view)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation state task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation state read failed",
+            )
+        }
+    }
+}
+
+/// Saves a draft contact. It never sends and never creates an invitation.
+#[allow(clippy::result_large_err)]
+async fn save_person_invitation_contact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+    Json(request): Json<InvitationDraftRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let email = request.email;
+    let task_person_key = person_key.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::save_contact_draft(
+            &mut genealogy,
+            &identity,
+            &account,
+            &task_person_key,
+            &email,
+        )
+        .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(masked)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": person_key,
+            "masked_contact": masked,
+            "sent": false,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation draft task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the contact draft failed",
+            )
+        }
+    }
+}
+
+/// Prepares the review payload. It reuses a pending invitation and never sends.
+#[allow(clippy::result_large_err)]
+async fn prepare_person_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::prepare_invitation(&mut genealogy, &identity, &account, &person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(review)) => Json(prepare_review_json(&review)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation prepare task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation preparation failed",
+            )
+        }
+    }
 }
 
 /// Maps a family profile failure without revealing restricted content.

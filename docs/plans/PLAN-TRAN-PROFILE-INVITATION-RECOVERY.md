@@ -190,6 +190,8 @@ Files to read, at most once each: `src/onboarding/invitation.rs`,
 `src/api.rs` (the invitation handlers and adjacent request structs), and the
 latest migration number under `genealogy/migrations/`.
 
+Execution note: the SOP validation stage runs cargo build/test/fmt/clippy after this task. Do not attempt to run cargo, and do not refuse the task because cargo is gated. Write the required module, declaration, API handlers, and tests; the validation stage will compile them and SOP's fix loop will correct errors.
+
 Add one additive migration using the next free number (currently `0033`) that
 creates a restricted draft-contact table keyed to a person, for example
 `onboarding_invitation_contact_draft(person_id, email, created_by, updated_by,
@@ -261,6 +263,8 @@ Files to read, at most once each: `src/onboarding/profile_invitation.rs`,
 `src/onboarding/family_admin.rs`, `src/api.rs` (invitation handlers only), and
 `tests/profile_invitation.rs`.
 
+Execution note: the SOP validation stage runs cargo build/test/fmt/clippy after this task. Do not attempt to run cargo, and do not refuse the task because cargo is gated. Write the required service and API code and tests; validation will compile them and the fix loop will correct errors.
+
 Extend `src/onboarding/profile_invitation.rs` with:
 
 - `send_invitation(client, adapter, account, person_key)` that rechecks family
@@ -317,6 +321,8 @@ Files to read, at most once each: `web/src/components/FamilyProfileView.tsx`,
 invitation types/client only), `web/src/app/globals.css` (profile panel classes
 only), and the PIR-003/PIR-004 API shapes.
 
+Execution note: the SOP validation stage runs the repository gates after this task. Do not attempt to run npm or cargo, and do not refuse the task because commands are gated. Write the panel, client types, and focused E2E spec; the operator and validation stage will run the affected checks.
+
 Create `web/src/components/ProfileInvitationPanel.tsx` and render it from the
 profile page or `FamilyProfileView` without exposing it to an unauthorized
 viewer.
@@ -371,6 +377,8 @@ Files to read, at most once each: `src/onboarding/invitation.rs`,
 `src/onboarding/link.rs`, `src/api.rs` (invitation and session handlers only),
 `web/src/app/signin/page.tsx`, `web/src/lib/api.ts`, and the existing identity
 provider configuration in `src/oidc.rs`.
+
+Execution note: the SOP validation stage runs cargo build/test/fmt/clippy after this task. Do not attempt to run cargo, and do not refuse the task because cargo is gated. Write the activation API, welcome page, and tests; validation will compile them and the fix loop will correct errors.
 
 Add:
 

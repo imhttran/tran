@@ -24,6 +24,7 @@ pub mod invitation;
 pub mod link;
 pub mod media;
 pub mod profile;
+pub mod profile_invitation;
 pub mod profile_restriction;
 pub mod profile_revisions;
 pub mod reservation;
@@ -74,6 +75,10 @@ pub use media::{
     MediaStorage, OwnerMedia, DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
+pub use profile_invitation::{
+    prepare_invitation, read_invitation_state, save_contact_draft, Blocker, InvitationState,
+    InvitationStateView, PrepareReview, ProfileInvitationError, PREPARE_ACCESS,
+};
 pub use profile_restriction::{restrict_own_field, RestrictionError, RestrictionOutcome};
 pub use profile_revisions::{
     cancel_owned_draft, create_draft, create_owned_draft, is_allowed_profile_field, is_media_field,
