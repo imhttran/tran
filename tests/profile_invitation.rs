@@ -1016,6 +1016,93 @@ fn migration_is_additive() {
     assert!(!sql.to_lowercase().contains("alter table"));
 }
 
+/// A linked caller with no Head of Family appointment cannot invite their own
+/// person: a reviewed link is no longer an invitation permission.
+#[test]
+fn a_linked_caller_without_an_appointment_cannot_invite_themselves() {
+    let Some(fixture) = build_fixture("pir008-self-no-appointment", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    let caller_key = format!("{}-caller", fixture.prefix);
+    let caller_person_id: i64 = client
+        .query_one(
+            "SELECT person_id FROM person WHERE person_key = $1",
+            &[&caller_key],
+        )
+        .expect("caller person")
+        .get(0);
+    client
+        .execute(
+            "DELETE FROM head_of_family_appointment WHERE person_key = $1",
+            &[&caller_key],
+        )
+        .expect("remove the appointment");
+
+    let state = read_invitation_state(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &caller_key,
+    );
+    assert!(matches!(state, Err(ProfileInvitationError::Refused(_))));
+
+    let email = fixture.email();
+    let refused = save_contact_draft(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &caller_key,
+        &email,
+    );
+    assert!(matches!(refused, Err(ProfileInvitationError::Refused(_))));
+    assert_eq!(count_drafts(&mut client, caller_person_id), 0);
+    assert_eq!(count_invitations(&mut client, caller_person_id), 0);
+}
+
+/// A family head may invite their own person only through their branch scope.
+#[test]
+fn a_family_head_may_invite_themselves_only_through_their_branch() {
+    let Some(fixture) = build_fixture("pir008-self-branch", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    let caller_key = format!("{}-caller", fixture.prefix);
+    let caller_person_id: i64 = client
+        .query_one(
+            "SELECT person_id FROM person WHERE person_key = $1",
+            &[&caller_key],
+        )
+        .expect("caller person")
+        .get(0);
+
+    let state = read_invitation_state(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &caller_key,
+    )
+    .expect("self within the branch");
+    assert_eq!(state.authorization, "family_head_branch");
+
+    // Moving the caller's own verified claim out of the appointment branch
+    // removes the authority: there is no branch-independent self permission.
+    client
+        .execute(
+            "UPDATE assertion SET value_text = $2
+              WHERE person_id = $1 AND assertion_kind = 'branch_claim'",
+            &[&caller_person_id, &OTHER_BRANCH],
+        )
+        .expect("move the caller branch claim");
+    let state = read_invitation_state(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &caller_key,
+    );
+    assert!(matches!(state, Err(ProfileInvitationError::Refused(_))));
+}
+
 /// The delivery migration only adds nullable or defaulted columns.
 #[test]
 fn delivery_migration_is_additive() {

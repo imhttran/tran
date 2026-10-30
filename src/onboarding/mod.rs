@@ -28,14 +28,16 @@ pub mod profile;
 pub mod profile_invitation;
 pub mod profile_restriction;
 pub mod profile_revisions;
+pub mod provisioning;
 pub mod reservation;
 pub mod review_queue;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
 pub use activation::{
-    accept_invitation, preview_invitation, ActivationError, ActivationOutcome, ActivationState,
-    InvitationPreview,
+    accept_invitation, decide_link_request, pending_link_requests, preview_invitation,
+    ActivationError, ActivationOutcome, ActivationState, InvitationPreview, LinkRequestDecision,
+    LinkRequestState, LinkRequestView, LinkState,
 };
 pub use batch::{
     batch_status_items, confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport,
@@ -53,8 +55,8 @@ pub use candidate::{
 };
 pub use delivery::{
     issue_deliverable_invitation, send_batch, sync_invitation_status, verify_recipient,
-    DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, MailAdapter, SendOutcome,
-    SentMessage, UnconfiguredAdapter,
+    DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, HttpMailAdapter, MailAdapter,
+    SendOutcome, SentMessage, UnconfiguredAdapter,
 };
 pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
@@ -96,6 +98,7 @@ pub use profile_revisions::{
     RevisionError, RevisionStatus, ALLOWED_PROFILE_FIELDS, BIOGRAPHY_MAX_CHARS,
     MEDIA_PROFILE_FIELDS, NAME_MAX_CHARS, NARRATIVE_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
 };
+pub use provisioning::provision_invited_member;
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
 pub use review_queue::{
     read_review_detail, read_review_queue, ReviewDetail, ReviewEntry, ReviewEvent, ReviewMedia,

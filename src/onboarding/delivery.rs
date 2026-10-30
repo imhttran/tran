@@ -244,6 +244,93 @@ impl MailAdapter for FakeAdapter {
     }
 }
 
+/// A provider-backed adapter that posts one message to a configured HTTPS
+/// endpoint.
+///
+/// The operator supplies the endpoint and an optional bearer credential. The
+/// adapter reports `accepted` only when the provider answers with a 2xx status:
+/// that is provider acceptance, never confirmation of inbox delivery. Redirects
+/// are not followed, and no error carries the endpoint or the credential.
+pub struct HttpMailAdapter {
+    endpoint: String,
+    bearer: Option<String>,
+    timeout: Duration,
+}
+
+impl HttpMailAdapter {
+    /// Builds an adapter for one provider endpoint.
+    pub fn new(endpoint: impl Into<String>, bearer: Option<String>, timeout: Duration) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            bearer,
+            timeout,
+        }
+    }
+}
+
+impl MailAdapter for HttpMailAdapter {
+    fn name(&self) -> &'static str {
+        "http"
+    }
+
+    fn is_configured(&self) -> bool {
+        !self.endpoint.trim().is_empty()
+    }
+
+    fn deliver(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if !self.is_configured() {
+            return Err(DeliveryError::NotConfigured);
+        }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| DeliveryError::Provider("client_unavailable".to_string()))?;
+        let payload = serde_json::json!({ "to": to, "subject": subject, "body": body });
+        let encoded = serde_json::to_vec(&payload)
+            .map_err(|_| DeliveryError::Provider("payload_unavailable".to_string()))?;
+        let mut request = client
+            .post(&self.endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(encoded);
+        if let Some(bearer) = self.bearer.as_deref() {
+            request = request.bearer_auth(bearer);
+        }
+        let response = request
+            .send()
+            .map_err(|_| DeliveryError::Provider("provider_unreachable".to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            // The numeric status is safe and useful; the body may echo the
+            // message, so it is never read into an error.
+            return Err(DeliveryError::Provider(format!(
+                "provider_status_{}",
+                status.as_u16()
+            )));
+        }
+        let message_id = response
+            .text()
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .get("message_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+        Ok(DeliveryReceipt {
+            provider: "http".to_string(),
+            accepted: true,
+            message_id,
+        })
+    }
+}
+
 /// The safe result of one send attempt. It carries no token and no address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendOutcome {
@@ -729,5 +816,84 @@ mod tests {
                 "{email} should be rejected"
             );
         }
+    }
+
+    /// Serves exactly one canned HTTP response, then closes.
+    fn one_shot_server(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one request");
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let response = format!(
+                "{status_line}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            request
+        });
+        (format!("http://{address}/deliver"), handle)
+    }
+
+    #[test]
+    fn http_adapter_reports_provider_acceptance() {
+        let (endpoint, handle) =
+            one_shot_server("HTTP/1.1 202 Accepted", "{\"message_id\":\"m-1\"}");
+        let adapter = HttpMailAdapter::new(
+            endpoint,
+            Some("synthetic-bearer".to_string()),
+            Duration::from_secs(5),
+        );
+        assert!(adapter.is_configured());
+        let receipt = adapter
+            .deliver("synthetic@example.test", "Activate", "Link body")
+            .expect("provider acceptance");
+        assert!(receipt.accepted);
+        assert_eq!(receipt.provider, "http");
+        assert_eq!(receipt.message_id.as_deref(), Some("m-1"));
+        let request = handle.join().expect("server thread");
+        assert!(request.contains("POST /deliver"));
+        assert!(request.contains("authorization: Bearer synthetic-bearer"));
+        assert!(request.contains("synthetic@example.test"));
+    }
+
+    #[test]
+    fn http_adapter_never_claims_success_on_a_provider_error() {
+        let (endpoint, handle) = one_shot_server("HTTP/1.1 500 Internal Server Error", "no");
+        let adapter = HttpMailAdapter::new(endpoint, None, Duration::from_secs(5));
+        let error = adapter
+            .deliver("synthetic@example.test", "Activate", "Link body")
+            .expect_err("provider rejection");
+        assert_eq!(
+            error,
+            DeliveryError::Provider("provider_status_500".to_string())
+        );
+        let rendered = format!("{error:?}");
+        assert!(
+            !rendered.contains("127.0.0.1"),
+            "the error leaked the endpoint"
+        );
+        assert!(
+            !rendered.contains("example.test"),
+            "the error leaked the address"
+        );
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn http_adapter_fails_closed_without_an_endpoint() {
+        let adapter = HttpMailAdapter::new("   ", None, Duration::from_secs(1));
+        assert!(!adapter.is_configured());
+        assert_eq!(
+            adapter.deliver("synthetic@example.test", "s", "b"),
+            Err(DeliveryError::NotConfigured)
+        );
     }
 }

@@ -1868,6 +1868,45 @@ export function revokeProfileInvitation(
   );
 }
 
+/// PIR-008: pending reviewed-link requests for an administrator.
+export type LinkRequestView = {
+  request_id: number;
+  invitation_id: number;
+  person_key: string;
+  display_name: string;
+  account_id: number;
+  requested_at: string;
+};
+
+export function listLinkRequests(): Promise<{
+  ok: true;
+  requests: LinkRequestView[];
+}> {
+  return request("/api/admin/family-members/link-requests", {
+    cache: "no-store",
+  });
+}
+
+export function decideLinkRequest(
+  requestId: number,
+  decision: "approve" | "reject",
+): Promise<{
+  ok: true;
+  request_id: number;
+  person_key: string;
+  linked: boolean;
+  already_decided: boolean;
+}> {
+  return request(
+    `/api/admin/family-members/link-requests/${requestId}/decision`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    },
+  );
+}
+
 /// PIR-006: the welcome view of an invitation link. Public: the link is the
 /// credential, and the response carries only the intended person and state.
 export type InvitationPreviewResponse = {
@@ -1878,6 +1917,8 @@ export type InvitationPreviewResponse = {
   state: string;
   /// True when the person already has an account link.
   person_linked: boolean;
+  /// `none`, `pending`, `approved`, or `rejected`.
+  request_state: string;
 };
 
 export type InvitationActivationResponse = {
@@ -1885,8 +1926,9 @@ export type InvitationActivationResponse = {
   person_key: string;
   display_name: string;
   state: string;
-  /// True when this account was already linked to the person.
-  already_linked: boolean;
+  /// `linked` when the account is linked, `pending_review` when an
+  /// administrator still has to review the link request.
+  link_state: string;
 };
 
 export function previewInvitation(

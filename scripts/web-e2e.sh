@@ -194,6 +194,18 @@ E2E_RESTRICT_OWNER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSU
 export E2E_RESTRICT_OWNER_TOKEN
 E2E_RESTRICTABLE_MARKER="ZX-RESTRICTABLE-BIOGRAPHY-5b38"
 export E2E_RESTRICTABLE_MARKER
+# Invitation flow: two identities that are deliberately NOT provisioned at seed
+# time, so the activation path has to provision them. One invitation drives the
+# API flow and one drives the browser flow. Nothing is ever emailed.
+E2E_INVITEE_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-invitee --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_INVITEE_TOKEN
+E2E_INVITEE_TWO_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-invitee-2 --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_INVITEE_TWO_TOKEN
+E2E_INVITATION_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export E2E_INVITATION_TOKEN
+E2E_INVITATION_TWO_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export E2E_INVITATION_TWO_TOKEN
+export E2E_CORPUS="$CORPUS"
 
 echo "web-e2e: seeding test identities"
 # Base RAG schema and the FAM-002 document lifecycle metadata. These are
@@ -210,7 +222,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subjec
 # No password-reset provider in E2E: the reset action must fail closed.
 unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee', 'e2e-invitee-2')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER'), ('e2e-family-member', '$E2E_ISSUER'), ('e2e-restrict-owner', '$E2E_ISSUER')" >/dev/null
 # A disposable account the admin accounts test changes and deactivates.
@@ -266,7 +278,8 @@ for migration in \
 	0031_archive_photograph_assets \
 	0032_archive_photograph_link_provenance \
 	0033_onboarding_invitation_contact_draft \
-	0034_onboarding_invitation_delivery; do
+	0034_onboarding_invitation_delivery \
+	0035_onboarding_link_request; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
@@ -308,6 +321,21 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_APPROVER_ACCOUNT_ID, 'e2e-seed', '$E2E_APPROVER_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-approver'" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_person_account_link (person_id, account_id, linked_by, identity_fingerprint) SELECT person_id, $E2E_DEACTIVATED_ACCOUNT_ID, 'e2e-seed', '$E2E_DEACTIVATED_FINGERPRINT' FROM person WHERE person_key = 'e2e-profile-deactivated'" >/dev/null
+
+# Invitation activation fixture. Two unlinked people with a pending invitation,
+# one per invitee token. Deleting the people cascades their invitations, link
+# requests, and links, so every run exercises a first-time activation.
+echo "web-e2e: seeding invitation activation fixtures"
+E2E_INVITATION_HASH=$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$E2E_INVITATION_TOKEN")
+E2E_INVITATION_TWO_HASH=$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$E2E_INVITATION_TWO_TOKEN")
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DELETE FROM person WHERE person_key IN ('e2e-invitee-person', 'e2e-invitee-person-2')" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO person (person_key, display_name) VALUES ('e2e-invitee-person', 'Synthetic Invitee Person'), ('e2e-invitee-person-2', 'Synthetic Invitee Person Two')" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_INVITATION_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-invitee-person'" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_INVITATION_TWO_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-invitee-person-2'" >/dev/null
 
 # USR-005B: synthetic branch-review people with verified branch claims, plus the
 # reviewer's own account-person link. Reuses the synthetic branch rows above.

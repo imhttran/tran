@@ -43,6 +43,34 @@ function fail(origin: string, code: string): NextResponse {
   return response;
 }
 
+// An invitation link is the only return path that needs the identity account to
+// exist before the session can be established. The token in the path names the
+// invitation; it is used only in the API call and never logged.
+function activationToken(path: string): string | null {
+  const match = /^\/activate\/([A-Za-z0-9_-]+)$/.exec(path);
+  return match ? match[1] : null;
+}
+
+async function provisionInvitee(
+  api: string,
+  token: string,
+  idToken: string,
+): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${api}/api/invitations/${encodeURIComponent(token)}/provision`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${idToken}` },
+        cache: "no-store",
+      },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Completes the authorization-code exchange. The Rust API is the cryptographic
 // authority: after the local state/nonce/issuer/audience/expiry checks, the ID
 // token is sent to /api/account. Only a 2xx response establishes a session.
@@ -130,6 +158,22 @@ export async function GET(request: NextRequest) {
     /\/+$/,
     "",
   );
+  const returnPath = safeReturnPath(
+    request.cookies.get(OIDC_RETURN_COOKIE)?.value,
+  );
+  const invitation = activationToken(returnPath);
+  if (invitation) {
+    // A new invitee has no account yet. The invitation token plus the verified
+    // identity authorize the minimum member provisioning; the person link still
+    // waits for an administrative review. A failed provision returns to the
+    // welcome screen without a session, where the invitation state is explained.
+    const provisioned = await provisionInvitee(api, invitation, idToken);
+    if (!provisioned) {
+      const response = NextResponse.redirect(new URL(returnPath, origin), 303);
+      clearTransient(response);
+      return response;
+    }
+  }
   try {
     const account = await fetch(`${api}/api/account`, {
       headers: { authorization: `Bearer ${idToken}` },
@@ -145,13 +189,7 @@ export async function GET(request: NextRequest) {
     return fail(origin, "account_unavailable");
   }
 
-  const response = NextResponse.redirect(
-    new URL(
-      safeReturnPath(request.cookies.get(OIDC_RETURN_COOKIE)?.value),
-      origin,
-    ),
-    303,
-  );
+  const response = NextResponse.redirect(new URL(returnPath, origin), 303);
   response.cookies.set(sessionCookie(idToken, sessionLifetime));
   response.cookies.set(csrfCookie(randomString(32), sessionLifetime));
   // Automatic renewal is optional. When the store is configured and the

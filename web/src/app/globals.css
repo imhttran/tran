@@ -2050,6 +2050,22 @@ footer.page-footer {
     margin: 0;
     padding-left: 18px;
 }
+.link-review-list {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+}
+.link-review-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+}
 .profile-field-heading {
     display: flex;
     justify-content: space-between;
