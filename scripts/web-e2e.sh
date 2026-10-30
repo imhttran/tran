@@ -205,6 +205,13 @@ E2E_INVITATION_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))'
 export E2E_INVITATION_TOKEN
 E2E_INVITATION_TWO_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 export E2E_INVITATION_TWO_TOKEN
+# A third invitation drives the real OIDC authorization-code round trip for a
+# subject the application has never seen. The issuer is switched to that subject
+# by the spec through the test-only /test/subject endpoint.
+E2E_OIDC_INVITEE_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-oidc-invitee --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_OIDC_INVITEE_TOKEN
+E2E_OIDC_INVITATION_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export E2E_OIDC_INVITATION_TOKEN
 export E2E_CORPUS="$CORPUS"
 
 echo "web-e2e: seeding test identities"
@@ -222,7 +229,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subjec
 # No password-reset provider in E2E: the reset action must fail closed.
 unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee', 'e2e-invitee-2')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee', 'e2e-invitee-2', 'e2e-oidc-invitee')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER'), ('e2e-family-member', '$E2E_ISSUER'), ('e2e-restrict-owner', '$E2E_ISSUER')" >/dev/null
 # A disposable account the admin accounts test changes and deactivates.
@@ -336,6 +343,13 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_INVITATION_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-invitee-person'" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_INVITATION_TWO_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-invitee-person-2'" >/dev/null
+E2E_OIDC_INVITATION_HASH=$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$E2E_OIDC_INVITATION_TOKEN")
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DELETE FROM person WHERE person_key = 'e2e-oidc-invitee-person'" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO person (person_key, display_name) VALUES ('e2e-oidc-invitee-person', 'Synthetic OIDC Invitee Person')" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_OIDC_INVITATION_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-oidc-invitee-person'" >/dev/null
 
 # USR-005B: synthetic branch-review people with verified branch claims, plus the
 # reviewer's own account-person link. Reuses the synthetic branch rows above.

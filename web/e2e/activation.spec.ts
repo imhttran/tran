@@ -124,8 +124,9 @@ test.describe("invitation activation", () => {
     await expect(page.getByTestId("activation-pending-review")).toContainText(
       "Synthetic Person",
     );
+    // Access follows the administrator's review, not the acceptance alone.
     await expect(page.getByTestId("activation-pending-review")).toContainText(
-      "Member access",
+      "before archive access opens",
     );
     await expect(page.getByTestId("activation-open-profile")).toHaveCount(0);
     expect(calls.some((path) => path.endsWith("/accept"))).toBe(true);

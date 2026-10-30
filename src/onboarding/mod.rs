@@ -98,7 +98,7 @@ pub use profile_revisions::{
     RevisionError, RevisionStatus, ALLOWED_PROFILE_FIELDS, BIOGRAPHY_MAX_CHARS,
     MEDIA_PROFILE_FIELDS, NAME_MAX_CHARS, NARRATIVE_MAX_CHARS, REVIEW_NOTE_MAX_CHARS,
 };
-pub use provisioning::provision_invited_member;
+pub use provisioning::{grant_member_access, provision_identity_account};
 pub use reservation::{claim, release, reserve, Reservation, ReservationError, ReservationStatus};
 pub use review_queue::{
     read_review_detail, read_review_queue, ReviewDetail, ReviewEntry, ReviewEvent, ReviewMedia,

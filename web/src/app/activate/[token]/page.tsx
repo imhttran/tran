@@ -173,9 +173,9 @@ function PendingReviewPanel({ displayName }: { displayName: string }) {
       >
         <h1>Pending review</h1>
         <p>
-          Your account is ready with Member access, and your link to{" "}
-          {displayName} is waiting for an administrator to review it. You can
-          sign in now; the family profile opens after that review.
+          Your account is ready. An administrator must review the link to{" "}
+          {displayName} before archive access opens. You can sign in now; the
+          family profile and archive stay closed until that review.
         </p>
         <div className="state-panel-actions">
           <Link href="/signin" className="button">
@@ -439,9 +439,9 @@ function ActivationView({ token }: { token: string }) {
               This invitation is for <strong>{preview.display_name}</strong>.
             </p>
             <p>
-              Accepting links your own account to this person with Member
-              access. You can read the family archive and fill in your own
-              profile. It does not make you an administrator.
+              Accepting asks an administrator to link your account to this
+              person with Member access. The archive opens after that review. It
+              does not make you an administrator.
             </p>
 
             {signedIn ? (

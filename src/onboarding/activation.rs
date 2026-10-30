@@ -157,6 +157,8 @@ pub struct LinkRequestDecision {
     pub request_id: i64,
     /// The opaque person key.
     pub person_key: String,
+    /// The opaque identity account id the request belongs to.
+    pub account_id: i64,
     /// True when the reviewed link now exists.
     pub linked: bool,
     /// True when the decision was already recorded with the same outcome.
@@ -585,6 +587,7 @@ pub fn decide_link_request(
                     Ok(LinkRequestDecision {
                         request_id,
                         person_key,
+                        account_id: account.account_id,
                         linked: false,
                         already_decided: true,
                     })
@@ -595,6 +598,7 @@ pub fn decide_link_request(
             Ok(LinkRequestDecision {
                 request_id,
                 person_key,
+                account_id: account.account_id,
                 linked: false,
                 already_decided: false,
             })
@@ -604,6 +608,7 @@ pub fn decide_link_request(
                 return Ok(LinkRequestDecision {
                     request_id,
                     person_key,
+                    account_id: account.account_id,
                     linked: true,
                     already_decided: true,
                 });
@@ -633,6 +638,7 @@ pub fn decide_link_request(
             Ok(LinkRequestDecision {
                 request_id,
                 person_key,
+                account_id: account.account_id,
                 linked: link.person_id == person_id,
                 already_decided: false,
             })

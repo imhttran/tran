@@ -103,8 +103,14 @@ class Provider:
         self.refresh_calls = 0
         self.fail_refreshes = False
         self.ttl = 3600
+        # The subject the authorization endpoint signs in. A test can change it
+        # through /test/subject to simulate a person the application has never
+        # seen; the issuer is the authority for who the browser signed in as.
+        self.default_subject = SUBJECT
 
-    def token(self, code: str, verifier: str, redirect_uri: str) -> tuple[str, str] | None:
+    def token(
+        self, code: str, verifier: str, redirect_uri: str
+    ) -> tuple[str, str] | None:
         record = self.codes.pop(code, None)
         if record is None:
             return None
@@ -198,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
                 challenge,
                 redirect_uri,
                 nonce,
-                SUBJECT,
+                self.server.provider.default_subject,
             )
             location = f"{redirect_uri}?{urlencode({'code': code, 'state': state})}"
             self.send_response(303)
@@ -227,6 +233,19 @@ class Handler(BaseHTTPRequestHandler):
             if token:
                 self.server.provider.revoke(token)
             self.send_json(200, {"ok": True})
+            return
+
+        if parsed.path == "/test/subject":
+            payload = json.loads(raw or "{}")
+            subject = payload.get("subject", SUBJECT)
+            if not isinstance(subject, str) or not subject.strip():
+                self.send_json(400, {"error": "invalid_subject"})
+                return
+            self.server.provider.default_subject = subject.strip()
+            self.send_json(
+                200,
+                {"ok": True, "subject": self.server.provider.default_subject},
+            )
             return
 
         if parsed.path == "/test/mint":

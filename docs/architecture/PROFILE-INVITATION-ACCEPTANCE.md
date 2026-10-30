@@ -1,4 +1,4 @@
-# Profile Invitation — Acceptance Evidence (PIR-007 / PR #136 follow-up in PR #137)
+# Profile Invitation — Acceptance Evidence (PIR-007 / follow-ups in PRs #136, #137, and #138)
 
 Evidence for the recovery plan `docs/plans/PLAN-TRAN-PROFILE-INVITATION-RECOVERY.md`
 (tasks PIR-001 through PIR-007) and for the follow-up that makes the flow usable by
@@ -7,7 +7,7 @@ this working tree; anything not run is marked `NOT RUN`. All data used in tests 
 synthetic (`example.test` addresses, `synthetic-*` and `e2e-*` keys). No real name,
 address, token, hash, or credential appears in this document.
 
-## Follow-up changes (PR #136 follow-up, delivered in PR #137)
+## Follow-up changes (PRs #136–#138)
 
 The first delivery was safe but not usable end to end. This follow-up closes five
 gaps; each is verified below.
@@ -18,16 +18,33 @@ gaps; each is verified below.
    way a family head may invite their own person.
 2. **Email delivery.** A provider-backed `http` adapter now exists and is selected
    by the existing `ONBOARDING_MAIL_ADAPTER` configuration. It posts one JSON
-   message to `ONBOARDING_MAIL_URL` and reports provider acceptance only.
-3. **New-user activation.** Signing in from an invitation provisions the identity
-   account with the viewer role and the archive corpus grant, audited and
-   idempotent, so no manual CLI provisioning is needed.
+   message to `ONBOARDING_MAIL_URL` and reports provider acceptance only. Its
+   contract and the compatibility finding are in
+   [`PROFILE-INVITATION-MAIL-ADAPTER.md`](PROFILE-INVITATION-MAIL-ADAPTER.md).
+3. **New-user activation.** Signing in from an invitation creates the identity
+   account, so no manual CLI provisioning is needed. The account starts with **no**
+   role and **no** archive grant.
 4. **Person-link review.** Token possession records a link **request**; an
    administrator makes the explicit reviewed-link decision in the console (or
    through the admin API). An existing link is never replaced.
 5. **Verification.** Focused Rust and browser coverage exercises unauthorized
    self-invitation, family-head scope, provisioning, reviewed linking, delivery
-   failures, and the critical flow against the real API.
+   failures, the real OIDC round trip, and the real-API browser flow.
+
+### Access timing (latest revision)
+
+Member access follows the **approved link**, not the invitation token:
+
+- Signing in or accepting creates only the identity row, one accepted invitation,
+  and one pending link request.
+- Until an administrator approves, the account has no role and no corpus grant.
+  `/api/genealogy/tree`, `/api/query`, and the other archive reads are refused with
+  `403`; the family profile is closed because the person is not linked.
+- Approval writes the reviewed link and then grants the viewer role plus the
+  archive corpus grant. Both steps are audited and idempotent, and the token is
+  never consulted for access.
+
+The real-API suites assert the `403` before approval and the `200` after it.
 
 ## Implemented surfaces
 
@@ -36,7 +53,7 @@ gaps; each is verified below.
 | Family-admin authority rule and denial cases                            | `src/onboarding/family_admin.rs`                                                                       |
 | Contact draft, preparation, send, resend, revoke, status                | `src/onboarding/profile_invitation.rs`                                                                 |
 | Invitation welcome, acceptance, and reviewed-link requests              | `src/onboarding/activation.rs`                                                                         |
-| Member provisioning (viewer + corpus grant)                             | `src/onboarding/provisioning.rs`                                                                       |
+| Member provisioning (identity row) and approved member access           | `src/onboarding/provisioning.rs`                                                                       |
 | Delivery adapters (fake, http, unconfigured) and per-invitation receipt | `src/onboarding/delivery.rs`                                                                           |
 | Draft contact table (additive)                                          | `genealogy/migrations/0033_onboarding_invitation_contact_draft.sql`                                    |
 | Per-invitation delivery receipt columns (additive)                      | `genealogy/migrations/0034_onboarding_invitation_delivery.sql`                                         |
@@ -117,19 +134,21 @@ statements only.
 - `GET /api/invitations/{token}` returns the intended person, the invitation
   state, and the link-request state. Read-only.
 - The OIDC login route stores a validated same-origin `returnTo`; the callback
-  provisions the member when the return path is an invitation, then establishes
-  the session. A failed provision returns to the welcome screen without a session.
+  provisions the identity row when the return path is an invitation, then
+  establishes the session. A failed provision returns to the welcome screen
+  without a session. No application account needs to exist beforehand; the
+  identity provider still authenticates the person.
 - `POST /api/invitations/{token}/provision` requires a verified identity and a
-  usable invitation. It creates or reactivates the identity row and grants exactly
-  the viewer role and the archive corpus grant (audited, idempotent). It never
-  grants editor or admin.
+  usable invitation. It creates or reactivates the identity row only.
 - `POST /api/invitations/{token}/accept` consumes the invitation and records one
   pending link request. It refuses expired, revoked, already-accepted (by another
   account), person-already-linked, and account-linked-elsewhere cases.
 - `POST /api/admin/family-members/link-requests/{id}/decision` applies the
-  reviewed-link policy: approve calls `link_reviewed` and writes its audit row;
-  reject records the decision with no link. A repeat decision with the same
-  outcome is reported as already decided.
+  reviewed-link policy: approve calls `link_reviewed`, writes its audit row, and
+  then grants the viewer role and the archive corpus grant by opaque account id;
+  reject records the decision with no link and no grant. A repeat decision with
+  the same outcome is reported as already decided, and a repeated approval
+  re-grants idempotently.
 
 ## Verification
 
@@ -137,29 +156,35 @@ Commands run from the repository root with disposable test databases
 (`DATABASE_URL` and `GENEALOGY_DATABASE_URL` pointed at `*_test` copies, and
 `REQUIRE_TEST_DATABASE=1` where applicable).
 
-| Command                                                                             | Result                                                                                                                  |
-| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `cargo build --locked`                                                              | PASS                                                                                                                    |
-| `cargo test --locked`                                                               | PASS                                                                                                                    |
-| `cargo fmt --check`                                                                 | PASS                                                                                                                    |
-| `cargo clippy --locked --all-targets -- -D warnings`                                | PASS                                                                                                                    |
-| `sop validate`                                                                      | PASS — BUILD, UNIT_TEST, LINT                                                                                           |
-| `cargo test --locked --test profile_invitation`                                     | PASS — 23 tests                                                                                                         |
-| `cargo test --locked --test onboarding_activation`                                  | PASS — 9 tests                                                                                                          |
-| `cargo test --locked --test onboarding_provisioning`                                | PASS — 1 test                                                                                                           |
-| `cargo test --locked --test onboarding_bulk`                                        | PASS — 1 test                                                                                                           |
-| `make web-check`                                                                    | PASS — TypeScript and production build                                                                                  |
-| `PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts"` (stubbed) | PASS — 16 tests                                                                                                         |
-| `PLAYWRIGHT_ARGS="e2e/invitation-activation-real.spec.ts"` (real API + browser)     | PASS — 5 tests                                                                                                          |
-| Full `make web-e2e` (entire suite)                                                  | NOT RUN — only the focused specs were run                                                                               |
-| A real mail provider delivery                                                       | NOT RUN — no provider credentials in this environment                                                                   |
-| The OIDC authorization-code round trip in a browser                                 | NOT RUN — the harness sets a session cookie; the callback's provision call is covered by review, not by that round trip |
+| Command                                                                                           | Result                                                     |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `cargo build --locked`                                                                            | PASS                                                       |
+| `cargo test --locked`                                                                             | PASS                                                       |
+| `cargo fmt --check`                                                                               | PASS                                                       |
+| `cargo clippy --locked --all-targets -- -D warnings`                                              | PASS                                                       |
+| `sop validate`                                                                                    | PASS — BUILD, UNIT_TEST, LINT                              |
+| `cargo test --locked --test profile_invitation`                                                   | PASS — 23 tests                                            |
+| `cargo test --locked --test onboarding_activation`                                                | PASS — 9 tests                                             |
+| `cargo test --locked --test onboarding_provisioning`                                              | PASS — 1 test                                              |
+| `cargo test --locked --test onboarding_bulk`                                                      | PASS — 1 test                                              |
+| `make web-check`                                                                                  | PASS — TypeScript and production build                     |
+| `PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts"` (stubbed)               | PASS — 16 tests                                            |
+| `PLAYWRIGHT_ARGS="e2e/invitation-activation-real.spec.ts e2e/invitation-oidc-round-trip.spec.ts"` | PASS — 6 tests (5 real-API flow + 1 real OIDC round trip)  |
+| Full `make web-e2e` (entire suite)                                                                | NOT RUN — only the focused specs were run                  |
+| A real mail provider delivery                                                                     | NOT RUN — no provider endpoint or credential is configured |
 
-The real-API spec proves, against a running Axum API and PostgreSQL: a public
-preview; an unauthenticated provision is refused; provisioning grants viewer plus
-the corpus grant; acceptance records a request without a link and the family
-profile stays closed; the admin console approves the link; the family profile then
-opens; and a second invitee completes the flow from the welcome page itself.
+The real-API suites prove, against a running Axum API and PostgreSQL: a public
+preview; an unauthenticated provision is refused; signing in creates an account
+with no role and no archive access (`/api/genealogy/tree` is `403`); acceptance
+records a request and leaves the family profile closed; the admin console
+approval grants viewer plus the corpus grant (`/api/genealogy/tree` becomes
+`200`); and a second invitee completes the flow from the welcome page.
+
+The OIDC round-trip suite additionally proves the case application-level
+provisioning alone cannot: the test issuer signs in a **subject the application
+has never seen**, the browser completes the authorization-code redirect chain,
+the callback provisions the account, the invitation survives the round trip, and
+acceptance reaches pending review.
 
 ## Acceptance criteria coverage
 
@@ -172,8 +197,9 @@ opens; and a second invitee completes the flow from the welcome page itself.
 | Resend and revoke use the same authority                                            | `profile_invitation.rs` (`resend_revokes_previous_and_issues_one_link`, `revoke_reports_state_and_is_idempotent`, `wrong_branch_family_head_cannot_send_or_revoke`)                                                              |
 | Status distinguishes pending, sent, queued, failed, expired, accepted, unconfigured | `ProfileDeliveryState`; `profile_invitation.rs`; `profile-invitation.spec.ts`                                                                                                                                                    |
 | No token or full address in a response, error, log, or rendered page                | Rust test assertions; both stubbed and real browser specs                                                                                                                                                                        |
-| A new invitee is provisioned without operator action                                | `onboarding_provisioning.rs`; `invitation-activation-real.spec.ts` (`signing in provisions Member access without an operator`)                                                                                                   |
-| Member access only; no elevated role                                                | `onboarding_provisioning.rs` asserts exactly `[viewer]` and no `admin`/`editor`; the real spec asserts the same through `/api/account`                                                                                           |
+| A new invitee is provisioned without operator action                                | `onboarding_provisioning.rs`; `invitation-activation-real.spec.ts` (`signing in creates an account without archive access`); `invitation-oidc-round-trip.spec.ts`                                                                |
+| No archive access before the link is approved                                       | `onboarding_provisioning.rs` (no role/grant after provisioning); both real specs assert `/api/genealogy/tree` is `403` before approval and `200` after                                                                           |
+| Member access only; no elevated role                                                | `onboarding_provisioning.rs` asserts exactly `[viewer]` and no `admin`/`editor` after approval; the real specs assert the same through `/api/account`                                                                            |
 | Token possession never approves a person link                                       | `onboarding_activation.rs`; `invitation-activation-real.spec.ts` (`accepting records a link request instead of approving it`)                                                                                                    |
 | An administrator decides the reviewed link                                          | `activation.rs` (`decide_link_request`); `onboarding_activation.rs`; the admin console path in the real spec                                                                                                                     |
 | An existing link is never replaced                                                  | `onboarding_activation.rs` (`a_person_linked_to_another_account_is_never_reclaimed`, `an_account_linked_to_another_person_is_refused`)                                                                                           |
@@ -183,24 +209,32 @@ opens; and a second invitee completes the flow from the welcome page itself.
 
 - **No mail provider is configured in this environment.** The `http` adapter is
   implemented and unit-tested against a local one-shot HTTP server, but no real
-  delivery was attempted. A deployment needs `ONBOARDING_MAIL_ADAPTER=http`,
+  delivery was attempted. The endpoint contract is documented in
+  [`PROFILE-INVITATION-MAIL-ADAPTER.md`](PROFILE-INVITATION-MAIL-ADAPTER.md). A
+  deployment needs `ONBOARDING_MAIL_ADAPTER=http`,
   `ONBOARDING_MAIL_URL=https://...` (loopback `http://` is allowed for local
   testing), and optionally `ONBOARDING_MAIL_BEARER`. A 2xx means provider
   acceptance only, never inbox delivery. Email remains the only channel.
+- **No existing provider is compatible.** `PASSWORD_RESET_URL`, the only outbound
+  mail provider contract in the repository, receives `{issuer, subject}` and
+  resolves the address itself; it cannot deliver this message. A generic endpoint
+  is not automatically compatible with a mail provider: point the adapter at a
+  small gateway, or add a provider-specific adapter.
+- **The identity provider must authenticate the person.** The application needs no
+  pre-existing account, and the OIDC round trip is verified, but the family's IdP
+  still has to issue a token for that person (self-signup or an operator-created
+  IdP account). That is an external prerequisite.
 - **Provisioning trusts the verified identity, not the invited address.** The
   invitation token proves control of the delivered link; the identity provider
   proves control of the signed-in identity. The IdP address is not compared with
-  the invited address, so the administrator's link review is the human gate. An
-  account created this way holds only viewer plus the archive corpus grant.
+  the invited address, so the administrator's link review is the human gate. The
+  account holds no access until that review.
 - **The admin decision is an API plus a panel on `/admin/family-members`.** There
   is no dedicated review queue page.
 - **Expired invitations are not resent automatically.** An administrator must
   resend or issue a new invitation.
-- **The OIDC round trip is not exercised by the browser suite.** The harness sets
-  the session cookie directly; the callback's provisioning call is reviewed but
-  not covered end to end by a browser test.
 - **The full `make web-e2e` suite was not run**; only the focused invitation specs
   were executed.
-- **The original plan text for PIR-002 mentions a self-invitation permission.**
-  The operator instruction for this follow-up removed it; the code and this report
-  describe the stricter rule that is now implemented.
+- **The plan document was updated** to remove the obsolete self-invitation
+  permission. The compiled SOP task text is unchanged because the plan is not
+  recompiled; the code and this report describe the implemented rule.

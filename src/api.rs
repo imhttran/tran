@@ -4220,15 +4220,43 @@ async fn preview_invitation(State(state): State<AppState>, Path(token): Path<Str
     }
 }
 
-/// Grants the minimum member access an invitation implies. The identity store
-/// audits every write and the grant is idempotent, so a retried activation is
-/// safe. It never grants `editor` or `admin`.
+/// Creates or reactivates the invitee's identity row. No role or corpus grant is
+/// written here: archive access opens only after an administrator approves the
+/// reviewed person link, so an unapproved holder can sign in and see the
+/// pending-review state but cannot read protected archive content.
 #[allow(clippy::result_large_err)]
-fn provision_member(
+fn provision_identity(config: &Config, issuer: &str, subject: &str) -> Result<(), Response> {
+    let client =
+        postgres::Client::connect(&config.database_url, postgres::NoTls).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_unavailable",
+                "the identity store is unavailable",
+            )
+        })?;
+    let mut identity = crate::identity_store_pg::PgIdentityClient::from_client(client);
+    onboarding::provision_identity_account(&mut identity, subject, issuer, "invitation").map_err(
+        |err| {
+            eprintln!("api: invitation provisioning failed: {err}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provision_failed",
+                "the member account could not be prepared",
+            )
+        },
+    )?;
+    Ok(())
+}
+
+/// Grants the approved member access by opaque account id. Called only after the
+/// reviewed link exists; it is audited and idempotent, so a retried approval
+/// neither duplicates nor removes access.
+#[allow(clippy::result_large_err)]
+fn grant_member(
     config: &Config,
-    issuer: &str,
-    subject: &str,
+    account_id: i64,
     corpus: &str,
+    actor: &str,
 ) -> Result<(), Response> {
     let client =
         postgres::Client::connect(&config.database_url, postgres::NoTls).map_err(|_| {
@@ -4239,15 +4267,14 @@ fn provision_member(
             )
         })?;
     let mut identity = crate::identity_store_pg::PgIdentityClient::from_client(client);
-    onboarding::provision_invited_member(&mut identity, subject, issuer, corpus, "invitation")
-        .map_err(|err| {
-            eprintln!("api: invitation provisioning failed: {err}");
-            error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "provision_failed",
-                "the member account could not be prepared",
-            )
-        })?;
+    onboarding::grant_member_access(&mut identity, account_id, corpus, actor).map_err(|err| {
+        eprintln!("api: approved member access failed: {err}");
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "member_access_failed",
+            "the approved member access could not be granted; retry the approval",
+        )
+    })?;
     Ok(())
 }
 
@@ -4276,7 +4303,6 @@ async fn provision_invitation(
         );
     }
     let config = state.config.clone();
-    let corpus = state.corpus.clone();
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
@@ -4308,7 +4334,7 @@ async fn provision_invitation(
                 );
             }
         }
-        provision_member(&config, &issuer, &subject, &corpus)?;
+        provision_identity(&config, &issuer, &subject)?;
         Ok::<_, Response>(
             Json(serde_json::json!({ "ok": true, "provisioned": true })).into_response(),
         )
@@ -4349,7 +4375,6 @@ async fn accept_invitation(
         );
     }
     let config = state.config.clone();
-    let corpus = state.corpus.clone();
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
@@ -4368,7 +4393,7 @@ async fn accept_invitation(
                     return Err(activation_error(onboarding::ActivationError::Revoked))
                 }
                 onboarding::ActivationState::Pending if !preview.person_linked => {
-                    provision_member(&config, &issuer, &subject, &corpus)?;
+                    provision_identity(&config, &issuer, &subject)?;
                 }
                 // A person who already has a link belongs to another account (a
                 // retry after approval arrives as `Accepted`, not `Pending`).
@@ -4477,11 +4502,18 @@ async fn admin_decide_link_request(
         }
     };
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let actor = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
-        onboarding::decide_link_request(&mut genealogy, request_id, decision, &actor)
-            .map_err(activation_error)
+        let decided = onboarding::decide_link_request(&mut genealogy, request_id, decision, &actor)
+            .map_err(activation_error)?;
+        // Access follows the approved link, never the invitation token. The
+        // grant is idempotent, so retrying an already-approved request is safe.
+        if decided.linked {
+            grant_member(&config, decided.account_id, &corpus, &actor)?;
+        }
+        Ok::<_, Response>(decided)
     })
     .await;
     match result {
