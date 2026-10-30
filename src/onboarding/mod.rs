@@ -18,6 +18,7 @@ pub mod branch_review;
 pub mod candidate;
 pub mod delivery;
 pub mod dry_run;
+pub mod family_admin;
 pub mod family_profile;
 pub mod invitation;
 pub mod link;
@@ -52,6 +53,11 @@ pub use delivery::{
 pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
     Page, Selector, REVIEW_NEEDED_EMPTY,
+};
+pub use family_admin::{
+    authorize_person_invitation, authorize_person_invitation_in, decide as decide_family_admin,
+    CallerAppointment, CallerLink, FamilyAdminAllow, FamilyAdminCheckError, FamilyAdminDecision,
+    FamilyAdminError, FamilyAdminInput, FamilyAdminOutcome, FamilyAdminRefusal,
 };
 pub use family_profile::{
     can_read_family_history, read_family_history, read_family_profile, FamilyHistory,
