@@ -39,6 +39,7 @@ use crate::document_lifecycle::{
 };
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
+use crate::genealogy::eligibility::ReasonCode;
 use crate::genealogy::{
     appointments, authority, branch_review, document_extraction, narrative, person_search,
     photograph_review, photograph_store::PhotographStore, query as genealogy_query,
@@ -5264,13 +5265,22 @@ async fn genealogy_head_of_family(State(state): State<AppState>, headers: Header
                 &appointment.evidence_assertion_ids,
             )
             .map_err(|err| err.to_string())?;
+            // An appointment whose holder no longer meets the verified rules
+            // stays listed (so an administrator can end it) but is never
+            // presented as a verified Head of Family.
+            let still_eligible = appointment.current_eligibility == ReasonCode::Eligible;
             conclusions.push(serde_json::json!({
-                "conclusion": "Head of Family",
+                "conclusion": if still_eligible {
+                    "Head of Family"
+                } else {
+                    "Head of Family appointment needs review"
+                },
                 "record_id": appointment.person_key,
                 "appointment_id": appointment.appointment_id,
                 "head_label": appointment.display_name,
                 "evidence": evidence_json(&citations),
-                "evidence_status": "verified",
+                "evidence_status": if still_eligible { "verified" } else { "needs_review" },
+                "reason": appointment.current_eligibility.as_str(),
             }));
         }
         Ok::<_, String>(conclusions)

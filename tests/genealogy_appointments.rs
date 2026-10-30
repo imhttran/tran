@@ -132,6 +132,46 @@ fn eligible_candidate_can_be_nominated_approved_and_revoked() {
 }
 
 #[test]
+fn active_appointment_is_revalidated_when_living_evidence_is_withdrawn() {
+    let Some(target) = prepare("appointments_revalidate") else {
+        return;
+    };
+    let mut client = target.connect();
+    seed_person(&mut client, "synthetic-later", BRANCH, true);
+
+    let nomination =
+        appointments::nominate(&mut client, "synthetic-later", BRANCH, "editor").unwrap();
+    appointments::approve(&mut client, nomination, BRANCH, "admin").expect("approve");
+    let active = appointments::list_active_appointments(&mut client).unwrap();
+    assert_eq!(
+        active[0].current_eligibility,
+        eligibility::ReasonCode::Eligible
+    );
+
+    // Later review disputes the living-status evidence (for example, a death
+    // record surfaces). The stored appointment stays active until an
+    // administrator ends it, but it must no longer read as eligible.
+    client
+        .execute(
+            "UPDATE assertion SET review_status = 'disputed' \
+              WHERE assertion_kind = 'vital_status' AND person_id = \
+                    (SELECT person_id FROM person WHERE person_key = 'synthetic-later')",
+            &[],
+        )
+        .expect("dispute living evidence");
+
+    let active = appointments::list_active_appointments(&mut client).unwrap();
+    assert_eq!(active.len(), 1, "no appointment is silently ended");
+    assert_eq!(
+        active[0].current_eligibility,
+        eligibility::ReasonCode::MissingLivingEvidence
+    );
+
+    drop(client);
+    target.cleanup();
+}
+
+#[test]
 fn nominator_cannot_approve_their_own_nomination() {
     let Some(target) = prepare("appointments_self_approval") else {
         return;

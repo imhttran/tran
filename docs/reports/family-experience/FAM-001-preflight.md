@@ -99,7 +99,7 @@ Reproduced from the plan product behavior table to confirm expectations.
 | Separate guarded `GENEALOGY_DATABASE_URL` | Exists; never fall back to `DATABASE_URL` | Rust persistence layer |
 | TRAN-002 provenance and review workflow | Exists | Genealogy persistence layer |
 | Pure eligibility and appointment rules | Exists | Genealogy persistence layer |
-| Head of Family active-appointment revalidation | **Not present** — the active list trusts stored `active` status; see [Known open gaps](#known-open-gaps-on-this-baseline) | Genealogy persistence layer |
+| Head of Family active-appointment revalidation | **Present** — each active appointment is re-evaluated against current verified evidence when listed (gap 2, closed) | Genealogy persistence layer |
 | Additive document version/review/job metadata | Not present — belongs to FAM-002 | RAG persistence layer |
 | Legacy backfill/quarantine migration | Not present — belongs to FAM-002 | RAG persistence layer |
 | Profile asset ownership and visibility storage | Not present — belongs to FAM-002 | RAG persistence layer |
@@ -130,7 +130,7 @@ remediation change.
 | # | Gap | Evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Cross-issuer account reassignment | `migrations/006_identity.sql` declares `subject TEXT NOT NULL UNIQUE`; `src/identity_store_pg.rs` provisions with `ON CONFLICT (subject) DO UPDATE SET issuer = EXCLUDED.issuer`. A second issuer presenting the same subject can take over the existing account and inherit its roles and corpus grants. | OPEN |
-| 2 | Head of Family living-status revalidation | `src/genealogy/appointments.rs` `list_active_appointments` filters on `a.status = 'active'` only. It does not re-check living, male, first-born, branch, or verified-evidence status, so a candidate who later becomes deceased, disputed, or unverified is still presented as the active Head of Family. | OPEN |
+| 2 | Head of Family living-status revalidation | `src/genealogy/appointments.rs` `list_active_appointments` filters on `a.status = 'active'` only. It does not re-check living, male, first-born, branch, or verified-evidence status, so a candidate who later becomes deceased, disputed, or unverified is still presented as the active Head of Family. | CLOSED — `list_active_appointments` now re-runs the eligibility decision for each active appointment; an ineligible holder is returned as `needs_review` with its reason code and is never presented as the verified head. |
 | 3 | Last active administrator | Guarded by PR #14: `ensure_not_last_admin` takes a `pg_advisory_xact_lock`, excludes deactivated users, and runs for both deactivation and admin revocation; `tests/identity_last_admin.rs` covers it. | CLOSED (PR #14) |
 | 4 | Legacy approval endpoint | Removed by PR #15. | CLOSED (PR #15) |
 
