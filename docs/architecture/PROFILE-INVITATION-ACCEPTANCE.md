@@ -8,35 +8,35 @@ real name, address, token, hash, or credential appears in this document.
 
 ## Implemented surfaces
 
-| Surface | Path |
-| --- | --- |
-| Family-admin authority rule and denial cases | `src/onboarding/family_admin.rs` |
-| Contact draft, preparation, send, resend, revoke, status | `src/onboarding/profile_invitation.rs` |
-| Invitation welcome and activation | `src/onboarding/activation.rs` |
-| Delivery adapter contract and per-invitation receipt | `src/onboarding/delivery.rs` |
-| Draft contact table (additive) | `genealogy/migrations/0033_onboarding_invitation_contact_draft.sql` |
-| Per-invitation delivery receipt columns (additive) | `genealogy/migrations/0034_onboarding_invitation_delivery.sql` |
-| Routes and safe error mapping | `src/api.rs` |
-| Self-service accept operation | `src/identity.rs` (`Operation::InvitationAccept`) |
-| Profile invitation panel | `web/src/components/ProfileInvitationPanel.tsx` |
-| Profile-page wiring | `web/src/components/FamilyProfileView.tsx` |
-| API client types and functions | `web/src/lib/api.ts` |
-| Activation and welcome screen | `web/src/app/activate/[token]/page.tsx` |
-| Post-sign-in return path | `web/src/app/api/auth/login/route.ts`, `web/src/app/api/auth/callback/route.ts`, `web/src/lib/oidc.ts`, `web/src/lib/proxy-cookies.ts` |
+| Surface                                                  | Path                                                                                                                                   |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Family-admin authority rule and denial cases             | `src/onboarding/family_admin.rs`                                                                                                       |
+| Contact draft, preparation, send, resend, revoke, status | `src/onboarding/profile_invitation.rs`                                                                                                 |
+| Invitation welcome and activation                        | `src/onboarding/activation.rs`                                                                                                         |
+| Delivery adapter contract and per-invitation receipt     | `src/onboarding/delivery.rs`                                                                                                           |
+| Draft contact table (additive)                           | `genealogy/migrations/0033_onboarding_invitation_contact_draft.sql`                                                                    |
+| Per-invitation delivery receipt columns (additive)       | `genealogy/migrations/0034_onboarding_invitation_delivery.sql`                                                                         |
+| Routes and safe error mapping                            | `src/api.rs`                                                                                                                           |
+| Self-service accept operation                            | `src/identity.rs` (`Operation::InvitationAccept`)                                                                                      |
+| Profile invitation panel                                 | `web/src/components/ProfileInvitationPanel.tsx`                                                                                        |
+| Profile-page wiring                                      | `web/src/components/FamilyProfileView.tsx`                                                                                             |
+| API client types and functions                           | `web/src/lib/api.ts`                                                                                                                   |
+| Activation and welcome screen                            | `web/src/app/activate/[token]/page.tsx`                                                                                                |
+| Post-sign-in return path                                 | `web/src/app/api/auth/login/route.ts`, `web/src/app/api/auth/callback/route.ts`, `web/src/lib/oidc.ts`, `web/src/lib/proxy-cookies.ts` |
 
 ### Routes
 
-| Method | Route | Authorization |
-| --- | --- | --- |
-| `GET` | `/api/family/persons/{person_key}/invitation` | `Operation::OnboardingInvite` plus the family-admin rule |
-| `PUT`/`POST` | `/api/family/persons/{person_key}/invitation` | same; saves a draft contact only |
-| `POST` | `/api/family/persons/{person_key}/invitation/prepare` | same; returns a review payload |
-| `POST` | `/api/family/persons/{person_key}/invitation/send` | same; explicit send only |
-| `POST` | `/api/family/persons/{person_key}/invitation/resend` | same; revokes then reissues |
-| `POST` | `/api/family/persons/{person_key}/invitation/revoke` | same; idempotent |
-| `GET` | `/api/family/persons/{person_key}/invitation/status` | same; read-only |
-| `GET` | `/api/invitations/{token}` | public; the link is the credential |
-| `POST` | `/api/invitations/{token}/accept` | any authenticated account (`Operation::InvitationAccept`) |
+| Method       | Route                                                 | Authorization                                             |
+| ------------ | ----------------------------------------------------- | --------------------------------------------------------- |
+| `GET`        | `/api/family/persons/{person_key}/invitation`         | `Operation::OnboardingInvite` plus the family-admin rule  |
+| `PUT`/`POST` | `/api/family/persons/{person_key}/invitation`         | same; saves a draft contact only                          |
+| `POST`       | `/api/family/persons/{person_key}/invitation/prepare` | same; returns a review payload                            |
+| `POST`       | `/api/family/persons/{person_key}/invitation/send`    | same; explicit send only                                  |
+| `POST`       | `/api/family/persons/{person_key}/invitation/resend`  | same; revokes then reissues                               |
+| `POST`       | `/api/family/persons/{person_key}/invitation/revoke`  | same; idempotent                                          |
+| `GET`        | `/api/family/persons/{person_key}/invitation/status`  | same; read-only                                           |
+| `GET`        | `/api/invitations/{token}`                            | public; the link is the credential                        |
+| `POST`       | `/api/invitations/{token}/accept`                     | any authenticated account (`Operation::InvitationAccept`) |
 
 ## Family-admin authority rule
 
@@ -96,7 +96,8 @@ path where an unauthorized caller can read the draft contact or trigger a send.
 ## Activation and identity-provider behavior
 
 - `GET /api/invitations/{token}` returns the intended person's display name and
-  the invitation state. It is read-only: it never accepts, expires, or links.
+  the invitation state. It is read-only: it never accepts, expires, or links. A
+  fixed read-limit bucket bounds this unauthenticated lookup.
 - The welcome screen (`/activate/[token]`) shows the person, the Member access
   level, and two paths: continue through the existing OIDC provider, or
   "This is not me".
@@ -123,36 +124,36 @@ Commands run from the repository root with disposable test databases
 (`DATABASE_URL` and `GENEALOGY_DATABASE_URL` pointed at `*_test` copies, and
 `REQUIRE_TEST_DATABASE=1`).
 
-| Command | Result |
-| --- | --- |
-| `cargo build --locked` | PASS |
-| `cargo test --locked` | PASS |
-| `cargo fmt --check` | PASS |
-| `cargo clippy --locked --all-targets -- -D warnings` | PASS |
-| `cargo test --locked --test profile_invitation` | PASS — 21 tests |
-| `cargo test --locked --test onboarding_activation` | PASS — 7 tests |
-| `cargo test --locked --test onboarding_bulk` | PASS — 1 test |
-| `sop validate` | PASS — BUILD, UNIT_TEST, LINT (fmt, clippy) |
-| `make web-check` | PASS — TypeScript and production build |
-| `API_PORT=8081 PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts" ./scripts/test-db.sh exec -- ./scripts/web-e2e.sh` | PASS — 14 tests |
-| Full `make web-e2e` (entire suite) | NOT RUN — only the two focused specs were run |
-| A real mail provider delivery | NOT RUN — only the synthetic adapter is implemented |
+| Command                                                                                                                                   | Result                                              |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `cargo build --locked`                                                                                                                    | PASS                                                |
+| `cargo test --locked`                                                                                                                     | PASS                                                |
+| `cargo fmt --check`                                                                                                                       | PASS                                                |
+| `cargo clippy --locked --all-targets -- -D warnings`                                                                                      | PASS                                                |
+| `cargo test --locked --test profile_invitation`                                                                                           | PASS — 21 tests                                     |
+| `cargo test --locked --test onboarding_activation`                                                                                        | PASS — 7 tests                                      |
+| `cargo test --locked --test onboarding_bulk`                                                                                              | PASS — 1 test                                       |
+| `sop validate`                                                                                                                            | PASS — BUILD, UNIT_TEST, LINT (fmt, clippy)         |
+| `make web-check`                                                                                                                          | PASS — TypeScript and production build              |
+| `API_PORT=8081 PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts" ./scripts/test-db.sh exec -- ./scripts/web-e2e.sh` | PASS — 14 tests                                     |
+| Full `make web-e2e` (entire suite)                                                                                                        | NOT RUN — only the two focused specs were run       |
+| A real mail provider delivery                                                                                                             | NOT RUN — only the synthetic adapter is implemented |
 
 ## Acceptance criteria coverage
 
-| Criterion | Evidence |
-| --- | --- |
-| Authority rule allows system admin, branch family head, and self; refuses every other case | `src/onboarding/family_admin.rs` unit tests; `tests/profile_invitation.rs` (`wrong_branch_family_head_is_denied`, `unlinked_callers_are_denied`, `revoked_callers_are_denied`) |
-| A draft contact is saved without sending | `tests/profile_invitation.rs` (`missing_contact_saves_as_draft_without_sending`, `saved_draft_does_not_send`) |
-| One explicit send creates exactly one invitation and reports the real receipt | `tests/profile_invitation.rs` (`explicit_send_reports_delivery_and_never_duplicates`) |
-| A delivery failure does not duplicate or claim success | `tests/profile_invitation.rs` (`adapter_failure_stays_recoverable_then_retry_succeeds`, `queued_delivery_is_not_reported_as_delivered`) |
-| Resend and revoke use the same authority | `tests/profile_invitation.rs` (`resend_revokes_previous_and_issues_one_link`, `revoke_reports_state_and_is_idempotent`, `wrong_branch_family_head_cannot_send_or_revoke`) |
-| Status distinguishes pending, sent, queued, failed, expired, accepted, unconfigured | `src/onboarding/profile_invitation.rs` (`ProfileDeliveryState`), `tests/profile_invitation.rs`, `web/e2e/profile-invitation.spec.ts` |
-| No token or full address in a response, error, log, or rendered page | `tests/profile_invitation.rs` and `tests/onboarding_activation.rs` assertions; `web/e2e/profile-invitation.spec.ts` and `web/e2e/activation.spec.ts` token/address assertions |
-| A valid invitation leads to the identity provider and a confirmation step | `web/e2e/activation.spec.ts` (`an anonymous visitor continues through the identity provider`, `a signed-in invitee accepts and is linked to Member access`) |
-| Expired, revoked, accepted, and wrong-person render clear next steps | `web/e2e/activation.spec.ts` |
-| Activation never auto-links or grants elevated access | `src/onboarding/activation.rs`; `tests/onboarding_activation.rs` (`an_account_linked_to_another_person_is_refused`, `a_person_linked_to_another_account_is_never_reclaimed`) |
-| An interrupted activation can be resumed without a duplicate account | `tests/onboarding_activation.rs` (`a_valid_invitation_previews_and_activates_once` — repeat accept is an idempotent success with one link); account creation is never performed by activation |
+| Criterion                                                                                  | Evidence                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Authority rule allows system admin, branch family head, and self; refuses every other case | `src/onboarding/family_admin.rs` unit tests; `tests/profile_invitation.rs` (`wrong_branch_family_head_is_denied`, `unlinked_callers_are_denied`, `revoked_callers_are_denied`)                |
+| A draft contact is saved without sending                                                   | `tests/profile_invitation.rs` (`missing_contact_saves_as_draft_without_sending`, `saved_draft_does_not_send`)                                                                                 |
+| One explicit send creates exactly one invitation and reports the real receipt              | `tests/profile_invitation.rs` (`explicit_send_reports_delivery_and_never_duplicates`)                                                                                                         |
+| A delivery failure does not duplicate or claim success                                     | `tests/profile_invitation.rs` (`adapter_failure_stays_recoverable_then_retry_succeeds`, `queued_delivery_is_not_reported_as_delivered`)                                                       |
+| Resend and revoke use the same authority                                                   | `tests/profile_invitation.rs` (`resend_revokes_previous_and_issues_one_link`, `revoke_reports_state_and_is_idempotent`, `wrong_branch_family_head_cannot_send_or_revoke`)                     |
+| Status distinguishes pending, sent, queued, failed, expired, accepted, unconfigured        | `src/onboarding/profile_invitation.rs` (`ProfileDeliveryState`), `tests/profile_invitation.rs`, `web/e2e/profile-invitation.spec.ts`                                                          |
+| No token or full address in a response, error, log, or rendered page                       | `tests/profile_invitation.rs` and `tests/onboarding_activation.rs` assertions; `web/e2e/profile-invitation.spec.ts` and `web/e2e/activation.spec.ts` token/address assertions                 |
+| A valid invitation leads to the identity provider and a confirmation step                  | `web/e2e/activation.spec.ts` (`an anonymous visitor continues through the identity provider`, `a signed-in invitee accepts and is linked to Member access`)                                   |
+| Expired, revoked, accepted, and wrong-person render clear next steps                       | `web/e2e/activation.spec.ts`                                                                                                                                                                  |
+| Activation never auto-links or grants elevated access                                      | `src/onboarding/activation.rs`; `tests/onboarding_activation.rs` (`an_account_linked_to_another_person_is_refused`, `a_person_linked_to_another_account_is_never_reclaimed`)                  |
+| An interrupted activation can be resumed without a duplicate account                       | `tests/onboarding_activation.rs` (`a_valid_invitation_previews_and_activates_once` — repeat accept is an idempotent success with one link); account creation is never performed by activation |
 
 ## Known limitations
 

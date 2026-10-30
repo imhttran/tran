@@ -4152,8 +4152,19 @@ fn activation_error(err: onboarding::ActivationError) -> Response {
 
 /// Reads the welcome view of one invitation link. Public: the link is the
 /// credential, and the response carries only the intended person and state.
+/// A fixed-bucket read limit bounds the unauthenticated database work.
 #[allow(clippy::result_large_err)]
 async fn preview_invitation(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    if !state
+        .read_limiter
+        .check("invitation-preview", "invitation_preview")
+    {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many invitation lookups",
+        );
+    }
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
