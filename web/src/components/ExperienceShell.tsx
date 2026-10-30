@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { AccountMenu } from "@/components/AccountMenu";
+import { decisionsNeedingAction } from "@/lib/api";
+import type { ProfileResponse } from "@/lib/api";
 import { canUpload } from "@/lib/experience-contract";
 import type { Role, SessionResult } from "@/lib/experience-contract";
 import {
@@ -254,6 +256,46 @@ export function ExperienceShell({ children }: Props) {
     };
   }, []);
 
+  // Review decisions waiting on this member. Re-read on navigation so the
+  // count clears after they revise on My profile. This is a hint only: it uses
+  // a plain fetch so its own 401 or error never changes the session state, and
+  // any failure just hides the badge.
+  const signedIn = roleOf(session) !== null;
+  const [actionCount, setActionCount] = useState(0);
+  useEffect(() => {
+    if (!signedIn) {
+      setActionCount(0);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/profile", { cache: "no-store" })
+      .then(async (raw) => {
+        if (!raw.ok) throw new Error(String(raw.status));
+        const response = (await raw.json()) as ProfileResponse;
+        if (!cancelled) {
+          setActionCount(
+            response.profile
+              ? decisionsNeedingAction(response.profile).length
+              : 0,
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setActionCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn, pathname]);
+  const actionLabel = `${actionCount} profile review decision${actionCount === 1 ? " needs" : "s need"} your attention`;
+  const actionBadge =
+    actionCount > 0 ? (
+      <span className="nav-badge" title={actionLabel} data-testid="nav-action-badge">
+        <span aria-hidden="true">{actionCount}</span>
+        <span className="visually-hidden">{actionLabel}</span>
+      </span>
+    ) : null;
+
   // Close open menus after navigation.
   useEffect(() => {
     setMoreOpen(false);
@@ -365,6 +407,7 @@ export function ExperienceShell({ children }: Props) {
       >
         <NavIcon name={item.icon} />
         <span>{item.label}</span>
+        {item.href === "/profile" ? actionBadge : null}
       </Link>
     );
   }
@@ -393,7 +436,10 @@ export function ExperienceShell({ children }: Props) {
                 aria-expanded={moreOpen}
                 aria-controls="more-menu"
                 aria-haspopup="true"
-                aria-label={currentInMore ? "More, current page" : "More"}
+                aria-label={
+                  (currentInMore ? "More, current page" : "More") +
+                  (actionCount > 0 ? `, ${actionLabel}` : "")
+                }
                 data-current={currentInMore ? "true" : undefined}
                 onClick={() => {
                   setMobileOpen(false);
@@ -405,6 +451,7 @@ export function ExperienceShell({ children }: Props) {
                 {currentInMore ? (
                   <span className="current-dot" aria-hidden="true" />
                 ) : null}
+                {actionBadge}
                 <span className="more-caret" aria-hidden="true">
                   ▾
                 </span>
@@ -447,6 +494,7 @@ export function ExperienceShell({ children }: Props) {
               data-testid="nav-toggle"
             >
               {mobileOpen ? "Close" : "Menu"}
+              {mobileOpen ? null : actionBadge}
             </button>
             {mobileOpen ? (
               <nav
