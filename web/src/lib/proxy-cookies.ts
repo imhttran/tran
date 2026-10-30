@@ -20,9 +20,6 @@ export const CSRF_HEADER = "x-csrf-token";
 export const OIDC_STATE_COOKIE = "rag_oidc_state";
 export const OIDC_NONCE_COOKIE = "rag_oidc_nonce";
 export const OIDC_VERIFIER_COOKIE = "rag_oidc_verifier";
-// A shared invitation waiting for sign-in: {token, name}, HttpOnly and scoped
-// to /api/auth so only the sign-in callback ever reads it.
-export const INVITE_COOKIE = "rag_invite";
 
 // Hard ceiling for a browser session. The ID token's remaining lifetime always
 // wins when it is shorter; a cookie is never allowed to outlive the token.
