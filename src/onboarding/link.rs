@@ -95,14 +95,30 @@ pub fn link_reviewed(
     decision: LinkDecision,
     reviewer: &str,
 ) -> Result<Option<LinkRecord>, LinkError> {
+    let mut transaction = client
+        .transaction()
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    let record = link_reviewed_in(&mut transaction, person_id, account, decision, reviewer)?;
+    transaction
+        .commit()
+        .map_err(|err| LinkError::Database(err.to_string()))?;
+    Ok(record)
+}
+
+/// [`link_reviewed`] inside a caller-owned transaction, so another change (an
+/// invitation claim decision) commits or rolls back together with the link and
+/// its audit row. The caller commits; an error leaves nothing to commit.
+pub fn link_reviewed_in(
+    transaction: &mut postgres::Transaction<'_>,
+    person_id: i64,
+    account: &IdentityAccount,
+    decision: LinkDecision,
+    reviewer: &str,
+) -> Result<Option<LinkRecord>, LinkError> {
     let reviewer = reviewer.trim();
     if reviewer.is_empty() {
         return Err(LinkError::InvalidReviewer);
     }
-
-    let mut transaction = client
-        .transaction()
-        .map_err(|err| LinkError::Database(err.to_string()))?;
 
     let locked_person = transaction
         .query_opt(
@@ -129,9 +145,6 @@ pub fn link_reviewed(
                     ],
                 )
                 .map_err(|err| LinkError::Database(err.to_string()))?;
-            transaction
-                .commit()
-                .map_err(|err| LinkError::Database(err.to_string()))?;
             Ok(None)
         }
         LinkDecision::Approve => {
@@ -154,8 +167,8 @@ pub fn link_reviewed(
                 )
                 .map_err(|err| LinkError::Database(err.to_string()))?;
             let Some(row) = row else {
-                // The transaction is dropped without a commit, so neither the
-                // audit row nor a partial link survives.
+                // The caller drops the transaction without a commit, so neither
+                // an audit row nor a partial link survives.
                 return Err(LinkError::AlreadyLinked);
             };
             transaction
@@ -171,11 +184,7 @@ pub fn link_reviewed(
                     ],
                 )
                 .map_err(|err| LinkError::Database(err.to_string()))?;
-            let record = row_to_link(row);
-            transaction
-                .commit()
-                .map_err(|err| LinkError::Database(err.to_string()))?;
-            Ok(Some(record))
+            Ok(Some(row_to_link(row)))
         }
     }
 }

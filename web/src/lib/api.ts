@@ -1084,6 +1084,41 @@ export function linkMember(
   });
 }
 
+export type InvitationClaim = {
+  invitation_id: number;
+  person_key: string;
+  person_label: string;
+  account_id: number;
+  claimed_name: string;
+  claimed_at: string;
+};
+
+/** Issues a fresh shareable invitation link; any earlier one stops working. */
+export function createInvitationLink(
+  personKey: string,
+): Promise<{ ok: true; invitation_id: number; url: string; expires_in_secs: number }> {
+  return postJson("/api/admin/family-members/invitation-links", {
+    person_key: personKey,
+  });
+}
+
+/**
+ * Background read of the claims queue. A plain fetch, so a failure (including
+ * a 401) only empties this list and never changes the page's session state.
+ */
+export async function listInvitationClaims(): Promise<InvitationClaim[]> {
+  const response = await fetch("/api/admin/family-members/claims", { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return ((await response.json()) as { claims: InvitationClaim[] }).claims;
+}
+
+export function decideInvitationClaim(
+  invitationId: number,
+  decision: "approve" | "reject",
+): Promise<{ ok: true; linked: boolean }> {
+  return postJson(`/api/admin/family-members/claims/${invitationId}`, { decision });
+}
+
 export function revokeMemberLink(linkId: number): Promise<{ ok: true }> {
   return postJson(`/api/admin/family-members/links/${linkId}/revoke`, {});
 }

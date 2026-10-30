@@ -165,6 +165,51 @@ impl PgIdentityClient {
         Ok(user_id)
     }
 
+    /// Records a self-registered account the first time it redeems an
+    /// invitation link. The row is inserted only when `(issuer, subject)` is
+    /// absent and carries no role or corpus grant. Unlike [`Self::provision_user`]
+    /// it never reactivates an existing row, so a deactivated account stays
+    /// deactivated.
+    pub fn register_if_absent(
+        &mut self,
+        subject: &str,
+        issuer: &str,
+    ) -> Result<(), IdentityStoreError> {
+        let mut guard = self.client.borrow_mut();
+        let mut tx = guard
+            .transaction()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        let inserted = tx
+            .execute(
+                "INSERT INTO users (subject, issuer) VALUES ($1, $2) \
+                 ON CONFLICT (issuer, subject) DO NOTHING",
+                &[&subject, &issuer],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        if inserted == 1 {
+            audit(&mut tx, subject, "user.self_register", subject, issuer)?;
+        }
+        tx.commit()
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(())
+    }
+
+    /// Returns the `(subject, issuer)` of an active account by its opaque id.
+    pub fn active_identity(
+        &mut self,
+        user_id: i64,
+    ) -> Result<Option<(String, String)>, IdentityStoreError> {
+        let row = self
+            .client
+            .borrow_mut()
+            .query_opt(
+                "SELECT subject, issuer FROM users WHERE id = $1 AND deactivated_at IS NULL",
+                &[&user_id],
+            )
+            .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+        Ok(row.map(|row| (row.get(0), row.get(1))))
+    }
+
     /// Deactivates an account without deleting its audit history.
     ///
     /// The user is resolved by immutable (issuer, subject), so deactivating one
