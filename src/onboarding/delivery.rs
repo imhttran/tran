@@ -306,7 +306,7 @@ fn contact_for(client: &mut Client, person_id: i64) -> Result<Option<String>, De
 }
 
 /// Builds the activation link. The token appears only in the message body.
-fn activation_link(base: &str, token: &str) -> String {
+pub(crate) fn activation_link(base: &str, token: &str) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}token={token}")
 }
@@ -592,6 +592,21 @@ fn record_delivery(
             ],
         )
         .map_err(|err| DeliveryError::Database(err.to_string()))?;
+    // Keep the invitation row's own delivery receipt in step with the batch item,
+    // so a per-person status read reports the same attempt for both flows.
+    if let Some(invitation_id) = invitation_id {
+        client
+            .execute(
+                "UPDATE onboarding_invitation
+                    SET delivery_state = $2,
+                        delivery_provider = $3,
+                        delivery_attempts = delivery_attempts + 1,
+                        last_delivery_error = CASE WHEN $2 = 'failed' THEN $3 ELSE NULL END
+                  WHERE invitation_id = $1",
+                &[&invitation_id, &status.as_str(), &provider],
+            )
+            .map_err(|err| DeliveryError::Database(err.to_string()))?;
+    }
     let event = match status {
         DeliveryStatus::Queued => "invitation_queued",
         DeliveryStatus::Sent => "invitation_sent",

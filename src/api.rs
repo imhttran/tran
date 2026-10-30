@@ -49,6 +49,7 @@ use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
 use crate::identity_store::{IdentityStore, IdentityStoreError};
 use crate::oidc::{validate_token, AuthConfig, AuthError, Jwks, JwksCache};
 use crate::ollama::{HttpTransport, OllamaClient};
+use crate::onboarding::delivery::DeliveryError;
 use crate::onboarding::family_profile::{
     AdminArchivePhotograph, ArchivePhotographDownload, ArchivePhotographError,
     FamilyArchivePhotograph, FamilyGalleryPhotograph,
@@ -196,6 +197,8 @@ impl AppState {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/health", get(health))
+            .route("/api/invitations/{token}", get(preview_invitation))
+            .route("/api/invitations/{token}/accept", post(accept_invitation))
             .route("/api/internal/sessions", post(create_internal_session))
             .route(
                 "/api/internal/sessions/{id}/renew",
@@ -287,6 +290,32 @@ impl AppState {
             .route(
                 "/api/family/persons/{person_key}/history",
                 get(family_history),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation",
+                get(person_invitation_state)
+                    .put(save_person_invitation_contact)
+                    .post(save_person_invitation_contact),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/prepare",
+                post(prepare_person_invitation),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/send",
+                post(send_person_invitation),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/resend",
+                post(resend_person_invitation),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/revoke",
+                post(revoke_person_invitation),
+            )
+            .route(
+                "/api/family/persons/{person_key}/invitation/status",
+                get(person_invitation_status),
             )
             .route(
                 "/api/family/persons/{person_key}/media/{media_id}",
@@ -3640,6 +3669,569 @@ fn family_history_json(passages: &[narrative::FamilyPassage]) -> Vec<serde_json:
             })
         })
         .collect()
+}
+
+// --- family person invitation draft and preparation (PIR-003) -----------
+
+#[derive(Deserialize)]
+struct InvitationDraftRequest {
+    email: String,
+}
+
+/// Maps a profile-invitation failure to a safe status and body.
+///
+/// No branch here logs or returns an address. Refusal codes keep their stable
+/// snake_case name, so the UI can offer a plain-language message.
+fn profile_invitation_error(err: onboarding::ProfileInvitationError) -> Response {
+    eprintln!("api: profile invitation refused: {err}");
+    match err {
+        onboarding::ProfileInvitationError::Refused(code) => error(
+            StatusCode::FORBIDDEN,
+            code,
+            "the authenticated account may not invite this person",
+        ),
+        onboarding::ProfileInvitationError::UnknownPerson => {
+            error(StatusCode::NOT_FOUND, "unknown_person", "no such person")
+        }
+        onboarding::ProfileInvitationError::InvalidAddress => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_contact",
+            "the contact address is not valid",
+        ),
+        onboarding::ProfileInvitationError::MissingContact => error(
+            StatusCode::CONFLICT,
+            "missing_contact",
+            "save a draft contact before preparing the invitation",
+        ),
+        onboarding::ProfileInvitationError::AlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "already_linked",
+            "the person is already linked to an account",
+        ),
+        onboarding::ProfileInvitationError::NotEligible => error(
+            StatusCode::CONFLICT,
+            "not_invitable",
+            "the person is not eligible for an invitation",
+        ),
+        onboarding::ProfileInvitationError::NoInvitation => error(
+            StatusCode::NOT_FOUND,
+            "no_invitation",
+            "no invitation exists for this person",
+        ),
+        onboarding::ProfileInvitationError::InvitationNotPending(status) => error(
+            StatusCode::CONFLICT,
+            status,
+            "the invitation is no longer pending",
+        ),
+        onboarding::ProfileInvitationError::Invitation(_)
+        | onboarding::ProfileInvitationError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invitation_unavailable",
+            "the invitation store is unavailable",
+        ),
+        onboarding::ProfileInvitationError::Delivery(err) => match err {
+            DeliveryError::NotConfigured => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "delivery_not_configured",
+                "no mail provider is configured; nothing was sent",
+            ),
+            DeliveryError::Provider(_) => error(
+                StatusCode::BAD_GATEWAY,
+                "delivery_failed",
+                "the mail provider did not accept the message; nothing was sent",
+            ),
+            _ => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invitation_unavailable",
+                "the invitation delivery is unavailable",
+            ),
+        },
+    }
+}
+
+fn invitation_state_json(state: &onboarding::InvitationState) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": state.person_key,
+        "authorization": state.authorization,
+        "eligibility": state.eligibility,
+        "invitation": {
+            "pending": state.invitation.pending,
+            "invitation_id": state.invitation.invitation_id,
+            "expires_at": state.invitation.expires_at,
+            "delivery_state": state.invitation.delivery_state,
+        },
+        "linked_account": state.linked_account,
+        "proposed_username": state.proposed_username,
+        "masked_contact": state.masked_contact,
+        "blockers": state.blockers.iter().map(|blocker| serde_json::json!({
+            "code": blocker.code,
+            "message": blocker.message,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn prepare_review_json(review: &onboarding::PrepareReview) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": review.person_key,
+        "masked_contact": review.masked_contact,
+        "proposed_username": review.proposed_username,
+        "access": review.access,
+        "invitation_id": review.invitation_id,
+        "invitation_reused": review.invitation_reused,
+        "invitation_created": review.invitation_created,
+    })
+}
+
+/// Reads the draft/prepare state for one person. Reads only.
+#[allow(clippy::result_large_err)]
+async fn person_invitation_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_invitation_state(&mut genealogy, &identity, &account, &person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(state_view)) => Json(invitation_state_json(&state_view)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation state task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation state read failed",
+            )
+        }
+    }
+}
+
+/// Saves a draft contact. It never sends and never creates an invitation.
+#[allow(clippy::result_large_err)]
+async fn save_person_invitation_contact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+    Json(request): Json<InvitationDraftRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let email = request.email;
+    let task_person_key = person_key.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::save_contact_draft(
+            &mut genealogy,
+            &identity,
+            &account,
+            &task_person_key,
+            &email,
+        )
+        .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(masked)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": person_key,
+            "masked_contact": masked,
+            "sent": false,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation draft task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the contact draft failed",
+            )
+        }
+    }
+}
+
+/// Prepares the review payload. It reuses a pending invitation and never sends.
+#[allow(clippy::result_large_err)]
+async fn prepare_person_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::prepare_invitation(&mut genealogy, &identity, &account, &person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(review)) => Json(prepare_review_json(&review)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation prepare task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation preparation failed",
+            )
+        }
+    }
+}
+
+fn send_outcome_json(outcome: &onboarding::SendInvitationOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": outcome.person_key,
+        "invitation_id": outcome.invitation_id,
+        "delivery_state": outcome.delivery_state.as_str(),
+        "provider": outcome.provider,
+        "delivered": outcome.delivered,
+        "masked_contact": outcome.masked_contact,
+    })
+}
+
+fn revoke_outcome_json(outcome: &onboarding::RevokeInvitationOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": outcome.person_key,
+        "invitation_id": outcome.invitation_id,
+        "delivery_state": outcome.delivery_state.as_str(),
+        "revoked": outcome.revoked,
+        "reason": outcome.reason,
+    })
+}
+
+fn invitation_status_json(status: &onboarding::InvitationStatusView) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "person_key": status.person_key,
+        "invitation_id": status.invitation_id,
+        "invitation_status": status.invitation_status,
+        "delivery_state": status.delivery_state.as_str(),
+        "delivery_provider": status.delivery_provider,
+        "last_delivery_error": status.last_delivery_error,
+        "delivery_attempts": status.delivery_attempts,
+        "expires_at": status.expires_at,
+        "accepted_at": status.accepted_at,
+    })
+}
+
+/// Sends or resends one profile invitation through the configured adapter.
+///
+/// The response reports the adapter's actual receipt. A delivery failure never
+/// reports success, and a refused caller learns nothing about the person.
+#[allow(clippy::result_large_err)]
+async fn run_profile_delivery(
+    state: AppState,
+    headers: HeaderMap,
+    person_key: String,
+    resend: bool,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let adapter = config.mail_adapter();
+    if !adapter.is_configured() {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "delivery_not_configured",
+            "no mail provider is configured; nothing was sent",
+        );
+    }
+    let activation = config.onboarding_activation_url.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        let outcome = if resend {
+            onboarding::resend_invitation(
+                &mut genealogy,
+                &identity,
+                &account,
+                &person_key,
+                adapter.as_ref(),
+                &activation,
+            )
+        } else {
+            onboarding::send_invitation(
+                &mut genealogy,
+                &identity,
+                &account,
+                &person_key,
+                adapter.as_ref(),
+                &activation,
+            )
+        }
+        .map_err(profile_invitation_error)?;
+        Ok::<_, Response>(outcome)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcome)) => Json(send_outcome_json(&outcome)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation send task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation send failed",
+            )
+        }
+    }
+}
+
+/// Sends one reviewed profile invitation. It never sends implicitly.
+#[allow(clippy::result_large_err)]
+async fn send_person_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    run_profile_delivery(state, headers, person_key, false).await
+}
+
+/// Resends one profile invitation after revoking the previous link.
+#[allow(clippy::result_large_err)]
+async fn resend_person_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    run_profile_delivery(state, headers, person_key, true).await
+}
+
+/// Revokes the live pending invitation for one person.
+#[allow(clippy::result_large_err)]
+async fn revoke_person_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let task_person_key = person_key.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::revoke_invitation(&mut genealogy, &identity, &account, &task_person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcome)) => Json(revoke_outcome_json(&outcome)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation revoke task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation revoke failed",
+            )
+        }
+    }
+}
+
+/// Reads the invitation and delivery status. It never returns a token or an
+/// address.
+#[allow(clippy::result_large_err)]
+async fn person_invitation_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(person_key): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::read_invitation_status(&mut genealogy, &identity, &account, &person_key)
+            .map_err(profile_invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(status)) => Json(invitation_status_json(&status)).into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation status task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation status read failed",
+            )
+        }
+    }
+}
+
+/// Maps an activation failure to a safe status and body.
+///
+/// No branch returns a token, a person name, or an address. The codes are stable
+/// so the welcome screen can offer a clear next step.
+fn activation_error(err: onboarding::ActivationError) -> Response {
+    eprintln!("api: invitation activation refused: {err}");
+    match err {
+        onboarding::ActivationError::InvalidToken | onboarding::ActivationError::UnknownPerson => {
+            error(
+                StatusCode::NOT_FOUND,
+                "invalid_invitation",
+                "this invitation link is not valid",
+            )
+        }
+        onboarding::ActivationError::Expired => error(
+            StatusCode::GONE,
+            "invitation_expired",
+            "this invitation has expired",
+        ),
+        onboarding::ActivationError::Revoked => error(
+            StatusCode::GONE,
+            "invitation_revoked",
+            "this invitation was revoked",
+        ),
+        onboarding::ActivationError::AlreadyAccepted => error(
+            StatusCode::CONFLICT,
+            "invitation_accepted",
+            "this invitation was already used",
+        ),
+        onboarding::ActivationError::PersonAlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "person_already_linked",
+            "this person already has an account",
+        ),
+        onboarding::ActivationError::AccountLinkedElsewhere => error(
+            StatusCode::CONFLICT,
+            "wrong_person",
+            "your account is linked to a different person",
+        ),
+        onboarding::ActivationError::Link(_)
+        | onboarding::ActivationError::Invitation(_)
+        | onboarding::ActivationError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "activation_unavailable",
+            "the invitation could not be activated",
+        ),
+    }
+}
+
+/// Reads the welcome view of one invitation link. Public: the link is the
+/// credential, and the response carries only the intended person and state.
+/// A fixed-bucket read limit bounds the unauthenticated database work.
+#[allow(clippy::result_large_err)]
+async fn preview_invitation(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    if !state
+        .read_limiter
+        .check("invitation-preview", "invitation_preview")
+    {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many invitation lookups",
+        );
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::preview_invitation(&mut genealogy, &token).map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": preview.person_key,
+            "display_name": preview.display_name,
+            "state": preview.state.as_str(),
+            "person_linked": preview.person_linked,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "activation_failed",
+                "the invitation could not be read",
+            )
+        }
+    }
+}
+
+/// Accepts one invitation for the signed-in account. The token and the reviewed
+/// link decide; no role is granted and no existing link is replaced.
+#[allow(clippy::result_large_err)]
+async fn accept_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::InvitationAccept) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::accept_invitation(&mut genealogy, &token, &account).map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcome)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": outcome.person_key,
+            "display_name": outcome.display_name,
+            "state": outcome.state.as_str(),
+            "already_linked": outcome.already_linked,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation activation task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "activation_failed",
+                "the invitation could not be activated",
+            )
+        }
+    }
 }
 
 /// Maps a family profile failure without revealing restricted content.

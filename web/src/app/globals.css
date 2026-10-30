@@ -266,6 +266,7 @@ label {
 
 input[type="file"],
 input[type="text"],
+input[type="email"],
 input[type="search"],
 select,
 textarea {
@@ -279,6 +280,7 @@ textarea {
         box-shadow 150ms var(--ease);
 }
 input[type="text"],
+input[type="email"],
 input[type="search"],
 select {
     padding: 10px;
@@ -290,6 +292,7 @@ input[type="file"] {
     max-width: 100%;
 }
 input[type="text"]:focus-visible,
+input[type="email"]:focus-visible,
 input[type="search"]:focus-visible,
 input[type="file"]:focus-visible,
 select:focus-visible,
@@ -2027,6 +2030,25 @@ footer.page-footer {
     flex-direction: column;
     gap: 10px;
     min-width: 0;
+}
+.profile-invitation-contact {
+    margin-top: 16px;
+}
+.profile-invitation-contact input[type="email"] {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+}
+.profile-invitation-review {
+    margin-top: 16px;
+}
+.profile-invitation-review h3 {
+    margin: 0;
+    font-size: 1.02rem;
+}
+.profile-invitation-review ul {
+    margin: 0;
+    padding-left: 18px;
 }
 .profile-field-heading {
     display: flex;

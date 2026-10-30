@@ -13,16 +13,19 @@
 //! a one-way fingerprint.
 
 pub mod account_map;
+pub mod activation;
 pub mod batch;
 pub mod branch_review;
 pub mod candidate;
 pub mod delivery;
 pub mod dry_run;
+pub mod family_admin;
 pub mod family_profile;
 pub mod invitation;
 pub mod link;
 pub mod media;
 pub mod profile;
+pub mod profile_invitation;
 pub mod profile_restriction;
 pub mod profile_revisions;
 pub mod reservation;
@@ -30,6 +33,10 @@ pub mod review_queue;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
+pub use activation::{
+    accept_invitation, preview_invitation, ActivationError, ActivationOutcome, ActivationState,
+    InvitationPreview,
+};
 pub use batch::{
     batch_status_items, confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport,
     BatchStatusItem, ItemStatus, CHUNK_SIZE,
@@ -53,6 +60,11 @@ pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
     Page, Selector, REVIEW_NEEDED_EMPTY,
 };
+pub use family_admin::{
+    authorize_person_invitation, authorize_person_invitation_in, decide as decide_family_admin,
+    CallerAppointment, CallerLink, FamilyAdminAllow, FamilyAdminCheckError, FamilyAdminDecision,
+    FamilyAdminError, FamilyAdminInput, FamilyAdminOutcome, FamilyAdminRefusal,
+};
 pub use family_profile::{
     can_read_family_history, read_family_history, read_family_profile, FamilyHistory,
     FamilyProfile, FamilyProfileError, FamilyProfileField, FamilyProfileMedia,
@@ -68,6 +80,12 @@ pub use media::{
     MediaStorage, OwnerMedia, DOCUMENT_FIELD, DOCUMENT_MAX_BYTES, PHOTO_FIELD, PHOTO_MAX_BYTES,
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
+pub use profile_invitation::{
+    prepare_invitation, read_invitation_state, read_invitation_status, resend_invitation,
+    revoke_invitation, save_contact_draft, send_invitation, Blocker, InvitationState,
+    InvitationStateView, InvitationStatusView, PrepareReview, ProfileDeliveryState,
+    ProfileInvitationError, RevokeInvitationOutcome, SendInvitationOutcome, PREPARE_ACCESS,
+};
 pub use profile_restriction::{restrict_own_field, RestrictionError, RestrictionOutcome};
 pub use profile_revisions::{
     cancel_owned_draft, create_draft, create_owned_draft, is_allowed_profile_field, is_media_field,

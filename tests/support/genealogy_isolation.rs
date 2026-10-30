@@ -65,6 +65,8 @@ pub const GENEALOGY_MIGRATIONS: &[&str] = &[
     "genealogy/migrations/0030_lowercase_usernames.sql",
     "genealogy/migrations/0031_archive_photograph_assets.sql",
     "genealogy/migrations/0032_archive_photograph_link_provenance.sql",
+    "genealogy/migrations/0033_onboarding_invitation_contact_draft.sql",
+    "genealogy/migrations/0034_onboarding_invitation_delivery.sql",
 ];
 
 static RUN_TOKEN: AtomicU64 = AtomicU64::new(0);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   OIDC_NONCE_COOKIE,
+  OIDC_RETURN_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
   SID_COOKIE,
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest) {
     OIDC_STATE_COOKIE,
     OIDC_NONCE_COOKIE,
     OIDC_VERIFIER_COOKIE,
+    OIDC_RETURN_COOKIE,
   ]) {
     response.cookies.set({
       name,
