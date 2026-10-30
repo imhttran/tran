@@ -9,7 +9,7 @@
 use postgres::{Client, Transaction};
 use serde::Serialize;
 
-use super::eligibility::{self, EligibilityDecision};
+use super::eligibility::{self, EligibilityDecision, ReasonCode};
 use super::narrative;
 use super::query::Citation;
 use super::GenealogyError;
@@ -25,6 +25,11 @@ pub struct AppointmentRow {
     pub evidence_assertion_ids: Vec<i64>,
     pub status: String,
     pub appointed_at: String,
+    /// The holder's eligibility re-evaluated from current verified evidence.
+    /// Anything other than `Eligible` means the stored appointment is no longer
+    /// supported (for example, the holder is now recorded as deceased) and must
+    /// not be presented as a verified Head of Family. No successor is inferred.
+    pub current_eligibility: ReasonCode,
 }
 
 /// One nomination.
@@ -73,7 +78,8 @@ fn audit(
     Ok(())
 }
 
-/// Lists active appointments, including the person's display label.
+/// Lists active appointments, including the person's display label, and
+/// re-evaluates each holder's eligibility from current verified evidence.
 pub fn list_active_appointments(
     client: &mut Client,
 ) -> Result<Vec<AppointmentRow>, GenealogyError> {
@@ -88,22 +94,27 @@ pub fn list_active_appointments(
             &[],
         )
         .map_err(GenealogyError::Query)?;
-    Ok(rows
-        .iter()
+    rows.iter()
         .map(|row| {
             let evidence: String = row.get(5);
-            AppointmentRow {
+            let person_key: String = row.get(1);
+            let branch_key: String = row.get(3);
+            // A stored `active` status is not proof: living, branch, and
+            // birth-order evidence can change after approval.
+            let input = eligibility::load_input(client, &person_key, &branch_key)?;
+            Ok(AppointmentRow {
                 appointment_id: row.get(0),
-                person_key: row.get(1),
+                person_key,
                 display_name: row.get(2),
-                branch_key: row.get(3),
+                branch_key,
                 approved_by: row.get(4),
                 evidence_assertion_ids: json_ids(&evidence),
                 status: row.get(6),
                 appointed_at: row.get(7),
-            }
+                current_eligibility: eligibility::decide(&input).reason_code,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Lists pending nominations.
@@ -378,6 +389,7 @@ pub fn approve(
         evidence_assertion_ids: evidence,
         status: "active".to_string(),
         appointed_at: String::new(),
+        current_eligibility: ReasonCode::Eligible,
     })
 }
 

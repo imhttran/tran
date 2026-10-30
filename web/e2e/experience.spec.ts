@@ -232,6 +232,23 @@ test.describe("head of family", () => {
     await assertNoSensitive(page);
   });
 
+  test("an appointment that no longer qualifies is not presented as the head", async ({ page }) => {
+    await signIn(page, "viewer");
+    await stubHeadOfFamily(page, {
+      catalog: "available",
+      conclusions: [{
+        conclusion: "Head of Family appointment needs review",
+        record_id: "synthetic-later", appointment_id: "1", head_label: "Synthetic Later",
+        evidence: [], evidence_status: "needs_review", reason: "missing_living_evidence",
+      }],
+    });
+    await page.goto("/head-of-family");
+    await expect(page.getByTestId("hof-head-name")).toHaveCount(0);
+    await expect(page.getByTestId("hof-review-reason")).toContainText("missing living evidence");
+    await expect(page.getByTestId("evidence-needs_review").first()).toBeVisible();
+    await assertNoSensitive(page);
+  });
+
   test("missing evidence shows Unverified", async ({ page }) => {
     await signIn(page, "viewer");
     await stubHeadOfFamily(page, HOF_AVAILABLE);
