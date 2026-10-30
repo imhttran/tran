@@ -20,6 +20,9 @@ export const CSRF_HEADER = "x-csrf-token";
 export const OIDC_STATE_COOKIE = "rag_oidc_state";
 export const OIDC_NONCE_COOKIE = "rag_oidc_nonce";
 export const OIDC_VERIFIER_COOKIE = "rag_oidc_verifier";
+// The same-origin path to return to after sign-in (for example an invitation
+// welcome screen). Transient, HttpOnly, and validated before use.
+export const OIDC_RETURN_COOKIE = "rag_oidc_return";
 
 // Hard ceiling for a browser session. The ID token's remaining lifetime always
 // wins when it is shorter; a cookie is never allowed to outlive the token.
@@ -116,9 +119,10 @@ export function sidCookie(
   value: string,
   maxAge: number = SID_MAX_SECONDS,
 ): CookieAttributes {
-  const bounded = Number.isFinite(maxAge) && maxAge > 0
-    ? Math.min(Math.floor(maxAge), SID_MAX_SECONDS)
-    : 0;
+  const bounded =
+    Number.isFinite(maxAge) && maxAge > 0
+      ? Math.min(Math.floor(maxAge), SID_MAX_SECONDS)
+      : 0;
   return {
     name: SID_COOKIE,
     value,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   OIDC_NONCE_COOKIE,
+  OIDC_RETURN_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
   csrfCookie,
@@ -16,6 +17,7 @@ import {
   randomString,
   requestOrigin,
   safeEqual,
+  safeReturnPath,
 } from "@/lib/oidc";
 import { createStoredSession, renewalConfigured } from "@/lib/session-store";
 
@@ -26,6 +28,7 @@ function clearTransient(response: NextResponse) {
     OIDC_STATE_COOKIE,
     OIDC_NONCE_COOKIE,
     OIDC_VERIFIER_COOKIE,
+    OIDC_RETURN_COOKIE,
   ]) {
     response.cookies.set({ name, value: "", path: "/api/auth", maxAge: 0 });
   }
@@ -123,20 +126,32 @@ export async function GET(request: NextRequest) {
 
   // Delegate signature verification and database-backed role/grant resolution
   // to Rust. A failure never becomes an anonymous session.
-  const api = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
+  const api = (process.env.API_URL || "http://127.0.0.1:8080").replace(
+    /\/+$/,
+    "",
+  );
   try {
     const account = await fetch(`${api}/api/account`, {
       headers: { authorization: `Bearer ${idToken}` },
       cache: "no-store",
     });
     if (!account.ok) {
-      return fail(origin, account.status === 403 ? "not_provisioned" : "session_denied");
+      return fail(
+        origin,
+        account.status === 403 ? "not_provisioned" : "session_denied",
+      );
     }
   } catch {
     return fail(origin, "account_unavailable");
   }
 
-  const response = NextResponse.redirect(new URL("/", origin), 303);
+  const response = NextResponse.redirect(
+    new URL(
+      safeReturnPath(request.cookies.get(OIDC_RETURN_COOKIE)?.value),
+      origin,
+    ),
+    303,
+  );
   response.cookies.set(sessionCookie(idToken, sessionLifetime));
   response.cookies.set(csrfCookie(randomString(32), sessionLifetime));
   // Automatic renewal is optional. When the store is configured and the

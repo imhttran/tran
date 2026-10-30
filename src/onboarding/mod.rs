@@ -13,6 +13,7 @@
 //! a one-way fingerprint.
 
 pub mod account_map;
+pub mod activation;
 pub mod batch;
 pub mod branch_review;
 pub mod candidate;
@@ -32,6 +33,10 @@ pub mod review_queue;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
+pub use activation::{
+    accept_invitation, preview_invitation, ActivationError, ActivationOutcome, ActivationState,
+    InvitationPreview,
+};
 pub use batch::{
     batch_status_items, confirm_batch, run_batch, BatchError, BatchItem, BatchKeys, BatchReport,
     BatchStatusItem, ItemStatus, CHUNK_SIZE,

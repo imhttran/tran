@@ -1846,6 +1846,47 @@ export function revokeProfileInvitation(
   );
 }
 
+/// PIR-006: the welcome view of an invitation link. Public: the link is the
+/// credential, and the response carries only the intended person and state.
+export type InvitationPreviewResponse = {
+  ok: true;
+  person_key: string;
+  display_name: string;
+  /// `pending`, `expired`, `revoked`, or `accepted`.
+  state: string;
+  /// True when the person already has an account link.
+  person_linked: boolean;
+};
+
+export type InvitationActivationResponse = {
+  ok: true;
+  person_key: string;
+  display_name: string;
+  state: string;
+  /// True when this account was already linked to the person.
+  already_linked: boolean;
+};
+
+export function previewInvitation(
+  token: string,
+): Promise<InvitationPreviewResponse> {
+  return request<InvitationPreviewResponse>(
+    `/api/invitations/${encodeURIComponent(token)}`,
+    { cache: "no-store" },
+  );
+}
+
+/// Accepts the invitation for the signed-in account. The server never replaces
+/// an existing link and never grants a role.
+export function acceptInvitation(
+  token: string,
+): Promise<InvitationActivationResponse> {
+  return request<InvitationActivationResponse>(
+    `/api/invitations/${encodeURIComponent(token)}/accept`,
+    { method: "POST" },
+  );
+}
+
 /// Fetches the published archive history for one person. Used by the family-tree
 /// dialog when it opens; a failure must replace, never preserve, prior content.
 export function getFamilyHistory(

@@ -197,6 +197,8 @@ impl AppState {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/health", get(health))
+            .route("/api/invitations/{token}", get(preview_invitation))
+            .route("/api/invitations/{token}/accept", post(accept_invitation))
             .route("/api/internal/sessions", post(create_internal_session))
             .route(
                 "/api/internal/sessions/{id}/renew",
@@ -4094,6 +4096,128 @@ async fn person_invitation_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "invitation_failed",
                 "the invitation status read failed",
+            )
+        }
+    }
+}
+
+/// Maps an activation failure to a safe status and body.
+///
+/// No branch returns a token, a person name, or an address. The codes are stable
+/// so the welcome screen can offer a clear next step.
+fn activation_error(err: onboarding::ActivationError) -> Response {
+    eprintln!("api: invitation activation refused: {err}");
+    match err {
+        onboarding::ActivationError::InvalidToken | onboarding::ActivationError::UnknownPerson => {
+            error(
+                StatusCode::NOT_FOUND,
+                "invalid_invitation",
+                "this invitation link is not valid",
+            )
+        }
+        onboarding::ActivationError::Expired => error(
+            StatusCode::GONE,
+            "invitation_expired",
+            "this invitation has expired",
+        ),
+        onboarding::ActivationError::Revoked => error(
+            StatusCode::GONE,
+            "invitation_revoked",
+            "this invitation was revoked",
+        ),
+        onboarding::ActivationError::AlreadyAccepted => error(
+            StatusCode::CONFLICT,
+            "invitation_accepted",
+            "this invitation was already used",
+        ),
+        onboarding::ActivationError::PersonAlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "person_already_linked",
+            "this person already has an account",
+        ),
+        onboarding::ActivationError::AccountLinkedElsewhere => error(
+            StatusCode::CONFLICT,
+            "wrong_person",
+            "your account is linked to a different person",
+        ),
+        onboarding::ActivationError::Link(_)
+        | onboarding::ActivationError::Invitation(_)
+        | onboarding::ActivationError::Database(_) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "activation_unavailable",
+            "the invitation could not be activated",
+        ),
+    }
+}
+
+/// Reads the welcome view of one invitation link. Public: the link is the
+/// credential, and the response carries only the intended person and state.
+#[allow(clippy::result_large_err)]
+async fn preview_invitation(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::preview_invitation(&mut genealogy, &token).map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": preview.person_key,
+            "display_name": preview.display_name,
+            "state": preview.state.as_str(),
+            "person_linked": preview.person_linked,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation preview task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "activation_failed",
+                "the invitation could not be read",
+            )
+        }
+    }
+}
+
+/// Accepts one invitation for the signed-in account. The token and the reviewed
+/// link decide; no role is granted and no existing link is replaced.
+#[allow(clippy::result_large_err)]
+async fn accept_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::InvitationAccept) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let config = state.config.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::accept_invitation(&mut genealogy, &token, &account).map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(outcome)) => Json(serde_json::json!({
+            "ok": true,
+            "person_key": outcome.person_key,
+            "display_name": outcome.display_name,
+            "state": outcome.state.as_str(),
+            "already_linked": outcome.already_linked,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation activation task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "activation_failed",
+                "the invitation could not be activated",
             )
         }
     }
