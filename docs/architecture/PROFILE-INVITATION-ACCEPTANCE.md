@@ -264,16 +264,18 @@ These are external to the repository. None was changed or exercised here.
 3. **Publicly reachable activation URL.** `ONBOARDING_ACTIVATION_URL` must be an
    absolute public URL. It is unset here, so the default `/activate` is used.
 
-### Known defect blocking (3)
+### Activation-link shape (fixed in #140)
 
-The delivered link is built as `{ONBOARDING_ACTIVATION_URL}?token=<token>`
+The delivered link was built as `{ONBOARDING_ACTIVATION_URL}?token=<token>`
 (`activation_link` in `src/onboarding/delivery.rs`), but the welcome screen is the
-path route `/activate/[token]`. A queried `/activate?token=...` does not match that
-route, so an emailed link would 404 even with a correct public host. The fix is
-either to build `{base}/{token}` (and update the unit test and the bulk flow) or to
-add an `/activate` page that reads `?token=`. It is left unfixed here because this
-revision was scoped to review-only status; the OIDC, API, and admin-console flows
-were verified with direct paths.
+path route `/activate/[token]`. A queried `/activate?token=...` did not match that
+route, so an emailed link would have returned 404 even with a correct public host.
+
+PR #140 fixes it: `activation_link` now emits `{base}/{token}`, trims trailing
+slashes from the configured base, and percent-encodes the token as one path
+segment. Send, resend, and the bulk send path share the builder; unit, database,
+and browser regressions cover the generated URL. Prerequisite 3 below is therefore
+only the public host configuration.
 
 ### Distinguishing the two accounts
 
