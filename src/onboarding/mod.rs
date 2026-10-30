@@ -76,8 +76,10 @@ pub use media::{
 };
 pub use profile::{read_own_profile, ProfileError, ProfileField, ProfileView};
 pub use profile_invitation::{
-    prepare_invitation, read_invitation_state, save_contact_draft, Blocker, InvitationState,
-    InvitationStateView, PrepareReview, ProfileInvitationError, PREPARE_ACCESS,
+    prepare_invitation, read_invitation_state, read_invitation_status, resend_invitation,
+    revoke_invitation, save_contact_draft, send_invitation, Blocker, InvitationState,
+    InvitationStateView, InvitationStatusView, PrepareReview, ProfileDeliveryState,
+    ProfileInvitationError, RevokeInvitationOutcome, SendInvitationOutcome, PREPARE_ACCESS,
 };
 pub use profile_restriction::{restrict_own_field, RestrictionError, RestrictionOutcome};
 pub use profile_revisions::{

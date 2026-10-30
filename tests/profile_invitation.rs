@@ -1,4 +1,5 @@
-//! PIR-003 integration test: restricted contact drafts and invitation preparation.
+//! PIR-003/PIR-004 integration test: restricted contact drafts, invitation
+//! preparation, and explicit send/resend/revoke/status.
 //!
 //! Every scenario runs against a disposable genealogy database created through
 //! `tests/support/genealogy_isolation.rs`. Each synthetic person, appointment,
@@ -10,8 +11,11 @@ use rag_foundation::identity::{Role, VerifiedIdentity};
 use rag_foundation::onboarding::account_map::IdentityAccount;
 use rag_foundation::onboarding::candidate::Classification;
 use rag_foundation::onboarding::{
-    identity_fingerprint, prepare_invitation, read_invitation_state, save_contact_draft,
-    InvitationState, PrepareReview, ProfileInvitationError,
+    identity_fingerprint, prepare_invitation, read_invitation_state, read_invitation_status,
+    resend_invitation, revoke_invitation, save_contact_draft, send_invitation, DeliveryError,
+    DeliveryReceipt, FakeAdapter, InvitationState, InvitationStatusView, MailAdapter,
+    PrepareReview, ProfileDeliveryState, ProfileInvitationError, RevokeInvitationOutcome,
+    SendInvitationOutcome, UnconfiguredAdapter,
 };
 
 #[path = "support/genealogy_isolation.rs"]
@@ -280,6 +284,432 @@ fn assert_masked_only(masked: Option<&str>, local_part: &str) {
         masked.ends_with("@example.test"),
         "masked contact dropped the domain: {masked}"
     );
+}
+
+/// An adapter that always fails, so a delivery failure is deterministic.
+struct FailingAdapter;
+
+impl MailAdapter for FailingAdapter {
+    fn name(&self) -> &'static str {
+        "failing"
+    }
+
+    fn deliver(
+        &self,
+        _to: &str,
+        _subject: &str,
+        _body: &str,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        Err(DeliveryError::Provider(
+            "synthetic_provider_failure".to_string(),
+        ))
+    }
+}
+
+/// Saves the fixture's draft contact so a send has an address to target.
+fn save_fixture_draft(client: &mut Client, fixture: &Fixture) {
+    let email = fixture.email();
+    save_contact_draft(
+        client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        &email,
+    )
+    .expect("save draft contact");
+}
+
+fn count_pending(client: &mut Client, person_id: i64) -> i64 {
+    client
+        .query_one(
+            "SELECT count(*) FROM onboarding_invitation
+              WHERE person_id = $1 AND status = 'pending'",
+            &[&person_id],
+        )
+        .expect("count pending invitations")
+        .get(0)
+}
+
+fn status_for(client: &mut Client, fixture: &Fixture) -> InvitationStatusView {
+    read_invitation_status(
+        client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+    )
+    .expect("read invitation status")
+}
+
+fn send_with(
+    client: &mut Client,
+    fixture: &Fixture,
+    adapter: &dyn MailAdapter,
+) -> Result<SendInvitationOutcome, ProfileInvitationError> {
+    send_invitation(
+        client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        adapter,
+        "https://example.test/activate",
+    )
+}
+
+fn resend_with(
+    client: &mut Client,
+    fixture: &Fixture,
+    adapter: &dyn MailAdapter,
+) -> Result<SendInvitationOutcome, ProfileInvitationError> {
+    resend_invitation(
+        client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        adapter,
+        "https://example.test/activate",
+    )
+}
+
+/// One explicit send creates exactly one invitation, reports the adapter's real
+/// receipt, and never duplicates or re-sends on a second call.
+#[test]
+fn explicit_send_reports_delivery_and_never_duplicates() {
+    let Some(fixture) = build_fixture("pir004-send", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+
+    let outcome = send_with(&mut client, &fixture, &adapter).expect("explicit send");
+    assert!(outcome.delivered);
+    assert_eq!(outcome.delivery_state, ProfileDeliveryState::Sent);
+    assert_eq!(outcome.provider.as_deref(), Some("fake"));
+    assert_masked_only(Some(&outcome.masked_contact), &fixture.prefix);
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 1);
+    assert_eq!(count_recipients(&mut client, fixture.target_person_id), 0);
+
+    let messages = adapter.messages();
+    assert_eq!(messages.len(), 1, "one explicit send delivers one message");
+    let token = messages[0]
+        .body
+        .rsplit("token=")
+        .next()
+        .expect("message carries a link")
+        .trim()
+        .to_string();
+    assert!(!token.is_empty());
+    let rendered = format!("{outcome:?}");
+    assert!(!rendered.contains(&token), "the outcome leaked the token");
+    assert!(
+        !rendered.contains(&fixture.email()),
+        "the outcome leaked the address"
+    );
+
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_status, Some("pending"));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Sent);
+    assert_eq!(status.delivery_attempts, 1);
+    assert_eq!(status.delivery_provider.as_deref(), Some("fake"));
+    let rendered = format!("{status:?}");
+    assert!(!rendered.contains(&token), "the status leaked the token");
+    assert!(
+        !rendered.contains(&fixture.email()),
+        "the status leaked the address"
+    );
+
+    let again = send_with(&mut client, &fixture, &adapter).expect("second send is reported");
+    assert_eq!(again.invitation_id, outcome.invitation_id);
+    assert!(again.delivered);
+    assert_eq!(
+        adapter.messages().len(),
+        1,
+        "a duplicate send sends nothing"
+    );
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+}
+
+/// An unconfigured adapter fails closed before an invitation is created.
+#[test]
+fn unconfigured_adapter_creates_no_invitation() {
+    let Some(fixture) = build_fixture("pir004-unconfigured", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = UnconfiguredAdapter;
+    let result = send_with(&mut client, &fixture, &adapter);
+    assert!(matches!(
+        result,
+        Err(ProfileInvitationError::Delivery(
+            DeliveryError::NotConfigured
+        ))
+    ));
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 0);
+}
+
+/// A provider failure leaves the invitation recoverable: the failure is recorded,
+/// no second invitation appears, and a retry revokes the failed row and issues
+/// exactly one replacement.
+#[test]
+fn adapter_failure_stays_recoverable_then_retry_succeeds() {
+    let Some(fixture) = build_fixture("pir004-failure", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let failing = FailingAdapter;
+
+    let result = send_with(&mut client, &fixture, &failing);
+    assert!(matches!(
+        result,
+        Err(ProfileInvitationError::Delivery(DeliveryError::Provider(_)))
+    ));
+    let rendered = format!("{result:?}");
+    assert!(
+        !rendered.contains(&fixture.email()),
+        "the error leaked the address"
+    );
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_status, Some("pending"));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Failed);
+    assert_eq!(status.delivery_attempts, 1);
+    assert_eq!(
+        status.last_delivery_error.as_deref(),
+        Some("provider_failed")
+    );
+
+    let adapter = FakeAdapter::accepting();
+    let retried = send_with(&mut client, &fixture, &adapter).expect("retry after failure");
+    assert!(retried.delivered);
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 2);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 1);
+    let revoked: i64 = client
+        .query_one(
+            "SELECT count(*) FROM onboarding_invitation
+              WHERE person_id = $1 AND status = 'revoked'",
+            &[&fixture.target_person_id],
+        )
+        .expect("count revoked")
+        .get(0);
+    assert_eq!(
+        revoked, 1,
+        "the failed invitation is revoked, not left live"
+    );
+    assert_eq!(adapter.messages().len(), 1);
+}
+
+/// A resend revokes the previous link and leaves exactly one live invitation.
+#[test]
+fn resend_revokes_previous_and_issues_one_link() {
+    let Some(fixture) = build_fixture("pir004-resend", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    let first = send_with(&mut client, &fixture, &adapter).expect("first send");
+    let second = resend_with(&mut client, &fixture, &adapter).expect("resend");
+
+    assert_ne!(second.invitation_id, first.invitation_id);
+    assert!(second.delivered);
+    assert_eq!(adapter.messages().len(), 2);
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 2);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 1);
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_id, Some(second.invitation_id));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Sent);
+}
+
+/// Revoking reports the resulting state and is idempotent.
+#[test]
+fn revoke_reports_state_and_is_idempotent() {
+    let Some(fixture) = build_fixture("pir004-revoke", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    let sent = send_with(&mut client, &fixture, &adapter).expect("send");
+
+    let revoked: RevokeInvitationOutcome = revoke_invitation(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+    )
+    .expect("revoke");
+    assert!(revoked.revoked);
+    assert_eq!(revoked.invitation_id, Some(sent.invitation_id));
+    assert_eq!(revoked.delivery_state, ProfileDeliveryState::Revoked);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 0);
+
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_status, Some("revoked"));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Revoked);
+
+    let again = revoke_invitation(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+    )
+    .expect("second revoke");
+    assert!(!again.revoked);
+    assert_eq!(again.reason, Some("no_pending_invitation"));
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+}
+
+/// A queued message is not reported as delivered and is not re-sent implicitly.
+#[test]
+fn queued_delivery_is_not_reported_as_delivered() {
+    let Some(fixture) = build_fixture("pir004-queued", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::queueing();
+    let outcome = send_with(&mut client, &fixture, &adapter).expect("queued send");
+    assert!(!outcome.delivered, "a queued message is not delivered");
+    assert_eq!(outcome.delivery_state, ProfileDeliveryState::Queued);
+    assert_eq!(adapter.messages().len(), 1);
+
+    let again = send_with(&mut client, &fixture, &adapter).expect("second send");
+    assert!(!again.delivered);
+    assert_eq!(again.invitation_id, outcome.invitation_id);
+    assert_eq!(adapter.messages().len(), 1, "a queued send is not repeated");
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+}
+
+/// An expired invitation is reported as expired and can be reissued.
+#[test]
+fn expired_invitation_is_reported_and_reissued() {
+    let Some(fixture) = build_fixture("pir004-expired", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    let first = send_with(&mut client, &fixture, &adapter).expect("send");
+    client
+        .execute(
+            "UPDATE onboarding_invitation SET expires_at = now() - interval '1 hour'
+              WHERE invitation_id = $1",
+            &[&first.invitation_id],
+        )
+        .expect("expire invitation");
+
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_status, Some("expired"));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Expired);
+    // A status read writes nothing: the stored row is still `pending`.
+    let stored: String = client
+        .query_one(
+            "SELECT status FROM onboarding_invitation WHERE invitation_id = $1",
+            &[&first.invitation_id],
+        )
+        .expect("read stored status")
+        .get(0);
+    assert_eq!(stored, "pending");
+
+    let reissued = send_with(&mut client, &fixture, &adapter).expect("send after expiry");
+    assert_ne!(reissued.invitation_id, first.invitation_id);
+    assert!(reissued.delivered);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 1);
+    assert_eq!(adapter.messages().len(), 2);
+}
+
+/// An accepted invitation is reported as accepted and cannot be resent.
+#[test]
+fn accepted_invitation_cannot_be_resent() {
+    let Some(fixture) = build_fixture("pir004-accepted", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    let sent = send_with(&mut client, &fixture, &adapter).expect("send");
+    client
+        .execute(
+            "UPDATE onboarding_invitation
+                SET status = 'accepted', used_at = now(), accepted_at = now()
+              WHERE invitation_id = $1",
+            &[&sent.invitation_id],
+        )
+        .expect("accept invitation");
+
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.invitation_status, Some("accepted"));
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Accepted);
+    assert!(status.accepted_at.is_some());
+
+    let result = resend_with(&mut client, &fixture, &adapter);
+    assert!(matches!(
+        result,
+        Err(ProfileInvitationError::InvitationNotPending("accepted"))
+    ));
+    assert_eq!(adapter.messages().len(), 1, "accepted is never resent");
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 1);
+}
+
+/// A family head outside the target's branch cannot send, resend, or revoke.
+#[test]
+fn wrong_branch_family_head_cannot_send_or_revoke() {
+    let Some(fixture) = build_fixture("pir004-wrong-branch", OTHER_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft_forbidden(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    let result = send_with(&mut client, &fixture, &adapter);
+    assert!(matches!(result, Err(ProfileInvitationError::Refused(_))));
+    let result = resend_with(&mut client, &fixture, &adapter);
+    assert!(matches!(result, Err(ProfileInvitationError::Refused(_))));
+    let result = revoke_invitation(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+    );
+    assert!(matches!(result, Err(ProfileInvitationError::Refused(_))));
+    assert_eq!(adapter.messages().len(), 0);
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 0);
+}
+
+/// A linked person cannot be sent an invitation.
+#[test]
+fn linked_person_cannot_be_sent_an_invitation() {
+    let Some(fixture) = build_fixture("pir004-linked", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    insert_link(&mut client, fixture.target_person_id, 7, &"d".repeat(64));
+    let adapter = FakeAdapter::accepting();
+    let result = send_with(&mut client, &fixture, &adapter);
+    assert!(matches!(
+        result,
+        Err(ProfileInvitationError::AlreadyLinked) | Err(ProfileInvitationError::NotEligible)
+    ));
+    assert_eq!(adapter.messages().len(), 0);
+    assert_eq!(count_invitations(&mut client, fixture.target_person_id), 0);
+}
+
+/// The draft save in a wrong-branch fixture is refused, so the send path cannot
+/// even be reached with an address.
+fn save_fixture_draft_forbidden(client: &mut Client, fixture: &Fixture) {
+    let email = fixture.email();
+    let result = save_contact_draft(
+        client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        &email,
+    );
+    assert!(matches!(result, Err(ProfileInvitationError::Refused(_))));
 }
 
 /// Missing contact: a saved draft reads back as a masked contact and creates no
@@ -584,4 +1014,20 @@ fn migration_is_additive() {
     assert!(sql.contains("CREATE TABLE IF NOT EXISTS onboarding_invitation_contact_draft"));
     assert!(!sql.to_lowercase().contains("drop "));
     assert!(!sql.to_lowercase().contains("alter table"));
+}
+
+/// The delivery migration only adds nullable or defaulted columns.
+#[test]
+fn delivery_migration_is_additive() {
+    let sql =
+        std::fs::read_to_string("genealogy/migrations/0034_onboarding_invitation_delivery.sql")
+            .expect("read delivery migration");
+    assert!(sql.contains("ADD COLUMN IF NOT EXISTS delivery_state"));
+    assert!(sql.contains("ADD COLUMN IF NOT EXISTS delivery_provider"));
+    assert!(sql.contains("ADD COLUMN IF NOT EXISTS last_delivery_error"));
+    assert!(sql.contains("ADD COLUMN IF NOT EXISTS delivery_attempts"));
+    let lower = sql.to_lowercase();
+    assert!(!lower.contains("drop "));
+    assert!(!lower.contains("delete "));
+    assert!(!lower.contains("not null default null"));
 }

@@ -1,6 +1,7 @@
-//! Restricted draft contact and invitation preparation for one person (PIR-003).
+//! Restricted draft contact, preparation, and explicit send for one person
+//! (PIR-003, PIR-004).
 //!
-//! Preparation is a review step, never a send. The module offers three
+//! Preparation is a review step, never a send. The module offers these
 //! operations:
 //!
 //! * [`read_invitation_state`] reads the family-admin decision, eligibility,
@@ -9,13 +10,18 @@
 //! * [`save_contact_draft`] stores a proposed address in the restricted
 //!   `onboarding_invitation_contact_draft` table only;
 //! * [`prepare_invitation`] rechecks authorization, eligibility, link state,
-//!   duplicate invitation, and the draft contact, and returns a review payload.
+//!   duplicate invitation, and the draft contact, and returns a review payload;
+//! * [`send_invitation`], [`resend_invitation`], [`revoke_invitation`], and
+//!   [`read_invitation_status`] perform and report one explicit send.
 //!
-//! No operation here imports a delivery adapter, writes
-//! `onboarding_recipient_contact`, or marks an invitation sent. An existing
-//! pending invitation is reused through [`crate::onboarding::invitation::create`],
-//! so a duplicate is reported, not duplicated. Only a masked address leaves the
-//! module in a response; the error text never carries an address.
+//! Only [`send_invitation`] and [`resend_invitation`] hand a message to a
+//! configured [`MailAdapter`]. Every operation reports the adapter's actual
+//! receipt: an unconfirmed send is never reported as delivered, and a failure
+//! leaves the invitation recoverable without creating a second active link.
+//! Only a masked address leaves the module in a response; the error text never
+//! carries an address, and no return value carries a token.
+
+use std::time::Duration;
 
 use postgres::Client;
 use thiserror::Error;
@@ -25,16 +31,18 @@ use crate::onboarding::account_map::IdentityAccount;
 use crate::onboarding::candidate::{
     load_name_parts, mask_email, reclassify_person, CandidateError, Classification, Reason,
 };
+use crate::onboarding::delivery::{activation_link, DeliveryError, MailAdapter};
 use crate::onboarding::family_admin::{
     authorize_person_invitation_in, FamilyAdminCheckError, FamilyAdminDecision,
 };
-use crate::onboarding::invitation::{create, InvitationError};
+use crate::onboarding::invitation::{create, revoke as revoke_row, InvitationError};
 use crate::onboarding::username::candidate_username;
 
-/// The invitation lifetime used when preparation has to issue a placeholder
-/// invitation row. Preparation never sends; the row only reserves the pending
-/// slot the review payload names.
-const PREPARE_INVITATION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// The invitation lifetime used by preparation and by an explicit send.
+///
+/// Preparation never sends; the row it reserves and the row a send delivers are
+/// the same invitation, so both use one lifetime.
+const INVITATION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// The fixed review payload access level. Preparation grants no role: it only
 /// offers the Member (`viewer`) level the operator would assign.
@@ -113,6 +121,128 @@ pub struct PrepareReview {
     pub invitation_created: bool,
 }
 
+/// The safe delivery state of one profile invitation.
+///
+/// The state is recorded from the mail adapter's actual receipt. `Queued` is
+/// deliberately distinct from `Sent`: a provider that only accepted the message
+/// for later delivery has not confirmed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileDeliveryState {
+    /// No invitation row exists for this person.
+    NotSent,
+    /// An invitation row exists but no send was attempted.
+    Pending,
+    /// The provider accepted the message for later delivery. Not confirmed.
+    Queued,
+    /// The provider confirmed the message was sent.
+    Sent,
+    /// The last delivery attempt failed. The invitation stays recoverable.
+    Failed,
+    /// The invitation expired before acceptance.
+    Expired,
+    /// The invitation was accepted.
+    Accepted,
+    /// The invitation was revoked.
+    Revoked,
+}
+
+impl ProfileDeliveryState {
+    /// The stable string code for this state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProfileDeliveryState::NotSent => "not_sent",
+            ProfileDeliveryState::Pending => "pending",
+            ProfileDeliveryState::Queued => "queued",
+            ProfileDeliveryState::Sent => "sent",
+            ProfileDeliveryState::Failed => "failed",
+            ProfileDeliveryState::Expired => "expired",
+            ProfileDeliveryState::Accepted => "accepted",
+            ProfileDeliveryState::Revoked => "revoked",
+        }
+    }
+
+    /// Reads a stored delivery state. An unrecognized value yields `None`, so a
+    /// caller reports an unknown state rather than guessing.
+    fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "not_sent" => Some(ProfileDeliveryState::NotSent),
+            "pending" => Some(ProfileDeliveryState::Pending),
+            "queued" => Some(ProfileDeliveryState::Queued),
+            "sent" => Some(ProfileDeliveryState::Sent),
+            "failed" => Some(ProfileDeliveryState::Failed),
+            "expired" => Some(ProfileDeliveryState::Expired),
+            "accepted" => Some(ProfileDeliveryState::Accepted),
+            "revoked" => Some(ProfileDeliveryState::Revoked),
+            _ => None,
+        }
+    }
+
+    /// True only when the provider confirmed the send.
+    fn is_confirmed(self) -> bool {
+        matches!(self, ProfileDeliveryState::Sent)
+    }
+}
+
+/// The result of one explicit send or resend.
+///
+/// It names the invitation and the adapter's actual outcome. It carries the
+/// masked contact only, never a token, an address, or a provider credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendInvitationOutcome {
+    /// The opaque person key the send belongs to.
+    pub person_key: String,
+    /// The invitation this send attempted.
+    pub invitation_id: i64,
+    /// The recorded delivery state.
+    pub delivery_state: ProfileDeliveryState,
+    /// The adapter that handled the attempt, when one ran.
+    pub provider: Option<String>,
+    /// True only when the provider confirmed the message was sent.
+    pub delivered: bool,
+    /// The masked contact the message was addressed to.
+    pub masked_contact: String,
+}
+
+/// The result of one revoke request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeInvitationOutcome {
+    /// The opaque person key the revoke belongs to.
+    pub person_key: String,
+    /// The revoked invitation, when one was live.
+    pub invitation_id: Option<i64>,
+    /// The resulting delivery state.
+    pub delivery_state: ProfileDeliveryState,
+    /// True when a live pending invitation was revoked.
+    pub revoked: bool,
+    /// A safe reason code when nothing was revoked.
+    pub reason: Option<&'static str>,
+}
+
+/// The safe invitation and delivery status of one person.
+///
+/// The view never carries a token, an address, or a provider credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvitationStatusView {
+    /// The opaque person key this status describes.
+    pub person_key: String,
+    /// The most recent invitation, when one exists.
+    pub invitation_id: Option<i64>,
+    /// The invitation lifecycle: `pending`, `accepted`, `revoked`, or `expired`.
+    pub invitation_status: Option<&'static str>,
+    /// The recorded delivery state.
+    pub delivery_state: ProfileDeliveryState,
+    /// The adapter that handled the last attempt.
+    pub delivery_provider: Option<String>,
+    /// A safe failure code such as `not_configured` or `provider_failed`.
+    pub last_delivery_error: Option<String>,
+    /// How many delivery attempts were recorded.
+    pub delivery_attempts: i32,
+    /// The invitation expiry, rendered as text.
+    pub expires_at: Option<String>,
+    /// The acceptance time, rendered as text.
+    pub accepted_at: Option<String>,
+}
+
 /// Errors raised by the profile-invitation operations.
 ///
 /// No variant carries an address, a token, a name, or raw SQL text.
@@ -137,6 +267,18 @@ pub enum ProfileInvitationError {
     /// The person's evidence needs review or is not eligible.
     #[error("the person is not eligible for an invitation")]
     NotEligible,
+    /// No invitation exists for this person, so there is nothing to resend or
+    /// revoke.
+    #[error("no invitation exists for this person")]
+    NoInvitation,
+    /// The invitation is not in a state that permits the operation. The code is
+    /// the invitation's current safe status.
+    #[error("the invitation is not pending: {0}")]
+    InvitationNotPending(&'static str),
+    /// The mail adapter failed or is not configured. The invitation, when one
+    /// was issued, stays recoverable.
+    #[error("invitation delivery failed")]
+    Delivery(DeliveryError),
     /// The invitation operation failed for a non-policy reason.
     #[error("invitation operation failed")]
     Invitation(String),
@@ -157,6 +299,12 @@ impl From<InvitationError> for ProfileInvitationError {
             InvitationError::UnknownPerson => ProfileInvitationError::UnknownPerson,
             other => ProfileInvitationError::Invitation(other.to_string()),
         }
+    }
+}
+
+impl From<DeliveryError> for ProfileInvitationError {
+    fn from(err: DeliveryError) -> Self {
+        ProfileInvitationError::Delivery(err)
     }
 }
 
@@ -194,52 +342,121 @@ fn allow_code(decision: FamilyAdminDecision) -> &'static str {
     decision.as_str()
 }
 
-/// Reads the pending invitation and delivery state for one person.
-fn read_invitation_state_view(
+/// One invitation row with its safe delivery receipt.
+struct InvitationRecord {
+    invitation_id: i64,
+    /// The stored lifecycle: `pending`, `accepted`, `revoked`, or `expired`.
+    status: &'static str,
+    /// True when the row is still `pending` but its expiry has passed.
+    expired: bool,
+    delivery_state: ProfileDeliveryState,
+    delivery_provider: Option<String>,
+    last_delivery_error: Option<String>,
+    delivery_attempts: i32,
+    expires_at: Option<String>,
+    accepted_at: Option<String>,
+}
+
+/// Maps the stored invitation status to its stable code.
+fn status_code(status: &str) -> &'static str {
+    match status {
+        "pending" => "pending",
+        "accepted" => "accepted",
+        "revoked" => "revoked",
+        "expired" => "expired",
+        _ => "unknown",
+    }
+}
+
+/// Reads the most recent invitation row for one person with its delivery receipt.
+///
+/// The row is read as stored. When it is `pending` past its expiry, the returned
+/// record reports the effective `expired` state without writing anything, so a
+/// status read stays read-only.
+fn latest_invitation(
     client: &mut Client,
     person_id: i64,
-) -> Result<InvitationStateView, ProfileInvitationError> {
-    let pending = client.query_opt(
-        "SELECT invitation_id, expires_at::text
+) -> Result<Option<InvitationRecord>, ProfileInvitationError> {
+    let row = client.query_opt(
+        "SELECT invitation_id, status,
+                (status = 'pending' AND expires_at IS NOT NULL AND expires_at <= now()),
+                delivery_state, delivery_provider, last_delivery_error,
+                delivery_attempts, expires_at::text, accepted_at::text
            FROM onboarding_invitation
           WHERE person_id = $1
-            AND status = 'pending'
-            AND expires_at IS NOT NULL
-            AND expires_at > now()
           ORDER BY created_at DESC, invitation_id DESC
           LIMIT 1",
         &[&person_id],
     )?;
-    let (invitation_id, expires_at) = match pending {
-        Some(row) => (Some(row.get(0)), Some(row.get(1))),
-        None => (None, None),
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let stored_status: String = row.get(1);
+    let expired: bool = row.get(2);
+    let stored_delivery: String = row.get(3);
+    let invitation_id: i64 = row.get(0);
+
+    let status = match stored_status.as_str() {
+        "accepted" => "accepted",
+        "revoked" => "revoked",
+        "expired" => "expired",
+        // A pending row past its expiry is reported as expired.
+        _ if expired => "expired",
+        _ => "pending",
+    };
+    let delivery_state = match status {
+        "accepted" => ProfileDeliveryState::Accepted,
+        "revoked" => ProfileDeliveryState::Revoked,
+        "expired" => ProfileDeliveryState::Expired,
+        _ => {
+            ProfileDeliveryState::from_db(&stored_delivery).unwrap_or(ProfileDeliveryState::Pending)
+        }
     };
 
-    // The delivery state reflects a batch item when one exists. Preparation and
-    // draft contact never write a delivery state, so a person without a batch
-    // item reports `not_sent`.
-    let delivery: Option<String> = client
-        .query_opt(
-            "SELECT delivery_status FROM onboarding_batch_item
-              WHERE person_id = $1
-              ORDER BY batch_id DESC LIMIT 1",
-            &[&person_id],
-        )?
-        .map(|row| row.get(0));
-    let delivery_state = match delivery.as_deref() {
-        Some("queued") => "queued",
-        Some("sent") => "sent",
-        Some("accepted") => "accepted",
-        Some("failed") => "failed",
-        Some("expired") => "expired",
-        _ => "not_sent",
-    };
-
-    Ok(InvitationStateView {
-        pending: invitation_id.is_some(),
+    Ok(Some(InvitationRecord {
         invitation_id,
-        expires_at,
+        status,
+        expired,
         delivery_state,
+        delivery_provider: row.get(4),
+        last_delivery_error: row.get(5),
+        delivery_attempts: row.get(6),
+        expires_at: row.get(7),
+        accepted_at: row.get(8),
+    }))
+}
+
+/// Reads the live pending invitation for one person, if any.
+///
+/// An expired pending row is not live, so it never counts as a duplicate or as a
+/// reason to reuse a row a later send cannot deliver.
+fn pending_invitation(
+    client: &mut Client,
+    person_id: i64,
+) -> Result<Option<InvitationRecord>, ProfileInvitationError> {
+    let latest = latest_invitation(client, person_id)?;
+    Ok(latest.filter(|record| record.status == "pending" && !record.expired))
+}
+
+/// Reads the invitation and delivery state for one person.
+fn read_invitation_state_view(
+    client: &mut Client,
+    person_id: i64,
+) -> Result<InvitationStateView, ProfileInvitationError> {
+    let Some(record) = latest_invitation(client, person_id)? else {
+        return Ok(InvitationStateView {
+            pending: false,
+            invitation_id: None,
+            expires_at: None,
+            delivery_state: ProfileDeliveryState::NotSent.as_str(),
+        });
+    };
+    let live = record.status == "pending" && !record.expired;
+    Ok(InvitationStateView {
+        pending: live,
+        invitation_id: live.then_some(record.invitation_id),
+        expires_at: live.then_some(record.expires_at).flatten(),
+        delivery_state: record.delivery_state.as_str(),
     })
 }
 
@@ -513,7 +730,7 @@ pub fn prepare_invitation(
     let issued = create(
         client,
         person_id,
-        std::time::Duration::from_secs(PREPARE_INVITATION_TTL_SECS),
+        std::time::Duration::from_secs(INVITATION_TTL_SECS),
         &actor,
     )?;
 
@@ -528,6 +745,354 @@ pub fn prepare_invitation(
         invitation_id: issued.invitation_id,
         invitation_reused,
         invitation_created,
+    })
+}
+
+/// Reads the stored draft contact for one person.
+fn draft_contact(
+    client: &mut Client,
+    person_id: i64,
+) -> Result<Option<String>, ProfileInvitationError> {
+    let row = client.query_opt(
+        "SELECT email FROM onboarding_invitation_contact_draft WHERE person_id = $1",
+        &[&person_id],
+    )?;
+    Ok(row.map(|row| row.get(0)))
+}
+
+/// The audit actor string for a caller.
+fn actor_for(account: &IdentityAccount) -> String {
+    format!("{}/{}", account.account_id, account.identity_fingerprint)
+}
+
+/// Rechecks the authority, link, and eligibility a send requires.
+///
+/// The family-admin rule runs before any row is read, so a refused caller learns
+/// nothing about the person.
+fn check_invitable(
+    client: &mut Client,
+    identity: &VerifiedIdentity,
+    account: &IdentityAccount,
+    person_key: &str,
+) -> Result<i64, ProfileInvitationError> {
+    authorize_person_invitation_in(client, identity, account, person_key)?;
+    let person_id = person_id_for_key(client, person_key)?;
+    if linked_account(client, person_id)? {
+        return Err(ProfileInvitationError::AlreadyLinked);
+    }
+    let (classification, _reasons) = reclassify_person(client, person_id, person_key)?;
+    match classification {
+        Classification::AlreadyLinked => Err(ProfileInvitationError::AlreadyLinked),
+        Classification::NeedsReview | Classification::NotEligible => {
+            Err(ProfileInvitationError::NotEligible)
+        }
+        Classification::EligibleForInvite
+        | Classification::Invited
+        | Classification::AlreadyPrepared => Ok(person_id),
+    }
+}
+
+/// The resolved inputs for one delivery attempt.
+struct DeliveryRequest<'a> {
+    person_key: &'a str,
+    person_id: i64,
+    email: &'a str,
+    activation_base: &'a str,
+    actor: &'a str,
+}
+
+/// Issues at most one active invitation and hands one message to the adapter.
+///
+/// Any pending row is revoked first, so a resend never leaves two live links for
+/// one person. The recorded state is the adapter's actual receipt: an unconfirmed
+/// message is stored as `queued`, and a failure is stored as `failed` with a safe
+/// code while the row stays recoverable. No return value carries the token.
+fn deliver_invitation(
+    client: &mut Client,
+    request: DeliveryRequest<'_>,
+    adapter: &dyn MailAdapter,
+) -> Result<SendInvitationOutcome, ProfileInvitationError> {
+    let DeliveryRequest {
+        person_key,
+        person_id,
+        email,
+        activation_base,
+        actor,
+    } = request;
+    let masked_contact = mask_email(email);
+
+    if let Some(pending) = pending_invitation(client, person_id)? {
+        let _ = revoke_row(client, pending.invitation_id);
+        let _ = client.execute(
+            "UPDATE onboarding_invitation
+                SET delivery_state = 'revoked', last_delivery_error = 'revoked'
+              WHERE invitation_id = $1",
+            &[&pending.invitation_id],
+        );
+    }
+
+    let issued = create(
+        client,
+        person_id,
+        Duration::from_secs(INVITATION_TTL_SECS),
+        actor,
+    )?;
+    let Some(token) = issued.token else {
+        return Err(ProfileInvitationError::Invitation(
+            "no deliverable invitation was issued".to_string(),
+        ));
+    };
+
+    let link = activation_link(activation_base, &token);
+    let subject = "Activate your family archive account";
+    let body = format!(
+        "A family administrator prepared an account for you in the family archive.\n\
+         Open this single-use link to continue:\n\n{link}\n\n\
+         The link expires automatically. If you did not expect this message, ignore it."
+    );
+
+    match adapter.deliver(email, subject, &body) {
+        Ok(receipt) => {
+            let state = if receipt.accepted {
+                ProfileDeliveryState::Sent
+            } else {
+                ProfileDeliveryState::Queued
+            };
+            client.execute(
+                "UPDATE onboarding_invitation
+                    SET invited_email = $2,
+                        delivery_state = $3,
+                        delivery_provider = $4,
+                        delivery_attempts = delivery_attempts + 1,
+                        last_delivery_error = NULL
+                  WHERE invitation_id = $1",
+                &[
+                    &issued.invitation_id,
+                    &email,
+                    &state.as_str(),
+                    &receipt.provider,
+                ],
+            )?;
+            Ok(SendInvitationOutcome {
+                person_key: person_key.to_string(),
+                invitation_id: issued.invitation_id,
+                delivery_state: state,
+                provider: Some(receipt.provider),
+                delivered: state.is_confirmed(),
+                masked_contact: masked_contact.clone(),
+            })
+        }
+        Err(err) => {
+            let code = match &err {
+                DeliveryError::NotConfigured => "not_configured",
+                DeliveryError::Provider(_) => "provider_failed",
+                DeliveryError::InvalidRecipient => "invalid_recipient",
+                DeliveryError::MissingVerifiedContact => "missing_verified_contact",
+                DeliveryError::NotPrepared => "not_prepared",
+                DeliveryError::Database(_) | DeliveryError::Invitation(_) => "delivery_failed",
+            };
+            let _ = client.execute(
+                "UPDATE onboarding_invitation
+                    SET delivery_state = 'failed',
+                        delivery_provider = $2,
+                        delivery_attempts = delivery_attempts + 1,
+                        last_delivery_error = $3
+                  WHERE invitation_id = $1",
+                &[&issued.invitation_id, &adapter.name(), &code],
+            );
+            Err(ProfileInvitationError::Delivery(err))
+        }
+    }
+}
+
+/// Sends one reviewed profile invitation.
+///
+/// The family-admin rule, link state, and eligibility are rechecked before any
+/// write. An adapter that is not configured fails closed before an invitation is
+/// created. An invitation already confirmed by the provider is never duplicated
+/// or silently re-sent; use [`resend_invitation`] for an explicit repeat. The
+/// returned state is the adapter's actual receipt.
+pub fn send_invitation(
+    client: &mut Client,
+    identity: &VerifiedIdentity,
+    account: &IdentityAccount,
+    person_key: &str,
+    adapter: &dyn MailAdapter,
+    activation_base: &str,
+) -> Result<SendInvitationOutcome, ProfileInvitationError> {
+    if !adapter.is_configured() {
+        return Err(ProfileInvitationError::Delivery(
+            DeliveryError::NotConfigured,
+        ));
+    }
+    let person_key = person_key.trim();
+    let person_id = check_invitable(client, identity, account, person_key)?;
+
+    // A delivered or queued invitation is reported as it stands. Creating a
+    // second row or re-sending without an explicit resend would duplicate the
+    // link and misstate the outcome.
+    if let Some(pending) = pending_invitation(client, person_id)? {
+        if matches!(
+            pending.delivery_state,
+            ProfileDeliveryState::Sent | ProfileDeliveryState::Queued
+        ) {
+            let masked_contact = draft_contact(client, person_id)?
+                .map(|email| mask_email(&email))
+                .unwrap_or_default();
+            return Ok(SendInvitationOutcome {
+                person_key: person_key.to_string(),
+                invitation_id: pending.invitation_id,
+                delivery_state: pending.delivery_state,
+                provider: pending.delivery_provider,
+                delivered: pending.delivery_state.is_confirmed(),
+                masked_contact,
+            });
+        }
+    }
+
+    let email = draft_contact(client, person_id)?.ok_or(ProfileInvitationError::MissingContact)?;
+    let actor = actor_for(account);
+    deliver_invitation(
+        client,
+        DeliveryRequest {
+            person_key,
+            person_id,
+            email: &email,
+            activation_base,
+            actor: &actor,
+        },
+        adapter,
+    )
+}
+
+/// Resends one profile invitation.
+///
+/// The same family-admin rule decides authority. The current invitation is
+/// revoked before a replacement is issued, so the previous link stops working
+/// and only one invitation stays live. An accepted invitation cannot be
+/// resent.
+pub fn resend_invitation(
+    client: &mut Client,
+    identity: &VerifiedIdentity,
+    account: &IdentityAccount,
+    person_key: &str,
+    adapter: &dyn MailAdapter,
+    activation_base: &str,
+) -> Result<SendInvitationOutcome, ProfileInvitationError> {
+    if !adapter.is_configured() {
+        return Err(ProfileInvitationError::Delivery(
+            DeliveryError::NotConfigured,
+        ));
+    }
+    let person_key = person_key.trim();
+    let person_id = check_invitable(client, identity, account, person_key)?;
+
+    let Some(latest) = latest_invitation(client, person_id)? else {
+        return Err(ProfileInvitationError::NoInvitation);
+    };
+    if latest.status == "accepted" {
+        return Err(ProfileInvitationError::InvitationNotPending("accepted"));
+    }
+
+    let email = draft_contact(client, person_id)?.ok_or(ProfileInvitationError::MissingContact)?;
+    let actor = actor_for(account);
+    deliver_invitation(
+        client,
+        DeliveryRequest {
+            person_key,
+            person_id,
+            email: &email,
+            activation_base,
+            actor: &actor,
+        },
+        adapter,
+    )
+}
+
+/// Revokes the live pending invitation for one person.
+///
+/// The same family-admin rule decides authority. Revoking an already revoked,
+/// expired, or accepted invitation changes nothing and reports the current
+/// state instead of an error.
+pub fn revoke_invitation(
+    client: &mut Client,
+    identity: &VerifiedIdentity,
+    account: &IdentityAccount,
+    person_key: &str,
+) -> Result<RevokeInvitationOutcome, ProfileInvitationError> {
+    let person_key = person_key.trim();
+    authorize_person_invitation_in(client, identity, account, person_key)?;
+    let person_id = person_id_for_key(client, person_key)?;
+
+    let Some(pending) = pending_invitation(client, person_id)? else {
+        let current = latest_invitation(client, person_id)?;
+        return Ok(RevokeInvitationOutcome {
+            person_key: person_key.to_string(),
+            invitation_id: None,
+            delivery_state: current
+                .map(|record| record.delivery_state)
+                .unwrap_or(ProfileDeliveryState::NotSent),
+            revoked: false,
+            reason: Some("no_pending_invitation"),
+        });
+    };
+
+    revoke_row(client, pending.invitation_id)?;
+    client.execute(
+        "UPDATE onboarding_invitation
+            SET delivery_state = 'revoked', last_delivery_error = 'revoked'
+          WHERE invitation_id = $1",
+        &[&pending.invitation_id],
+    )?;
+
+    Ok(RevokeInvitationOutcome {
+        person_key: person_key.to_string(),
+        invitation_id: Some(pending.invitation_id),
+        delivery_state: ProfileDeliveryState::Revoked,
+        revoked: true,
+        reason: None,
+    })
+}
+
+/// Reads the safe invitation and delivery status for one person.
+///
+/// The caller must pass the family-admin rule. The view reports the lifecycle and
+/// the recorded attempt, and never a token, an address, or a credential. A
+/// pending row past its expiry is reported as `expired` without a write.
+pub fn read_invitation_status(
+    client: &mut Client,
+    identity: &VerifiedIdentity,
+    account: &IdentityAccount,
+    person_key: &str,
+) -> Result<InvitationStatusView, ProfileInvitationError> {
+    let person_key = person_key.trim();
+    authorize_person_invitation_in(client, identity, account, person_key)?;
+    let person_id = person_id_for_key(client, person_key)?;
+
+    let Some(record) = latest_invitation(client, person_id)? else {
+        return Ok(InvitationStatusView {
+            person_key: person_key.to_string(),
+            invitation_id: None,
+            invitation_status: None,
+            delivery_state: ProfileDeliveryState::NotSent,
+            delivery_provider: None,
+            last_delivery_error: None,
+            delivery_attempts: 0,
+            expires_at: None,
+            accepted_at: None,
+        });
+    };
+
+    Ok(InvitationStatusView {
+        person_key: person_key.to_string(),
+        invitation_id: Some(record.invitation_id),
+        invitation_status: Some(status_code(record.status)),
+        delivery_state: record.delivery_state,
+        delivery_provider: record.delivery_provider,
+        last_delivery_error: record.last_delivery_error,
+        delivery_attempts: record.delivery_attempts,
+        expires_at: record.expires_at,
+        accepted_at: record.accepted_at,
     })
 }
 

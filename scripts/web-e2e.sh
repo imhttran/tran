@@ -265,7 +265,8 @@ for migration in \
 	0030_lowercase_usernames \
 	0031_archive_photograph_assets \
 	0032_archive_photograph_link_provenance \
-	0033_onboarding_invitation_contact_draft; do
+	0033_onboarding_invitation_contact_draft \
+	0034_onboarding_invitation_delivery; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
