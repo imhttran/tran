@@ -114,6 +114,8 @@ export HOF_THIRD_BRANCH_KEY="branch-3"
 # integration suite separately proves the unconfigured adapter fails closed.
 export ONBOARDING_MAIL_ADAPTER="${ONBOARDING_MAIL_ADAPTER:-fake}"
 export ONBOARDING_ACTIVATION_URL="${ONBOARDING_ACTIVATION_URL:-${WEB_ORIGIN}/activate}"
+# The base the delivery builder uses; the link is {base}/{token}.
+export E2E_ACTIVATION_BASE="$ONBOARDING_ACTIVATION_URL"
 export ONBOARDING_SEND_INTERVAL_MS="${ONBOARDING_SEND_INTERVAL_MS:-0}"
 
 echo "web-e2e: starting the test OIDC issuer"
@@ -212,6 +214,10 @@ E2E_OIDC_INVITEE_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER
 export E2E_OIDC_INVITEE_TOKEN
 E2E_OIDC_INVITATION_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 export E2E_OIDC_INVITATION_TOKEN
+# A fourth invitation exercises the generated link shape end to end: a fresh
+# person and a known token, so the spec can open {base}/{token} exactly.
+E2E_LINK_INVITATION_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export E2E_LINK_INVITATION_TOKEN
 export E2E_CORPUS="$CORPUS"
 
 echo "web-e2e: seeding test identities"
@@ -350,6 +356,13 @@ psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO person (person_key, display_name) VALUES ('e2e-oidc-invitee-person', 'Synthetic OIDC Invitee Person')" >/dev/null
 psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_OIDC_INVITATION_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-oidc-invitee-person'" >/dev/null
+E2E_LINK_INVITATION_HASH=$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$E2E_LINK_INVITATION_TOKEN")
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "DELETE FROM person WHERE person_key = 'e2e-link-invitee-person'" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO person (person_key, display_name) VALUES ('e2e-link-invitee-person', 'Synthetic Link Invitee Person')" >/dev/null
+psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
+	-c "INSERT INTO onboarding_invitation (person_id, token_hash, expires_at, status, created_by) SELECT person_id, '$E2E_LINK_INVITATION_HASH', now() + interval '1 day', 'pending', 'e2e-seed' FROM person WHERE person_key = 'e2e-link-invitee-person'" >/dev/null
 
 # USR-005B: synthetic branch-review people with verified branch claims, plus the
 # reviewer's own account-person link. Reuses the synthetic branch rows above.
