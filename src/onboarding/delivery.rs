@@ -306,7 +306,7 @@ fn contact_for(client: &mut Client, person_id: i64) -> Result<Option<String>, De
 }
 
 /// Builds the activation link. The token appears only in the message body.
-fn activation_link(base: &str, token: &str) -> String {
+pub fn activation_link(base: &str, token: &str) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}token={token}")
 }

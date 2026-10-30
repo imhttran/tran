@@ -192,6 +192,9 @@ export E2E_FAMILY_MEMBER_TOKEN
 # Dedicated owner for the privacy-restriction scenario.
 E2E_RESTRICT_OWNER_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-restrict-owner --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
 export E2E_RESTRICT_OWNER_TOKEN
+# A login the app has never seen: it redeems a shared invitation link.
+E2E_INVITEE_TOKEN=$(python3 scripts/e2e-auth.py token --issuer "$E2E_ISSUER" --audience "$E2E_AUDIENCE" --subject e2e-invitee --role viewer --corpus "$CORPUS" --key-file "$E2E_KEY_FILE")
+export E2E_INVITEE_TOKEN
 E2E_RESTRICTABLE_MARKER="ZX-RESTRICTABLE-BIOGRAPHY-5b38"
 export E2E_RESTRICTABLE_MARKER
 
@@ -210,7 +213,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/008_identity_issuer_subjec
 # No password-reset provider in E2E: the reset action must fail closed.
 unset PASSWORD_RESET_URL PASSWORD_RESET_TOKEN
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null
+	-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee')" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 	-c "INSERT INTO users (subject, issuer) VALUES ('e2e-admin', '$E2E_ISSUER'), ('e2e-viewer', '$E2E_ISSUER'), ('e2e-approver', '$E2E_ISSUER'), ('e2e-deactivated', '$E2E_ISSUER'), ('e2e-reviewer', '$E2E_ISSUER'), ('e2e-reviewer-off', '$E2E_ISSUER'), ('e2e-family-member', '$E2E_ISSUER'), ('e2e-restrict-owner', '$E2E_ISSUER')" >/dev/null
 # A disposable account the admin accounts test changes and deactivates.
@@ -264,7 +267,8 @@ for migration in \
 	0029_narrative_review_search \
 	0030_lowercase_usernames \
 	0031_archive_photograph_assets \
-	0032_archive_photograph_link_provenance; do
+	0032_archive_photograph_link_provenance \
+	0033_invitation_claims; do
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-f "genealogy/migrations/$migration.sql" >/dev/null
 done
@@ -383,9 +387,9 @@ cleanup() {
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM documents WHERE corpus = '$CORPUS'" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null 2>&1 || true
+		-c "DELETE FROM audit_events WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee')" >/dev/null 2>&1 || true
 	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner')" >/dev/null 2>&1 || true
+		-c "DELETE FROM users WHERE subject IN ('e2e-admin', 'e2e-viewer', 'e2e-approver', 'e2e-deactivated', 'e2e-member', 'e2e-reviewer', 'e2e-reviewer-off', 'e2e-family-member', 'e2e-restrict-owner', 'e2e-invitee')" >/dev/null 2>&1 || true
 	# Profile members have no assertion review history, so they can be removed.
 	psql "$GENEALOGY_DATABASE_URL" -v ON_ERROR_STOP=1 \
 		-c "DELETE FROM person WHERE person_key IN ('e2e-profile-admin', 'e2e-profile-approver', 'e2e-profile-deactivated', 'e2e-profile-viewer')" >/dev/null 2>&1 || true

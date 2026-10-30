@@ -4647,3 +4647,7 @@ footer.page-footer {
     outline: 2px solid currentColor;
     outline-offset: -2px;
 }
+
+/* Shareable invitation links (admin). */
+.invite-link-result { display: grid; gap: 8px; margin: 12px 0; }
+.invite-link-result input { width: 100%; font-family: ui-monospace, monospace; font-size: 0.85rem; }

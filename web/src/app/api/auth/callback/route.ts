@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
+  INVITE_COOKIE,
   OIDC_NONCE_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
@@ -26,6 +27,7 @@ function clearTransient(response: NextResponse) {
     OIDC_STATE_COOKIE,
     OIDC_NONCE_COOKIE,
     OIDC_VERIFIER_COOKIE,
+    INVITE_COOKIE,
   ]) {
     response.cookies.set({ name, value: "", path: "/api/auth", maxAge: 0 });
   }
@@ -36,6 +38,51 @@ function fail(origin: string, code: string): NextResponse {
     new URL(`/signin?error=${encodeURIComponent(code)}`, origin),
     303,
   );
+  clearTransient(response);
+  return response;
+}
+
+type Invite = { token: string; name: string };
+
+function readInvite(value: string | undefined): Invite | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<Invite>;
+    return typeof parsed.token === "string" && typeof parsed.name === "string"
+      ? { token: parsed.token, name: parsed.name }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// Maps the Rust redemption outcome onto a short code the /activate page
+// explains. The token, name, and person never appear in the URL.
+async function redeemInvite(api: string, idToken: string, invite: Invite): Promise<string> {
+  try {
+    const response = await fetch(`${api}/api/invitations/redeem`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${idToken}`, "content-type": "application/json" },
+      body: JSON.stringify(invite),
+      cache: "no-store",
+    });
+    if (response.ok) return "awaiting";
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    const codes: Record<string, string> = {
+      invitation_expired: "expired",
+      invitation_accepted: "used",
+      unknown_invitation: "invalid",
+      already_linked: "linked",
+      invalid_name: "invalid",
+    };
+    return codes[body?.error ?? ""] ?? (response.status === 403 ? "denied" : "error");
+  } catch {
+    return "error";
+  }
+}
+
+function activationResult(origin: string, result: string): NextResponse {
+  const response = NextResponse.redirect(new URL(`/activate?result=${result}`, origin), 303);
   clearTransient(response);
   return response;
 }
@@ -124,19 +171,32 @@ export async function GET(request: NextRequest) {
   // Delegate signature verification and database-backed role/grant resolution
   // to Rust. A failure never becomes an anonymous session.
   const api = (process.env.API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
+
+  // A shared invitation link is redeemed here, server-side, with the fresh ID
+  // token, so the token never travels through the identity provider. The
+  // redemption records a claim for an administrator to confirm; until then the
+  // new login holds no role and can read only its own empty account.
+  const invite = readInvite(request.cookies.get(INVITE_COOKIE)?.value);
+  const inviteResult = invite ? await redeemInvite(api, idToken, invite) : null;
+
   try {
     const account = await fetch(`${api}/api/account`, {
       headers: { authorization: `Bearer ${idToken}` },
       cache: "no-store",
     });
     if (!account.ok) {
+      if (inviteResult) return activationResult(origin, inviteResult);
       return fail(origin, account.status === 403 ? "not_provisioned" : "session_denied");
     }
   } catch {
+    if (inviteResult) return activationResult(origin, inviteResult);
     return fail(origin, "account_unavailable");
   }
 
-  const response = NextResponse.redirect(new URL("/", origin), 303);
+  const response = NextResponse.redirect(
+    new URL(inviteResult ? `/activate?result=${inviteResult}` : "/", origin),
+    303,
+  );
   response.cookies.set(sessionCookie(idToken, sessionLifetime));
   response.cookies.set(csrfCookie(randomString(32), sessionLifetime));
   // Automatic renewal is optional. When the store is configured and the

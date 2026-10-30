@@ -57,7 +57,10 @@ pub use family_profile::{
     can_read_family_history, read_family_history, read_family_profile, FamilyHistory,
     FamilyProfile, FamilyProfileError, FamilyProfileField, FamilyProfileMedia,
 };
-pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
+pub use invitation::{
+    accept, claim_invitation, create, decide_claim, expire_due, pending_claims, revoke,
+    InvitationClaim, InvitationError, IssuedInvitation,
+};
 pub use link::{
     link_for_account, link_for_person, link_reviewed, revoke_link, LinkDecision, LinkError,
     LinkRecord,

@@ -16,6 +16,9 @@ use postgres::Client;
 use ring::rand::SecureRandom;
 use thiserror::Error;
 
+use crate::onboarding::account_map::IdentityAccount;
+use crate::onboarding::link::{link_reviewed_in, LinkDecision, LinkError, LinkRecord};
+
 /// A created (or reused) invitation.
 ///
 /// `token` is `Some` only when this call generated a new token. A reused
@@ -42,6 +45,12 @@ pub enum InvitationError {
     Expired,
     #[error("invitation already accepted")]
     AlreadyAccepted,
+    /// The invited person or the redeeming account already has an active link.
+    #[error("person or account is already linked")]
+    AlreadyLinked,
+    /// The self-reported name is blank or too long.
+    #[error("a name of 1 to 100 characters is required")]
+    InvalidName,
     #[error("database error")]
     Database(String),
 }
@@ -163,20 +172,69 @@ pub fn create(
 /// revoked token returns [`InvitationError::InvalidToken`]; an expired pending
 /// token is marked `expired` and returns [`InvitationError::Expired`].
 pub fn accept(client: &mut Client, token: &str) -> Result<i64, InvitationError> {
-    let token_hash = hash_token(token);
+    redeem_in(client.transaction()?, token, None)
+}
+
+/// Redeems a shared invitation link for a signed-in `account`.
+///
+/// Consumes the token exactly like [`accept`] and records the claiming account
+/// (opaque id + fingerprint) and the member's self-reported name. A claim is
+/// not a link: an administrator confirms or rejects it with [`decide_claim`].
+/// The token is left untouched when the person or the account already has an
+/// active link, so a mistaken redemption does not burn the invitation.
+pub fn claim_invitation(
+    client: &mut Client,
+    token: &str,
+    account: &IdentityAccount,
+    claimed_name: &str,
+) -> Result<i64, InvitationError> {
+    let name = claimed_name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(InvitationError::InvalidName);
+    }
     let mut tx = client.transaction()?;
+    let linked: bool = tx
+        .query_one(
+            "SELECT EXISTS (
+                 SELECT 1 FROM onboarding_person_account_link l
+                  WHERE l.account_id = $2
+                     OR l.person_id = (SELECT person_id FROM onboarding_invitation
+                                        WHERE token_hash = $1))",
+            &[&hash_token(token), &account.account_id],
+        )?
+        .get(0);
+    if linked {
+        return Err(InvitationError::AlreadyLinked);
+    }
+    redeem_in(tx, token, Some((account, name)))
+}
+
+/// Consumes a pending, unexpired token inside `tx` and commits. With a claim,
+/// the claiming account and name are stored on the same row.
+fn redeem_in(
+    mut tx: postgres::Transaction<'_>,
+    token: &str,
+    claim: Option<(&IdentityAccount, &str)>,
+) -> Result<i64, InvitationError> {
+    let token_hash = hash_token(token);
+    let account_id = claim.map(|(account, _)| account.account_id);
+    let fingerprint = claim.map(|(account, _)| account.identity_fingerprint.as_str());
+    let name = claim.map(|(_, name)| name);
 
     let accepted = tx.query_opt(
         "UPDATE onboarding_invitation
             SET status = 'accepted',
                 used_at = now(),
-                accepted_at = now()
+                accepted_at = now(),
+                account_id = COALESCE($2, account_id),
+                claimed_fingerprint = COALESCE($3, claimed_fingerprint),
+                claimed_name = COALESCE($4, claimed_name)
           WHERE token_hash = $1
             AND status = 'pending'
             AND expires_at IS NOT NULL
             AND expires_at > now()
           RETURNING invitation_id",
-        &[&token_hash],
+        &[&token_hash, &account_id, &fingerprint, &name],
     )?;
     if let Some(row) = accepted {
         let invitation_id: i64 = row.get(0);
@@ -240,6 +298,94 @@ pub fn revoke(client: &mut Client, invitation_id: i64) -> Result<(), InvitationE
     } else {
         Err(InvitationError::InvalidToken)
     }
+}
+
+/// One redeemed invitation waiting for an administrator's decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvitationClaim {
+    pub invitation_id: i64,
+    pub person_key: String,
+    pub person_label: String,
+    /// The opaque identity account that redeemed the link.
+    pub account_id: i64,
+    /// The member's self-reported name. It is not verified.
+    pub claimed_name: String,
+    pub claimed_at: String,
+}
+
+/// Lists redeemed invitations that no administrator has decided yet, oldest
+/// first.
+pub fn pending_claims(client: &mut Client) -> Result<Vec<InvitationClaim>, InvitationError> {
+    let rows = client.query(
+        "SELECT i.invitation_id, p.person_key, p.display_name, i.account_id,
+                COALESCE(i.claimed_name, ''), i.accepted_at::text
+           FROM onboarding_invitation i
+           JOIN person p ON p.person_id = i.person_id
+          WHERE i.status = 'accepted'
+            AND i.account_id IS NOT NULL
+            AND i.claim_decision IS NULL
+          ORDER BY i.accepted_at, i.invitation_id",
+        &[],
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|row| InvitationClaim {
+            invitation_id: row.get(0),
+            person_key: row.get(1),
+            person_label: row.get(2),
+            account_id: row.get(3),
+            claimed_name: row.get(4),
+            claimed_at: row.get(5),
+        })
+        .collect())
+}
+
+/// Confirms or rejects one open claim.
+///
+/// `Approve` writes the reviewed account-to-person link and its audit row;
+/// `Reject` writes only a `rejected` audit row. Either way the claim is marked
+/// decided in the same transaction, so a claim is decided at most once and a
+/// failed link (for example, an account linked meanwhile) leaves it open. An
+/// unknown or already decided claim returns [`LinkError::UnknownLink`].
+pub fn decide_claim(
+    client: &mut Client,
+    invitation_id: i64,
+    decision: LinkDecision,
+    reviewer: &str,
+) -> Result<Option<LinkRecord>, LinkError> {
+    let db = |err: postgres::Error| LinkError::Database(err.to_string());
+    let mut tx = client.transaction().map_err(db)?;
+    let Some(row) = tx
+        .query_opt(
+            "SELECT person_id, account_id, claimed_fingerprint
+               FROM onboarding_invitation
+              WHERE invitation_id = $1
+                AND status = 'accepted'
+                AND account_id IS NOT NULL
+                AND claimed_fingerprint IS NOT NULL
+                AND claim_decision IS NULL
+              FOR UPDATE",
+            &[&invitation_id],
+        )
+        .map_err(db)?
+    else {
+        return Err(LinkError::UnknownLink);
+    };
+    let person_id: i64 = row.get(0);
+    let account = IdentityAccount {
+        account_id: row.get(1),
+        identity_fingerprint: row.get(2),
+    };
+    let record = link_reviewed_in(&mut tx, person_id, &account, decision, reviewer)?;
+    tx.execute(
+        "UPDATE onboarding_invitation
+            SET claim_decision = $2, claim_decided_by = $3, claim_decided_at = now()
+          WHERE invitation_id = $1",
+        &[&invitation_id, &decision.as_str(), &reviewer.trim()],
+    )
+    .map_err(db)?;
+    tx.commit().map_err(db)?;
+    Ok(record)
 }
 
 /// Mark pending invitations whose `expires_at <= now()` as `expired`.

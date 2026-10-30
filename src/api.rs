@@ -444,6 +444,19 @@ impl AppState {
                 post(revoke_invitation),
             )
             .route("/api/admin/family-members/links", post(create_link))
+            .route(
+                "/api/admin/family-members/invitation-links",
+                post(create_invitation_link),
+            )
+            .route(
+                "/api/admin/family-members/claims",
+                get(list_invitation_claims),
+            )
+            .route(
+                "/api/admin/family-members/claims/{id}",
+                post(decide_invitation_claim),
+            )
+            .route("/api/invitations/redeem", post(redeem_invitation))
             .route("/api/admin/family-members/people", get(admin_member_people))
             .route(
                 "/api/admin/family-members/links/{id}/revoke",
@@ -6705,6 +6718,16 @@ fn invitation_error(err: onboarding::InvitationError) -> Response {
             "invitation_accepted",
             "the invitation was already accepted",
         ),
+        onboarding::InvitationError::AlreadyLinked => error(
+            StatusCode::CONFLICT,
+            "already_linked",
+            "the person or account is already linked",
+        ),
+        onboarding::InvitationError::InvalidName => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_name",
+            "a name of 1 to 100 characters is required",
+        ),
         onboarding::InvitationError::Database(_) => error(
             StatusCode::SERVICE_UNAVAILABLE,
             "invitation_unavailable",
@@ -6956,6 +6979,283 @@ async fn revoke_invitation(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "invitation_failed",
                 "the invitation failed",
+            )
+        }
+    }
+}
+
+// --- shareable invitation links -------------------------------------------
+
+/// Issues a fresh single-use link for one unlinked person and returns its URL
+/// once. Any earlier pending invitation for the person is revoked, so only the
+/// newest shared link works. No email address is needed: the administrator
+/// shares the URL through whatever channel suits the member.
+#[allow(clippy::result_large_err)]
+async fn create_invitation_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateInvitationRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingInvite) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let person_key = request.person_key.trim().to_string();
+    if person_key.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_person",
+            "person_key must not be empty",
+        );
+    }
+    let ttl = request
+        .ttl_secs
+        .unwrap_or(DEFAULT_INVITATION_TTL_SECS)
+        .clamp(1, MAX_INVITATION_TTL_SECS);
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let task_person_key = person_key.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<(i64, String), Response> {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        let person_id = person_id_for_key(&mut client, &task_person_key)
+            .map_err(|err| genealogy_unavailable(err.to_string()))?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "unknown_person", "no such person"))?;
+        if link::link_for_person(&mut client, person_id)
+            .map_err(link_error)?
+            .is_some()
+        {
+            return Err(link_error(LinkError::AlreadyLinked));
+        }
+        let (invitation_id, token) = onboarding::delivery::issue_deliverable_invitation(
+            &mut client,
+            person_id,
+            Duration::from_secs(ttl),
+            &actor,
+        )
+        .map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        })?
+        .ok_or_else(|| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        })?;
+        let url = onboarding::delivery::activation_link(&config.onboarding_activation_url, &token);
+        Ok((invitation_id, url))
+    })
+    .await;
+    match result {
+        Ok(Ok((invitation_id, url))) => Json(serde_json::json!({
+            "ok": true,
+            "invitation_id": invitation_id,
+            "person_key": person_key,
+            "url": url,
+            "expires_in_secs": ttl,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation link task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RedeemInvitationRequest {
+    token: String,
+    name: String,
+}
+
+/// Redeems a shared invitation for the signed-in account.
+///
+/// Only the verified token is required here, not a role: a member who just
+/// created their login has none yet. A missing account row is created with no
+/// role or grant (a deactivated account is never revived), and the invitation
+/// records a claim that an administrator must confirm before any link exists.
+#[allow(clippy::result_large_err)]
+async fn redeem_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RedeemInvitationRequest>,
+) -> Response {
+    let verified = match authenticate(&state, &headers) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if !state.limiter.check(verified.subject(), "invitation_redeem") {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many requests for this operation",
+        );
+    }
+    let token = request.token.trim().to_string();
+    if token.is_empty() {
+        return invitation_error(onboarding::InvitationError::InvalidToken);
+    }
+    let config = state.config.clone();
+    let store = state.store.clone();
+    let subject = verified.subject().to_string();
+    let issuer = verified.issuer().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<String, Response> {
+        let mut identity = identity_client(&store).map_err(identity_store_error)?;
+        identity
+            .register_if_absent(&subject, &issuer)
+            .map_err(identity_store_error)?;
+        let mut identity_db = postgres::Client::connect(&config.database_url, postgres::NoTls)
+            .map_err(|_| {
+                error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "identity_unavailable",
+                    "the identity store is unavailable",
+                )
+            })?;
+        let account = onboarding::resolve_account(&mut identity_db, &issuer, &subject)
+            .map_err(account_map_error)?;
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        let invitation_id =
+            onboarding::claim_invitation(&mut client, &token, &account, &request.name)
+                .map_err(invitation_error)?;
+        let label: String = client
+            .query_one(
+                "SELECT p.display_name FROM onboarding_invitation i \
+                   JOIN person p ON p.person_id = i.person_id \
+                  WHERE i.invitation_id = $1",
+                &[&invitation_id],
+            )
+            .map_err(|err| genealogy_unavailable(err.to_string()))?
+            .get(0);
+        Ok(label)
+    })
+    .await;
+    match result {
+        Ok(Ok(person_label)) => Json(serde_json::json!({
+            "ok": true,
+            "status": "awaiting_confirmation",
+            "person_label": person_label,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation redeem task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invitation_failed",
+                "the invitation failed",
+            )
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn list_invitation_claims(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingLink) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, Response> {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        onboarding::pending_claims(&mut client).map_err(invitation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(claims)) => Json(serde_json::json!({
+            "ok": true,
+            "claims": claims.iter().map(|claim| serde_json::json!({
+                "invitation_id": claim.invitation_id,
+                "person_key": claim.person_key,
+                "person_label": claim.person_label,
+                "account_id": claim.account_id,
+                "claimed_name": claim.claimed_name,
+                "claimed_at": claim.claimed_at,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => genealogy_unavailable(format!("claim list task failed: {err}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClaimDecisionRequest {
+    decision: String,
+}
+
+/// Confirms or rejects one redeemed invitation. Confirming writes the reviewed
+/// link and then gives the account the baseline viewer role and archive grant
+/// so the member can use the site; an existing role or grant is left as is.
+#[allow(clippy::result_large_err)]
+async fn decide_invitation_claim(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(invitation_id): Path<i64>,
+    Json(request): Json<ClaimDecisionRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingLink) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
+        "approve" | "approved" => LinkDecision::Approve,
+        "reject" | "rejected" => LinkDecision::Reject,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_decision",
+                "decision must be approve or reject",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let store = state.store.clone();
+    let corpus = state.corpus.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<bool, Response> {
+        let mut client = open_genealogy(&config).map_err(genealogy_unavailable)?;
+        let Some(record) = onboarding::decide_claim(&mut client, invitation_id, decision, &actor)
+            .map_err(link_error)?
+        else {
+            return Ok(false);
+        };
+        let mut identity = identity_client(&store).map_err(identity_store_error)?;
+        let (subject, issuer) = identity
+            .active_identity(record.account_id)
+            .map_err(identity_store_error)?
+            .ok_or_else(|| account_map_error(AccountMapError::DeactivatedIdentity))?;
+        identity
+            .grant_corpus(&subject, &issuer, &corpus, &actor)
+            .map_err(identity_store_error)?;
+        IdentityStore::new(identity)
+            .grant_role(&subject, &issuer, Role::Viewer, &actor)
+            .map_err(identity_store_error)?;
+        Ok(true)
+    })
+    .await;
+    match result {
+        Ok(Ok(linked)) => Json(serde_json::json!({
+            "ok": true,
+            "invitation_id": invitation_id,
+            "linked": linked,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: claim decision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "link_failed",
+                "the link failed",
             )
         }
     }
