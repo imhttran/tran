@@ -1,4 +1,4 @@
-# Profile Invitation — Acceptance Evidence (PIR-007 / follow-ups in PRs #136 and #137)
+# Profile Invitation — Acceptance Evidence (PIR-007 / follow-ups in PRs #136, #137, and #138)
 
 Evidence for the recovery plan `docs/plans/PLAN-TRAN-PROFILE-INVITATION-RECOVERY.md`
 (tasks PIR-001 through PIR-007) and for the follow-up that makes the flow usable by
@@ -7,7 +7,7 @@ this working tree; anything not run is marked `NOT RUN`. All data used in tests 
 synthetic (`example.test` addresses, `synthetic-*` and `e2e-*` keys). No real name,
 address, token, hash, or credential appears in this document.
 
-## Follow-up changes (PR #136 follow-up, delivered in PR #137)
+## Follow-up changes (PRs #136–#138)
 
 The first delivery was safe but not usable end to end. This follow-up closes five
 gaps; each is verified below.
