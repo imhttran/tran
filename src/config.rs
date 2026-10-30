@@ -53,8 +53,11 @@ pub const DEFAULT_SESSION_REFRESH_WINDOW_SECONDS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 pub const DEFAULT_PASSWORD_RESET_COOLDOWN_SECS: i64 = 300;
 
-/// Bulk invitation delivery adapter: `unconfigured` (default) or `fake`.
+/// Bulk invitation delivery adapter: `unconfigured` (default), `fake`, or
+/// `http`.
 pub const DEFAULT_ONBOARDING_MAIL_ADAPTER: &str = "unconfigured";
+/// Request timeout for the `http` mail adapter, in seconds.
+pub const DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS: i64 = 10;
 /// Base URL used to build the activation link handed to the adapter.
 pub const DEFAULT_ONBOARDING_ACTIVATION_URL: &str = "/activate";
 /// Minimum delay between bulk invitation sends, in milliseconds.
@@ -123,6 +126,13 @@ pub struct Config {
     /// Bulk invitation delivery adapter name. Defaults to `unconfigured`, which
     /// fails closed without creating an invitation.
     pub onboarding_mail_adapter: String,
+    /// HTTPS endpoint for the `http` mail adapter. `None` fails closed even when
+    /// the adapter name is `http`.
+    pub onboarding_mail_url: Option<String>,
+    /// Optional bearer credential for the `http` mail adapter.
+    pub onboarding_mail_bearer: Option<String>,
+    /// Request timeout for the `http` mail adapter.
+    pub onboarding_mail_timeout_secs: u64,
     /// Base URL for the one-time activation link.
     pub onboarding_activation_url: String,
     /// Delay between bulk sends, in milliseconds.
@@ -362,6 +372,18 @@ impl Config {
             )?,
             auth_rate_limit: positive_int(&get, "AUTH_RATE_LIMIT", DEFAULT_AUTH_RATE_LIMIT)?,
             onboarding_mail_adapter: onboarding_mail_adapter(&get)?,
+            onboarding_mail_url: match get("ONBOARDING_MAIL_URL") {
+                None => None,
+                Some(url) => Some(validate_provider_endpoint("ONBOARDING_MAIL_URL", &url)?),
+            },
+            onboarding_mail_bearer: get("ONBOARDING_MAIL_BEARER")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            onboarding_mail_timeout_secs: positive_int(
+                &get,
+                "ONBOARDING_MAIL_TIMEOUT_SECS",
+                DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS,
+            )? as u64,
             onboarding_activation_url: get("ONBOARDING_ACTIVATION_URL")
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
@@ -393,12 +415,22 @@ impl Config {
 
     /// Builds the configured bulk delivery adapter.
     ///
-    /// Only the synthetic `fake` adapter is implemented. A production operator
-    /// must supply a real provider adapter and approve its configuration before
-    /// real invitations can be sent.
+    /// `fake` is synthetic and never performs network I/O. `http` posts one
+    /// JSON message to `ONBOARDING_MAIL_URL` and reports provider acceptance
+    /// only. Any other name, or `http` without a valid URL, fails closed.
     pub fn mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
         match self.onboarding_mail_adapter.as_str() {
             "fake" => Box::new(crate::onboarding::FakeAdapter::accepting()),
+            "http" => match self.onboarding_mail_url.as_deref() {
+                Some(url) if !url.trim().is_empty() => {
+                    Box::new(crate::onboarding::HttpMailAdapter::new(
+                        url,
+                        self.onboarding_mail_bearer.clone(),
+                        Duration::from_secs(self.onboarding_mail_timeout_secs.max(1)),
+                    ))
+                }
+                _ => Box::new(crate::onboarding::UnconfiguredAdapter),
+            },
             _ => Box::new(crate::onboarding::UnconfiguredAdapter),
         }
     }
@@ -436,9 +468,9 @@ impl Config {
     }
 }
 
-/// Validates the bulk delivery adapter name. Only the fail-closed default and
-/// the synthetic test adapter exist today; an unknown name is an error rather
-/// than a silent fallback.
+/// Validates the bulk delivery adapter name. The fail-closed default, the
+/// synthetic test adapter, and the HTTP provider adapter are the supported
+/// values; an unknown name is an error rather than a silent fallback.
 fn onboarding_mail_adapter<F>(get: &F) -> Result<String, ConfigError>
 where
     F: Fn(&str) -> Option<String>,
@@ -446,11 +478,28 @@ where
     let value = get("ONBOARDING_MAIL_ADAPTER")
         .unwrap_or_else(|| DEFAULT_ONBOARDING_MAIL_ADAPTER.to_string());
     match value.trim() {
-        "unconfigured" | "fake" => Ok(value.trim().to_string()),
+        "unconfigured" | "fake" | "http" => Ok(value.trim().to_string()),
         other => Err(ConfigError::Invalid(format!(
-            "ONBOARDING_MAIL_ADAPTER must be unconfigured or fake, got {other:?}"
+            "ONBOARDING_MAIL_ADAPTER must be unconfigured, fake, or http, got {other:?}"
         ))),
     }
+}
+
+/// Requires a provider endpoint to use https, or http only on loopback.
+fn validate_provider_endpoint(variable: &str, raw: &str) -> Result<String, ConfigError> {
+    let url = raw.trim().to_string();
+    let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+        .iter()
+        .any(|prefix| {
+            url.strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+        });
+    if url.is_empty() || (!local && !url.starts_with("https://")) {
+        return Err(ConfigError::Invalid(format!(
+            "{variable} must use https:// (or http:// on loopback)"
+        )));
+    }
+    Ok(url)
 }
 
 /// Validates a configured provider name against the provider registry,
@@ -970,5 +1019,31 @@ mod tests {
                 (url, Some("t"))
             );
         }
+    }
+
+    #[test]
+    fn the_http_mail_adapter_requires_a_valid_endpoint() {
+        // Unknown names and plain remote HTTP are configuration errors.
+        assert!(load(&[("ONBOARDING_MAIL_ADAPTER", "smtp")]).is_err());
+        assert!(load(&[
+            ("ONBOARDING_MAIL_ADAPTER", "http"),
+            ("ONBOARDING_MAIL_URL", "http://mail.example/send"),
+        ])
+        .is_err());
+
+        // https, or loopback http, is accepted with an optional bearer.
+        let cfg = load(&[
+            ("ONBOARDING_MAIL_ADAPTER", "http"),
+            ("ONBOARDING_MAIL_URL", "https://mail.example/send"),
+            ("ONBOARDING_MAIL_BEARER", "synthetic-bearer"),
+        ])
+        .unwrap();
+        let adapter = cfg.mail_adapter();
+        assert!(adapter.is_configured());
+        assert_eq!(adapter.name(), "http");
+
+        // The name without a URL still fails closed.
+        let cfg = load(&[("ONBOARDING_MAIL_ADAPTER", "http")]).unwrap();
+        assert!(!cfg.mail_adapter().is_configured());
     }
 }

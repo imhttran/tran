@@ -166,8 +166,6 @@ pub enum Operation {
     MemberDirectory,
     /// Requesting a provider-managed password reset email for an account.
     PasswordReset,
-    /// Accepting one's own invitation link (self-service, token-authorized).
-    InvitationAccept,
 }
 
 impl Operation {
@@ -205,8 +203,7 @@ impl Operation {
             | Operation::ProfileWrite
             | Operation::FamilyProfileRead
             | Operation::BranchReviewRead
-            | Operation::BranchReviewWrite
-            | Operation::InvitationAccept => None,
+            | Operation::BranchReviewWrite => None,
         }
     }
 
@@ -257,7 +254,6 @@ impl Operation {
             Operation::OnboardingBulkSend => "onboarding_bulk_send",
             Operation::MemberDirectory => "member_directory",
             Operation::PasswordReset => "password_reset",
-            Operation::InvitationAccept => "invitation_accept",
         }
     }
 }

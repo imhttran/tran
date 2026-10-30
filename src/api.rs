@@ -198,6 +198,10 @@ impl AppState {
         Router::new()
             .route("/api/health", get(health))
             .route("/api/invitations/{token}", get(preview_invitation))
+            .route(
+                "/api/invitations/{token}/provision",
+                post(provision_invitation),
+            )
             .route("/api/invitations/{token}/accept", post(accept_invitation))
             .route("/api/internal/sessions", post(create_internal_session))
             .route(
@@ -473,6 +477,14 @@ impl AppState {
                 post(revoke_invitation),
             )
             .route("/api/admin/family-members/links", post(create_link))
+            .route(
+                "/api/admin/family-members/link-requests",
+                get(admin_link_requests),
+            )
+            .route(
+                "/api/admin/family-members/link-requests/{id}/decision",
+                post(admin_decide_link_request),
+            )
             .route("/api/admin/family-members/people", get(admin_member_people))
             .route(
                 "/api/admin/family-members/links/{id}/revoke",
@@ -4140,6 +4152,21 @@ fn activation_error(err: onboarding::ActivationError) -> Response {
             "wrong_person",
             "your account is linked to a different person",
         ),
+        onboarding::ActivationError::LinkRejected => error(
+            StatusCode::CONFLICT,
+            "link_rejected",
+            "an administrator rejected this link request",
+        ),
+        onboarding::ActivationError::UnknownLinkRequest => error(
+            StatusCode::NOT_FOUND,
+            "unknown_link_request",
+            "no such link request",
+        ),
+        onboarding::ActivationError::LinkRequestAlreadyDecided => error(
+            StatusCode::CONFLICT,
+            "link_request_decided",
+            "this link request was already decided",
+        ),
         onboarding::ActivationError::Link(_)
         | onboarding::ActivationError::Invitation(_)
         | onboarding::ActivationError::Database(_) => error(
@@ -4178,6 +4205,7 @@ async fn preview_invitation(State(state): State<AppState>, Path(token): Path<Str
             "display_name": preview.display_name,
             "state": preview.state.as_str(),
             "person_linked": preview.person_linked,
+            "request_state": preview.request_state.as_str(),
         }))
         .into_response(),
         Ok(Err(response)) => response,
@@ -4192,22 +4220,166 @@ async fn preview_invitation(State(state): State<AppState>, Path(token): Path<Str
     }
 }
 
-/// Accepts one invitation for the signed-in account. The token and the reviewed
-/// link decide; no role is granted and no existing link is replaced.
+/// Grants the minimum member access an invitation implies. The identity store
+/// audits every write and the grant is idempotent, so a retried activation is
+/// safe. It never grants `editor` or `admin`.
+#[allow(clippy::result_large_err)]
+fn provision_member(
+    config: &Config,
+    issuer: &str,
+    subject: &str,
+    corpus: &str,
+) -> Result<(), Response> {
+    let client =
+        postgres::Client::connect(&config.database_url, postgres::NoTls).map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_unavailable",
+                "the identity store is unavailable",
+            )
+        })?;
+    let mut identity = crate::identity_store_pg::PgIdentityClient::from_client(client);
+    onboarding::provision_invited_member(&mut identity, subject, issuer, corpus, "invitation")
+        .map_err(|err| {
+            eprintln!("api: invitation provisioning failed: {err}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provision_failed",
+                "the member account could not be prepared",
+            )
+        })?;
+    Ok(())
+}
+
+/// Provisions member access for an invitee who signed in through the identity
+/// provider. The invitation token plus the verified identity authorize it; no
+/// account or role is granted beyond viewer and the archive corpus, and the link
+/// still waits for an administrative review.
+#[allow(clippy::result_large_err)]
+async fn provision_invitation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    let identity = match authenticate(&state, &headers) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    if !state
+        .limiter
+        .check(identity.subject(), "invitation_provision")
+    {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many provisioning requests",
+        );
+    }
+    let config = state.config.clone();
+    let corpus = state.corpus.clone();
+    let issuer = identity.issuer().to_string();
+    let subject = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        // Validate the link before writing anything, so a bad or expired token
+        // never creates an account.
+        {
+            let mut genealogy = open_genealogy_response(&config)?;
+            let preview =
+                onboarding::preview_invitation(&mut genealogy, &token).map_err(activation_error)?;
+            match preview.state {
+                onboarding::ActivationState::Expired => {
+                    return Err(activation_error(onboarding::ActivationError::Expired))
+                }
+                onboarding::ActivationState::Revoked => {
+                    return Err(activation_error(onboarding::ActivationError::Revoked))
+                }
+                onboarding::ActivationState::Pending | onboarding::ActivationState::Accepted => {}
+            }
+            if preview.person_linked {
+                // The person already has an account; provisioning a second one
+                // would not help and is not what an invitation authorizes.
+                return Ok::<_, Response>(
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "provisioned": false,
+                        "reason": "person_already_linked",
+                    }))
+                    .into_response(),
+                );
+            }
+        }
+        provision_member(&config, &issuer, &subject, &corpus)?;
+        Ok::<_, Response>(
+            Json(serde_json::json!({ "ok": true, "provisioned": true })).into_response(),
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => response,
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: invitation provisioning task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provision_failed",
+                "the member account could not be prepared",
+            )
+        }
+    }
+}
+
+/// Accepts one invitation for the signed-in identity. The token authorizes the
+/// acceptance; the person link is only *requested* and an administrator decides
+/// it. No role is granted here and no existing link is replaced.
 #[allow(clippy::result_large_err)]
 async fn accept_invitation(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Response {
-    let identity = match authorize(&state, &headers, Operation::InvitationAccept) {
+    let identity = match authenticate(&state, &headers) {
         Ok(identity) => identity,
         Err(response) => return response,
     };
+    if !state.limiter.check(identity.subject(), "invitation_accept") {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many acceptance requests",
+        );
+    }
     let config = state.config.clone();
+    let corpus = state.corpus.clone();
     let issuer = identity.issuer().to_string();
     let subject = identity.subject().to_string();
     let result = tokio::task::spawn_blocking(move || {
+        // An invitee who has never signed in has no account yet. Provision the
+        // minimum member access before resolving the account, but only for a
+        // usable invitation, so a failed acceptance creates nothing.
+        {
+            let mut genealogy = open_genealogy_response(&config)?;
+            let preview =
+                onboarding::preview_invitation(&mut genealogy, &token).map_err(activation_error)?;
+            match preview.state {
+                onboarding::ActivationState::Expired => {
+                    return Err(activation_error(onboarding::ActivationError::Expired))
+                }
+                onboarding::ActivationState::Revoked => {
+                    return Err(activation_error(onboarding::ActivationError::Revoked))
+                }
+                onboarding::ActivationState::Pending if !preview.person_linked => {
+                    provision_member(&config, &issuer, &subject, &corpus)?;
+                }
+                // A person who already has a link belongs to another account (a
+                // retry after approval arrives as `Accepted`, not `Pending`).
+                onboarding::ActivationState::Pending => {
+                    return Err(activation_error(
+                        onboarding::ActivationError::PersonAlreadyLinked,
+                    ))
+                }
+                onboarding::ActivationState::Accepted => {}
+            }
+        }
         let account = resolve_profile_account(&config, &issuer, &subject)?;
         let mut genealogy = open_genealogy_response(&config)?;
         onboarding::accept_invitation(&mut genealogy, &token, &account).map_err(activation_error)
@@ -4219,7 +4391,7 @@ async fn accept_invitation(
             "person_key": outcome.person_key,
             "display_name": outcome.display_name,
             "state": outcome.state.as_str(),
-            "already_linked": outcome.already_linked,
+            "link_state": outcome.link_state.as_str(),
         }))
         .into_response(),
         Ok(Err(response)) => response,
@@ -4229,6 +4401,105 @@ async fn accept_invitation(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "activation_failed",
                 "the invitation could not be activated",
+            )
+        }
+    }
+}
+
+/// Lists pending reviewed-link requests for an administrator.
+#[allow(clippy::result_large_err)]
+async fn admin_link_requests(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::OnboardingLink) {
+        return response;
+    }
+    let config = state.config.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::pending_link_requests(&mut genealogy).map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(requests)) => Json(serde_json::json!({
+            "ok": true,
+            "requests": requests
+                .iter()
+                .map(|request| serde_json::json!({
+                    "request_id": request.request_id,
+                    "invitation_id": request.invitation_id,
+                    "person_key": request.person_key,
+                    "display_name": request.display_name,
+                    "account_id": request.account_id,
+                    "requested_at": request.requested_at,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: link request list task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "link_request_failed",
+                "the link request list failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LinkRequestDecisionBody {
+    decision: String,
+}
+
+/// Applies one administrative decision to a reviewed-link request. Approval uses
+/// the existing reviewed-link policy; rejection records the decision without a
+/// link.
+#[allow(clippy::result_large_err)]
+async fn admin_decide_link_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<i64>,
+    Json(body): Json<LinkRequestDecisionBody>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::OnboardingLink) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let decision = match body.decision.trim().to_ascii_lowercase().as_str() {
+        "approve" | "approved" => LinkDecision::Approve,
+        "reject" | "rejected" => LinkDecision::Reject,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_decision",
+                "decision must be approve or reject",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let actor = identity.subject().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::decide_link_request(&mut genealogy, request_id, decision, &actor)
+            .map_err(activation_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(decided)) => Json(serde_json::json!({
+            "ok": true,
+            "request_id": decided.request_id,
+            "person_key": decided.person_key,
+            "linked": decided.linked,
+            "already_decided": decided.already_decided,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: link request decision task failed: {err}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "link_request_failed",
+                "the link request decision failed",
             )
         }
     }

@@ -7,10 +7,15 @@ import type { Page } from "@playwright/test";
 // failure states of this page, and that the invitation token is never rendered.
 // Synthetic names and tokens are used; no real invitation exists.
 
-const TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TOKEN =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const AUTH_PATH = `/activate/${TOKEN}`;
 
-const SIGNED_IN = { state: "signed_in", role: "viewer", display_name: "Synthetic Member" };
+const SIGNED_IN = {
+  state: "signed_in",
+  role: "viewer",
+  display_name: "Synthetic Member",
+};
 const ANONYMOUS = { state: "anonymous" };
 
 function json(status: number, body: unknown) {
@@ -47,10 +52,14 @@ async function stubInvitation(
             person_key: "synthetic-person",
             display_name: "Synthetic Person",
             state: "accepted",
-            already_linked: false,
+            link_state: "pending_review",
           },
         ),
       );
+      return;
+    }
+    if (path.endsWith("/provision")) {
+      await route.fulfill(json(200, { ok: true, provisioned: true }));
       return;
     }
     await route.fulfill(json(preview.status, preview.body));
@@ -67,6 +76,7 @@ function pendingPreview(overrides: Record<string, unknown> = {}) {
       display_name: "Synthetic Person",
       state: "pending",
       person_linked: false,
+      request_state: "none",
       ...overrides,
     },
   };
@@ -99,7 +109,7 @@ test.describe("invitation activation", () => {
     await expect(page.getByText(TOKEN)).toHaveCount(0);
   });
 
-  test("a signed-in invitee accepts and is linked to Member access", async ({
+  test("a signed-in invitee accepts and waits for the reviewed link", async ({
     page,
   }) => {
     await stubSession(page, SIGNED_IN);
@@ -107,6 +117,36 @@ test.describe("invitation activation", () => {
 
     await page.goto(AUTH_PATH);
     await expect(page.getByTestId("activation-signin")).toHaveCount(0);
+    await page.getByTestId("activation-accept").click();
+
+    // Token possession records a request; it never approves the link itself.
+    await expect(page.getByTestId("activation-pending-review")).toBeVisible();
+    await expect(page.getByTestId("activation-pending-review")).toContainText(
+      "Synthetic Person",
+    );
+    await expect(page.getByTestId("activation-pending-review")).toContainText(
+      "Member access",
+    );
+    await expect(page.getByTestId("activation-open-profile")).toHaveCount(0);
+    expect(calls.some((path) => path.endsWith("/accept"))).toBe(true);
+  });
+
+  test("an administrator-approved link completes the welcome", async ({
+    page,
+  }) => {
+    await stubSession(page, SIGNED_IN);
+    await stubInvitation(page, pendingPreview(), {
+      status: 200,
+      body: {
+        ok: true,
+        person_key: "synthetic-person",
+        display_name: "Synthetic Person",
+        state: "accepted",
+        link_state: "linked",
+      },
+    });
+
+    await page.goto(AUTH_PATH);
     await page.getByTestId("activation-accept").click();
 
     await expect(page.getByTestId("activation-accepted")).toBeVisible();
@@ -120,7 +160,19 @@ test.describe("invitation activation", () => {
       "href",
       "/family/synthetic-person",
     );
-    expect(calls.some((path) => path.endsWith("/accept"))).toBe(true);
+  });
+
+  test("a returning invitee sees the recorded review state", async ({
+    page,
+  }) => {
+    await stubSession(page, ANONYMOUS);
+    await stubInvitation(
+      page,
+      pendingPreview({ state: "accepted", request_state: "pending" }),
+    );
+
+    await page.goto(AUTH_PATH);
+    await expect(page.getByTestId("activation-pending-review")).toBeVisible();
   });
 
   test("an expired invitation explains the next step", async ({ page }) => {

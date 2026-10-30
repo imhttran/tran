@@ -75,10 +75,10 @@ impl FamilyAdminDecision {
 pub enum FamilyAdminAllow {
     /// The caller holds the system `admin` role.
     SystemAdmin,
-    /// The caller's Head of Family appointment covers the target's branch.
+    /// The caller's active Head of Family appointment covers the target's
+    /// branch. A caller may invite themselves only through this branch scope,
+    /// never through a separate self permission.
     FamilyHeadBranch,
-    /// The target person is the caller's own linked person.
-    SelfLink,
 }
 
 impl FamilyAdminAllow {
@@ -87,7 +87,6 @@ impl FamilyAdminAllow {
         match self {
             FamilyAdminAllow::SystemAdmin => "system_admin",
             FamilyAdminAllow::FamilyHeadBranch => "family_head_branch",
-            FamilyAdminAllow::SelfLink => "self_link",
         }
     }
 }
@@ -286,8 +285,6 @@ pub struct FamilyAdminInput {
     pub appointment: Option<CallerAppointment>,
     /// Whether the target person key resolves to a person row.
     pub target_exists: bool,
-    /// Whether the target person is the caller's own reviewed linked person.
-    pub target_is_self: bool,
     /// The target person's current verified branch labels.
     pub target_branches: Vec<String>,
 }
@@ -300,7 +297,6 @@ impl FamilyAdminInput {
             link: CallerLink::Missing,
             appointment: None,
             target_exists: true,
-            target_is_self: false,
             target_branches: Vec::new(),
         }
     }
@@ -324,15 +320,14 @@ pub fn decide(input: &FamilyAdminInput) -> FamilyAdminOutcome {
     }
 
     // 3. A reviewed link must exist, and it must not be revoked.
-    let link = match &input.link {
-        CallerLink::Reviewed(link) => link,
+    match &input.link {
+        CallerLink::Reviewed(_) => {}
         CallerLink::Revoked => return Err(FamilyAdminRefusal::RevokedLink.into()),
         CallerLink::Missing => return Err(FamilyAdminRefusal::MissingLink.into()),
     };
 
     // 4. The caller must hold an active, eligible Head of Family appointment.
-    //    This runs before the self check so revoked or ineligible authority
-    //    cannot authorize even a self invitation later.
+    //    A reviewed link alone never authorizes an invitation.
     let appointment = match &input.appointment {
         Some(appointment) => appointment,
         None => return Err(FamilyAdminRefusal::IneligibleAppointment.into()),
@@ -344,16 +339,7 @@ pub fn decide(input: &FamilyAdminInput) -> FamilyAdminOutcome {
         return Err(FamilyAdminRefusal::IneligibleHolder.into());
     }
 
-    // 5. The caller's own linked person is allowed, independent of branch, once
-    //    the active and eligible appointment above is confirmed.
-    if input.target_is_self {
-        return Ok(FamilyAdminDecision::Allow(FamilyAdminAllow::SelfLink));
-    }
-    // The link is the reviewed authority; the caller key must match the target
-    // branch check below, so the record is kept for the appointment comparison.
-    let _caller_person_id = link.person_id;
-
-    // 6. The target must carry exactly one current verified branch claim.
+    // 5. The target must carry exactly one current verified branch claim.
     //    Deduplicate defensively so two distinct labels cannot be silently
     //    picked.
     let mut labels = input.target_branches.clone();
@@ -365,7 +351,9 @@ pub fn decide(input: &FamilyAdminInput) -> FamilyAdminOutcome {
         _ => return Err(FamilyAdminRefusal::AmbiguousBranch.into()),
     }
 
-    // 7. The appointment branch must equal the target's single verified claim.
+    // 6. The appointment branch must equal the target's single verified claim.
+    //    This applies to every target, including the caller's own person: there
+    //    is no separate self-invitation permission.
     if labels[0] != appointment.branch_key {
         return Err(FamilyAdminRefusal::WrongBranch.into());
     }
@@ -508,7 +496,6 @@ pub fn authorize_person_invitation_in<C: GenericClient>(
 
     let appointment = caller_appointment_for(client, &caller_key)?;
 
-    let target_is_self = target_person_key == caller_key;
     let target_branches = target_branch_claims(client, target_person_key)?;
 
     decide(&FamilyAdminInput {
@@ -516,7 +503,6 @@ pub fn authorize_person_invitation_in<C: GenericClient>(
         link,
         appointment,
         target_exists,
-        target_is_self,
         target_branches,
     })
 }
@@ -645,7 +631,6 @@ mod tests {
             link: CallerLink::Reviewed(link()),
             appointment: Some(appointment("branch-a", "active", true)),
             target_exists: true,
-            target_is_self: false,
             target_branches: vec!["branch-a".to_string()],
         }
     }
@@ -674,43 +659,39 @@ mod tests {
     }
 
     #[test]
-    fn self_is_allowed_in_same_branch() {
-        let mut input = base_input();
-        input.target_is_self = true;
-        input.target_branches = vec!["branch-a".to_string()];
+    fn a_family_head_may_invite_their_own_person_only_within_their_branch() {
+        // The caller's own person is not a separate permission: the branch rule
+        // is the only way a linked parent may invite themselves.
+        let input = base_input();
         let outcome = decide(&input);
         assert_eq!(
             outcome,
-            Ok(FamilyAdminDecision::Allow(FamilyAdminAllow::SelfLink))
+            Ok(FamilyAdminDecision::Allow(
+                FamilyAdminAllow::FamilyHeadBranch
+            ))
         );
-        assert_eq!(outcome.unwrap().as_str(), "self_link");
     }
 
     #[test]
-    fn self_in_another_branch_is_allowed() {
+    fn a_linked_person_with_an_appointment_in_another_branch_is_refused() {
         let mut input = base_input();
-        input.target_is_self = true;
         input.target_branches = vec!["branch-z".to_string()];
         let outcome = decide(&input);
-        assert_eq!(
-            outcome,
-            Ok(FamilyAdminDecision::Allow(FamilyAdminAllow::SelfLink))
-        );
+        assert_eq!(outcome, Err(FamilyAdminRefusal::WrongBranch.into()));
     }
 
     #[test]
-    fn self_without_active_appointment_is_refused() {
+    fn a_linked_person_without_an_appointment_cannot_invite_themselves() {
+        // A reviewed link alone is no longer an invitation permission.
         let mut input = base_input();
-        input.target_is_self = true;
         input.appointment = None;
         let outcome = decide(&input);
         assert_eq!(outcome.unwrap_err().as_str(), "ineligible_appointment");
     }
 
     #[test]
-    fn self_with_revoked_appointment_is_refused() {
+    fn a_linked_person_with_a_revoked_appointment_cannot_invite_themselves() {
         let mut input = base_input();
-        input.target_is_self = true;
         input.appointment = Some(appointment("branch-a", "revoked", true));
         let outcome = decide(&input);
         assert_eq!(outcome.unwrap_err().as_str(), "revoked_appointment");

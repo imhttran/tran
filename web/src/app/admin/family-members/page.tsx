@@ -7,6 +7,7 @@ import { DenialView } from "@/components/DenialView";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
+import { PendingLinkReviews } from "@/components/PendingLinkReviews";
 import {
   ApiRequestError,
   bulkBatchStatus,
@@ -471,6 +472,8 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         title="Bulk onboard"
         subtitle="Preview verified living family members, prepare accounts, and send invitations only after a separate approval. Preparation never activates an account."
       />
+
+      <PendingLinkReviews />
 
       <div className="fm-workspace">
         {error ? (

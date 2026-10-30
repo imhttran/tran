@@ -134,6 +134,59 @@ function StatePanel({
   );
 }
 
+function ApprovedPanel({ outcome }: { outcome: InvitationActivationResponse }) {
+  return (
+    <>
+      <PageTitle title="Invitation accepted" />
+      <section
+        className="state-panel"
+        data-testid="activation-accepted"
+        role="status"
+      >
+        <h1>You&apos;re all set</h1>
+        <p>
+          Your account is linked to {outcome.display_name} with Member access.
+          Nothing else was changed.
+        </p>
+        <div className="state-panel-actions">
+          <Link
+            href={`/family/${encodeURIComponent(outcome.person_key)}`}
+            className="button"
+            data-testid="activation-open-profile"
+          >
+            Open the family profile
+          </Link>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function PendingReviewPanel({ displayName }: { displayName: string }) {
+  return (
+    <>
+      <PageTitle title="Pending review" />
+      <section
+        className="state-panel"
+        data-testid="activation-pending-review"
+        role="status"
+      >
+        <h1>Pending review</h1>
+        <p>
+          Your account is ready with Member access, and your link to{" "}
+          {displayName} is waiting for an administrator to review it. You can
+          sign in now; the family profile opens after that review.
+        </p>
+        <div className="state-panel-actions">
+          <Link href="/signin" className="button">
+            Go to sign in
+          </Link>
+        </div>
+      </section>
+    </>
+  );
+}
+
 function ActivationView({ token }: { token: string }) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
@@ -209,31 +262,10 @@ function ActivationView({ token }: { token: string }) {
   }, []);
 
   if (accepted) {
-    return (
-      <>
-        <PageTitle title="Invitation accepted" />
-        <section
-          className="state-panel"
-          data-testid="activation-accepted"
-          role="status"
-        >
-          <h1>You&apos;re all set</h1>
-          <p>
-            Your account is now linked to {accepted.display_name} with Member
-            access. Nothing else was changed.
-          </p>
-          <div className="state-panel-actions">
-            <Link
-              href={`/family/${encodeURIComponent(accepted.person_key)}`}
-              className="button"
-              data-testid="activation-open-profile"
-            >
-              Open the family profile
-            </Link>
-          </div>
-        </section>
-      </>
-    );
+    if (accepted.link_state === "linked") {
+      return <ApprovedPanel outcome={accepted} />;
+    }
+    return <PendingReviewPanel displayName={accepted.display_name} />;
   }
 
   if (problem) {
@@ -317,6 +349,39 @@ function ActivationView({ token }: { token: string }) {
   }
 
   if (preview.state === "accepted") {
+    if (preview.request_state === "pending") {
+      return <PendingReviewPanel displayName={preview.display_name} />;
+    }
+    if (preview.request_state === "approved") {
+      return (
+        <ApprovedPanel
+          outcome={{
+            ok: true,
+            person_key: preview.person_key,
+            display_name: preview.display_name,
+            state: "accepted",
+            link_state: "linked",
+          }}
+        />
+      );
+    }
+    if (preview.request_state === "rejected") {
+      return (
+        <>
+          <PageTitle title="Link request declined" />
+          <StatePanel
+            problem={{
+              title: "An administrator declined this link",
+              body: "This invitation was used, but the link to this person was not approved. Ask the family administrator if you think that is wrong.",
+            }}
+          >
+            <Link href="/signin" className="button-secondary">
+              Go to sign in
+            </Link>
+          </StatePanel>
+        </>
+      );
+    }
     return (
       <>
         <PageTitle title="Invitation already used" />

@@ -52,6 +52,28 @@ is the recovery implementation for
 - The OIDC login route honors a validated same-origin `returnTo`, so the invitee
   returns to the welcome screen after sign-in.
 
+## Follow-up in this PR
+
+Makes the flow usable by a real new family member:
+
+- **Authorization.** Removed the independent "own linked person" permission. Only
+  a system admin or an active, eligible Head of Family inside the appointment's
+  branch may invite; that branch rule is also the only way a family head may
+  invite their own person.
+- **Real email adapter.** `ONBOARDING_MAIL_ADAPTER=http` posts one JSON message to
+  `ONBOARDING_MAIL_URL` (optional `ONBOARDING_MAIL_BEARER`), refuses redirects, and
+  reports provider acceptance only. `fake` stays for tests; both fail closed when
+  unconfigured.
+- **Self-service activation.** Signing in from an invitation provisions the
+  identity account with the viewer role and the archive corpus grant (audited and
+  idempotent). No CLI provisioning is required, and no elevated role is granted.
+- **Reviewed linking.** Acceptance records a link request; an administrator
+  approves or rejects it in the family-members console (or the admin API). Token
+  possession never approves a link, and an existing link is never replaced.
+- **Real-flow coverage.** A new browser/API spec drives provisioning, acceptance,
+  the admin approval in the console, and the resulting family-profile access
+  against the running API and PostgreSQL.
+
 ## Validation
 
 Run with disposable `*_test` databases:
@@ -60,27 +82,30 @@ Run with disposable `*_test` databases:
 - `cargo test --locked` — PASS
 - `cargo fmt --check` — PASS
 - `cargo clippy --locked --all-targets -- -D warnings` — PASS
-- `cargo test --locked --test profile_invitation` — PASS, 21 tests
-- `cargo test --locked --test onboarding_activation` — PASS, 7 tests
-- `cargo test --locked --test onboarding_bulk` — PASS
 - `sop validate` — PASS (BUILD, UNIT_TEST, LINT)
+- `cargo test --locked --test profile_invitation` — PASS, 23 tests
+- `cargo test --locked --test onboarding_activation` — PASS, 9 tests
+- `cargo test --locked --test onboarding_provisioning` — PASS, 1 test
+- `cargo test --locked --test onboarding_bulk` — PASS
 - `make web-check` — PASS (TypeScript + production build)
-- `API_PORT=8081 PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts" ./scripts/test-db.sh exec -- ./scripts/web-e2e.sh` — PASS, 14 tests
+- `PLAYWRIGHT_ARGS="e2e/activation.spec.ts e2e/profile-invitation.spec.ts"` — PASS, 16 tests (stubbed UI states)
+- `PLAYWRIGHT_ARGS="e2e/invitation-activation-real.spec.ts"` — PASS, 5 tests (real API + browser)
 
-Not run: the full `make web-e2e` suite, and any delivery through a real mail
-provider.
+Not run: the full `make web-e2e` suite, the OIDC authorization-code round trip in a
+browser, and any delivery through a real mail provider (no provider credentials in
+this environment).
 
 ## Known limitations
 
-- Email is the only delivery channel; only the synthetic adapter is implemented,
-  so a real deployment must supply a provider adapter before invitations can be
-  delivered.
-- The invitee's identity account must already be provisioned; activation never
-  creates an account, and an unprovisioned identity sees **Pending review**.
-- Acceptance grants no role; Member access is the family-read capability of a
-  linked account.
+- Email is the only delivery channel, and no provider is configured here. A
+  deployment needs `ONBOARDING_MAIL_ADAPTER=http`, `ONBOARDING_MAIL_URL=https://…`
+  and an optional bearer. A 2xx is provider acceptance, not inbox delivery.
+- Provisioning trusts the verified identity, not the invited address, so the
+  administrator's link review is the human gate.
+- The admin decision is an API plus a panel on `/admin/family-members`; there is no
+  dedicated queue page.
 - Expired invitations are not resent automatically.
-- Browser tests stub the API; the Rust integration suites cover the real
-  database paths.
+- Browser tests stub the panel states; the real-API spec covers the integrated
+  flow but not the OIDC redirect itself.
 
 Full evidence: `docs/architecture/PROFILE-INVITATION-ACCEPTANCE.md`.
