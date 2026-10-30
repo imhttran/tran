@@ -103,7 +103,7 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-branch-grant-submit").click();
     await expect(page.getByTestId("fm-confirm")).toContainText("Second Branch");
     await page.getByTestId("fm-confirm-yes").click();
-    await expect(page.getByTestId("accounts").getByRole("status")).toContainText("can now review Second Branch");
+    await expect(page.getByRole("status").filter({ hasText: "can now review Second Branch" })).toBeVisible();
     const grant = row.locator('[data-testid="fm-branch-grant"][data-branch="branch-2"]');
     await expect(grant).toHaveCount(1);
 
@@ -120,7 +120,7 @@ test.describe.serial("admin accounts", () => {
     await row.getByTestId("fm-branch-reason").fill("Synthetic test cleanup");
     await grant.getByTestId("fm-branch-revoke").click();
     await page.getByTestId("fm-confirm-yes").click();
-    await expect(page.getByTestId("accounts").getByRole("status")).toContainText("no longer reviews Second Branch");
+    await expect(page.getByRole("status").filter({ hasText: "no longer reviews Second Branch" })).toBeVisible();
     await expect(row.getByTestId("fm-branch-review")).toHaveCount(0);
 
     // The previous choice must not survive the link form being removed and shown again.
