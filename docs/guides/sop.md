@@ -179,8 +179,32 @@ Cargo fails right away instead of writing 40 GB to the main disk.
 Anything else that runs `target/debug/...` directly would pick up a stale
 binary, so check for that when adding scripts.
 
-The test run itself still waits a lot (25% CPU). The likely cause is Postgres
-keeping its data on the hard drive, which hasn't been checked yet.
+The test run had the same problem. Postgres keeps its data on the hard drive
+(`/var/lib/postgresql/16/main` on `sdb3`), and the tests spent about 6½ minutes
+waiting on it. Two settings, applied only to the two test databases, fixed that.
+The server's other databases are untouched.
+
+```sh
+# Don't wait for the disk on each commit. A crash could lose the last moments of
+# test data, which the tests rebuild anyway.
+sudo -u postgres psql -c 'ALTER DATABASE tran_rag_test SET synchronous_commit = off'
+sudo -u postgres psql -c 'ALTER DATABASE tran_genealogy_test SET synchronous_commit = off'
+
+# Keep the test databases' files on the SSD. Run with nothing connected to them.
+sudo install -d -o postgres -g postgres -m 700 /srv/builds/pg-tablespaces/tran-test
+sudo -u postgres psql -c "CREATE TABLESPACE tran_test LOCATION '/srv/builds/pg-tablespaces/tran-test'"
+sudo -u postgres psql -c "ALTER DATABASE tran_rag_test SET TABLESPACE tran_test"
+sudo -u postgres psql -c "ALTER DATABASE tran_genealogy_test SET TABLESPACE tran_test"
+```
+
+| Full test run on Linux (`./scripts/test-db.sh exec -- cargo test --locked`) | Time   |
+| --------------------------------------------------------------------------- | ------ |
+| Test databases on the hard drive                                            | 13m58s |
+| With `synchronous_commit = off`                                             | 11m49s |
+| Test databases on the SSD                                                   | 1m55s  |
+
+If the external SSD is unplugged, the two test databases won't open until it's
+back. Postgres and the server's other databases keep working.
 
 ## When a run stalls
 
