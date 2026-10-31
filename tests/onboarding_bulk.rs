@@ -448,6 +448,37 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         .ok_or("plain item")?;
     assert_eq!(plain_item.status, ItemStatus::Prepared);
 
+    // Correcting the override and preparing the same selection again succeeds
+    // for the failed row and keeps the earlier reservation of the other.
+    let plain_username = reserved_username(client, plain)?;
+    let corrected = confirm_batch(
+        client,
+        &format!("override-policy-admin-{prefix}"),
+        2,
+        &[bad_override, plain],
+        &HashMap::from([(bad_override, format!("Fixed{tag}"))]),
+    )
+    .map_err(|err| db_error(&err))?;
+    assert!(corrected.created);
+    assert_ne!(corrected.batch_id, mixed_overrides.batch_id);
+    let fixed_item = corrected
+        .items
+        .iter()
+        .find(|item| item.person_id == bad_override)
+        .ok_or("corrected item")?;
+    assert_eq!(fixed_item.status, ItemStatus::Prepared);
+    assert_eq!(
+        reserved_username(client, bad_override)?,
+        format!("fixed{tag}")
+    );
+    let plain_again = corrected
+        .items
+        .iter()
+        .find(|item| item.person_id == plain)
+        .ok_or("plain item again")?;
+    assert_eq!(plain_again.status, ItemStatus::SkippedAlreadyPrepared);
+    assert_eq!(reserved_username(client, plain)?, plain_username);
+
     // An override never replaces an active reservation.
     let parts = load_name_parts(client, first_override).map_err(|err| db_error(&err))?;
     let kept = reserve(
