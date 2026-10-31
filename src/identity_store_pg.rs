@@ -210,19 +210,7 @@ impl PgIdentityClient {
             return Err(IdentityStoreError::UnknownUser(subject.to_string()));
         };
         let user_id: i64 = row.get(0);
-        let is_active_admin: bool = tx
-            .query_one(
-                "SELECT EXISTS ( \
-                     SELECT 1 FROM role_assignments r JOIN users u ON u.id = r.user_id \
-                      WHERE r.user_id = $1 AND r.role = 'admin' AND r.revoked_at IS NULL \
-                        AND u.deactivated_at IS NULL)",
-                &[&user_id],
-            )
-            .map_err(|err| IdentityStoreError::Database(err.to_string()))?
-            .get(0);
-        if is_active_admin {
-            ensure_not_last_admin(&mut tx)?;
-        }
+        guard_admin_removal(&mut tx, user_id)?;
         tx.execute(
             "UPDATE users SET deactivated_at = now(), updated_at = now() WHERE id = $1",
             &[&user_id],
@@ -235,17 +223,36 @@ impl PgIdentityClient {
     }
 }
 
-/// Fails with [`IdentityStoreError::LastAdmin`] when at most one active
-/// administrator remains. Call it before removing an admin by revocation or
-/// deactivation. It serializes admin changes so two concurrent removals cannot
-/// both observe two admins and leave zero. A deactivated user's unrevoked admin
-/// role does not count.
-fn ensure_not_last_admin(tx: &mut Transaction<'_>) -> Result<(), IdentityStoreError> {
+/// Whether `user_id` holds an unrevoked admin role and is not deactivated.
+fn is_active_admin(tx: &mut Transaction<'_>, user_id: i64) -> Result<bool, IdentityStoreError> {
+    tx.query_one(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM role_assignments r JOIN users u ON u.id = r.user_id \
+              WHERE r.user_id = $1 AND r.role = 'admin' AND r.revoked_at IS NULL \
+                AND u.deactivated_at IS NULL)",
+        &[&user_id],
+    )
+    .map(|row| row.get(0))
+    .map_err(|err| IdentityStoreError::Database(err.to_string()))
+}
+
+/// Fails with [`IdentityStoreError::LastAdmin`] when removing `user_id`'s admin
+/// access (by revocation or deactivation) would leave no active administrator.
+///
+/// The advisory lock is taken before anything is read, so the target check and
+/// the count both see a state no concurrent admin change can alter. Two removals
+/// therefore cannot both observe two admins and leave zero. Removing a
+/// deactivated user's dormant admin role is allowed: it does not reduce the
+/// active-admin count.
+fn guard_admin_removal(tx: &mut Transaction<'_>, user_id: i64) -> Result<(), IdentityStoreError> {
     tx.execute(
         "SELECT pg_advisory_xact_lock(hashtext('role:admin')::bigint)",
         &[],
     )
     .map_err(|err| IdentityStoreError::Database(err.to_string()))?;
+    if !is_active_admin(tx, user_id)? {
+        return Ok(());
+    }
     let active: i64 = tx
         .query_one(
             "SELECT count(*) FROM role_assignments r JOIN users u ON u.id = r.user_id \
@@ -360,8 +367,10 @@ impl IdentityClient for PgIdentityClient {
         let user_id: i64 = row.get(0);
 
         let action = if grant { "role.grant" } else { "role.revoke" };
+        // Revoking a deactivated user's dormant admin role cannot reduce the
+        // active-admin count, so only an active admin target is guarded.
         if !grant && role == Role::Admin {
-            ensure_not_last_admin(&mut tx)?;
+            guard_admin_removal(&mut tx, user_id)?;
         }
         if grant {
             tx.execute(
