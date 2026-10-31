@@ -115,9 +115,10 @@ tables did not yet exist there; no database was reset or recreated.
 The path form is served by `web/src/app/activate/[token]/page.tsx`, which reads
 the `[token]` segment and calls the public `GET /api/invitations/{token}` route.
 The captured message's exact URL was opened in the browser and completed the
-flow described above. The Rust unit test `activation_link_uses_the_path_form`
-pins the builder output. No API route was changed by MAIL-003; only the link
-shape changed, and the existing web route accepts it.
+flow described above. The upstream unit test `activation_link_is_a_path_segment`
+pins the builder output. No API route was changed; the link shape comes from the
+upstream fix, and the existing web route accepts it. MAIL-003 also fixes the
+profile-invitation test, which still parsed the old query form.
 
 ## Known limitations
 

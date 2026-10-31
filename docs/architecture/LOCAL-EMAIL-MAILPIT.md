@@ -98,10 +98,12 @@ Docker service name. Set `ONBOARDING_ACTIVATION_URL` to the host UI origin, for
 example `http://127.0.0.1:3000/activate`. Never set it to `http://mailpit:8025`
 or to another internal Docker service name.
 
-MAIL-003 implements the path form in `activation_link`: the configured base has
-its trailing slash trimmed and the token is appended as `/<token>`. The captured
-invitation message contains `http://127.0.0.1:3000/activate/<token>`; the browser
-opened that exact URL. The query form (`?token=`) is no longer produced.
+The upstream activation-link fix (PR #140, commit `23291dd`) provides the path
+form in `activation_link`: the configured base is trimmed and the token is
+percent-encoded as one path segment. MAIL-003 reuses that fix and does not
+duplicate it. The captured invitation message contains
+`http://127.0.0.1:3000/activate/<token>`; the browser opened that exact URL. The
+query form (`?token=`) is no longer produced.
 
 ## Local Keycloak SMTP
 
