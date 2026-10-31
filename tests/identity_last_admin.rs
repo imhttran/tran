@@ -263,7 +263,13 @@ fn deactivated_admin_does_not_count_toward_the_last_admin() {
     // The deactivated admin's dormant role can still be revoked: it does not
     // reduce the active-admin count.
     identity
-        .change_role("synthetic-admin-a", Role::Admin, "synthetic-admin-b", false)
+        .change_role(
+            "synthetic-admin-a",
+            ISSUER,
+            Role::Admin,
+            "synthetic-admin-b",
+            false,
+        )
         .expect("a deactivated user's admin role can be revoked");
     let dormant: i64 = client
         .query_one(
