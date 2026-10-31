@@ -112,10 +112,75 @@ Linux doesn't have this check.
 
 Pull the branch that tracks the config. If the machine already has its own
 untracked `.agent-sdlc/config.yaml`, move it aside first or the pull will refuse
-to overwrite it. Then set the two `advisory_retrieval` paths in its `.env`,
-install `semgrep` and `gitleaks`, and run `make test-db-up`. On Linux,
-`test-db.sh` tries port 5432 before 5434 and 5435, so a native Postgres wins.
+to overwrite it. Then set the two `advisory_retrieval` paths in its `.env` and
+install `semgrep` and `gitleaks`.
+
+`test-db.sh` uses the database URLs from `.env`. Only when they're unset does it
+probe for a server (5432 first on Linux, 5434 first on macOS).
 `./scripts/test-db.sh status` shows which server it picked.
+
+### Linux box
+
+Set up on 2026-10-31. Two things made SOP slow or broken there.
+
+The first was the database. The box runs its own Postgres on 5432, but `.env`
+pointed at 5434, the Docker port used on the Mac, so every test step failed with
+"Connection refused" and SOP burned fix cycles on code that wasn't broken. Both
+URLs now point at 5432 and carry the password. The Rust tests use the `postgres`
+crate, which doesn't read `~/.pgpass`, so the password has to be in the URL,
+URL-encoded.
+
+```sh
+DATABASE_URL=postgres://rag:<encoded-password>@127.0.0.1:5432/tran_rag_test?sslmode=disable
+GENEALOGY_DATABASE_URL=postgres://rag:<encoded-password>@127.0.0.1:5432/tran_genealogy_test?sslmode=disable
+```
+
+The Docker Postgres makes `rag` a superuser, so the Mac never needed grants. A
+shared server does. Run these once as `postgres`. If `make test-db-up` stops on
+`CREATE EXTENSION vector`, create the extension and run it again.
+
+```sh
+sudo -u postgres createuser --login --createdb --pwprompt rag   # or: ALTER ROLE rag CREATEDB
+sudo -u postgres psql -d tran_rag_test -c 'CREATE EXTENSION IF NOT EXISTS vector'
+sudo -u postgres psql -c 'GRANT SET ON PARAMETER session_replication_role TO rag'   # Postgres 15+
+make test-db-up
+```
+
+The last grant is for two tests in `onboarding_profile_revisions` that switch
+triggers off for their own session. Don't make `rag` a superuser instead.
+
+The second was the disk. `/home` sits on a 2.5" spinning drive, and building the
+test binaries there kept 12 cores at 86% CPU, mostly waiting. Moving Cargo's
+output to an SSD fixed it.
+
+| Build of the test binaries after a change | Time  |
+| ----------------------------------------- | ----- |
+| Linux, hard drive                         | 6m29s |
+| Linux, SSD                                | 46s   |
+| Mac                                       | 53s   |
+
+The SSD is an external Samsung on a 10 Gbps USB port (`uas` driver), split into
+`Builds` (ext4, mounted at `/srv/builds`) and `SharedData` (exFAT, shared with
+the Mac). Keep Cargo output off exFAT, it has no Linux permissions and is slow
+with many small files. Set the target folder in the shell and in `tran/.env`,
+since SOP loads `.env` into every command.
+
+```sh
+export CARGO_TARGET_DIR=/srv/builds/cargo-target/tran   # in ~/.zshrc
+CARGO_TARGET_DIR=/srv/builds/cargo-target/tran          # in tran/.env
+```
+
+Because the disk is external, `fstab` mounts it with `nofail` so the box still
+boots without it, and the empty mount point is locked with
+`sudo chattr +i /srv/builds` (run while unmounted). If the disk is missing,
+Cargo fails right away instead of writing 40 GB to the main disk.
+
+`scripts/local-app.sh` and `scripts/web-e2e.sh` follow `CARGO_TARGET_DIR`.
+Anything else that runs `target/debug/...` directly would pick up a stale
+binary, so check for that when adding scripts.
+
+The test run itself still waits a lot (25% CPU). The likely cause is Postgres
+keeping its data on the hard drive, which hasn't been checked yet.
 
 ## When a run stalls
 
