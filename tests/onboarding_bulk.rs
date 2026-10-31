@@ -21,8 +21,9 @@ use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
     batch_status_items, confirm_batch, create, issue_deliverable_invitation, load_name_parts,
     preview_candidates, preview_dry_run, reclassify_person, reserve, send_batch,
-    sync_invitation_status, verify_recipient, Classification, DeliveryError, DeliveryStatus,
-    DryRunFilters, FakeAdapter, ItemStatus, Page, Selector, UnconfiguredAdapter,
+    sync_invitation_status, verify_recipient, Classification, DeliveryError, DeliveryReceipt,
+    DeliveryStatus, DryRunFilters, FakeAdapter, InvitationMessage, ItemStatus, MailAdapter, Page,
+    Selector, UnconfiguredAdapter,
 };
 
 const MIGRATIONS: [&str; 28] = [
@@ -794,7 +795,111 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         .get(0);
     assert_eq!(old_status, "revoked");
 
+    // 18. A sign-in adapter receives the batch's reserved username and link.
+    let invitee = insert_person(client, prefix, "Pham Thi Lan", Some(1980))?;
+    mark_living(client, prefix, invitee, true, false)?;
+    let login_batch = confirm_batch(
+        client,
+        &format!("login-admin-{prefix}"),
+        1,
+        &[invitee],
+        &no_overrides(),
+    )
+    .map_err(|err| db_error(&err))?;
+    verify_recipient(client, invitee, "lan@example.test", "synthetic-admin")
+        .map_err(|err| db_error(&err))?;
+    let login_adapter = LoginRecorder::default();
+    let sent = send_batch(
+        client,
+        login_batch.batch_id,
+        None,
+        &login_adapter,
+        "https://archive.example.test/activate",
+        Duration::from_secs(3600),
+        "synthetic-admin",
+        Duration::ZERO,
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(sent[0].status, DeliveryStatus::Sent);
+    let seen = login_adapter.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, reserved_username(client, invitee)?);
+    assert!(seen[0]
+        .1
+        .starts_with("https://archive.example.test/activate/"));
+
+    // 19. A sign-in failure is stored per person under its own code.
+    let blocked = insert_person(client, prefix, "Vo Minh Tam", Some(1980))?;
+    mark_living(client, prefix, blocked, true, false)?;
+    let blocked_batch = confirm_batch(
+        client,
+        &format!("login-blocked-admin-{prefix}"),
+        1,
+        &[blocked],
+        &no_overrides(),
+    )
+    .map_err(|err| db_error(&err))?;
+    verify_recipient(client, blocked, "tam@example.test", "synthetic-admin")
+        .map_err(|err| db_error(&err))?;
+    let refusing = LoginRecorder {
+        fail: Some("login_username_taken"),
+        ..LoginRecorder::default()
+    };
+    let refused = send_batch(
+        client,
+        blocked_batch.batch_id,
+        None,
+        &refusing,
+        "https://archive.example.test/activate",
+        Duration::from_secs(3600),
+        "synthetic-admin",
+        Duration::ZERO,
+    )
+    .map_err(|err| db_error(&err))?;
+    assert_eq!(refused[0].status, DeliveryStatus::Failed);
+    assert_eq!(refused[0].reason, Some("login_username_taken"));
+
     Ok(())
+}
+
+/// Records the sign-in profile each invitation carries, or fails with a code.
+#[derive(Default)]
+struct LoginRecorder {
+    fail: Option<&'static str>,
+    seen: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl MailAdapter for LoginRecorder {
+    fn name(&self) -> &'static str {
+        "keycloak"
+    }
+
+    fn provisions_logins(&self) -> bool {
+        true
+    }
+
+    fn deliver(&self, _: &str, _: &str, _: &str) -> Result<DeliveryReceipt, DeliveryError> {
+        panic!("a sign-in adapter receives the whole invitation");
+    }
+
+    fn deliver_invitation(
+        &self,
+        message: &InvitationMessage<'_>,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if let Some(code) = self.fail {
+            return Err(DeliveryError::Login(code));
+        }
+        let login = message.login.expect("a login profile is supplied");
+        self.seen
+            .lock()
+            .unwrap()
+            .push((login.username.clone(), message.link.to_string()));
+        Ok(DeliveryReceipt {
+            provider: "keycloak".to_string(),
+            accepted: true,
+            message_id: None,
+        })
+    }
 }
 
 fn seed(client: &mut Client, prefix: &str) -> Result<Seeded, String> {

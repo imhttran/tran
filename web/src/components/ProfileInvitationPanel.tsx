@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { signInErrorText } from "@/lib/sign-in-errors";
+
 import {
   ApiRequestError,
   getProfileInvitationState,
@@ -55,6 +57,8 @@ function deliveryLabel(value: string): string {
 /// Maps the server's safe failure code to prose. An unknown code is never
 /// rendered: it would leak an implementation detail and confuse the operator.
 function deliveryErrorText(code: string | null): string | null {
+  const signIn = signInErrorText(code);
+  if (signIn) return signIn;
   switch (code) {
     case null:
     case "":

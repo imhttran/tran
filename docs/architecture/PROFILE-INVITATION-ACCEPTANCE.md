@@ -255,7 +255,9 @@ These are external to the repository. None was changed or exercised here.
    needs SMTP), and confirms the `tran-web` client accepts the flow. Otherwise the
    operator creates each user under _Users → Add user_ and sets a credential. The
    discovery document's `registration_endpoint` is OAuth **client** registration,
-   not user sign-up, and does not help here.
+   not user sign-up, and does not help here. A third option keeps registration
+   off: set `ONBOARDING_KEYCLOAK_LOGINS` and the API creates the login when the
+   invitation is sent ([`KEYCLOAK-INVITATION-LOGINS.md`](../operations/KEYCLOAK-INVITATION-LOGINS.md)).
 2. **Compatible mail delivery.** Set `ONBOARDING_MAIL_ADAPTER=http` and
    `ONBOARDING_MAIL_URL` to an endpoint that accepts the contract in
    [`PROFILE-INVITATION-MAIL-ADAPTER.md`](PROFILE-INVITATION-MAIL-ADAPTER.md).
@@ -279,9 +281,9 @@ only the public host configuration.
 
 ### Distinguishing the two accounts
 
-- **Identity-provider account (Keycloak):** authenticates the person. The
-  application cannot create it; it is either self-registered (disabled here) or
-  created by an operator.
+- **Identity-provider account (Keycloak):** authenticates the person. It is
+  self-registered (disabled here), created by an operator, or created by the API
+  at send time when `ONBOARDING_KEYCLOAK_LOGINS` is on.
 - **Tran application account (identity database `users` row):** created
   automatically by `/api/invitations/{token}/provision` on the first successful
   sign-in and audited. No operator action is needed. It carries no role and no

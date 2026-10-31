@@ -101,6 +101,10 @@ pub enum DeliveryError {
     /// The invitation operation failed.
     #[error("invitation operation failed: {0}")]
     Invitation(String),
+    /// The identity provider could not prepare the invitee's sign-in. The code
+    /// is a stable, safe reason such as `login_username_taken`.
+    #[error("the sign-in could not be prepared: {0}")]
+    Login(&'static str),
 }
 
 impl From<CandidateError> for DeliveryError {
@@ -138,6 +142,20 @@ pub struct SentMessage {
     pub body: String,
 }
 
+/// One invitation handed to an adapter.
+///
+/// `body` already contains `link`. `login` is present only for an adapter that
+/// [`MailAdapter::provisions_logins`]; it names the reserved username the
+/// sign-in will use.
+#[derive(Debug, Clone, Copy)]
+pub struct InvitationMessage<'a> {
+    pub to: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+    pub link: &'a str,
+    pub login: Option<&'a crate::onboarding::keycloak_logins::LoginProfile>,
+}
+
 /// A mail provider adapter.
 ///
 /// Implementations must return [`DeliveryError::NotConfigured`] rather than
@@ -152,6 +170,12 @@ pub trait MailAdapter: Send + Sync {
         true
     }
 
+    /// True when the adapter also creates the invitee's identity-provider
+    /// sign-in, so callers must reserve a username and pass a login profile.
+    fn provisions_logins(&self) -> bool {
+        false
+    }
+
     /// Delivers one message.
     fn deliver(
         &self,
@@ -159,6 +183,43 @@ pub trait MailAdapter: Send + Sync {
         subject: &str,
         body: &str,
     ) -> Result<DeliveryReceipt, DeliveryError>;
+
+    /// Delivers one invitation. The default sends the plain message.
+    fn deliver_invitation(
+        &self,
+        message: &InvitationMessage<'_>,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        self.deliver(message.to, message.subject, message.body)
+    }
+}
+
+/// Builds the sign-in profile for one person: the reserved username (reserving
+/// one when none exists) and the verified name parts.
+pub fn login_profile(
+    client: &mut Client,
+    person_id: i64,
+    actor: &str,
+) -> Result<crate::onboarding::keycloak_logins::LoginProfile, DeliveryError> {
+    let parts = crate::onboarding::candidate::load_name_parts(client, person_id)
+        .map_err(|_| DeliveryError::Login("login_username_unavailable"))?;
+    let reservation =
+        crate::onboarding::reservation::reserve(client, person_id, &parts, None, actor)
+            .map_err(|_| DeliveryError::Login("login_username_unavailable"))?;
+    let first = [parts.middle.as_deref(), parts.given.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(crate::onboarding::keycloak_logins::LoginProfile {
+        username: reservation.username,
+        first_name: (!first.is_empty()).then_some(first),
+        last_name: parts
+            .family
+            .map(|family| family.trim().to_string())
+            .filter(|family| !family.is_empty()),
+    })
 }
 
 /// The fail-closed default: no provider is configured.
@@ -701,6 +762,32 @@ pub fn send_batch(
             continue;
         };
 
+        let login = if adapter.provisions_logins() {
+            match login_profile(client, person_id, actor) {
+                Ok(login) => Some(login),
+                Err(_) => {
+                    record_delivery(
+                        client,
+                        batch_id,
+                        person_id,
+                        None,
+                        DeliveryStatus::Failed,
+                        "login_username_unavailable",
+                        Some(actor),
+                    )?;
+                    outcomes.push(SendOutcome {
+                        person_id,
+                        status: DeliveryStatus::Failed,
+                        provider: Some(adapter.name().to_string()),
+                        reason: Some("login_username_unavailable"),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
         // A retry must not leave two active links. Revoke the previous
         // invitation before issuing a replacement.
         if let Some(invitation_id) = existing_invitation {
@@ -726,7 +813,14 @@ pub fn send_batch(
              The link expires automatically. If you did not expect this message, ignore it."
         );
 
-        match adapter.deliver(&email, subject, &body) {
+        let message = InvitationMessage {
+            to: &email,
+            subject,
+            body: &body,
+            link: &link,
+            login: login.as_ref(),
+        };
+        match adapter.deliver_invitation(&message) {
             Ok(receipt) => {
                 let status = if receipt.accepted {
                     DeliveryStatus::Sent
@@ -756,6 +850,7 @@ pub fn send_batch(
             Err(err) => {
                 let reason = match err {
                     DeliveryError::NotConfigured => "not_configured",
+                    DeliveryError::Login(code) => code,
                     DeliveryError::Provider(_) => "provider_failed",
                     _ => "delivery_failed",
                 };

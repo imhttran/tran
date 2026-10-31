@@ -146,6 +146,9 @@ pub struct Config {
     pub onboarding_activation_url: String,
     /// Delay between bulk sends, in milliseconds.
     pub onboarding_send_interval_ms: i64,
+    /// Keycloak service-account settings for creating invitees' sign-ins.
+    /// `None` unless `ONBOARDING_KEYCLOAK_LOGINS` is on.
+    pub onboarding_keycloak_logins: Option<crate::onboarding::KeycloakLoginSettings>,
     /// Validated SMTP settings for the `smtp` mail adapter. `None` for any other
     /// adapter name.
     pub onboarding_smtp: Option<crate::onboarding::SmtpSettings>,
@@ -327,6 +330,7 @@ impl Config {
 
         let onboarding_mail_adapter = onboarding_mail_adapter(&get)?;
         let onboarding_smtp = onboarding_smtp(&get, &onboarding_mail_adapter)?;
+        let onboarding_keycloak_logins = onboarding_keycloak_logins(&get)?;
 
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
@@ -388,6 +392,7 @@ impl Config {
             auth_rate_limit: positive_int(&get, "AUTH_RATE_LIMIT", DEFAULT_AUTH_RATE_LIMIT)?,
             onboarding_mail_adapter,
             onboarding_smtp: onboarding_smtp.clone(),
+            onboarding_keycloak_logins,
             onboarding_mail_url: match get("ONBOARDING_MAIL_URL") {
                 None => None,
                 Some(url) => Some(validate_provider_endpoint("ONBOARDING_MAIL_URL", &url)?),
@@ -434,7 +439,20 @@ impl Config {
     /// `fake` is synthetic and never performs network I/O. `http` posts one
     /// JSON message to `ONBOARDING_MAIL_URL` and reports provider acceptance
     /// only. Any other name, or `http` without a valid URL, fails closed.
+    ///
+    /// With `ONBOARDING_KEYCLOAK_LOGINS` on, that adapter is wrapped so each
+    /// invitation also creates the invitee's Keycloak sign-in.
     pub fn mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
+        let inner = self.plain_mail_adapter();
+        match self.onboarding_keycloak_logins.clone() {
+            Some(settings) => Box::new(crate::onboarding::KeycloakLoginAdapter::new(
+                settings, inner,
+            )),
+            None => inner,
+        }
+    }
+
+    fn plain_mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
         match self.onboarding_mail_adapter.as_str() {
             "fake" => Box::new(crate::onboarding::FakeAdapter::accepting()),
             "http" => match self.onboarding_mail_url.as_deref() {
@@ -512,6 +530,73 @@ where
 /// half-configured credential pair are configuration errors that name the
 /// offending variable. Settings are `None` for every other adapter name, so a
 /// stale SMTP block cannot affect the HTTP, fake, or unconfigured adapters.
+/// Default lifetime of Keycloak's password link: the invitation's own seven days.
+pub const DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS: i64 = 7 * 24 * 60 * 60;
+
+fn onboarding_keycloak_logins<F>(
+    get: &F,
+) -> Result<Option<crate::onboarding::KeycloakLoginSettings>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !bool_setting(get, "ONBOARDING_KEYCLOAK_LOGINS", false)? {
+        return Ok(None);
+    }
+    let required = |key: &str| -> Result<String, ConfigError> {
+        get(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "{key} is required when ONBOARDING_KEYCLOAK_LOGINS is on"
+                ))
+            })
+    };
+    let base_url = validate_provider_endpoint("KEYCLOAK_URL", &required("KEYCLOAK_URL")?)?;
+    if base_url.contains("/realms/") {
+        return Err(ConfigError::Invalid(
+            "KEYCLOAK_URL must be the Keycloak base URL, not a realm URL".into(),
+        ));
+    }
+    let settings = crate::onboarding::KeycloakLoginSettings {
+        base_url,
+        realm: required("KEYCLOAK_REALM")?,
+        client_id: required("KEYCLOAK_LOGIN_CLIENT_ID")?,
+        client_secret: required("KEYCLOAK_LOGIN_CLIENT_SECRET")?,
+        actions_client_id: required("KEYCLOAK_ACTIONS_CLIENT_ID")?,
+        actions_lifespan: Duration::from_secs(positive_int(
+            get,
+            "KEYCLOAK_ACTIONS_LIFESPAN_SECS",
+            DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS,
+        )? as u64),
+        timeout: Duration::from_secs(positive_int(
+            get,
+            "ONBOARDING_MAIL_TIMEOUT_SECS",
+            DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS,
+        )? as u64),
+    };
+    // A login created in another realm would have a subject this API never
+    // accepts, so the realm must be the one that issues the API's tokens.
+    let issuer = get("AUTH_ISSUER").unwrap_or_default();
+    if issuer.trim().trim_end_matches('/') != settings.issuer() {
+        return Err(ConfigError::Invalid(
+            "AUTH_ISSUER must equal KEYCLOAK_URL/realms/KEYCLOAK_REALM when ONBOARDING_KEYCLOAK_LOGINS is on".into(),
+        ));
+    }
+    // Keycloak returns the person to the activation link after they choose a
+    // password, so it must be an absolute URL.
+    validate_provider_endpoint(
+        "ONBOARDING_ACTIVATION_URL",
+        &get("ONBOARDING_ACTIVATION_URL").unwrap_or_default(),
+    )
+    .map_err(|_| {
+        ConfigError::Invalid(
+            "ONBOARDING_ACTIVATION_URL must be an absolute https:// URL (or http:// on loopback) when ONBOARDING_KEYCLOAK_LOGINS is on".into(),
+        )
+    })?;
+    Ok(Some(settings))
+}
+
 fn onboarding_smtp<F>(
     get: &F,
     adapter: &str,
@@ -1206,5 +1291,89 @@ mod tests {
         let cfg = load(&[("ONBOARDING_MAIL_ADAPTER", "fake")]).unwrap();
         assert!(cfg.onboarding_smtp.is_none());
         assert_eq!(cfg.mail_adapter().name(), "fake");
+    }
+
+    fn keycloak_env() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("ONBOARDING_KEYCLOAK_LOGINS", "true"),
+            ("KEYCLOAK_URL", "http://127.0.0.1:8180"),
+            ("KEYCLOAK_REALM", "tran"),
+            ("KEYCLOAK_LOGIN_CLIENT_ID", "tran-invitations"),
+            ("KEYCLOAK_LOGIN_CLIENT_SECRET", "synthetic-secret"),
+            ("KEYCLOAK_ACTIONS_CLIENT_ID", "tran-web"),
+            ("AUTH_ISSUER", "http://127.0.0.1:8180/realms/tran"),
+            (
+                "ONBOARDING_ACTIVATION_URL",
+                "http://127.0.0.1:3000/activate",
+            ),
+            ("ONBOARDING_MAIL_ADAPTER", "fake"),
+        ]
+    }
+
+    #[test]
+    fn keycloak_logins_are_off_by_default() {
+        let cfg = load(&[]).expect("defaults load");
+        assert!(cfg.onboarding_keycloak_logins.is_none());
+        assert!(!cfg.mail_adapter().provisions_logins());
+    }
+
+    #[test]
+    fn keycloak_logins_wrap_the_mail_adapter() {
+        let cfg = load(&keycloak_env()).expect("keycloak settings load");
+        let settings = cfg.onboarding_keycloak_logins.as_ref().expect("settings");
+        assert_eq!(settings.actions_client_id, "tran-web");
+        assert_eq!(
+            settings.actions_lifespan,
+            Duration::from_secs(DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS as u64)
+        );
+        let adapter = cfg.mail_adapter();
+        assert_eq!(adapter.name(), "keycloak");
+        assert!(adapter.is_configured());
+        assert!(adapter.provisions_logins());
+        assert!(!format!("{settings:?}").contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn keycloak_logins_require_every_setting() {
+        for missing in [
+            "KEYCLOAK_URL",
+            "KEYCLOAK_REALM",
+            "KEYCLOAK_LOGIN_CLIENT_ID",
+            "KEYCLOAK_LOGIN_CLIENT_SECRET",
+            "KEYCLOAK_ACTIONS_CLIENT_ID",
+        ] {
+            let env: Vec<_> = keycloak_env()
+                .into_iter()
+                .filter(|(key, _)| *key != missing)
+                .collect();
+            let err = load(&env).expect_err(missing);
+            assert!(err.to_string().contains(missing), "{err}");
+        }
+    }
+
+    #[test]
+    fn keycloak_logins_refuse_another_realm_or_a_relative_link() {
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "AUTH_ISSUER");
+        env.push(("AUTH_ISSUER", "http://127.0.0.1:8180/realms/other"));
+        assert!(load(&env).unwrap_err().to_string().contains("AUTH_ISSUER"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "ONBOARDING_ACTIVATION_URL");
+        env.push(("ONBOARDING_ACTIVATION_URL", "/activate"));
+        assert!(load(&env)
+            .unwrap_err()
+            .to_string()
+            .contains("ONBOARDING_ACTIVATION_URL"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "KEYCLOAK_URL");
+        env.push(("KEYCLOAK_URL", "http://kc.example.test"));
+        assert!(load(&env).unwrap_err().to_string().contains("KEYCLOAK_URL"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "KEYCLOAK_URL");
+        env.push(("KEYCLOAK_URL", "http://127.0.0.1:8180/realms/tran"));
+        assert!(load(&env).unwrap_err().to_string().contains("realm URL"));
     }
 }

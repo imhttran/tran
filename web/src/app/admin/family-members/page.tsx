@@ -22,6 +22,7 @@ import {
   type BulkPreviewRow,
 } from "@/lib/api";
 import { canAdmin, type Role } from "@/lib/experience-contract";
+import { signInErrorText } from "@/lib/sign-in-errors";
 
 // Admin-only bulk onboarding. Preview and dry-run are read-only. Preparation
 // reserves usernames and records a batch, but never activates an account.
@@ -396,8 +397,16 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
       const failed = result.results.filter(
         (row) => row.status === "failed",
       ).length;
+      const signInProblems = [
+        ...new Set(
+          result.results
+            .map((row) => signInErrorText(row.reason))
+            .filter((text): text is string => text !== null),
+        ),
+      ];
       setSendMessage(
-        `Provider confirmed ${sent} sent, ${queued} queued, ${failed} failed. No account is activated until the recipient completes the identity flow and an admin reviews the person link.`,
+        `Provider confirmed ${sent} sent, ${queued} queued, ${failed} failed. No account is activated until the recipient completes the identity flow and an admin reviews the person link.` +
+          (signInProblems.length > 0 ? ` ${signInProblems.join(" ")}` : ""),
       );
       setConfirmSend(false);
       restoreOpener();

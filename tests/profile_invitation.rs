@@ -13,9 +13,9 @@ use rag_foundation::onboarding::candidate::Classification;
 use rag_foundation::onboarding::{
     identity_fingerprint, prepare_invitation, read_invitation_state, read_invitation_status,
     resend_invitation, revoke_invitation, save_contact_draft, send_invitation, DeliveryError,
-    DeliveryReceipt, FakeAdapter, InvitationState, InvitationStatusView, MailAdapter,
-    PrepareReview, ProfileDeliveryState, ProfileInvitationError, RevokeInvitationOutcome,
-    SendInvitationOutcome, SentMessage, UnconfiguredAdapter,
+    DeliveryReceipt, FakeAdapter, InvitationMessage, InvitationState, InvitationStatusView,
+    LoginProfile, MailAdapter, PrepareReview, ProfileDeliveryState, ProfileInvitationError,
+    RevokeInvitationOutcome, SendInvitationOutcome, SentMessage, UnconfiguredAdapter,
 };
 
 #[path = "support/genealogy_isolation.rs"]
@@ -1191,4 +1191,162 @@ fn delivery_migration_is_additive() {
     assert!(!lower.contains("drop "));
     assert!(!lower.contains("delete "));
     assert!(!lower.contains("not null default null"));
+}
+
+/// An adapter that creates sign-ins: it records the login profile and link it
+/// was handed, or fails with a fixed sign-in code.
+struct LoginRecorder {
+    fail: Option<&'static str>,
+    seen: std::sync::Mutex<Vec<(LoginProfile, String)>>,
+}
+
+impl LoginRecorder {
+    fn new(fail: Option<&'static str>) -> Self {
+        Self {
+            fail,
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn seen(&self) -> Vec<(LoginProfile, String)> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl MailAdapter for LoginRecorder {
+    fn name(&self) -> &'static str {
+        "keycloak"
+    }
+
+    fn provisions_logins(&self) -> bool {
+        true
+    }
+
+    fn deliver(&self, _: &str, _: &str, _: &str) -> Result<DeliveryReceipt, DeliveryError> {
+        panic!("a sign-in adapter receives the whole invitation");
+    }
+
+    fn deliver_invitation(
+        &self,
+        message: &InvitationMessage<'_>,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if let Some(code) = self.fail {
+            return Err(DeliveryError::Login(code));
+        }
+        let login = message.login.expect("a login profile is supplied").clone();
+        assert!(
+            message.body.contains(message.link),
+            "the body carries the link"
+        );
+        self.seen
+            .lock()
+            .unwrap()
+            .push((login, message.link.to_string()));
+        Ok(DeliveryReceipt {
+            provider: "keycloak".to_string(),
+            accepted: true,
+            message_id: None,
+        })
+    }
+}
+
+fn reserved_usernames(client: &mut Client, person_id: i64) -> Vec<String> {
+    client
+        .query(
+            "SELECT username FROM onboarding_username_reservation
+              WHERE person_id = $1 AND status <> 'released'",
+            &[&person_id],
+        )
+        .expect("read reservations")
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// The sign-in adapter receives the person's reserved username, verified name
+/// parts, and the activation link; a resend reuses the same username.
+#[test]
+fn sign_in_adapter_receives_the_reserved_username_and_link() {
+    let Some(fixture) = admin_fixture("kc-login-send") else {
+        return;
+    };
+    let mut client = fixture.client();
+    client
+        .execute(
+            "UPDATE person SET display_name = 'Nguyen Van An', family_name = 'Nguyen',
+                    given_name = 'An'
+              WHERE person_id = $1",
+            &[&fixture.target_person_id],
+        )
+        .expect("name the synthetic person");
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = LoginRecorder::new(None);
+
+    let outcome = send_with(&mut client, &fixture, &adapter).expect("send");
+    assert!(outcome.delivered);
+    assert_eq!(outcome.provider.as_deref(), Some("keycloak"));
+    let reserved = reserved_usernames(&mut client, fixture.target_person_id);
+    assert_eq!(reserved.len(), 1, "sending reserves exactly one username");
+
+    let seen = adapter.seen();
+    assert_eq!(seen.len(), 1);
+    let (login, link) = &seen[0];
+    assert_eq!(login.username, reserved[0]);
+    assert_eq!(login.username, "nvan");
+    assert_eq!(login.first_name.as_deref(), Some("Van An"));
+    assert_eq!(login.last_name.as_deref(), Some("Nguyen"));
+    assert!(link.starts_with("https://example.test/activate/"));
+
+    resend_with(&mut client, &fixture, &adapter).expect("resend");
+    let seen = adapter.seen();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].0.username, "nvan", "a resend keeps the username");
+    assert_ne!(seen[1].1, seen[0].1, "a resend issues a new link");
+    assert_eq!(
+        reserved_usernames(&mut client, fixture.target_person_id).len(),
+        1
+    );
+}
+
+/// A sign-in failure is recorded by its code and stays recoverable.
+#[test]
+fn sign_in_failure_is_recorded_and_recoverable() {
+    let Some(fixture) = admin_fixture("kc-login-fail") else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let failing = LoginRecorder::new(Some("login_username_taken"));
+
+    let result = send_with(&mut client, &fixture, &failing);
+    assert!(matches!(
+        result,
+        Err(ProfileInvitationError::Delivery(DeliveryError::Login(
+            "login_username_taken"
+        )))
+    ));
+    let status = status_for(&mut client, &fixture);
+    assert_eq!(status.delivery_state, ProfileDeliveryState::Failed);
+    assert_eq!(
+        status.last_delivery_error.as_deref(),
+        Some("login_username_taken")
+    );
+
+    let adapter = LoginRecorder::new(None);
+    let retried = send_with(&mut client, &fixture, &adapter).expect("retry");
+    assert!(retried.delivered);
+    assert_eq!(count_pending(&mut client, fixture.target_person_id), 1);
+}
+
+/// A plain mail adapter reserves no username: the sign-in step is opt-in.
+#[test]
+fn plain_adapter_reserves_no_username() {
+    let Some(fixture) = admin_fixture("kc-login-plain") else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    send_with(&mut client, &fixture, &adapter).expect("send");
+    assert!(reserved_usernames(&mut client, fixture.target_person_id).is_empty());
 }
