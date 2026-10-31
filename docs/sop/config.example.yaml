@@ -1,0 +1,44 @@
+# Example SOP settings for tran.
+#
+# .agent-sdlc/config.yaml is local and gitignored, so these settings do not
+# travel with the repository. Copy the two blocks below into your own
+# .agent-sdlc/config.yaml (merge them with what `sop init` wrote). SOP never
+# overwrites a hand-edited config, but `sop init --refresh-validation` replaces
+# the whole validation block, so reapply it after running that.
+
+validation:
+  # SOP always runs build, then test, then lint, and stops at the first failure.
+  # The fast checks sit under build so a format or lint error fails in the first
+  # minute instead of after the long database test suite.
+  build:
+    - cargo fmt --check
+    - cargo build --locked
+    - cargo clippy --locked --all-targets -- -D warnings
+  test:
+    # test-db.sh points the suite at the disposable *_test databases derived
+    # from .env and refuses any other database (same as `make test`). Start
+    # Postgres first with `make db-up`.
+    - ./scripts/test-db.sh exec -- cargo test --locked
+
+# Security scanner add-on. Turn it on and pick the mode with SOP_SECURITY_ENABLED
+# and SOP_SECURITY_MODE in .env (see .env.example).
+security:
+  # Required. Before Semgrep starts, SOP walks the workspace to detect source
+  # languages, and the walk does not read .gitignore. Without these entries it
+  # crawls build output and extra checkouts (hundreds of thousands of files)
+  # and the run appears to hang after validation. Gitleaks also reports
+  # false positives from the build caches.
+  exclude:
+    - target
+    - .worktrees
+    - .claude
+    - node_modules
+    - web/.next
+    - web/.next-build
+    - .run
+    - data
+  # Listing adapters replaces SOP's defaults, so both are named here.
+  adapters:
+    - id: semgrep
+      rules: .semgrep/rules.yaml
+    - id: gitleaks
