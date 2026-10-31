@@ -31,7 +31,9 @@ use crate::onboarding::account_map::IdentityAccount;
 use crate::onboarding::candidate::{
     load_name_parts, mask_email, reclassify_person, CandidateError, Classification, Reason,
 };
-use crate::onboarding::delivery::{activation_link, DeliveryError, MailAdapter};
+use crate::onboarding::delivery::{
+    activation_link, login_profile, DeliveryError, InvitationMessage, MailAdapter,
+};
 use crate::onboarding::family_admin::{
     authorize_person_invitation_in, FamilyAdminCheckError, FamilyAdminDecision,
 };
@@ -821,6 +823,14 @@ fn deliver_invitation(
     } = request;
     let masked_contact = mask_email(email);
 
+    // The sign-in profile is resolved before any invitation is touched, so a
+    // username that cannot be reserved leaves the current invitation in place.
+    let login = if adapter.provisions_logins() {
+        Some(login_profile(client, person_id, actor)?)
+    } else {
+        None
+    };
+
     if let Some(pending) = pending_invitation(client, person_id)? {
         let _ = revoke_row(client, pending.invitation_id);
         let _ = client.execute(
@@ -850,8 +860,15 @@ fn deliver_invitation(
          Open this single-use link to continue:\n\n{link}\n\n\
          The link expires automatically. If you did not expect this message, ignore it."
     );
+    let message = InvitationMessage {
+        to: email,
+        subject,
+        body: &body,
+        link: &link,
+        login: login.as_ref(),
+    };
 
-    match adapter.deliver(email, subject, &body) {
+    match adapter.deliver_invitation(&message) {
         Ok(receipt) => {
             let state = if receipt.accepted {
                 ProfileDeliveryState::Sent
@@ -885,6 +902,7 @@ fn deliver_invitation(
         Err(err) => {
             let code = match &err {
                 DeliveryError::NotConfigured => "not_configured",
+                DeliveryError::Login(code) => code,
                 DeliveryError::Provider(_) => "provider_failed",
                 DeliveryError::InvalidRecipient => "invalid_recipient",
                 DeliveryError::MissingVerifiedContact => "missing_verified_contact",

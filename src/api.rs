@@ -3752,6 +3752,7 @@ fn profile_invitation_error(err: onboarding::ProfileInvitationError) -> Response
                 "delivery_failed",
                 "the mail provider did not accept the message; nothing was sent",
             ),
+            DeliveryError::Login(code) => login_error_response(code),
             _ => error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "invitation_unavailable",
@@ -8428,6 +8429,47 @@ async fn bulk_recipient(
     }
 }
 
+/// The response for a sign-in that Keycloak could not prepare. The code names
+/// the rule; the message never names the person, the address, or Keycloak's
+/// own response.
+fn login_error_response(code: &'static str) -> Response {
+    let (status, message) = match code {
+        "login_username_taken" => (
+            StatusCode::CONFLICT,
+            "the reserved username belongs to a different Keycloak login; nothing was sent",
+        ),
+        "login_ambiguous" => (
+            StatusCode::CONFLICT,
+            "more than one Keycloak login uses this address; nothing was sent",
+        ),
+        "login_disabled" => (
+            StatusCode::CONFLICT,
+            "the Keycloak login for this address is disabled; nothing was sent",
+        ),
+        "login_username_unavailable" => (
+            StatusCode::CONFLICT,
+            "no username could be reserved for this person; nothing was sent",
+        ),
+        "login_redirect_rejected" => (
+            StatusCode::BAD_GATEWAY,
+            "Keycloak refused the activation link as a redirect; nothing was sent",
+        ),
+        "login_email_failed" => (
+            StatusCode::BAD_GATEWAY,
+            "Keycloak could not send its password email",
+        ),
+        "login_provider_unauthorized" => (
+            StatusCode::BAD_GATEWAY,
+            "the Keycloak service account was refused; nothing was sent",
+        ),
+        _ => (
+            StatusCode::BAD_GATEWAY,
+            "Keycloak is unavailable; nothing was sent",
+        ),
+    };
+    error(status, code, message)
+}
+
 fn delivery_error(err: onboarding::DeliveryError) -> Response {
     match err {
         onboarding::DeliveryError::InvalidRecipient => error(
@@ -8450,6 +8492,7 @@ fn delivery_error(err: onboarding::DeliveryError) -> Response {
             "not_prepared",
             "the person is not prepared for sending",
         ),
+        onboarding::DeliveryError::Login(code) => login_error_response(code),
         _ => error(
             StatusCode::SERVICE_UNAVAILABLE,
             "delivery_failed",

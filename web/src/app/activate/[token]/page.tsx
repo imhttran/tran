@@ -489,7 +489,10 @@ function ActivationView({ token }: { token: string }) {
           <aside className="signin-side">
             <h2>What happens next</h2>
             <ul>
-              <li>You sign in with the identity provider your family uses.</li>
+              <li>
+                You sign in with the identity provider your family uses. If you
+                just chose your password, you are already signed in there.
+              </li>
               <li>Your account is linked to this person only.</li>
               <li>The invitation link then stops working.</li>
             </ul>

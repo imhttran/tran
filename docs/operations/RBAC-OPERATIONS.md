@@ -212,6 +212,9 @@ Never remove the last valid administrator before the replacement works.
 
 ## Invite and role administration
 
+Invitees without a Keycloak login can get one automatically at send time; see
+[Keycloak sign-ins for invitations](KEYCLOAK-INVITATION-LOGINS.md).
+
 The admin CLI is the supported operator interface for account and grant
 changes. Every write is transactional and records an `audit_events` row.
 

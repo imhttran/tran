@@ -22,6 +22,7 @@ pub mod dry_run;
 pub mod family_admin;
 pub mod family_profile;
 pub mod invitation;
+pub mod keycloak_logins;
 pub mod link;
 pub mod media;
 pub mod profile;
@@ -56,8 +57,9 @@ pub use candidate::{
 };
 pub use delivery::{
     issue_deliverable_invitation, send_batch, sync_invitation_status, verify_recipient,
-    DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, HttpMailAdapter, MailAdapter,
-    SendOutcome, SentMessage, SmtpMailAdapter, SmtpSettings, SmtpTlsMode, UnconfiguredAdapter,
+    DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, HttpMailAdapter,
+    InvitationMessage, MailAdapter, SendOutcome, SentMessage, SmtpMailAdapter, SmtpSettings,
+    SmtpTlsMode, UnconfiguredAdapter,
 };
 pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
@@ -73,6 +75,7 @@ pub use family_profile::{
     FamilyProfile, FamilyProfileError, FamilyProfileField, FamilyProfileMedia,
 };
 pub use invitation::{accept, create, expire_due, revoke, InvitationError, IssuedInvitation};
+pub use keycloak_logins::{KeycloakLoginAdapter, KeycloakLoginSettings, LoginProfile};
 pub use link::{
     link_for_account, link_for_person, link_reviewed, revoke_link, LinkDecision, LinkError,
     LinkRecord,
