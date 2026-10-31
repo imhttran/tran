@@ -78,6 +78,9 @@ r2d2_postgres = "0.18"
 # the lock file through `stringprep`; declared here because the question path
 # uses it directly.
 unicode-normalization = "0.1"
+# Email (MAIL-003): maintained SMTP client for the onboarding invitation adapter.
+# rustls avoids a system OpenSSL dependency; native-tls is not enabled.
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls-tls"] }
 # HTTP API (RUST-008A): Axum serves the browser-facing contract; Tokio provides
 # the runtime. Blocking database/Ollama work runs through spawn_blocking so it
 # never occupies an async executor thread.

@@ -31,6 +31,7 @@ pub mod profile_revisions;
 pub mod provisioning;
 pub mod reservation;
 pub mod review_queue;
+pub mod smtp_delivery;
 pub mod username;
 
 pub use account_map::{identity_fingerprint, resolve_account, AccountMapError, IdentityAccount};
@@ -56,7 +57,7 @@ pub use candidate::{
 pub use delivery::{
     issue_deliverable_invitation, send_batch, sync_invitation_status, verify_recipient,
     DeliveryError, DeliveryReceipt, DeliveryStatus, FakeAdapter, HttpMailAdapter, MailAdapter,
-    SendOutcome, SentMessage, UnconfiguredAdapter,
+    SendOutcome, SentMessage, SmtpMailAdapter, SmtpSettings, SmtpTlsMode, UnconfiguredAdapter,
 };
 pub use dry_run::{
     name_is_ambiguous, preview_dry_run, username_collides, DryRunFilters, DryRunReport, DryRunRow,
