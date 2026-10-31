@@ -236,5 +236,56 @@ acceptance reaches pending review.
 - **The full `make web-e2e` suite was not run**; only the focused invitation specs
   were executed.
 - **The plan document was updated** to remove the obsolete self-invitation
-  permission. The compiled SOP task text is unchanged because the plan is not
-  recompiled; the code and this report describe the implemented rule.
+  permission. The operator authorized the change and it was accepted through
+  `sop reconcile "docs/plans/PLAN-TRAN-PROFILE-INVITATION-RECOVERY.md"
+--accept-changed PIR-002`; SOP reports `RECONCILE_CLEAN` with all seven tasks
+  satisfied and the execution history preserved.
+
+## Deployment prerequisites
+
+These are external to the repository. None was changed or exercised here.
+
+1. **Identity-provider registration.** The deployed provider is Keycloak
+   (`http://127.0.0.1:8180/realms/tran`). A read-only probe of the realm's login
+   page found no registration link, which is Keycloak's standard signal that
+   `User registration` is off. An invited person **without** a Keycloak account
+   therefore cannot create one today. To enable self-service, an operator opens
+   the Keycloak admin console for realm `tran`, enables _Realm settings → Login →
+   User registration_ (optionally _Email as username_ and _Verify email_, which
+   needs SMTP), and confirms the `tran-web` client accepts the flow. Otherwise the
+   operator creates each user under _Users → Add user_ and sets a credential. The
+   discovery document's `registration_endpoint` is OAuth **client** registration,
+   not user sign-up, and does not help here.
+2. **Compatible mail delivery.** Set `ONBOARDING_MAIL_ADAPTER=http` and
+   `ONBOARDING_MAIL_URL` to an endpoint that accepts the contract in
+   [`PROFILE-INVITATION-MAIL-ADAPTER.md`](PROFILE-INVITATION-MAIL-ADAPTER.md).
+   No provider is configured, and `PASSWORD_RESET_URL` is not compatible. A 2xx is
+   provider acceptance only.
+3. **Publicly reachable activation URL.** `ONBOARDING_ACTIVATION_URL` must be an
+   absolute public URL. It is unset here, so the default `/activate` is used.
+
+### Activation-link shape (fixed in #140)
+
+The delivered link was built as `{ONBOARDING_ACTIVATION_URL}?token=<token>`
+(`activation_link` in `src/onboarding/delivery.rs`), but the welcome screen is the
+path route `/activate/[token]`. A queried `/activate?token=...` did not match that
+route, so an emailed link would have returned 404 even with a correct public host.
+
+PR #140 fixes it: `activation_link` now emits `{base}/{token}`, trims trailing
+slashes from the configured base, and percent-encodes the token as one path
+segment. Send, resend, and the bulk send path share the builder; unit, database,
+and browser regressions cover the generated URL. Prerequisite 3 below is therefore
+only the public host configuration.
+
+### Distinguishing the two accounts
+
+- **Identity-provider account (Keycloak):** authenticates the person. The
+  application cannot create it; it is either self-registered (disabled here) or
+  created by an operator.
+- **Tran application account (identity database `users` row):** created
+  automatically by `/api/invitations/{token}/provision` on the first successful
+  sign-in and audited. No operator action is needed. It carries no role and no
+  archive grant until an administrator approves the reviewed link.
+
+The real OIDC round-trip test proves the second point with a subject the
+application had never seen.

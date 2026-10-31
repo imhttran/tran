@@ -519,8 +519,17 @@ fn run(dsn: &str, client: &mut Client, prefix: &str) -> Result<(), String> {
         .all(|outcome| outcome.status == DeliveryStatus::Sent));
     assert_eq!(adapter.messages().len(), ids.len());
     // The message body carries the one-time link; the API outcome does not.
-    assert!(adapter.messages()[0].body.contains("/activate/"));
-    assert!(!format!("{:?}", outcomes[0]).contains("/activate/"));
+    let messages = adapter.messages();
+    let link = messages[0]
+        .body
+        .split_whitespace()
+        .find(|word| word.starts_with("/activate/"))
+        .expect("the body carries the path activation link");
+    assert!(
+        !link.contains('?'),
+        "the token must be a path segment: {link}"
+    );
+    assert!(!format!("{:?}", outcomes[0]).contains(link));
 
     // 10. A repeat send creates no second invitation.
     let invitations_before: i64 = client

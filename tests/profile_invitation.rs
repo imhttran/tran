@@ -15,7 +15,7 @@ use rag_foundation::onboarding::{
     resend_invitation, revoke_invitation, save_contact_draft, send_invitation, DeliveryError,
     DeliveryReceipt, FakeAdapter, InvitationState, InvitationStatusView, MailAdapter,
     PrepareReview, ProfileDeliveryState, ProfileInvitationError, RevokeInvitationOutcome,
-    SendInvitationOutcome, UnconfiguredAdapter,
+    SendInvitationOutcome, SentMessage, UnconfiguredAdapter,
 };
 
 #[path = "support/genealogy_isolation.rs"]
@@ -1105,6 +1105,76 @@ fn a_family_head_may_invite_themselves_only_through_their_branch() {
         &caller_key,
     );
     assert!(matches!(state, Err(ProfileInvitationError::Refused(_))));
+}
+
+/// The activation link is a path segment on the `/activate/[token]` route, and
+/// both the explicit send and the resend hand it to the adapter unchanged.
+#[test]
+fn send_and_resend_use_the_path_activation_link() {
+    let Some(fixture) = build_fixture("pir011-link", TARGET_BRANCH) else {
+        return;
+    };
+    let mut client = fixture.client();
+    save_fixture_draft(&mut client, &fixture);
+    let adapter = FakeAdapter::accepting();
+    // A trailing-slash base must not double the separator or fall back to a query.
+    let base = "https://example.test/activate///";
+
+    let link_from = |messages: &[SentMessage]| -> String {
+        let message = messages.last().expect("one delivered message");
+        message
+            .body
+            .split_whitespace()
+            .find(|word| word.starts_with("https://example.test/"))
+            .expect("the body carries the activation link")
+            .to_string()
+    };
+
+    send_invitation(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        &adapter,
+        base,
+    )
+    .expect("explicit send");
+    let first = link_from(&adapter.messages());
+    assert!(
+        first.starts_with("https://example.test/activate/"),
+        "unexpected link: {first}"
+    );
+    assert!(
+        !first.contains('?'),
+        "the token must be a path segment: {first}"
+    );
+    let first_token = first.rsplit('/').next().expect("token segment").to_string();
+    assert_eq!(first_token.len(), 64);
+    assert!(first_token.chars().all(|c| c.is_ascii_hexdigit()));
+
+    resend_invitation(
+        &mut client,
+        &fixture.identity,
+        &fixture.account,
+        &fixture.target_person_key,
+        &adapter,
+        base,
+    )
+    .expect("resend");
+    let second = link_from(&adapter.messages());
+    assert!(
+        second.starts_with("https://example.test/activate/"),
+        "unexpected link: {second}"
+    );
+    let second_token = second
+        .rsplit('/')
+        .next()
+        .expect("token segment")
+        .to_string();
+    assert_ne!(
+        first_token, second_token,
+        "a resend issues a new single-use token"
+    );
 }
 
 /// The delivery migration only adds nullable or defaulted columns.

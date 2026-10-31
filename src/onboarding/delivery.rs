@@ -505,13 +505,33 @@ fn contact_for(client: &mut Client, person_id: i64) -> Result<Option<String>, De
     Ok(row.map(|row| row.get(0)))
 }
 
-/// Builds the activation link in the path-based `/activate/<token>` form.
+/// Percent-encodes one URL path segment.
 ///
-/// The token appears only in the message body. Both `send_batch` (bulk) and
-/// `deliver_invitation` (individual send and resend) call this one builder, so
-/// every flow produces the same link shape.
+/// Unreserved characters are kept; every other byte is escaped. The invitation
+/// token is lowercase hex, so a real token is unchanged, but a malformed value
+/// can never introduce a path separator, a query separator, or a fragment.
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Builds the activation link as `{base}/{token}`.
+///
+/// The link matches the web route `/activate/[token]`, so the token is a path
+/// segment and never a query parameter. Trailing slashes on the configured base
+/// are ignored, and the token is percent-encoded. The token appears only in the
+/// message body.
 pub(crate) fn activation_link(base: &str, token: &str) -> String {
-    format!("{}/{}", base.trim_end_matches('/'), token)
+    let base = base.trim().trim_end_matches('/');
+    format!("{base}/{}", encode_path_segment(token))
 }
 
 /// Issues an invitation whose plaintext token can be delivered.
@@ -896,11 +916,30 @@ mod tests {
     }
 
     #[test]
-    fn activation_link_uses_the_path_form() {
-        assert_eq!(activation_link("/activate", "abc"), "/activate/abc");
+    fn activation_link_is_a_path_segment() {
+        let token = "0123456789abcdef";
+        // The configured base may end with any number of slashes; the link always
+        // has exactly one separator before the token.
+        for base in [
+            "https://example.test/activate",
+            "https://example.test/activate/",
+            "https://example.test/activate///",
+            "  https://example.test/activate/  ",
+        ] {
+            assert_eq!(
+                activation_link(base, token),
+                "https://example.test/activate/0123456789abcdef",
+                "base: {base:?}"
+            );
+        }
         assert_eq!(
-            activation_link("http://localhost:3000/activate/", "abc"),
-            "http://localhost:3000/activate/abc"
+            activation_link("/activate", token),
+            "/activate/0123456789abcdef"
+        );
+        // Every unsafe byte is escaped, so a token cannot break out of the path.
+        assert_eq!(
+            activation_link("https://example.test/activate", "a/b c%?#"),
+            "https://example.test/activate/a%2Fb%20c%25%3F%23"
         );
     }
 
