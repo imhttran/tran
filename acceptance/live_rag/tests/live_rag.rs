@@ -301,12 +301,16 @@ fn source_base(source: &str) -> String {
 }
 
 /// Section comparison tolerates the optional `Section:` label the prompt uses.
-fn section_base(section: &str) -> &str {
+/// Production's `normalize_section` matches the label case-insensitively, so
+/// this helper does too.
+fn section_base(section: &str) -> String {
     let trimmed = section.trim();
-    trimmed
-        .strip_prefix("Section:")
-        .map(str::trim)
-        .unwrap_or(trimmed)
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("section:") {
+        trimmed[8..].trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn provenance_exists(dsn: &str, corpus: &str, citation: &AnswerCitation) -> bool {
@@ -378,6 +382,21 @@ fn assert_cites(
             && expected_page.map_or(true, |page| citation.page == Some(page))
     });
     assert!(found, "{message}:\n{answer}");
+}
+
+#[test]
+fn citation_provenance_accepts_formatting_variants() {
+    let policy = answer_citations("[live-policy.md (live-policy-md) - section: Missed Payments]");
+    assert_eq!(policy.len(), 1);
+    assert_eq!(source_base(&policy[0].source), "live-policy");
+    assert_eq!(section_base(&policy[0].section), "Missed Payments");
+    assert_eq!(policy[0].page, None);
+
+    let pdf = answer_citations("[live-text-layer.pdf - Page 2 - p.2]");
+    assert_eq!(pdf.len(), 1);
+    assert_eq!(source_base(&pdf[0].source), "live-text-layer.pdf");
+    assert_eq!(section_base(&pdf[0].section), "Page 2");
+    assert_eq!(pdf[0].page, Some(2));
 }
 
 /// Runs a query up to `attempts` times, accepting the first success that carries
