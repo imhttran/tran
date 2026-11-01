@@ -96,6 +96,7 @@ the `PLAN-TRAN-*` plans. The original RAG-template loan demo survives only as th
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | [guides/usage.md](guides/usage.md)                                                   | You want to set up, ingest a document, or ask a question.                             |
 | [guides/testing.md](guides/testing.md)                                               | You need the test-database isolation model and how the suites are run.                |
+| [guides/sop.md](guides/sop.md)                                                       | You run SOP on tran, or a run is stalling, hanging, or slow.                          |
 | [guides/evaluation.md](guides/evaluation.md)                                         | You want to score retrieval or compare settings/models.                               |
 | [guides/genealogy-dates.md](guides/genealogy-dates.md)                               | You need how birth and death dates move from the catalog into assertions.             |
 | [guides/my-profile.md](guides/my-profile.md)                                         | You are building or reviewing the member My Profile surface and its privacy boundary. |

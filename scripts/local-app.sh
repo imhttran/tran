@@ -33,7 +33,8 @@ CATALOG_DEFAULT="docs/tran/Tran-Family-People-Catalog.md"
 RUN_DIR="$ROOT/.run"
 API_PID_FILE="$RUN_DIR/api.pid"
 API_LOG_FILE="$RUN_DIR/api.log"
-API_BIN="$ROOT/target/debug/api"
+# Follow CARGO_TARGET_DIR when the build output lives elsewhere.
+API_BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/api"
 
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8080}"

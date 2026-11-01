@@ -424,7 +424,7 @@ echo "web-e2e: building the API"
 cargo build --locked --bin api
 
 api_log=$(mktemp)
-API_HOST=127.0.0.1 API_PORT="$API_PORT" target/debug/api >"$api_log" 2>&1 &
+API_HOST=127.0.0.1 API_PORT="$API_PORT" "${CARGO_TARGET_DIR:-target}/debug/api" >"$api_log" 2>&1 &
 API_PID=$!
 
 cleanup() {
