@@ -426,6 +426,32 @@ async function stubAdmin(page: Page) {
       }),
     }),
   );
+  // PendingLinkReviews fetches this auxiliary list from the same page. Without
+  // a stub its 401 would trip the shared session-expiry state even though the
+  // preview scenario itself is authenticated by the session stub above.
+  await page.route("**/api/admin/family-members/link-requests", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, requests: [] }),
+    }),
+  );
+  // The accounts workspace also loads the branch-reviewer directory. Stub its
+  // auxiliary reads so they cannot return 401 and trip the shared expiry state.
+  await page.route("**/api/admin/branch-reviewers/branches", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, branches: [] }),
+    }),
+  );
+  await page.route("**/api/admin/branch-reviewers?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, grants: [], grants_next_cursor: null }),
+    }),
+  );
 }
 
 async function openStubbedPreview(page: Page) {

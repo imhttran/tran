@@ -4,7 +4,7 @@ export type FormStatusState = { kind: "ok" | "error" | "info"; text: string } | 
 export function FormStatus({ status }: { status: FormStatusState }) {
   if (!status) return null;
   return (
-    <p className={`form-status ${status.kind}`} role="status">
+    <p className={`form-status ${status.kind}`} role="status" data-testid="form-status">
       {status.text}
     </p>
   );
