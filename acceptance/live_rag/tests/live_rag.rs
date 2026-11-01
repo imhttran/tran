@@ -244,6 +244,142 @@ fn assert_valid_citations(dsn: &str, corpus: &str, output: &str) {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AnswerCitation {
+    source: String,
+    section: String,
+    page: Option<i32>,
+}
+
+/// Parses the answer body's `[source - section]` and `[source - section - p.N]`
+/// citations. The source may carry the lifecycle's optional `(shortkey)`
+/// suffix; provenance comparison strips it.
+fn answer_citations(answer: &str) -> Vec<AnswerCitation> {
+    let normalized = answer.replace(['\u{2013}', '\u{2014}'], "-");
+    let mut found = Vec::new();
+    let mut rest = normalized.as_str();
+    while let Some(start) = rest.find('[') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find(']') else {
+            break;
+        };
+        let inner = &after[..end];
+        if let Some((source, tail)) = inner.split_once(" - ") {
+            let mut citation = AnswerCitation {
+                source: source.trim().to_string(),
+                section: tail.trim().to_string(),
+                page: None,
+            };
+            if let Some((section, page_segment)) = tail.split_once(" - ") {
+                if let Some(page) = page_segment
+                    .trim()
+                    .strip_prefix("p.")
+                    .and_then(|page| page.parse::<i32>().ok())
+                {
+                    citation.section = section.trim().to_string();
+                    citation.page = Some(page);
+                }
+            }
+            found.push(citation);
+        }
+        rest = &after[end + 1..];
+    }
+    found
+}
+
+/// The stored source may include the lifecycle's `(shortkey)` or a `.md`
+/// suffix; the citation may omit either. Compare the publication's normalized
+/// base source only, case-insensitively like the library's resolver.
+fn source_base(source: &str) -> String {
+    let base = source
+        .split(" (")
+        .next()
+        .unwrap_or(source)
+        .trim()
+        .to_lowercase();
+    base.strip_suffix(".md").unwrap_or(&base).to_string()
+}
+
+/// Section comparison tolerates the optional `Section:` label the prompt uses.
+fn section_base(section: &str) -> &str {
+    let trimmed = section.trim();
+    trimmed
+        .strip_prefix("Section:")
+        .map(str::trim)
+        .unwrap_or(trimmed)
+}
+
+fn provenance_exists(dsn: &str, corpus: &str, citation: &AnswerCitation) -> bool {
+    let base = source_base(&citation.source);
+    let section = section_base(&citation.section);
+    let mut client =
+        postgres::Client::connect(dsn, postgres::NoTls).expect("connect for provenance check");
+    let count: i64 = match citation.page {
+        Some(page) => client
+            .query_one(
+                concat!(
+                    "SELECT count(*) FROM documents ",
+                    "WHERE corpus = $1 ",
+                    "AND lower(regexp_replace(split_part(source, ' (', 1), '\\.md$', '', 'i')) = $2 ",
+                    "AND regexp_replace(section, '^Section:\\s*', '', 'i') = $3::text ",
+                    "AND page = $4"
+                ),
+                &[&corpus, &base, &section, &page],
+            )
+            .expect("check the paged answer citation")
+            .get(0),
+        None => client
+            .query_one(
+                concat!(
+                    "SELECT count(*) FROM documents ",
+                    "WHERE corpus = $1 ",
+                    "AND lower(regexp_replace(split_part(source, ' (', 1), '\\.md$', '', 'i')) = $2 ",
+                    "AND regexp_replace(section, '^Section:\\s*', '', 'i') = $3::text"
+                ),
+                &[&corpus, &base, &section],
+            )
+            .expect("check the answer citation")
+            .get(0),
+    };
+    count > 0
+}
+
+/// Every citation in the answer body must resolve to a stored row. Formatting
+/// differences such as an optional `(shortkey)` are accepted; a missing or
+/// wrong provenance is not.
+fn assert_answer_citations_resolve(dsn: &str, corpus: &str, answer: &str) {
+    let found = answer_citations(answer);
+    assert!(
+        !found.is_empty(),
+        "the answer body must carry at least one citation:\n{answer}"
+    );
+    for citation in &found {
+        assert!(
+            provenance_exists(dsn, corpus, citation),
+            "answer citation {citation:?} does not resolve to a stored row in corpus {corpus:?}"
+        );
+    }
+}
+
+/// Requires at least one answer-body citation naming the expected publication,
+/// and (when supplied) the expected section and page.
+fn assert_cites(
+    answer: &str,
+    expected_source: &str,
+    expected_section: Option<&str>,
+    expected_page: Option<i32>,
+    message: &str,
+) {
+    let found = answer_citations(answer).into_iter().any(|citation| {
+        source_base(&citation.source) == source_base(expected_source)
+            && expected_section.map_or(true, |section| {
+                section_base(&citation.section) == section_base(section)
+            })
+            && expected_page.map_or(true, |page| citation.page == Some(page))
+    });
+    assert!(found, "{message}:\n{answer}");
+}
+
 /// Runs a query up to `attempts` times, accepting the first success that carries
 /// valid citations. Live generation is stochastic, so a bounded retry is
 /// recorded and never treated as a mock.
@@ -357,9 +493,13 @@ fn live_production_ingest_query_and_cited_answer() {
         3,
     );
     assert_valid_citations(&dsn, &corpus, &policy_answer);
-    assert!(
-        policy_answer.contains("live-policy.md - "),
-        "the loan-policy answer must cite the Markdown source:\n{policy_answer}"
+    assert_answer_citations_resolve(&dsn, &corpus, &policy_answer);
+    assert_cites(
+        &policy_answer,
+        "live-policy.md",
+        None,
+        None,
+        "the loan-policy answer must cite the Markdown source",
     );
 
     let pdf_answer = answer_with_citations(
@@ -369,9 +509,13 @@ fn live_production_ingest_query_and_cited_answer() {
         3,
     );
     assert_valid_citations(&dsn, &corpus, &pdf_answer);
-    assert!(
-        pdf_answer.contains("live-text-layer.pdf - Page 2 - p.2"),
-        "the PDF answer must cite page 2 with page provenance:\n{pdf_answer}"
+    assert_answer_citations_resolve(&dsn, &corpus, &pdf_answer);
+    assert_cites(
+        &pdf_answer,
+        "live-text-layer.pdf",
+        Some("Page 2"),
+        Some(2),
+        "the PDF answer must cite page 2 with page provenance",
     );
 
     let note_answer =

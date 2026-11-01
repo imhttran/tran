@@ -118,6 +118,23 @@ export function ProfileInvitationPanel({
         getProfileInvitationStatus(personKey),
       ]);
       if (sequence.current !== current) return;
+      // A malformed or legacy payload may omit the invitation block or the
+      // status fields the panel renders. Treat any incomplete shape as
+      // unavailable rather than dereferencing a missing object.
+      if (
+        !state ||
+        typeof state !== "object" ||
+        !state.invitation ||
+        typeof state.invitation !== "object" ||
+        typeof state.invitation.pending !== "boolean" ||
+        typeof state.invitation.delivery_state !== "string" ||
+        !status ||
+        typeof status !== "object" ||
+        typeof status.delivery_state !== "string"
+      ) {
+        setPanel({ kind: "unavailable" });
+        return;
+      }
       setPanel({ kind: "ready", state, status });
     } catch (err) {
       if (sequence.current !== current) return;

@@ -330,6 +330,32 @@ async function signIn(page: Page, session: unknown) {
       body: JSON.stringify(session),
     }),
   );
+  // PendingLinkReviews fetches this auxiliary list on the family-members page.
+  // Stub it so a 401 cannot trip the shared session-expiry state in these
+  // stub-only scenarios; real authorization still comes from the API.
+  await page.route("**/api/admin/family-members/link-requests", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, requests: [] }),
+    }),
+  );
+  // The accounts workspace also loads the branch-reviewer directory. Stub its
+  // auxiliary reads so they cannot return 401 and trip the shared expiry state.
+  await page.route("**/api/admin/branch-reviewers/branches", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, branches: [] }),
+    }),
+  );
+  await page.route("**/api/admin/branch-reviewers?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, grants: [], grants_next_cursor: null }),
+    }),
+  );
 }
 
 async function stubSubmissions(page: Page, submissions: unknown[] = [SUBMISSION]) {

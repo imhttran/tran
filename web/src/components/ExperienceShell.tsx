@@ -226,6 +226,19 @@ function matchesAny(pathname: string | null, items: NavItem[]): boolean {
   return items.some((item) => isCurrent(pathname, item.href));
 }
 
+// Family-facing profiles and branch-scoped review pages present another
+// person's restricted record. They must not request the caller's own profile
+// for the review-decision hint.
+function showsRestrictedRecord(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return (
+    pathname === "/family" ||
+    pathname.startsWith("/family/") ||
+    pathname === "/branch-review" ||
+    pathname.startsWith("/branch-review/")
+  );
+}
+
 export function ExperienceShell({ children }: Props) {
   const pathname = usePathname();
   const [session, setSession] = useState<SessionResult | null>(null);
@@ -261,9 +274,10 @@ export function ExperienceShell({ children }: Props) {
   // a plain fetch so its own 401 or error never changes the session state, and
   // any failure just hides the badge.
   const signedIn = roleOf(session) !== null;
+  const wantsProfileActions = signedIn && !showsRestrictedRecord(pathname);
   const [actionCount, setActionCount] = useState(0);
   useEffect(() => {
-    if (!signedIn) {
+    if (!wantsProfileActions) {
       setActionCount(0);
       return;
     }
@@ -286,7 +300,7 @@ export function ExperienceShell({ children }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [signedIn, pathname]);
+  }, [wantsProfileActions, pathname]);
   const actionLabel = `${actionCount} profile review decision${actionCount === 1 ? " needs" : "s need"} your attention`;
   const actionBadge =
     actionCount > 0 ? (
