@@ -121,6 +121,12 @@ check_request() {
 		if [ -s "$err" ]; then
 			cat "$err" >&2
 		fi
+		# A response may still be on stdout: report its status and error code.
+		if [ -s "$out" ]; then
+			python3 "$parser" "$kind" <"$out" | grep -E '^(STATUS|ERROR_CODE)=' \
+				| sed "s/^/FAIL: $name: /" >&2 || true
+		fi
+		operator_steps
 		exit 1
 	fi
 
