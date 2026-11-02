@@ -79,7 +79,9 @@ fi
 printf '%s\n' "$files" >"$script_dir/.ingest-files.$$"
 trap 'rm -f "$script_dir/.ingest-files.$$"' EXIT INT TERM
 while IFS= read -r file; do
-	if ! "$ingest_bin" "$file"; then
+	# The Rust ingest stores the bare file name unless RAG_SOURCE names the
+	# repo-relative path that retrieval reports as evidence `source`.
+	if ! RAG_SOURCE=$file "$ingest_bin" "$file"; then
 		printf '%s\n' "ingest failed for file: $file" >&2
 		exit 1
 	fi

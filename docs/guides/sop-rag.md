@@ -59,8 +59,8 @@ tran, start Docker, pull models, or edit its untracked config.
 # 1. Build the producer and the ingester from rag-template-rust main.
 cd ~/agentic-workspace/projects/rag-template-rust
 git switch main && git pull
-go build -o bin/retrieval ./cmd/retrieval
-go build -o bin/ingest ./cmd/ingest
+cargo build --locked --release --bin retrieval --bin ingest
+mkdir -p bin && cp target/release/retrieval target/release/ingest bin/
 
 # 2. Start the retrieval database on 5436 as its own Compose project.
 docker compose -p sop-rag -f docker-compose.yml \
