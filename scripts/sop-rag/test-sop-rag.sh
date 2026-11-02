@@ -223,4 +223,26 @@ if ! printf '%s\n' "$block" | grep -qxF "    - $corpus"; then
 fi
 printf 'PASS: scenario J\n'
 
+# --- Scenario K: check-live.sh reports a failing wrapper's status and the steps ---
+live_stub_dir=$workdir/live-bin
+mkdir -p "$live_stub_dir"
+cat >"$live_stub_dir/retrieval" <<'STUB'
+#!/bin/sh
+printf '%s\n' '{"status":"UNAVAILABLE","diagnostics":{"error_code":"UNAVAILABLE"}}'
+exit 3
+STUB
+chmod +x "$live_stub_dir/retrieval"
+live_err=$workdir/live.err
+if SOP_RAG_BIN_DIR="$live_stub_dir" sh "$script_dir/check-live.sh" >/dev/null 2>"$live_err"; then
+	fail "scenario K: check-live.sh passed with a failing wrapper"
+fi
+grep -q 'STATUS=UNAVAILABLE' "$live_err" || fail "scenario K: status was not reported"
+grep -q 'ERROR_CODE=UNAVAILABLE' "$live_err" || fail "scenario K: error_code was not reported"
+grep -q 'Operator steps' "$live_err" || fail "scenario K: operator steps were not printed"
+if SOP_RAG_BIN_DIR="$missing_dir" sh "$script_dir/check-live.sh" >/dev/null 2>"$live_err"; then
+	fail "scenario K: check-live.sh passed with no retrieval binary"
+fi
+grep -q 'Operator steps' "$live_err" || fail "scenario K: no operator steps for a missing binary"
+printf 'PASS: scenario K\n'
+
 printf 'PASS: sop-rag scripts\n'

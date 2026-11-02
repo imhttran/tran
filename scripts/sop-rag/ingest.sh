@@ -53,7 +53,7 @@ list_files() {
 			;;
 		*)
 			[ -d "$entry" ] || continue
-			find "$entry" -type f -name '*.md' | sort
+			find "$entry" -maxdepth 1 -type f -name '*.md' | sort
 			;;
 		esac
 	done <"$corpus_list"
@@ -76,8 +76,6 @@ if [ ! -x "$ingest_bin" ]; then
 	exit 127
 fi
 
-printf '%s\n' "$files" >"$script_dir/.ingest-files.$$"
-trap 'rm -f "$script_dir/.ingest-files.$$"' EXIT INT TERM
 while IFS= read -r file; do
 	# The Rust ingest stores the bare file name unless RAG_SOURCE names the
 	# repo-relative path that retrieval reports as evidence `source`.
@@ -85,4 +83,6 @@ while IFS= read -r file; do
 		printf '%s\n' "ingest failed for file: $file" >&2
 		exit 1
 	fi
-done <"$script_dir/.ingest-files.$$"
+done <<EOF
+$files
+EOF
