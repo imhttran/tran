@@ -124,7 +124,7 @@ record_stub_dir=$workdir/record-bin
 mkdir -p "$record_stub_dir"
 cat >"$record_stub_dir/ingest" <<STUB
 #!/bin/sh
-printf '%s|%s\\n' "\$1" "\$RAG_CORPUS" >>"$record"
+printf '%s|%s|%s\\n' "\$1" "\$RAG_CORPUS" "\$RAG_SOURCE" >>"$record"
 STUB
 chmod +x "$record_stub_dir/ingest"
 SOP_RAG_BIN_DIR="$record_stub_dir" sh "$ingest"
@@ -133,8 +133,11 @@ expected_calls=$(printf '%s\n' "$expected" | wc -l | tr -d ' ')
 actual_calls=$(wc -l <"$record" | tr -d ' ')
 [ "$actual_calls" = "$expected_calls" ] \
 	|| fail "scenario F: expected $expected_calls ingest calls, got $actual_calls"
-if grep -qv '|tran-docs$' "$record"; then
+if awk -F'|' '$2 != "tran-docs"' "$record" | grep -q .; then
 	fail "scenario F: a call did not have RAG_CORPUS=tran-docs"
+fi
+if awk -F'|' '$3 != $1' "$record" | grep -q .; then
+	fail "scenario F: a call did not set RAG_SOURCE to its repo-relative path"
 fi
 printf 'PASS: scenario F\n'
 
