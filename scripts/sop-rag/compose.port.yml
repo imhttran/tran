@@ -1,0 +1,9 @@
+# Override the published port of the retrieval database service only.
+# Use it beside the rag-template-rust compose stack so that 5434 is replaced,
+# not added to the base file's list of ports.
+#
+#   docker compose -f compose.yml -f compose.port.yml up -d postgres
+services:
+  postgres:
+    ports: !override
+      - "5436:5432"

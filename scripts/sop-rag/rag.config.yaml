@@ -1,0 +1,10 @@
+# Operator step 5: append this rag: block to the primary checkout's .agent-sdlc/config.yaml.
+rag:
+  enabled: true
+  executable: /Users/imhttran/agentic-workspace/projects/tran/scripts/sop-rag/retrieval.sh
+  corpus: tran-docs
+  allowed_corpora:
+    - tran-docs
+  timeout_ms: 5000
+  top_k: 5
+  context_budget_bytes: 4096

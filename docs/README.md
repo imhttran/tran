@@ -110,6 +110,7 @@ the `PLAN-TRAN-*` plans. The original RAG-template loan demo survives only as th
 | [guides/source-narratives.md](guides/source-narratives.md)                           | You are extracting, reviewing, or publishing source-linked historical narratives.     |
 | [guides/document-worker-reliability.md](guides/document-worker-reliability.md)       | You are reviewing processing-worker leases and fencing.                               |
 | [guides/agent-scripts.md](guides/agent-scripts.md)                                   | You are working with the git hooks or the agent helper scripts.                       |
+| [guides/sop-rag.md](guides/sop-rag.md)                                               | You are running or checking the SOP RAG setup.                                        |
 
 ## Plans
 
