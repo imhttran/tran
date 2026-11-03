@@ -241,6 +241,9 @@ test.describe("family profile", () => {
     await expect(
       page.getByTestId("family-profile-branch-resolved"),
     ).toHaveCount(0);
+    // A recorded claim is family information, so the empty-profile panel must
+    // not also claim that nothing is shown.
+    await expect(page.getByTestId("family-profile-empty")).toHaveCount(0);
   });
 
   test("a verified claim shows the resolved branch", async ({ page }) => {
@@ -251,6 +254,7 @@ test.describe("family profile", () => {
     const resolved = page.getByTestId("family-profile-branch-resolved");
     await expect(resolved).toContainText("First Branch");
     await expect(resolved).toContainText("branch-1");
+    await expect(page.getByTestId("family-profile-empty")).toHaveCount(0);
   });
 
   test("conflicting claims show the disagreement", async ({ page }) => {
@@ -264,6 +268,7 @@ test.describe("family profile", () => {
     await expect(
       page.getByTestId("family-profile-branch-resolved"),
     ).toHaveCount(0);
+    await expect(page.getByTestId("family-profile-empty")).toHaveCount(0);
   });
 
   test("an older payload without a branch block omits the section", async ({

@@ -12,6 +12,7 @@ use genealogy_isolation::{base_dsn, create_isolated_target, IsolatedTarget};
 use postgres::Client;
 
 use rag_foundation::genealogy::appointments;
+use rag_foundation::genealogy::branch_projection;
 use rag_foundation::genealogy::query::list_records;
 use rag_foundation::identity::{decide, Decision, Operation, Role, VerifiedIdentity};
 
@@ -242,4 +243,51 @@ fn pending_nominations_carry_the_candidate_label() {
         .find(|row| row.nomination_id == missing)
         .expect("unknown-person nomination");
     assert_eq!(missing_row.candidate_label, "synthetic-missing-person");
+}
+
+#[test]
+fn a_branch_without_a_label_projects_by_key_without_panicking() {
+    let Some(target) = target() else {
+        eprintln!("GENEALOGY_DATABASE_URL is not set; skipping the database test");
+        return;
+    };
+    let mut client = target.connect();
+
+    let person_id = seed_person(
+        &mut client,
+        "synthetic-null-label-person",
+        "Synthetic Null Label Person",
+    );
+    // `family_branch.branch_label` is nullable; a catalog row without a label
+    // must resolve by key and must not panic the projection.
+    client
+        .execute(
+            "INSERT INTO family_branch (branch_key) VALUES ('synthetic-branch-null-label')",
+            &[],
+        )
+        .expect("seed label-less branch");
+    seed_branch_claim(
+        &mut client,
+        person_id,
+        "branch-null-label",
+        "synthetic-branch-null-label",
+        "verified",
+        false,
+    );
+
+    let projection =
+        branch_projection::project(&mut client, "synthetic-null-label-person").expect("projection");
+    assert_eq!(projection.state, branch_projection::BranchState::Verified);
+    assert_eq!(
+        projection.verified_branch_key.as_deref(),
+        Some("synthetic-branch-null-label")
+    );
+    assert!(projection.claims[0].branch_label.is_none());
+
+    // The nomination search's label read falls back to the recorded text, as
+    // the prior COALESCE read did.
+    let labels =
+        branch_projection::verified_branch_labels(&mut client, "synthetic-null-label-person")
+            .expect("verified labels");
+    assert_eq!(labels, vec!["synthetic-branch-null-label".to_string()]);
 }
