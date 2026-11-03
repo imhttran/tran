@@ -232,7 +232,27 @@ security:
     - .claude
     - .run
     - data
+    # Local-only environment files (.env is gitignored); never scan or stage
+    # them, so a real credential cannot reach scan evidence.
+    - .env
+    - .env.*
+  # Offline OSV cache for Rust dependency advisories. Provisioned by
+  # `make security-osv-db`; a scan only reads it and never fetches. OSV records
+  # the acquisition time, so freshness is verifiable without network access.
+  osv_database_path: .agent-sdlc/osv-db
+  # Reviewed suppressions. Entries stay visible in scan evidence and only
+  # stop matching findings from blocking once an owner has approved them.
+  baseline: .agent-sdlc/security-baseline.json
   adapters:
     - id: semgrep
       rules: .semgrep/rules.yaml
     - id: gitleaks
+    # Rust dependency advisories from the offline OSV cache above. The version
+    # is pinned exactly: the adapter verifies `osv-scanner --version` before
+    # scanning and fails closed on a missing or mismatched pin.
+    - id: osv-scanner
+      category: dependencies
+      protocol: builtin
+      command: [osv-scanner]
+      version: "2.7.0"
+      languages: [rust]

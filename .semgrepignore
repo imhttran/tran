@@ -1,0 +1,15 @@
+# Semgrep's built-in ignore list skips test/, tests/, testsuite/ and *_test.go.
+# This repository keeps security-relevant Rust setup in tests/, so the test
+# trees must stay in scope. Declaring this file replaces that built-in list.
+#
+# Keep generated, vendored, and local-only trees out instead. SOP also passes
+# its configured security.exclude patterns as --exclude; these entries keep a
+# manual `semgrep scan` in this repository consistent with the SOP scan.
+target/
+node_modules/
+web/.next/
+web/.next-build/
+data/
+.run/
+.worktrees/
+.agent-sdlc/
