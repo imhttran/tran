@@ -13,7 +13,7 @@
 //!   identity_fingerprint)` pair, holds a current `head_of_family_appointment`
 //!   with `status = 'active'` and `current_eligibility = Eligible`, and the
 //!   target person either is the caller's own linked person or carries one
-//!   current verified `branch_claim` equal to the appointment `branch_key`.
+//!   current verified recorded branch equal to the appointment `branch_key`.
 //! * A title, name, label, nomination text, request body, or client-supplied
 //!   role is never authority.
 //! * The rule never grants a role and never writes a link or a role. It issues
@@ -28,9 +28,10 @@
 //! * [`crate::genealogy::appointments::list_active_appointments`] row shape —
 //!   the caller's `head_of_family_appointment` columns (`person_key`,
 //!   `branch_key`, `status`) plus the re-evaluated `current_eligibility`.
-//! * The `branch_claim` predicate used by
-//!   `crate::genealogy::appointments::search_nomination_people` — current
-//!   verified branch labels for the target person.
+//! * [`crate::genealogy::branch_projection`] — the single projection of the
+//!   target person's current recorded branch membership. A resolved claim reports
+//!   its catalogued branch key; an unresolved verified claim reports its recorded
+//!   text so this rule keeps the prior read's shape.
 //!
 //! Allow codes: `system_admin`, `family_head_branch`, `self_link`.
 //! Deny codes: `missing_link`, `revoked_link`, `ineligible_appointment`,
@@ -47,7 +48,7 @@ use postgres::GenericClient;
 use thiserror::Error;
 
 use crate::genealogy::appointments::AppointmentRow;
-use crate::genealogy::current::CURRENT_ASSERTION;
+use crate::genealogy::branch_projection;
 use crate::genealogy::eligibility::ReasonCode;
 use crate::genealogy::GenealogyError;
 use crate::identity::{Role, VerifiedIdentity};
@@ -285,7 +286,9 @@ pub struct FamilyAdminInput {
     pub appointment: Option<CallerAppointment>,
     /// Whether the target person key resolves to a person row.
     pub target_exists: bool,
-    /// The target person's current verified branch labels.
+    /// The target person's current verified branch keys. A verified claim that
+    /// does not resolve to a catalogued branch reports its recorded text, so the
+    /// rule never silently drops a claim.
     pub target_branches: Vec<String>,
 }
 
@@ -339,22 +342,22 @@ pub fn decide(input: &FamilyAdminInput) -> FamilyAdminOutcome {
         return Err(FamilyAdminRefusal::IneligibleHolder.into());
     }
 
-    // 5. The target must carry exactly one current verified branch claim.
-    //    Deduplicate defensively so two distinct labels cannot be silently
+    // 5. The target must carry exactly one current verified branch.
+    //    Deduplicate defensively so two distinct branches cannot be silently
     //    picked.
-    let mut labels = input.target_branches.clone();
-    labels.sort();
-    labels.dedup();
-    match labels.len() {
+    let mut branches = input.target_branches.clone();
+    branches.sort();
+    branches.dedup();
+    match branches.len() {
         0 => return Err(FamilyAdminRefusal::UnrelatedPerson.into()),
         1 => {}
         _ => return Err(FamilyAdminRefusal::AmbiguousBranch.into()),
     }
 
-    // 6. The appointment branch must equal the target's single verified claim.
-    //    This applies to every target, including the caller's own person: there
-    //    is no separate self-invitation permission.
-    if labels[0] != appointment.branch_key {
+    // 6. The appointment branch must equal the target's single verified branch
+    //    key. This applies to every target, including the caller's own person:
+    //    there is no separate self-invitation permission.
+    if branches[0] != appointment.branch_key {
         return Err(FamilyAdminRefusal::WrongBranch.into());
     }
 
@@ -372,31 +375,33 @@ pub fn caller_appointment(caller_key: &str, rows: &[AppointmentRow]) -> Option<C
         .map(CallerAppointment::from_row)
 }
 
-/// Returns the current verified branch labels for one target person key.
+/// Returns the current verified branch keys for one target person key.
 ///
-/// The SQL mirrors the `branch_claim` predicate used by
-/// `appointments::search_nomination_people`. It issues a SELECT only.
+/// This reuses [`crate::genealogy::branch_projection`], the single definition of
+/// recorded branch membership, so the Head-of-Family rule cannot drift from the
+/// branch-review and nomination reads. A resolved claim reports its catalogued
+/// branch key, which is what the appointment `branch_key` comparison expects; an
+/// unresolved verified claim reports its recorded text. It issues SELECT
+/// statements only.
 pub fn target_branch_claims<C: GenericClient>(
     client: &mut C,
     target_person_key: &str,
 ) -> Result<Vec<String>, FamilyAdminError> {
-    let current = CURRENT_ASSERTION;
-    let sql = format!(
-        "SELECT DISTINCT COALESCE(b.branch_label, a.value_text) AS label \
-           FROM assertion a \
-           JOIN person p ON p.person_id = a.person_id \
-           LEFT JOIN family_branch b ON b.branch_key = a.value_text \
-          WHERE p.person_key = $1 \
-            AND a.assertion_kind = 'branch_claim' \
-            AND a.review_status = 'verified' \
-            AND ({current}) \
-          ORDER BY label"
-    );
-    let rows = client.query(&sql, &[&target_person_key])?;
-    Ok(rows
+    let projection = branch_projection::project(client, target_person_key)?;
+    let mut branches: Vec<String> = projection
+        .claims
         .iter()
-        .filter_map(|row| row.get::<_, Option<String>>(0))
-        .collect())
+        .filter(|claim| claim.verified)
+        .map(|claim| {
+            claim
+                .branch_key
+                .clone()
+                .unwrap_or_else(|| claim.value_text.clone())
+        })
+        .collect();
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
 }
 
 /// Reads the reviewed link owned by one verified identity on any client or

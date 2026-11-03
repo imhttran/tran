@@ -165,6 +165,19 @@ test.describe.serial("branch account details", () => {
       ).status(),
     ).toBe(401);
 
+    const anonymousGrant = await request.post(
+      `${API_URL}/api/admin/branch-reviewers/grants`,
+      {
+        data: {
+          issuer: ISSUER,
+          subject: "e2e-branch-grantee",
+          person_key: "e2e-branch-grantee",
+          reason: "Synthetic anonymous attempt",
+        },
+      },
+    );
+    expect(anonymousGrant.status()).toBe(401);
+
     const deniedGrant = await request.post(
       `${API_URL}/api/admin/branch-reviewers/grants`,
       {
@@ -212,8 +225,55 @@ test.describe.serial("branch account details", () => {
       "/api/genealogy/person/e2e-branch-grantee",
     );
     expect(person.status).toBe(200);
-    expect(JSON.stringify(person.body)).not.toContain("contacts");
+    // The member-facing read carries no admin contact block at all, under any
+    // spelling, and no address value.
+    expect(person.body).not.toHaveProperty("contact");
+    expect(person.body).not.toHaveProperty("contacts");
     expect(JSON.stringify(person.body)).not.toContain("@example.test");
+  });
+
+  test("the administrator directory shows person, account, contact, and branch facts", async ({
+    page,
+  }) => {
+    await signIn(page);
+    await page.goto("/admin/family-members");
+    await page.getByTestId("fm-search").fill("e2e-branch-grantee");
+    await page.getByTestId("fm-apply-filters").click();
+
+    const row = page.locator(
+      '[data-testid="fm-member"][data-subject="e2e-branch-grantee"]',
+    );
+    await expect(row).toHaveCount(1);
+
+    // Person identity and account identity stay visible and distinct.
+    await expect(row.getByTestId("fm-member-account")).toContainText("user_id");
+    await expect(row.getByTestId("fm-member-link")).toContainText(
+      "e2e-branch-grantee",
+    );
+    await expect(row.getByTestId("fm-member-link")).toContainText("person_id");
+
+    // The recorded email is labelled with its source and is never called
+    // verified; the archive records no phone.
+    await expect(row.getByTestId("fm-member-email")).toContainText(
+      "not recorded",
+    );
+    await expect(row.getByTestId("fm-member-email")).toContainText(
+      "source: identity account",
+    );
+    await expect(row.getByTestId("fm-member-email")).toContainText(
+      "verification: not recorded",
+    );
+    await expect(row.getByTestId("fm-member-phone")).toContainText(
+      "not recorded",
+    );
+
+    // The linked person's recorded branch is rendered with its state, label,
+    // and key.
+    const branch = row.getByTestId("fm-member-branch");
+    await expect(branch).toBeVisible();
+    await expect(branch).toContainText("Verified recorded branch");
+    await expect(branch).toContainText("Second Branch");
+    await expect(branch).toContainText("branch-2");
   });
 
   test("the four recorded branch states are reported without inference", async ({

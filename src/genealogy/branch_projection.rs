@@ -87,8 +87,8 @@ pub struct BranchProjection {
 pub struct FamilyBranch {
     /// The recorded branch key.
     pub branch_key: String,
-    /// The recorded branch label.
-    pub branch_label: String,
+    /// The recorded branch label, when the catalog records one.
+    pub branch_label: Option<String>,
 }
 
 /// Normalizes text for exact, case-insensitive, trimmed comparison.
@@ -110,7 +110,11 @@ fn resolve<'a>(value_text: &str, catalog: &'a [FamilyBranch]) -> Option<&'a Fami
     catalog
         .iter()
         .filter(|branch| {
-            normalize(&branch.branch_key) == needle || normalize(&branch.branch_label) == needle
+            normalize(&branch.branch_key) == needle
+                || branch
+                    .branch_label
+                    .as_deref()
+                    .is_some_and(|label| normalize(label) == needle)
         })
         .min_by(|left, right| left.branch_key.cmp(&right.branch_key))
 }
@@ -139,7 +143,7 @@ pub fn classify(raw: &[(String, String, String)], catalog: &[FamilyBranch]) -> B
                 review_status: review_status.clone(),
                 verified: false,
                 branch_key: matched.map(|branch| branch.branch_key.clone()),
-                branch_label: matched.map(|branch| branch.branch_label.clone()),
+                branch_label: matched.and_then(|branch| branch.branch_label.clone()),
             };
             claim.verified = claim.is_verified();
             claim
@@ -402,7 +406,10 @@ pub fn verified_branch_labels(
         .iter()
         .filter(|(_, _, review_status)| review_status.eq_ignore_ascii_case("verified"))
         .map(|(_, value_text, _)| match resolve(value_text, &catalog) {
-            Some(branch) => branch.branch_label.clone(),
+            Some(branch) => branch
+                .branch_label
+                .clone()
+                .unwrap_or_else(|| value_text.clone()),
             None => value_text.clone(),
         })
         .collect();
@@ -433,11 +440,11 @@ mod tests {
         vec![
             FamilyBranch {
                 branch_key: "branch-1".to_string(),
-                branch_label: "First Branch".to_string(),
+                branch_label: Some("First Branch".to_string()),
             },
             FamilyBranch {
                 branch_key: "branch-2".to_string(),
-                branch_label: "Second Branch".to_string(),
+                branch_label: Some("Second Branch".to_string()),
             },
         ]
     }
@@ -545,6 +552,19 @@ mod tests {
         assert_eq!(projection.claims[0].assertion_kind, "branch");
         assert!(!projection.claims[0].verified);
         assert!(projection.claims[0].branch_key.is_none());
+        assert!(projection.claims[0].branch_label.is_none());
+    }
+
+    #[test]
+    fn a_branch_without_a_label_resolves_by_key_and_reports_no_label() {
+        let catalog = vec![FamilyBranch {
+            branch_key: "branch-1".to_string(),
+            branch_label: None,
+        }];
+        let raw = [claim("branch_claim", "branch-1", "verified")];
+        let projection = classify(&raw, &catalog);
+        assert_eq!(projection.state, BranchState::Verified);
+        assert_eq!(projection.verified_branch_key.as_deref(), Some("branch-1"));
         assert!(projection.claims[0].branch_label.is_none());
     }
 

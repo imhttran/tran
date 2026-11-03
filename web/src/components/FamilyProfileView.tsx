@@ -257,7 +257,10 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
     documents.length > 0 ||
     dates.length > 0 ||
     history.length > 0 ||
-    archivePhotographs.length > 0;
+    archivePhotographs.length > 0 ||
+    // A recorded branch is shared family information, so an otherwise empty
+    // profile must not also claim that nothing is shown.
+    (profile.branches?.claims.length ?? 0) > 0;
   // The summary photo is the newest approved photograph, if the family shared
   // one. No photo means the initials fallback renders and no `<img>` at all.
   const summaryPhoto = photos[0];
@@ -432,7 +435,10 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
           ) : null}
 
           {profile.branches ? (
-            <div className="profile-section" data-testid="family-profile-branch-wrap">
+            <div
+              className="profile-section"
+              data-testid="family-profile-branch-wrap"
+            >
               <BranchSection
                 branches={profile.branches}
                 testIdPrefix="family-profile"

@@ -703,18 +703,15 @@ fn single_verified_branch(
     tx: &mut Transaction<'_>,
     person_id: i64,
 ) -> Result<String, BranchReviewError> {
-    let rows = tx.query(
-        "SELECT DISTINCT value_text FROM assertion \
-          WHERE person_id = $1 AND assertion_kind = 'branch_claim' \
-            AND review_status = 'verified' \
-            AND value_text IS NOT NULL AND btrim(value_text) <> ''",
-        &[&person_id],
-    )?;
-    let branches: Vec<String> = rows.into_iter().map(|row| row.get(0)).collect();
-    if branches.len() != 1 {
-        return Err(BranchReviewError::BranchAmbiguous);
-    }
-    Ok(branches.into_iter().next().expect("one branch"))
+    // The shared projection is the single definition of recorded membership.
+    // It applies the current-assertion predicate, sees the legacy `branch` kind,
+    // and resolves a recorded key or label to the catalogued branch key that the
+    // grant check compares against.
+    let projection = crate::genealogy::branch_projection::project_for_person_id(tx, person_id)
+        .map_err(|err| BranchReviewError::Database(err.to_string()))?;
+    projection
+        .verified_branch_key
+        .ok_or(BranchReviewError::BranchAmbiguous)
 }
 
 fn has_branch_grant<C: postgres::GenericClient>(
