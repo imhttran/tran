@@ -11,7 +11,7 @@
 //! link. This module never sees a password, reset link, token, or address in
 //! the outbound request, and an unconfigured provider fails closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::identity::Role;
@@ -163,6 +163,7 @@ pub fn list_members(
 pub struct LinkedPerson {
     pub link_id: i64,
     pub person_key: String,
+    pub display_name: String,
     pub username: Option<String>,
 }
 
@@ -177,7 +178,7 @@ pub fn linked_people(
     }
     let rows = genealogy
         .query(
-            "SELECT l.account_id, p.person_key, r.username, l.link_id
+            "SELECT l.account_id, p.person_key, p.display_name, r.username, l.link_id
                FROM onboarding_person_account_link l
                JOIN person p ON p.person_id = l.person_id
                LEFT JOIN onboarding_username_reservation r
@@ -192,13 +193,35 @@ pub fn linked_people(
             (
                 row.get(0),
                 LinkedPerson {
-                    link_id: row.get(3),
+                    link_id: row.get(4),
                     person_key: row.get(1),
-                    username: row.get(2),
+                    display_name: row.get(2),
+                    username: row.get(3),
                 },
             )
         })
         .collect())
+}
+
+/// Reads the active linked person keys for each person key.
+/// Read-only; keys without a link are absent from the set.
+pub fn linked_person_keys(
+    genealogy: &mut postgres::Client,
+    person_keys: &[String],
+) -> Result<HashSet<String>, String> {
+    if person_keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let rows = genealogy
+        .query(
+            "SELECT p.person_key
+               FROM onboarding_person_account_link l
+               JOIN person p ON p.person_id = l.person_id
+              WHERE p.person_key = ANY($1)",
+            &[&person_keys],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
 /// The outcome of a reset request. `Requested` means the provider accepted the
@@ -228,8 +251,6 @@ pub enum ResetError {
     UnknownUser,
     #[error("account is deactivated")]
     Deactivated,
-    #[error("account has no email address")]
-    NoEmail,
     #[error("database: {0}")]
     Database(String),
 }
@@ -275,24 +296,22 @@ pub fn request_password_reset(
     cooldown: Duration,
 ) -> Result<ResetState, ResetError> {
     let mut tx = identity.transaction().map_err(db)?;
-    let row = tx
+    // The provider resolves its own verified recipient from (issuer, subject),
+    // so no local address is required or read here.
+    let deactivated: Option<bool> = tx
         .query_opt(
-            "SELECT deactivated_at IS NOT NULL, NULLIF(btrim(COALESCE(email, '')), '') IS NOT NULL
-               FROM users WHERE issuer = $1 AND subject = $2 FOR UPDATE",
+            "SELECT deactivated_at IS NOT NULL FROM users
+              WHERE issuer = $1 AND subject = $2 FOR UPDATE",
             &[&request.issuer, &request.subject],
         )
         .map_err(db)?
-        .ok_or(ResetError::UnknownUser)?;
-    if row.get::<_, bool>(0) {
-        return Err(ResetError::Deactivated);
-    }
-    if !row.get::<_, bool>(1) {
-        return Err(ResetError::NoEmail);
-    }
+        .map(|row| row.get(0));
 
-    let state = match provider {
-        None => ResetState::NotConfigured,
-        Some(provider) => {
+    let outcome = match (deactivated, provider) {
+        (None, _) => Err(ResetError::UnknownUser),
+        (Some(true), _) => Err(ResetError::Deactivated),
+        (Some(false), None) => Ok(ResetState::NotConfigured),
+        (Some(false), Some(provider)) => {
             let cooldown_secs = cooldown.as_secs_f64();
             let recent: bool = tx
                 .query_one(
@@ -310,18 +329,24 @@ pub fn request_password_reset(
                 )
                 .map_err(db)?
                 .get(0);
-            if recent {
+            Ok(if recent {
                 ResetState::Throttled
             } else {
                 send_reset(http, provider, request.issuer, request.subject)
-            }
+            })
         }
     };
 
+    // Rejected attempts are audited too; only `requested` starts the cooldown.
+    let state = match &outcome {
+        Ok(state) => state.as_str(),
+        Err(ResetError::UnknownUser) => "rejected_unknown_account",
+        Err(_) => "rejected_deactivated",
+    };
     let detail = serde_json::json!({
         "issuer": request.issuer,
         "actor_issuer": request.actor_issuer,
-        "state": state.as_str(),
+        "state": state,
     });
     tx.execute(
         "INSERT INTO audit_events (actor, action, subject, detail) VALUES ($1, $2, $3, $4::text::jsonb)",
@@ -334,7 +359,7 @@ pub fn request_password_reset(
     )
     .map_err(db)?;
     tx.commit().map_err(db)?;
-    Ok(state)
+    outcome
 }
 
 /// Posts the identity to the provider. Only a 2xx response counts as accepted.

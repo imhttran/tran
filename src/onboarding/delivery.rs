@@ -101,6 +101,10 @@ pub enum DeliveryError {
     /// The invitation operation failed.
     #[error("invitation operation failed: {0}")]
     Invitation(String),
+    /// The identity provider could not prepare the invitee's sign-in. The code
+    /// is a stable, safe reason such as `login_username_taken`.
+    #[error("the sign-in could not be prepared: {0}")]
+    Login(&'static str),
 }
 
 impl From<CandidateError> for DeliveryError {
@@ -138,6 +142,20 @@ pub struct SentMessage {
     pub body: String,
 }
 
+/// One invitation handed to an adapter.
+///
+/// `body` already contains `link`. `login` is present only for an adapter that
+/// [`MailAdapter::provisions_logins`]; it names the reserved username the
+/// sign-in will use.
+#[derive(Debug, Clone, Copy)]
+pub struct InvitationMessage<'a> {
+    pub to: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+    pub link: &'a str,
+    pub login: Option<&'a crate::onboarding::keycloak_logins::LoginProfile>,
+}
+
 /// A mail provider adapter.
 ///
 /// Implementations must return [`DeliveryError::NotConfigured`] rather than
@@ -152,6 +170,12 @@ pub trait MailAdapter: Send + Sync {
         true
     }
 
+    /// True when the adapter also creates the invitee's identity-provider
+    /// sign-in, so callers must reserve a username and pass a login profile.
+    fn provisions_logins(&self) -> bool {
+        false
+    }
+
     /// Delivers one message.
     fn deliver(
         &self,
@@ -159,6 +183,43 @@ pub trait MailAdapter: Send + Sync {
         subject: &str,
         body: &str,
     ) -> Result<DeliveryReceipt, DeliveryError>;
+
+    /// Delivers one invitation. The default sends the plain message.
+    fn deliver_invitation(
+        &self,
+        message: &InvitationMessage<'_>,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        self.deliver(message.to, message.subject, message.body)
+    }
+}
+
+/// Builds the sign-in profile for one person: the reserved username (reserving
+/// one when none exists) and the verified name parts.
+pub fn login_profile(
+    client: &mut Client,
+    person_id: i64,
+    actor: &str,
+) -> Result<crate::onboarding::keycloak_logins::LoginProfile, DeliveryError> {
+    let parts = crate::onboarding::candidate::load_name_parts(client, person_id)
+        .map_err(|_| DeliveryError::Login("login_username_unavailable"))?;
+    let reservation =
+        crate::onboarding::reservation::reserve(client, person_id, &parts, None, actor)
+            .map_err(|_| DeliveryError::Login("login_username_unavailable"))?;
+    let first = [parts.middle.as_deref(), parts.given.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(crate::onboarding::keycloak_logins::LoginProfile {
+        username: reservation.username,
+        first_name: (!first.is_empty()).then_some(first),
+        last_name: parts
+            .family
+            .map(|family| family.trim().to_string())
+            .filter(|family| !family.is_empty()),
+    })
 }
 
 /// The fail-closed default: no provider is configured.
@@ -244,6 +305,206 @@ impl MailAdapter for FakeAdapter {
     }
 }
 
+/// A provider-backed adapter that posts one message to a configured HTTPS
+/// endpoint.
+///
+/// The operator supplies the endpoint and an optional bearer credential. The
+/// adapter reports `accepted` only when the provider answers with a 2xx status:
+/// that is provider acceptance, never confirmation of inbox delivery. Redirects
+/// are not followed, and no error carries the endpoint or the credential.
+pub struct HttpMailAdapter {
+    endpoint: String,
+    bearer: Option<String>,
+    timeout: Duration,
+}
+
+impl HttpMailAdapter {
+    /// Builds an adapter for one provider endpoint.
+    pub fn new(endpoint: impl Into<String>, bearer: Option<String>, timeout: Duration) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            bearer,
+            timeout,
+        }
+    }
+}
+
+impl MailAdapter for HttpMailAdapter {
+    fn name(&self) -> &'static str {
+        "http"
+    }
+
+    fn is_configured(&self) -> bool {
+        !self.endpoint.trim().is_empty()
+    }
+
+    fn deliver(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if !self.is_configured() {
+            return Err(DeliveryError::NotConfigured);
+        }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| DeliveryError::Provider("client_unavailable".to_string()))?;
+        let payload = serde_json::json!({ "to": to, "subject": subject, "body": body });
+        let encoded = serde_json::to_vec(&payload)
+            .map_err(|_| DeliveryError::Provider("payload_unavailable".to_string()))?;
+        let mut request = client
+            .post(&self.endpoint)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(encoded);
+        if let Some(bearer) = self.bearer.as_deref() {
+            request = request.bearer_auth(bearer);
+        }
+        let response = request
+            .send()
+            .map_err(|_| DeliveryError::Provider("provider_unreachable".to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            // The numeric status is safe and useful; the body may echo the
+            // message, so it is never read into an error.
+            return Err(DeliveryError::Provider(format!(
+                "provider_status_{}",
+                status.as_u16()
+            )));
+        }
+        let message_id = response
+            .text()
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .get("message_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+        Ok(DeliveryReceipt {
+            provider: "http".to_string(),
+            accepted: true,
+            message_id,
+        })
+    }
+}
+
+/// The explicit transport security mode for the SMTP adapter.
+///
+/// The mode is fixed by configuration. The adapter never retries with a lower
+/// mode after a connection or TLS failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTlsMode {
+    /// Plaintext. Permitted only for a loopback host through explicit local
+    /// configuration.
+    None,
+    /// Implicit TLS (for example port 465).
+    Implicit,
+    /// Connect in plaintext, then upgrade with STARTTLS before credentials.
+    StartTls,
+}
+
+impl SmtpTlsMode {
+    /// Parses a configured mode. `None` when the value is unknown.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(SmtpTlsMode::None),
+            "implicit" | "tls" => Some(SmtpTlsMode::Implicit),
+            "starttls" | "start_tls" => Some(SmtpTlsMode::StartTls),
+            _ => None,
+        }
+    }
+}
+
+/// The validated SMTP settings handed to the adapter.
+///
+/// Configuration code performs the loopback rule and the credential pairing
+/// checks before it builds an adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpSettings {
+    /// The SMTP server host name or address.
+    pub host: String,
+    /// The SMTP server port.
+    pub port: u16,
+    /// The explicit transport security mode.
+    pub tls: SmtpTlsMode,
+    /// The envelope sender address.
+    pub from: String,
+    /// The optional authentication user name. Present only together with
+    /// `password`.
+    pub username: Option<String>,
+    /// The optional authentication password. Present only together with
+    /// `username`.
+    pub password: Option<String>,
+    /// The bounded per-send timeout.
+    pub timeout: Duration,
+}
+
+/// Returns true when `host` names a loopback interface.
+///
+/// Plaintext SMTP is permitted only for these hosts, and only through explicit
+/// local configuration.
+pub fn smtp_host_is_loopback(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+}
+
+/// An SMTP adapter that sends one message per call over a fresh connection.
+///
+/// The adapter uses the configured transport security mode and never downgrades
+/// it after a connection or TLS failure. It reports `accepted` only when the SMTP
+/// server accepts the message after DATA: that is server acceptance, never a
+/// claim of delivery to a real inbox. Error messages carry a safe provider code
+/// only; they never carry the host, a credential, the token, or the body.
+pub struct SmtpMailAdapter {
+    settings: SmtpSettings,
+}
+
+impl SmtpMailAdapter {
+    /// Builds an adapter from validated settings.
+    pub fn new(settings: SmtpSettings) -> Self {
+        Self { settings }
+    }
+}
+
+impl MailAdapter for SmtpMailAdapter {
+    fn name(&self) -> &'static str {
+        "smtp"
+    }
+
+    fn is_configured(&self) -> bool {
+        !self.settings.host.trim().is_empty() && !self.settings.from.trim().is_empty()
+    }
+
+    fn deliver(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<DeliveryReceipt, DeliveryError> {
+        if !self.is_configured() {
+            return Err(DeliveryError::NotConfigured);
+        }
+        // The mode comes from configuration and is never lowered here.
+        crate::onboarding::smtp_delivery::send(&self.settings, to, subject, body)
+            .map_err(|code| DeliveryError::Provider(code.to_string()))?;
+        // SMTP acceptance only. This is server acceptance of the message, not a
+        // claim that it reached a real inbox.
+        Ok(DeliveryReceipt {
+            provider: "smtp".to_string(),
+            accepted: true,
+            message_id: None,
+        })
+    }
+}
+
 /// The safe result of one send attempt. It carries no token and no address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendOutcome {
@@ -305,10 +566,33 @@ fn contact_for(client: &mut Client, person_id: i64) -> Result<Option<String>, De
     Ok(row.map(|row| row.get(0)))
 }
 
-/// Builds the activation link. The token appears only in the message body.
-fn activation_link(base: &str, token: &str) -> String {
-    let separator = if base.contains('?') { '&' } else { '?' };
-    format!("{base}{separator}token={token}")
+/// Percent-encodes one URL path segment.
+///
+/// Unreserved characters are kept; every other byte is escaped. The invitation
+/// token is lowercase hex, so a real token is unchanged, but a malformed value
+/// can never introduce a path separator, a query separator, or a fragment.
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Builds the activation link as `{base}/{token}`.
+///
+/// The link matches the web route `/activate/[token]`, so the token is a path
+/// segment and never a query parameter. Trailing slashes on the configured base
+/// are ignored, and the token is percent-encoded. The token appears only in the
+/// message body.
+pub(crate) fn activation_link(base: &str, token: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    format!("{base}/{}", encode_path_segment(token))
 }
 
 /// Issues an invitation whose plaintext token can be delivered.
@@ -478,6 +762,32 @@ pub fn send_batch(
             continue;
         };
 
+        let login = if adapter.provisions_logins() {
+            match login_profile(client, person_id, actor) {
+                Ok(login) => Some(login),
+                Err(_) => {
+                    record_delivery(
+                        client,
+                        batch_id,
+                        person_id,
+                        None,
+                        DeliveryStatus::Failed,
+                        "login_username_unavailable",
+                        Some(actor),
+                    )?;
+                    outcomes.push(SendOutcome {
+                        person_id,
+                        status: DeliveryStatus::Failed,
+                        provider: Some(adapter.name().to_string()),
+                        reason: Some("login_username_unavailable"),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
         // A retry must not leave two active links. Revoke the previous
         // invitation before issuing a replacement.
         if let Some(invitation_id) = existing_invitation {
@@ -503,7 +813,14 @@ pub fn send_batch(
              The link expires automatically. If you did not expect this message, ignore it."
         );
 
-        match adapter.deliver(&email, subject, &body) {
+        let message = InvitationMessage {
+            to: &email,
+            subject,
+            body: &body,
+            link: &link,
+            login: login.as_ref(),
+        };
+        match adapter.deliver_invitation(&message) {
             Ok(receipt) => {
                 let status = if receipt.accepted {
                     DeliveryStatus::Sent
@@ -533,6 +850,7 @@ pub fn send_batch(
             Err(err) => {
                 let reason = match err {
                     DeliveryError::NotConfigured => "not_configured",
+                    DeliveryError::Login(code) => code,
                     DeliveryError::Provider(_) => "provider_failed",
                     _ => "delivery_failed",
                 };
@@ -592,6 +910,21 @@ fn record_delivery(
             ],
         )
         .map_err(|err| DeliveryError::Database(err.to_string()))?;
+    // Keep the invitation row's own delivery receipt in step with the batch item,
+    // so a per-person status read reports the same attempt for both flows.
+    if let Some(invitation_id) = invitation_id {
+        client
+            .execute(
+                "UPDATE onboarding_invitation
+                    SET delivery_state = $2,
+                        delivery_provider = $3,
+                        delivery_attempts = delivery_attempts + 1,
+                        last_delivery_error = CASE WHEN $2 = 'failed' THEN $3 ELSE NULL END
+                  WHERE invitation_id = $1",
+                &[&invitation_id, &status.as_str(), &provider],
+            )
+            .map_err(|err| DeliveryError::Database(err.to_string()))?;
+    }
     let event = match status {
         DeliveryStatus::Queued => "invitation_queued",
         DeliveryStatus::Sent => "invitation_sent",
@@ -678,11 +1011,30 @@ mod tests {
     }
 
     #[test]
-    fn activation_link_uses_query_or_ampersand() {
-        assert_eq!(activation_link("/activate", "abc"), "/activate?token=abc");
+    fn activation_link_is_a_path_segment() {
+        let token = "0123456789abcdef";
+        // The configured base may end with any number of slashes; the link always
+        // has exactly one separator before the token.
+        for base in [
+            "https://example.test/activate",
+            "https://example.test/activate/",
+            "https://example.test/activate///",
+            "  https://example.test/activate/  ",
+        ] {
+            assert_eq!(
+                activation_link(base, token),
+                "https://example.test/activate/0123456789abcdef",
+                "base: {base:?}"
+            );
+        }
         assert_eq!(
-            activation_link("/activate?locale=en", "abc"),
-            "/activate?locale=en&token=abc"
+            activation_link("/activate", token),
+            "/activate/0123456789abcdef"
+        );
+        // Every unsafe byte is escaped, so a token cannot break out of the path.
+        assert_eq!(
+            activation_link("https://example.test/activate", "a/b c%?#"),
+            "https://example.test/activate/a%2Fb%20c%25%3F%23"
         );
     }
 
@@ -714,5 +1066,271 @@ mod tests {
                 "{email} should be rejected"
             );
         }
+    }
+
+    /// Serves exactly one canned HTTP response, then closes.
+    fn one_shot_server(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one request");
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let response = format!(
+                "{status_line}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            request
+        });
+        (format!("http://{address}/deliver"), handle)
+    }
+
+    #[test]
+    fn http_adapter_reports_provider_acceptance() {
+        let (endpoint, handle) =
+            one_shot_server("HTTP/1.1 202 Accepted", "{\"message_id\":\"m-1\"}");
+        let adapter = HttpMailAdapter::new(
+            endpoint,
+            Some("synthetic-bearer".to_string()),
+            Duration::from_secs(5),
+        );
+        assert!(adapter.is_configured());
+        let receipt = adapter
+            .deliver("synthetic@example.test", "Activate", "Link body")
+            .expect("provider acceptance");
+        assert!(receipt.accepted);
+        assert_eq!(receipt.provider, "http");
+        assert_eq!(receipt.message_id.as_deref(), Some("m-1"));
+        let request = handle.join().expect("server thread");
+        assert!(request.contains("POST /deliver"));
+        assert!(request.contains("authorization: Bearer synthetic-bearer"));
+        assert!(request.contains("synthetic@example.test"));
+    }
+
+    #[test]
+    fn http_adapter_never_claims_success_on_a_provider_error() {
+        let (endpoint, handle) = one_shot_server("HTTP/1.1 500 Internal Server Error", "no");
+        let adapter = HttpMailAdapter::new(endpoint, None, Duration::from_secs(5));
+        let error = adapter
+            .deliver("synthetic@example.test", "Activate", "Link body")
+            .expect_err("provider rejection");
+        assert_eq!(
+            error,
+            DeliveryError::Provider("provider_status_500".to_string())
+        );
+        let rendered = format!("{error:?}");
+        assert!(
+            !rendered.contains("127.0.0.1"),
+            "the error leaked the endpoint"
+        );
+        assert!(
+            !rendered.contains("example.test"),
+            "the error leaked the address"
+        );
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn http_adapter_fails_closed_without_an_endpoint() {
+        let adapter = HttpMailAdapter::new("   ", None, Duration::from_secs(1));
+        assert!(!adapter.is_configured());
+        assert_eq!(
+            adapter.deliver("synthetic@example.test", "s", "b"),
+            Err(DeliveryError::NotConfigured)
+        );
+    }
+
+    fn smtp_settings(tls: SmtpTlsMode) -> SmtpSettings {
+        SmtpSettings {
+            host: "127.0.0.1".to_string(),
+            port: 1025,
+            tls,
+            from: "tran@example.test".to_string(),
+            username: None,
+            password: None,
+            timeout: Duration::from_secs(2),
+        }
+    }
+
+    /// A one-shot plaintext SMTP server that answers with the given final reply.
+    fn smtp_server(final_reply: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind smtp stub");
+        let port = listener.local_addr().expect("smtp address").port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept smtp client");
+            let _ = stream.write_all(b"220 stub ESMTP\r\n");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut transcript = String::new();
+            let mut in_data = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                transcript.push_str(&line);
+                if in_data {
+                    // Body lines (including one starting with a dot) are not
+                    // commands; the client sends exactly one reply for the
+                    // terminating dot. Replying to each body line would leave
+                    // extra replies in the client's buffer.
+                    if line.trim_end() == "." {
+                        let _ = stream.write_all(final_reply.as_bytes());
+                        let _ = stream.flush();
+                        break;
+                    }
+                    continue;
+                }
+                let upper = line.trim().to_ascii_uppercase();
+                let reply = if upper.starts_with("EHLO") || upper.starts_with("HELO") {
+                    "250 stub\r\n"
+                } else if upper.starts_with("MAIL FROM") || upper.starts_with("RCPT TO") {
+                    "250 ok\r\n"
+                } else if upper.starts_with("DATA") {
+                    in_data = true;
+                    "354 send data\r\n"
+                } else if upper.starts_with("QUIT") {
+                    "221 bye\r\n"
+                } else {
+                    "250 ok\r\n"
+                };
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }
+            transcript
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn smtp_adapter_reports_acceptance_only_on_a_2xx_final_reply() {
+        let (port, handle) = smtp_server("250 2.0.0 accepted\r\n");
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        let adapter = SmtpMailAdapter::new(settings);
+        assert!(adapter.is_configured());
+        let receipt = adapter
+            .deliver(
+                "synthetic@example.test",
+                "Activate",
+                "/activate/secret-token",
+            )
+            .expect("smtp acceptance");
+        assert!(receipt.accepted);
+        assert_eq!(receipt.provider, "smtp");
+        let transcript = handle.join().expect("smtp thread");
+        assert!(transcript.contains("MAIL FROM:<tran@example.test>"));
+        assert!(transcript.contains("RCPT TO:<synthetic@example.test>"));
+    }
+
+    #[test]
+    fn smtp_adapter_reports_a_rejection_as_failure_without_leaking() {
+        let (port, handle) = smtp_server("550 5.7.1 rejected\r\n");
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        let adapter = SmtpMailAdapter::new(settings);
+        let error = adapter
+            .deliver(
+                "synthetic@example.test",
+                "Activate",
+                "/activate/secret-token",
+            )
+            .expect_err("smtp rejection");
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains("secret-token"), "leaked a token");
+        assert!(
+            !rendered.contains("synthetic@example.test"),
+            "leaked an address"
+        );
+        assert!(!rendered.contains("tran@example.test"), "leaked the sender");
+        handle.join().expect("smtp thread");
+    }
+
+    #[test]
+    fn smtp_adapter_does_not_downgrade_a_tls_mode() {
+        use std::io::Write as _;
+
+        // A plaintext stub that would happily accept MAIL FROM/RCPT TO makes a
+        // downgrade observable: a TLS mode must fail during the handshake and
+        // never send the envelope in plaintext.
+        for tls in [SmtpTlsMode::Implicit, SmtpTlsMode::StartTls] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stub");
+            let port = listener.local_addr().expect("address").port();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let _ = stream.write_all(b"220 plaintext stub\r\n");
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buffer = [0u8; 4096];
+                let read = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                String::from_utf8_lossy(&buffer[..read]).into_owned()
+            });
+            let mut settings = smtp_settings(tls);
+            settings.port = port;
+            settings.timeout = Duration::from_secs(1);
+            let adapter = SmtpMailAdapter::new(settings);
+            let error = adapter
+                .deliver("synthetic@example.test", "s", "b")
+                .expect_err("a TLS mode must not fall back to plaintext");
+            assert!(
+                matches!(error, DeliveryError::Provider(_)),
+                "unexpected error: {error:?}"
+            );
+            let transcript = handle.join().expect("stub thread");
+            assert!(
+                !transcript.contains("MAIL FROM"),
+                "the adapter downgraded TLS and sent the envelope in plaintext"
+            );
+        }
+    }
+
+    #[test]
+    fn smtp_adapter_times_out_on_a_silent_server() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind silent stub");
+        let port = listener.local_addr().expect("address").port();
+        let handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept");
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.port = port;
+        settings.timeout = Duration::from_millis(300);
+        let adapter = SmtpMailAdapter::new(settings);
+        let started = std::time::Instant::now();
+        let error = adapter
+            .deliver("synthetic@example.test", "s", "b")
+            .expect_err("timeout");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            matches!(error, DeliveryError::Provider(ref code) if code == "smtp_timeout"),
+            "unexpected timeout error: {error:?}"
+        );
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn smtp_adapter_fails_closed_when_unconfigured() {
+        let mut settings = smtp_settings(SmtpTlsMode::None);
+        settings.host = "  ".to_string();
+        let adapter = SmtpMailAdapter::new(settings);
+        assert!(!adapter.is_configured());
+        assert_eq!(
+            adapter.deliver("a@example.test", "s", "b"),
+            Err(DeliveryError::NotConfigured)
+        );
+    }
+
+    #[test]
+    fn smtp_loopback_detection() {
+        assert!(smtp_host_is_loopback("127.0.0.1"));
+        assert!(smtp_host_is_loopback("localhost"));
+        assert!(smtp_host_is_loopback("[::1]"));
+        assert!(!smtp_host_is_loopback("mail.example.test"));
     }
 }

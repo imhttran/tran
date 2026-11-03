@@ -261,6 +261,13 @@ test.describe.serial("My Profile", () => {
       "Synthetic rejection: add more detail",
     );
     await expect(page.getByText("First synthetic biography")).toBeVisible();
+    // The shared navigation flags the decision on every page.
+    await page.goto("/genealogy");
+    await expect(page.getByTestId("more-toggle")).toHaveAttribute(
+      "aria-label",
+      /1 profile review decision needs your attention/,
+    );
+    await page.goto("/profile");
 
     await page.getByTestId("profile-revise-biography").click();
     await page
@@ -270,6 +277,9 @@ test.describe.serial("My Profile", () => {
     await expect(
       page.getByTestId("profile-open-biography").getByTestId("status-draft"),
     ).toBeVisible();
+    // A newer draft supersedes the rejection, so nothing is waiting any more.
+    await page.reload();
+    await expect(page.getByTestId("nav-action-badge")).toHaveCount(0);
 
     await page.getByTestId("profile-submit-biography").click();
     const pending = await profile(request, ADMIN);
@@ -290,6 +300,9 @@ test.describe.serial("My Profile", () => {
       needsChanges.getByTestId("status-needs_changes"),
     ).toBeVisible();
     await expect(needsChanges).toContainText("Synthetic: add dates");
+    await expect(page.getByTestId("more-toggle").getByTestId("nav-action-badge")).toHaveText(
+      /1/,
+    );
   });
 
   test("an unlinked member sees a safe explanation and no private values", async ({

@@ -67,6 +67,9 @@ export type HeadOfFamilyConclusion = {
   head_label: string | null;
   evidence: EvidenceRef[];
   evidence_status: EvidenceStatus;
+  // Current eligibility code; anything but "eligible" means the stored
+  // appointment is no longer supported by verified evidence.
+  reason?: string;
 };
 
 export type HeadOfFamilyView =

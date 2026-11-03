@@ -1,0 +1,8 @@
+# SOP RAG corpus for tran.
+# Paths are relative to the repository root, one per line.
+# A directory entry expands to the Markdown files inside it.
+# Plans, reports and history stay out: they are long or point-in-time.
+README.md
+docs/guides
+docs/architecture
+docs/reference

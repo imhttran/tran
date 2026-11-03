@@ -9,7 +9,7 @@
 //! Idempotency comes from two stable keys plus unique constraints in migration
 //! `0018_onboarding_batch.sql`:
 //!
-//!  * `batch_idempotency_key` = `batch:<actor>:<confirmed_count>:<sha256(sorted person ids)>`
+//!  * `batch_idempotency_key` = `batch:<actor>:<confirmed_count>:<sha256(sorted person ids[, overrides])>`
 //!  * `person_idempotency_key` = `<batch_idempotency_key>:<person_id>`
 //!
 //! A duplicate submission collapses to the existing batch row. A restart skips
@@ -17,6 +17,8 @@
 //! index allows one `prepared` item per person across every batch, so a later
 //! batch reselecting the same person records `skipped_already_prepared` instead
 //! of creating a second logical preparation.
+
+use std::collections::HashMap;
 
 use postgres::Client;
 use thiserror::Error;
@@ -136,17 +138,33 @@ pub struct BatchKeys {
 }
 
 impl BatchKeys {
-    /// Builds the batch key from the actor, the confirmed count, and the
-    /// deduplicated, sorted person ids.
-    pub fn derive(actor: &str, confirmed_count: usize, person_ids: &[i64]) -> Self {
+    /// Builds the batch key from the actor, the confirmed count, the
+    /// deduplicated, sorted person ids, and any username overrides.
+    ///
+    /// Overrides are part of the identity so a corrected override is a new
+    /// request instead of replaying the old batch's terminal failure. With no
+    /// overrides the key is unchanged from before overrides existed.
+    pub fn derive(
+        actor: &str,
+        confirmed_count: usize,
+        person_ids: &[i64],
+        overrides: &HashMap<i64, String>,
+    ) -> Self {
         let mut sorted: Vec<i64> = person_ids.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        let joined = sorted
+        let mut joined = sorted
             .iter()
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(",");
+        if !overrides.is_empty() {
+            let mut pairs: Vec<(&i64, &String)> = overrides.iter().collect();
+            pairs.sort_unstable();
+            // JSON keeps an override containing `,` or `=` unambiguous.
+            joined.push('|');
+            joined.push_str(&serde_json::to_string(&pairs).unwrap_or_default());
+        }
         let digest = sha256_hex(joined.as_bytes());
         BatchKeys {
             batch_key: format!("batch:{}:{}:{}", actor.trim(), confirmed_count, digest),
@@ -182,6 +200,63 @@ pub struct BatchItem {
     pub reason_code: Option<String>,
     /// The username reservation id, when one was created.
     pub reservation_id: Option<i64>,
+}
+
+/// One batch item as the admin status view shows it. Field names are the
+/// wire names of `GET /api/admin/family-members/bulk/batches/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BatchStatusItem {
+    pub person_key: String,
+    pub display_name: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub delivery_status: String,
+    pub provider: Option<String>,
+    pub attempts: i32,
+    pub username: Option<String>,
+    pub invitation_status: Option<String>,
+    pub has_verified_contact: bool,
+}
+
+/// Reads every item of one batch for the admin status view, in item order.
+/// Read-only.
+pub fn batch_status_items(
+    client: &mut Client,
+    batch_id: i64,
+) -> Result<Vec<BatchStatusItem>, postgres::Error> {
+    let rows = client.query(
+        "SELECT person.person_key, person.display_name, item.status, item.reason_code,
+                item.delivery_status, item.delivery_provider,
+                item.delivery_attempts, reservation.username,
+                invitation.status,
+                EXISTS (SELECT 1 FROM onboarding_recipient_contact contact
+                         WHERE contact.person_id = item.person_id
+                           AND contact.verified_at IS NOT NULL) AS has_verified_contact
+           FROM onboarding_batch_item item
+           JOIN person ON person.person_id = item.person_id
+           LEFT JOIN onboarding_username_reservation reservation
+             ON reservation.reservation_id = item.reservation_id
+           LEFT JOIN onboarding_invitation invitation
+             ON invitation.invitation_id = item.invitation_id
+          WHERE item.batch_id = $1
+          ORDER BY item.batch_item_id",
+        &[&batch_id],
+    )?;
+    Ok(rows
+        .iter()
+        .map(|row| BatchStatusItem {
+            person_key: row.get(0),
+            display_name: row.get(1),
+            status: row.get(2),
+            reason: row.get(3),
+            delivery_status: row.get(4),
+            provider: row.get(5),
+            attempts: row.get(6),
+            username: row.get(7),
+            invitation_status: row.get(8),
+            has_verified_contact: row.get(9),
+        })
+        .collect())
 }
 
 /// The outcome of one confirmation request.
@@ -257,6 +332,7 @@ pub fn confirm_batch(
     actor: &str,
     confirmed_count: usize,
     person_ids: &[i64],
+    overrides: &HashMap<i64, String>,
 ) -> Result<BatchReport, BatchError> {
     let mut distinct = person_ids.to_vec();
     distinct.sort_unstable();
@@ -271,7 +347,7 @@ pub fn confirm_batch(
         });
     }
 
-    let keys = BatchKeys::derive(actor, confirmed_count, &distinct);
+    let keys = BatchKeys::derive(actor, confirmed_count, &distinct, overrides);
 
     // Reserve the batch row. Concurrent duplicates race here and the unique key
     // decides; the loser reads the existing row.
@@ -334,7 +410,7 @@ pub fn confirm_batch(
             .map_err(|err| BatchError::Database(err.to_string()))?;
     }
 
-    let items = run_batch(client, batch_id, &distinct, actor)?;
+    let items = run_batch(client, batch_id, &distinct, overrides, actor)?;
 
     Ok(BatchReport {
         batch_id,
@@ -431,12 +507,13 @@ pub fn run_batch(
     client: &mut Client,
     batch_id: i64,
     person_ids: &[i64],
+    overrides: &HashMap<i64, String>,
     actor: &str,
 ) -> Result<Vec<BatchItem>, BatchError> {
     let mut items = Vec::new();
     for chunk in person_ids.chunks(CHUNK_SIZE) {
         for person_id in chunk {
-            match process_one(client, batch_id, *person_id, actor) {
+            match process_one(client, batch_id, *person_id, overrides, actor) {
                 Ok(item) => items.push(item),
                 Err(err) => {
                     let reason = match &err {
@@ -495,6 +572,7 @@ fn process_one(
     client: &mut Client,
     batch_id: i64,
     person_id: i64,
+    overrides: &HashMap<i64, String>,
     actor: &str,
 ) -> Result<BatchItem, BatchError> {
     // Read the item. A terminal item is skipped on restart.
@@ -559,7 +637,8 @@ fn process_one(
         }
 
         let parts = load_name_parts(client, person_id)?;
-        match reserve(client, person_id, &parts, actor) {
+        let override_name = overrides.get(&person_id).map(String::as_str);
+        match reserve(client, person_id, &parts, override_name, actor) {
             Ok(reservation) => record_item(
                 client,
                 batch_id,
@@ -606,21 +685,41 @@ mod tests {
 
     #[test]
     fn batch_key_is_stable_for_sorted_inputs() {
-        let a = BatchKeys::derive("admin", 2, &[3, 1]);
-        let b = BatchKeys::derive("admin", 2, &[1, 3]);
+        let a = BatchKeys::derive("admin", 2, &[3, 1], &HashMap::new());
+        let b = BatchKeys::derive("admin", 2, &[1, 3], &HashMap::new());
         assert_eq!(a.batch_key, b.batch_key);
     }
 
     #[test]
+    fn batch_key_without_overrides_is_unchanged() {
+        let keys = BatchKeys::derive("admin", 2, &[3, 1], &HashMap::new());
+        assert_eq!(
+            keys.batch_key,
+            format!("batch:admin:2:{}", sha256_hex(b"1,3"))
+        );
+    }
+
+    #[test]
+    fn batch_key_changes_with_overrides() {
+        let none = BatchKeys::derive("admin", 1, &[1], &HashMap::new());
+        let bad = BatchKeys::derive("admin", 1, &[1], &HashMap::from([(1, "bad!".into())]));
+        let fixed = BatchKeys::derive("admin", 1, &[1], &HashMap::from([(1, "good".into())]));
+        let again = BatchKeys::derive("admin", 1, &[1], &HashMap::from([(1, "good".into())]));
+        assert_ne!(none.batch_key, bad.batch_key);
+        assert_ne!(bad.batch_key, fixed.batch_key);
+        assert_eq!(fixed.batch_key, again.batch_key);
+    }
+
+    #[test]
     fn batch_key_changes_with_count() {
-        let a = BatchKeys::derive("admin", 2, &[1, 3]);
-        let b = BatchKeys::derive("admin", 3, &[1, 3]);
+        let a = BatchKeys::derive("admin", 2, &[1, 3], &HashMap::new());
+        let b = BatchKeys::derive("admin", 3, &[1, 3], &HashMap::new());
         assert_ne!(a.batch_key, b.batch_key);
     }
 
     #[test]
     fn person_key_uses_batch_key_and_person() {
-        let keys = BatchKeys::derive("admin", 1, &[7]);
+        let keys = BatchKeys::derive("admin", 1, &[7], &HashMap::new());
         assert_eq!(keys.person_key(7), format!("{}:7", keys.batch_key));
         assert_ne!(keys.person_key(7), keys.person_key(8));
     }

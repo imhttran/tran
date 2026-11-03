@@ -8,6 +8,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -53,12 +54,23 @@ pub const DEFAULT_SESSION_REFRESH_WINDOW_SECONDS: i64 = 60;
 pub const DEFAULT_AUTH_RATE_LIMIT: i64 = 60;
 pub const DEFAULT_PASSWORD_RESET_COOLDOWN_SECS: i64 = 300;
 
-/// Bulk invitation delivery adapter: `unconfigured` (default) or `fake`.
+/// Bulk invitation delivery adapter: `unconfigured` (default), `fake`, or
+/// `http`.
 pub const DEFAULT_ONBOARDING_MAIL_ADAPTER: &str = "unconfigured";
+/// Request timeout for the `http` mail adapter, in seconds.
+pub const DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS: i64 = 10;
 /// Base URL used to build the activation link handed to the adapter.
 pub const DEFAULT_ONBOARDING_ACTIVATION_URL: &str = "/activate";
 /// Minimum delay between bulk invitation sends, in milliseconds.
 pub const DEFAULT_ONBOARDING_SEND_INTERVAL_MS: i64 = 0;
+/// Default SMTP port for the local Mailpit-style sink.
+pub const DEFAULT_ONBOARDING_SMTP_PORT: i64 = 1025;
+/// Default SMTP transport security mode. Explicit; never negotiated.
+pub const DEFAULT_ONBOARDING_SMTP_TLS: &str = "none";
+/// Default bounded send timeout for the SMTP adapter, in seconds.
+pub const DEFAULT_ONBOARDING_SMTP_TIMEOUT_SECS: i64 = 10;
+/// Upper bound on the SMTP send timeout so a stalled host cannot hang a worker.
+pub const MAX_ONBOARDING_SMTP_TIMEOUT_SECS: i64 = 300;
 
 /// Name of the explicitly configured genealogy database DSN variable. It has no
 /// default, so a genealogy command can never silently target the RAG database.
@@ -123,10 +135,23 @@ pub struct Config {
     /// Bulk invitation delivery adapter name. Defaults to `unconfigured`, which
     /// fails closed without creating an invitation.
     pub onboarding_mail_adapter: String,
+    /// HTTPS endpoint for the `http` mail adapter. `None` fails closed even when
+    /// the adapter name is `http`.
+    pub onboarding_mail_url: Option<String>,
+    /// Optional bearer credential for the `http` mail adapter.
+    pub onboarding_mail_bearer: Option<String>,
+    /// Request timeout for the `http` mail adapter.
+    pub onboarding_mail_timeout_secs: u64,
     /// Base URL for the one-time activation link.
     pub onboarding_activation_url: String,
     /// Delay between bulk sends, in milliseconds.
     pub onboarding_send_interval_ms: i64,
+    /// Keycloak service-account settings for creating invitees' sign-ins.
+    /// `None` unless `ONBOARDING_KEYCLOAK_LOGINS` is on.
+    pub onboarding_keycloak_logins: Option<crate::onboarding::KeycloakLoginSettings>,
+    /// Validated SMTP settings for the `smtp` mail adapter. `None` for any other
+    /// adapter name.
+    pub onboarding_smtp: Option<crate::onboarding::SmtpSettings>,
     /// Private filesystem root for owner media. Never served as a static tree.
     pub media_root: PathBuf,
     /// Private filesystem root for family document originals. Never served as a
@@ -303,6 +328,10 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
+        let onboarding_mail_adapter = onboarding_mail_adapter(&get)?;
+        let onboarding_smtp = onboarding_smtp(&get, &onboarding_mail_adapter)?;
+        let onboarding_keycloak_logins = onboarding_keycloak_logins(&get)?;
+
         Ok(Config {
             ollama_url: get("OLLAMA_URL").unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string()),
             embed_model: get("OLLAMA_EMBED_MODEL")
@@ -361,7 +390,21 @@ impl Config {
                 DEFAULT_AUTH_CLOCK_SKEW_SECS,
             )?,
             auth_rate_limit: positive_int(&get, "AUTH_RATE_LIMIT", DEFAULT_AUTH_RATE_LIMIT)?,
-            onboarding_mail_adapter: onboarding_mail_adapter(&get)?,
+            onboarding_mail_adapter,
+            onboarding_smtp: onboarding_smtp.clone(),
+            onboarding_keycloak_logins,
+            onboarding_mail_url: match get("ONBOARDING_MAIL_URL") {
+                None => None,
+                Some(url) => Some(validate_provider_endpoint("ONBOARDING_MAIL_URL", &url)?),
+            },
+            onboarding_mail_bearer: get("ONBOARDING_MAIL_BEARER")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            onboarding_mail_timeout_secs: positive_int(
+                &get,
+                "ONBOARDING_MAIL_TIMEOUT_SECS",
+                DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS,
+            )? as u64,
             onboarding_activation_url: get("ONBOARDING_ACTIVATION_URL")
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
@@ -393,12 +436,39 @@ impl Config {
 
     /// Builds the configured bulk delivery adapter.
     ///
-    /// Only the synthetic `fake` adapter is implemented. A production operator
-    /// must supply a real provider adapter and approve its configuration before
-    /// real invitations can be sent.
+    /// `fake` is synthetic and never performs network I/O. `http` posts one
+    /// JSON message to `ONBOARDING_MAIL_URL` and reports provider acceptance
+    /// only. Any other name, or `http` without a valid URL, fails closed.
+    ///
+    /// With `ONBOARDING_KEYCLOAK_LOGINS` on, that adapter is wrapped so each
+    /// invitation also creates the invitee's Keycloak sign-in.
     pub fn mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
+        let inner = self.plain_mail_adapter();
+        match self.onboarding_keycloak_logins.clone() {
+            Some(settings) => Box::new(crate::onboarding::KeycloakLoginAdapter::new(
+                settings, inner,
+            )),
+            None => inner,
+        }
+    }
+
+    fn plain_mail_adapter(&self) -> Box<dyn crate::onboarding::MailAdapter> {
         match self.onboarding_mail_adapter.as_str() {
             "fake" => Box::new(crate::onboarding::FakeAdapter::accepting()),
+            "http" => match self.onboarding_mail_url.as_deref() {
+                Some(url) if !url.trim().is_empty() => {
+                    Box::new(crate::onboarding::HttpMailAdapter::new(
+                        url,
+                        self.onboarding_mail_bearer.clone(),
+                        Duration::from_secs(self.onboarding_mail_timeout_secs.max(1)),
+                    ))
+                }
+                _ => Box::new(crate::onboarding::UnconfiguredAdapter),
+            },
+            "smtp" => match self.onboarding_smtp.clone() {
+                Some(settings) => Box::new(crate::onboarding::SmtpMailAdapter::new(settings)),
+                None => Box::new(crate::onboarding::UnconfiguredAdapter),
+            },
             _ => Box::new(crate::onboarding::UnconfiguredAdapter),
         }
     }
@@ -436,9 +506,9 @@ impl Config {
     }
 }
 
-/// Validates the bulk delivery adapter name. Only the fail-closed default and
-/// the synthetic test adapter exist today; an unknown name is an error rather
-/// than a silent fallback.
+/// Validates the bulk delivery adapter name. The fail-closed default, the
+/// synthetic test adapter, and the HTTP provider adapter are the supported
+/// values; an unknown name is an error rather than a silent fallback.
 fn onboarding_mail_adapter<F>(get: &F) -> Result<String, ConfigError>
 where
     F: Fn(&str) -> Option<String>,
@@ -446,11 +516,181 @@ where
     let value = get("ONBOARDING_MAIL_ADAPTER")
         .unwrap_or_else(|| DEFAULT_ONBOARDING_MAIL_ADAPTER.to_string());
     match value.trim() {
-        "unconfigured" | "fake" => Ok(value.trim().to_string()),
+        "unconfigured" | "fake" | "http" | "smtp" => Ok(value.trim().to_string()),
         other => Err(ConfigError::Invalid(format!(
-            "ONBOARDING_MAIL_ADAPTER must be unconfigured or fake, got {other:?}"
+            "ONBOARDING_MAIL_ADAPTER must be unconfigured, fake, http, or smtp, got {other:?}"
         ))),
     }
+}
+
+/// Builds the SMTP settings for the `smtp` adapter.
+///
+/// Every field is validated here rather than at send time: a missing host or
+/// sender, an unknown TLS mode, an out-of-range port or timeout, and a
+/// half-configured credential pair are configuration errors that name the
+/// offending variable. Settings are `None` for every other adapter name, so a
+/// stale SMTP block cannot affect the HTTP, fake, or unconfigured adapters.
+/// Default lifetime of Keycloak's password link: the invitation's own seven days.
+pub const DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS: i64 = 7 * 24 * 60 * 60;
+
+fn onboarding_keycloak_logins<F>(
+    get: &F,
+) -> Result<Option<crate::onboarding::KeycloakLoginSettings>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !bool_setting(get, "ONBOARDING_KEYCLOAK_LOGINS", false)? {
+        return Ok(None);
+    }
+    let required = |key: &str| -> Result<String, ConfigError> {
+        get(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "{key} is required when ONBOARDING_KEYCLOAK_LOGINS is on"
+                ))
+            })
+    };
+    let base_url = validate_provider_endpoint("KEYCLOAK_URL", &required("KEYCLOAK_URL")?)?;
+    if base_url.contains("/realms/") {
+        return Err(ConfigError::Invalid(
+            "KEYCLOAK_URL must be the Keycloak base URL, not a realm URL".into(),
+        ));
+    }
+    let settings = crate::onboarding::KeycloakLoginSettings {
+        base_url,
+        realm: required("KEYCLOAK_REALM")?,
+        client_id: required("KEYCLOAK_LOGIN_CLIENT_ID")?,
+        client_secret: required("KEYCLOAK_LOGIN_CLIENT_SECRET")?,
+        actions_client_id: required("KEYCLOAK_ACTIONS_CLIENT_ID")?,
+        actions_lifespan: Duration::from_secs(positive_int(
+            get,
+            "KEYCLOAK_ACTIONS_LIFESPAN_SECS",
+            DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS,
+        )? as u64),
+        timeout: Duration::from_secs(positive_int(
+            get,
+            "ONBOARDING_MAIL_TIMEOUT_SECS",
+            DEFAULT_ONBOARDING_MAIL_TIMEOUT_SECS,
+        )? as u64),
+    };
+    // A login created in another realm would have a subject this API never
+    // accepts, so the realm must be the one that issues the API's tokens.
+    let issuer = get("AUTH_ISSUER").unwrap_or_default();
+    if issuer.trim().trim_end_matches('/') != settings.issuer() {
+        return Err(ConfigError::Invalid(
+            "AUTH_ISSUER must equal KEYCLOAK_URL/realms/KEYCLOAK_REALM when ONBOARDING_KEYCLOAK_LOGINS is on".into(),
+        ));
+    }
+    // Keycloak returns the person to the activation link after they choose a
+    // password, so it must be an absolute URL.
+    validate_provider_endpoint(
+        "ONBOARDING_ACTIVATION_URL",
+        &get("ONBOARDING_ACTIVATION_URL").unwrap_or_default(),
+    )
+    .map_err(|_| {
+        ConfigError::Invalid(
+            "ONBOARDING_ACTIVATION_URL must be an absolute https:// URL (or http:// on loopback) when ONBOARDING_KEYCLOAK_LOGINS is on".into(),
+        )
+    })?;
+    Ok(Some(settings))
+}
+
+fn onboarding_smtp<F>(
+    get: &F,
+    adapter: &str,
+) -> Result<Option<crate::onboarding::SmtpSettings>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if adapter != "smtp" {
+        return Ok(None);
+    }
+
+    let host = get("ONBOARDING_SMTP_HOST").ok_or_else(|| {
+        ConfigError::Invalid(
+            "ONBOARDING_SMTP_HOST is required when ONBOARDING_MAIL_ADAPTER=smtp".into(),
+        )
+    })?;
+    let port = positive_int(get, "ONBOARDING_SMTP_PORT", DEFAULT_ONBOARDING_SMTP_PORT)?;
+    if port > 65535 {
+        return Err(ConfigError::Invalid(format!(
+            "ONBOARDING_SMTP_PORT must be between 1 and 65535, got {port}"
+        )));
+    }
+    let tls_raw =
+        get("ONBOARDING_SMTP_TLS").unwrap_or_else(|| DEFAULT_ONBOARDING_SMTP_TLS.to_string());
+    let tls = crate::onboarding::SmtpTlsMode::parse(&tls_raw).ok_or_else(|| {
+        ConfigError::Invalid(format!(
+            "ONBOARDING_SMTP_TLS must be none, implicit, or starttls, got {tls_raw:?}"
+        ))
+    })?;
+    if tls == crate::onboarding::SmtpTlsMode::None
+        && !crate::onboarding::delivery::smtp_host_is_loopback(&host)
+        && !bool_setting(get, "ONBOARDING_SMTP_ALLOW_PLAINTEXT", false)?
+    {
+        return Err(ConfigError::Invalid(format!(
+            "ONBOARDING_SMTP_TLS=none is permitted only for a loopback \
+             ONBOARDING_SMTP_HOST; set ONBOARDING_SMTP_ALLOW_PLAINTEXT=true \
+             for an explicitly local container host, got {host:?}"
+        )));
+    }
+    let from = get("ONBOARDING_SMTP_FROM").ok_or_else(|| {
+        ConfigError::Invalid(
+            "ONBOARDING_SMTP_FROM is required when ONBOARDING_MAIL_ADAPTER=smtp".into(),
+        )
+    })?;
+    lettre::Address::from_str(&from).map_err(|_| {
+        ConfigError::Invalid(format!(
+            "ONBOARDING_SMTP_FROM must be a single email address, got {from:?}"
+        ))
+    })?;
+    let timeout = positive_int(
+        get,
+        "ONBOARDING_SMTP_TIMEOUT_SECS",
+        DEFAULT_ONBOARDING_SMTP_TIMEOUT_SECS,
+    )?;
+    if timeout > MAX_ONBOARDING_SMTP_TIMEOUT_SECS {
+        return Err(ConfigError::Invalid(format!(
+            "ONBOARDING_SMTP_TIMEOUT_SECS must not exceed \
+             {MAX_ONBOARDING_SMTP_TIMEOUT_SECS}, got {timeout}"
+        )));
+    }
+    let username = get("ONBOARDING_SMTP_USERNAME");
+    let password = get("ONBOARDING_SMTP_PASSWORD");
+    if username.is_some() != password.is_some() {
+        return Err(ConfigError::Invalid(
+            "ONBOARDING_SMTP_USERNAME and ONBOARDING_SMTP_PASSWORD must be set together".into(),
+        ));
+    }
+
+    Ok(Some(crate::onboarding::SmtpSettings {
+        host,
+        port: port as u16,
+        tls,
+        from,
+        username,
+        password,
+        timeout: Duration::from_secs(timeout as u64),
+    }))
+}
+
+/// Requires a provider endpoint to use https, or http only on loopback.
+fn validate_provider_endpoint(variable: &str, raw: &str) -> Result<String, ConfigError> {
+    let url = raw.trim().to_string();
+    let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+        .iter()
+        .any(|prefix| {
+            url.strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+        });
+    if url.is_empty() || (!local && !url.starts_with("https://")) {
+        return Err(ConfigError::Invalid(format!(
+            "{variable} must use https:// (or http:// on loopback)"
+        )));
+    }
+    Ok(url)
 }
 
 /// Validates a configured provider name against the provider registry,
@@ -970,5 +1210,170 @@ mod tests {
                 (url, Some("t"))
             );
         }
+    }
+
+    #[test]
+    fn the_http_mail_adapter_requires_a_valid_endpoint() {
+        // Unknown names and plain remote HTTP are configuration errors.
+        assert!(load(&[("ONBOARDING_MAIL_ADAPTER", "unknown")]).is_err());
+        assert!(load(&[
+            ("ONBOARDING_MAIL_ADAPTER", "http"),
+            ("ONBOARDING_MAIL_URL", "http://mail.example/send"),
+        ])
+        .is_err());
+
+        // https, or loopback http, is accepted with an optional bearer.
+        let cfg = load(&[
+            ("ONBOARDING_MAIL_ADAPTER", "http"),
+            ("ONBOARDING_MAIL_URL", "https://mail.example/send"),
+            ("ONBOARDING_MAIL_BEARER", "synthetic-bearer"),
+        ])
+        .unwrap();
+        let adapter = cfg.mail_adapter();
+        assert!(adapter.is_configured());
+        assert_eq!(adapter.name(), "http");
+
+        // The name without a URL still fails closed.
+        let cfg = load(&[("ONBOARDING_MAIL_ADAPTER", "http")]).unwrap();
+        assert!(!cfg.mail_adapter().is_configured());
+    }
+
+    #[test]
+    fn the_smtp_adapter_requires_valid_settings() {
+        let base = [
+            ("ONBOARDING_MAIL_ADAPTER", "smtp"),
+            ("ONBOARDING_SMTP_HOST", "127.0.0.1"),
+            ("ONBOARDING_SMTP_PORT", "1025"),
+            ("ONBOARDING_SMTP_TLS", "none"),
+            ("ONBOARDING_SMTP_FROM", "tran@example.test"),
+        ];
+
+        let cfg = load(&base).unwrap();
+        let adapter = cfg.mail_adapter();
+        assert!(adapter.is_configured());
+        assert_eq!(adapter.name(), "smtp");
+        let smtp = cfg.onboarding_smtp.as_ref().expect("smtp settings");
+        assert_eq!(smtp.host, "127.0.0.1");
+        assert_eq!(smtp.port, 1025);
+        assert_eq!(smtp.timeout, Duration::from_secs(10));
+        assert!(smtp.username.is_none());
+
+        // A missing host or sender is a configuration error, not a fallback.
+        for missing in ["ONBOARDING_SMTP_HOST", "ONBOARDING_SMTP_FROM"] {
+            let vars: Vec<(&str, &str)> = base
+                .iter()
+                .copied()
+                .filter(|(key, _)| *key != missing)
+                .collect();
+            assert!(load(&vars).is_err(), "{missing} must be required");
+        }
+
+        // Plaintext is loopback-only unless the operator explicitly accepts a
+        // local container hostname.
+        let mut container_host = base.to_vec();
+        container_host[1] = ("ONBOARDING_SMTP_HOST", "mailpit");
+        assert!(load(&container_host).is_err());
+        container_host.push(("ONBOARDING_SMTP_ALLOW_PLAINTEXT", "true"));
+        let cfg = load(&container_host).unwrap();
+        assert_eq!(cfg.onboarding_smtp.as_ref().unwrap().host, "mailpit");
+
+        // An unknown TLS mode fails closed instead of negotiating one.
+        let mut bad_tls = base.to_vec();
+        bad_tls[3] = ("ONBOARDING_SMTP_TLS", "opportunistic");
+        assert!(load(&bad_tls).is_err());
+
+        // A username without a password (or the reverse) is refused.
+        let mut half_auth = base.to_vec();
+        half_auth.push(("ONBOARDING_SMTP_USERNAME", "synthetic-user"));
+        assert!(load(&half_auth).is_err());
+
+        // A non-smtp adapter ignores a stale SMTP block.
+        let cfg = load(&[("ONBOARDING_MAIL_ADAPTER", "fake")]).unwrap();
+        assert!(cfg.onboarding_smtp.is_none());
+        assert_eq!(cfg.mail_adapter().name(), "fake");
+    }
+
+    fn keycloak_env() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("ONBOARDING_KEYCLOAK_LOGINS", "true"),
+            ("KEYCLOAK_URL", "http://127.0.0.1:8180"),
+            ("KEYCLOAK_REALM", "tran"),
+            ("KEYCLOAK_LOGIN_CLIENT_ID", "tran-invitations"),
+            ("KEYCLOAK_LOGIN_CLIENT_SECRET", "synthetic-secret"),
+            ("KEYCLOAK_ACTIONS_CLIENT_ID", "tran-web"),
+            ("AUTH_ISSUER", "http://127.0.0.1:8180/realms/tran"),
+            (
+                "ONBOARDING_ACTIVATION_URL",
+                "http://127.0.0.1:3000/activate",
+            ),
+            ("ONBOARDING_MAIL_ADAPTER", "fake"),
+        ]
+    }
+
+    #[test]
+    fn keycloak_logins_are_off_by_default() {
+        let cfg = load(&[]).expect("defaults load");
+        assert!(cfg.onboarding_keycloak_logins.is_none());
+        assert!(!cfg.mail_adapter().provisions_logins());
+    }
+
+    #[test]
+    fn keycloak_logins_wrap_the_mail_adapter() {
+        let cfg = load(&keycloak_env()).expect("keycloak settings load");
+        let settings = cfg.onboarding_keycloak_logins.as_ref().expect("settings");
+        assert_eq!(settings.actions_client_id, "tran-web");
+        assert_eq!(
+            settings.actions_lifespan,
+            Duration::from_secs(DEFAULT_KEYCLOAK_ACTIONS_LIFESPAN_SECS as u64)
+        );
+        let adapter = cfg.mail_adapter();
+        assert_eq!(adapter.name(), "keycloak");
+        assert!(adapter.is_configured());
+        assert!(adapter.provisions_logins());
+        assert!(!format!("{settings:?}").contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn keycloak_logins_require_every_setting() {
+        for missing in [
+            "KEYCLOAK_URL",
+            "KEYCLOAK_REALM",
+            "KEYCLOAK_LOGIN_CLIENT_ID",
+            "KEYCLOAK_LOGIN_CLIENT_SECRET",
+            "KEYCLOAK_ACTIONS_CLIENT_ID",
+        ] {
+            let env: Vec<_> = keycloak_env()
+                .into_iter()
+                .filter(|(key, _)| *key != missing)
+                .collect();
+            let err = load(&env).expect_err(missing);
+            assert!(err.to_string().contains(missing), "{err}");
+        }
+    }
+
+    #[test]
+    fn keycloak_logins_refuse_another_realm_or_a_relative_link() {
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "AUTH_ISSUER");
+        env.push(("AUTH_ISSUER", "http://127.0.0.1:8180/realms/other"));
+        assert!(load(&env).unwrap_err().to_string().contains("AUTH_ISSUER"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "ONBOARDING_ACTIVATION_URL");
+        env.push(("ONBOARDING_ACTIVATION_URL", "/activate"));
+        assert!(load(&env)
+            .unwrap_err()
+            .to_string()
+            .contains("ONBOARDING_ACTIVATION_URL"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "KEYCLOAK_URL");
+        env.push(("KEYCLOAK_URL", "http://kc.example.test"));
+        assert!(load(&env).unwrap_err().to_string().contains("KEYCLOAK_URL"));
+
+        let mut env = keycloak_env();
+        env.retain(|(key, _)| *key != "KEYCLOAK_URL");
+        env.push(("KEYCLOAK_URL", "http://127.0.0.1:8180/realms/tran"));
+        assert!(load(&env).unwrap_err().to_string().contains("realm URL"));
     }
 }

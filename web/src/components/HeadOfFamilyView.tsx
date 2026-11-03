@@ -222,8 +222,9 @@ export function HeadOfFamilyView({ role, result, onApprove, onRevoke }: Props) {
     (conclusion) =>
       Boolean(conclusion.appointment_id) || Boolean(conclusion.head_label),
   ).length;
+  // Only a currently verified appointment is presented as the head.
   const citedHead = conclusions.find((conclusion) =>
-    Boolean(conclusion.head_label),
+    Boolean(conclusion.head_label) && conclusion.evidence_status === "verified",
   );
   const headEvidenceStatus = citedHead?.evidence_status;
 
@@ -283,6 +284,13 @@ export function HeadOfFamilyView({ role, result, onApprove, onRevoke }: Props) {
               {conclusion.head_label ? (
                 <p className="meta" data-testid="hof-cited-head">
                   Cited head: {conclusion.head_label}
+                </p>
+              ) : null}
+              {conclusion.evidence_status !== "verified" && conclusion.reason ? (
+                <p className="meta" data-testid="hof-review-reason">
+                  Eligibility is no longer confirmed by verified evidence
+                  ({conclusion.reason.replaceAll("_", " ")}). An administrator
+                  should review this appointment.
                 </p>
               ) : null}
               <dl className="hof-record-meta">

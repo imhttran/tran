@@ -120,12 +120,17 @@ impl Reason {
     }
 }
 
-/// One classified candidate. Carries the opaque person key and reason codes
-/// only; never a display name, a date, or a source excerpt.
+/// One classified candidate.
+///
+/// Carries the opaque person key, the display name, and a *masked* verified
+/// contact email. It never carries a date or a source excerpt, and never an
+/// unmasked email address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateRow {
     /// The stable opaque catalog key.
     pub person_key: String,
+    /// The person display name, used to label the preview row.
+    pub display_name: String,
     /// The classification.
     pub classification: Classification,
     /// The ordered, deduplicated reason codes.
@@ -133,6 +138,9 @@ pub struct CandidateRow {
     /// The proposed display username, when the verified name parts permit one.
     /// This is a proposal only; preparation resolves collisions transactionally.
     pub proposed_username: Option<String>,
+    /// The verified contact email, masked for the wire. `None` when no verified
+    /// contact exists. This never carries the unmasked address.
+    pub contact_email_masked: Option<String>,
 }
 
 /// The aggregated preview for the admin endpoint.
@@ -225,6 +233,11 @@ pub struct PersonEvidence {
     minor_guardian_review: bool,
     /// True when no verified contact email is available.
     missing_verified_contact: bool,
+    /// The verified contact email, masked for the wire. `None` when no verified
+    /// contact exists.
+    contact_email_masked: Option<String>,
+    /// The person display name, read by the same evidence query.
+    display_name: String,
 }
 
 /// Returns `true` when the text names a living status. Only explicit living
@@ -234,6 +247,26 @@ fn is_living_value(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "alive" | "living"
     )
+}
+
+/// Masks an email address for display.
+///
+/// Keeps the first local-part character when the local part has more than one
+/// character, replaces the rest of the local part with a fixed `•••`, and keeps
+/// the domain. A one-character local part becomes `•••@domain`, and an input
+/// with no `@` is masked in full.
+pub fn mask_email(email: &str) -> String {
+    let email = email.trim();
+    let Some((local, domain)) = email.split_once('@') else {
+        return "•••".to_string();
+    };
+    let mut chars = local.chars();
+    let first = chars.next();
+    let masked_local = match first {
+        Some(first) if chars.next().is_some() => format!("{first}•••"),
+        _ => "•••".to_string(),
+    };
+    format!("{masked_local}@{domain}")
 }
 
 /// Splits a verified display name into structured parts without inventing a
@@ -392,15 +425,17 @@ fn load_person_evidence(
         .map_err(|err| CandidateError::Database(err.to_string()))?
         .get(0);
 
-    let has_verified_contact: bool = client
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM onboarding_recipient_contact
-                             WHERE person_id = $1 AND verified_at IS NOT NULL)",
+    let contact_email: Option<String> = client
+        .query_opt(
+            "SELECT email FROM onboarding_recipient_contact
+              WHERE person_id = $1 AND verified_at IS NOT NULL
+              ORDER BY verified_at DESC LIMIT 1",
             &[&person_id],
         )
         .map_err(|err| CandidateError::Database(err.to_string()))?
-        .get(0);
-    let missing_verified_contact = !has_verified_contact;
+        .map(|row| row.get(0));
+    let missing_verified_contact = contact_email.is_none();
+    let contact_email_masked = contact_email.as_deref().map(mask_email);
 
     let person = client
         .query_opt(
@@ -455,6 +490,8 @@ fn load_person_evidence(
         missing_dob,
         minor_guardian_review,
         missing_verified_contact,
+        contact_email_masked,
+        display_name,
     })
 }
 
@@ -559,9 +596,11 @@ pub fn preview_candidates(client: &mut Client) -> Result<CandidatePreview, Candi
         let parts = load_name_parts(client, person_id)?;
         rows.push(CandidateRow {
             person_key,
+            display_name: evidence.display_name.clone(),
             classification,
             reasons,
             proposed_username: crate::onboarding::username::candidate_username(&parts).ok(),
+            contact_email_masked: evidence.contact_email_masked.clone(),
         });
     }
     Ok(CandidatePreview { rows })
@@ -586,6 +625,47 @@ mod tests {
             missing_dob: false,
             minor_guardian_review: false,
             missing_verified_contact: false,
+            contact_email_masked: None,
+            display_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn mask_email_masks_local_part_and_keeps_domain() {
+        assert_eq!(mask_email("tran@gmail.com"), "t•••@gmail.com");
+    }
+
+    #[test]
+    fn mask_email_handles_one_character_local_part() {
+        assert_eq!(mask_email("a@example.com"), "•••@example.com");
+    }
+
+    #[test]
+    fn mask_email_uses_a_fixed_three_character_mask() {
+        assert_eq!(mask_email("VeryLongLocal@example.org"), "V•••@example.org");
+    }
+
+    #[test]
+    fn mask_email_handles_uppercase_input() {
+        assert_eq!(mask_email("Tran@Gmail.com"), "T•••@Gmail.com");
+    }
+
+    #[test]
+    fn mask_email_never_leaks_the_local_part() {
+        for (input, local) in [
+            ("tran@gmail.com", "tran"),
+            ("a@example.com", "a"),
+            ("VeryLongLocal@example.org", "VeryLongLocal"),
+        ] {
+            let masked = mask_email(input);
+            let remainder = &local[local
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| i)
+                .unwrap_or(local.len())..];
+            if !remainder.is_empty() {
+                assert!(!masked.contains(remainder));
+            }
         }
     }
 

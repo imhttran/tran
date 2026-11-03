@@ -10,6 +10,7 @@ import {
   ApiRequestError,
   cancelProfileDraft,
   createProfileDraft,
+  decisionsNeedingAction,
   getProfile,
   profileMediaUrl,
   restrictProfileField,
@@ -376,10 +377,10 @@ function ProfileHero({
   const total = PROFILE_FIELDS.length + 2;
   const completed = approvedFields + approvedMedia;
   const pendingCount = pending.length;
-  const feedbackCount = feedback.filter(
-    (revision) =>
-      revision.status === "rejected" || revision.status === "needs_changes",
-  ).length;
+  const feedbackCount = decisionsNeedingAction({
+    pending,
+    history: feedback,
+  }).length;
   const missing = PROFILE_FIELDS.filter(
     (field) =>
       !approved.some(

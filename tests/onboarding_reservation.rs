@@ -161,7 +161,7 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
 
     let first_key = format!("{prefix}-person-1");
     let first_id = insert_person(client, &first_key)?;
-    let first = reserve(client, first_id, &parts, "synthetic-actor")
+    let first = reserve(client, first_id, &parts, None, "synthetic-actor")
         .map_err(|err| format!("reserve first: {err}"))?;
     if first.username != "nvan" {
         return Err(format!(
@@ -184,7 +184,7 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
 
     let second_key = format!("{prefix}-person-2");
     let second_id = insert_person(client, &second_key)?;
-    let second = reserve(client, second_id, &parts, "synthetic-actor")
+    let second = reserve(client, second_id, &parts, None, "synthetic-actor")
         .map_err(|err| format!("reserve second: {err}"))?;
     if second.username != "nvan2" {
         return Err(format!(
@@ -201,7 +201,7 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
 
     // Repeating the same reservation for the same person is idempotent.
     let first_count = count_reservations(client, first_id)?;
-    let repeated = reserve(client, first_id, &parts, "synthetic-actor")
+    let repeated = reserve(client, first_id, &parts, None, "synthetic-actor")
         .map_err(|err| format!("reserve repeated: {err}"))?;
     if repeated.reservation_id != first.reservation_id {
         return Err(format!(
@@ -247,7 +247,7 @@ fn run_scenario(client: &mut Client, prefix: &str) -> Result<(), String> {
 
     let third_key = format!("{prefix}-person-3");
     let third_id = insert_person(client, &third_key)?;
-    let third = reserve(client, third_id, &parts, "synthetic-actor")
+    let third = reserve(client, third_id, &parts, None, "synthetic-actor")
         .map_err(|err| format!("reserve third: {err}"))?;
     if third.username_key != "nvan" {
         return Err(format!(

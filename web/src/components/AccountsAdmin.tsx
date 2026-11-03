@@ -4,33 +4,66 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FormStatus } from "@/components/FormStatus";
 import type { FormStatusState } from "@/components/FormStatus";
+import { NominationPersonSelector } from "@/components/NominationPersonSelector";
+import type { NominationPerson } from "@/components/NominationPersonSelector";
 import {
   ApiRequestError,
   changeMemberRole,
   deactivateMember,
+  grantBranchReviewer,
   linkMember,
   listFamilyMembers,
+  listReviewerBranches,
+  listReviewerGrants,
   requestPasswordReset,
+  revokeBranchReviewer,
   revokeMemberLink,
 } from "@/lib/api";
-import type { FamilyMember, FamilyMembersPage, MemberFilter } from "@/lib/api";
+import type {
+  FamilyMember,
+  FamilyMembersPage,
+  MemberFilter,
+  ReviewerBranch,
+  ReviewerGrant,
+} from "@/lib/api";
 import type { Role } from "@/lib/experience-contract";
 
 // Accounts section of Admin > Family Members. Every list and every outcome
 // comes from the Rust API; nothing here decides authorization, and no success
 // is shown unless the API confirmed it. Invitations live in the bulk onboarding
-// section above. Branch reviewer grants are not offered: there is no grant API.
+// section above. Branch reviewer grants are explicit admin actions on a linked
+// account; holding the Head of Family title grants nothing by itself.
 type Linkage = FamilyMembersPage["linkage"];
+
+// The admin person-search endpoint extends the shared person shape with a
+// `linked` flag so already-linked people can be shown but not chosen.
+type AdminPerson = NominationPerson & { linked?: boolean };
 
 type Pending =
   | { kind: "reset"; member: FamilyMember }
   | { kind: "deactivate"; member: FamilyMember }
   | { kind: "role"; member: FamilyMember; role: Role; revoke: boolean }
-  | { kind: "link"; member: FamilyMember; personKey: string }
-  | { kind: "unlink"; member: FamilyMember; linkId: number };
+  | {
+      kind: "link";
+      member: FamilyMember;
+      personKey: string;
+      personLabel: string;
+      branches: string[];
+    }
+  | { kind: "unlink"; member: FamilyMember; linkId: number }
+  | { kind: "grant"; member: FamilyMember; branch: ReviewerBranch; reason: string }
+  | { kind: "revoke-grant"; member: FamilyMember; grant: ReviewerGrant; reason: string };
+
+// Grantable branches and the active grants, keyed by identity account id.
+type Reviewer = { branches: ReviewerBranch[]; grants: ReviewerGrant[] };
+
+function branchName(branch: ReviewerBranch): string {
+  return branch.branch_label || branch.branch_key;
+}
 
 const ROLES: Role[] = ["viewer", "editor", "admin"];
 const EMPTY_FILTER: MemberFilter = { q: "", status: "", role: "" };
+const ADMIN_PERSON_ENDPOINT = "/api/admin/family-members/people";
 
 // Safe, human messages for the API's stable error codes.
 const ERROR_MESSAGES: Record<string, string> = {
@@ -38,7 +71,6 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Password reset is not configured for this identity provider. No email was sent. The member can use the provider's own \"Forgot password?\" link.",
   reset_failed: "The identity provider did not accept the reset request. No email was sent. Try again later.",
   reset_throttled: "A reset was already requested for this account recently. Wait before trying again.",
-  no_verified_email: "This account has no verified email address, so no reset can be requested.",
   account_deactivated: "This account is deactivated.",
   last_admin: "Refusing to remove the last active administrator.",
   csrf_failed: "Your session's security token is missing or stale. Reload the page and try again.",
@@ -47,6 +79,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   identity_deactivated: "That account is deactivated and cannot be linked.",
   identity_ambiguous: "That subject exists under more than one issuer; it cannot be linked.",
   already_linked: "That person or account already has an active link.",
+  account_not_linked: "Link this account to its genealogy person before granting branch review.",
+  branch_grant_exists: "This account already reviews that branch.",
+  branch_grant_not_active: "That grant was already revoked.",
+  invalid_branch_reason: "Give a reason of at most 1000 characters.",
 };
 
 function messageFor(error: unknown, fallback: string): string {
@@ -71,9 +107,15 @@ function confirmText(pending: Pending): string {
     case "role":
       return pending.revoke ? `Remove the ${pending.role} role from ${who}?` : `Grant the ${pending.role} role to ${who}?`;
     case "link":
-      return `Confirm you reviewed the identity proof and link ${who} to genealogy person ${pending.personKey}?`;
+      return `Confirm you reviewed the identity proof and link ${who} to ${pending.personLabel}${
+        pending.branches.length ? ` (${pending.branches.join(", ")})` : ""
+      }?`;
     case "unlink":
       return `Remove the link between ${who} and their genealogy person?`;
+    case "grant":
+      return `Let ${who} review submissions in ${branchName(pending.branch)}? Reason: ${pending.reason}`;
+    case "revoke-grant":
+      return `Stop ${who} reviewing ${branchName(pending.grant)}? Reason: ${pending.reason}`;
   }
 }
 
@@ -89,6 +131,10 @@ function confirmLabel(pending: Pending): string {
       return "Confirm link";
     case "unlink":
       return "Remove link";
+    case "grant":
+      return "Grant branch review";
+    case "revoke-grant":
+      return "Revoke branch review";
   }
 }
 
@@ -108,11 +154,17 @@ async function run(action: Pending): Promise<string> {
     case "link": {
       const result = await linkMember(action.member, action.personKey);
       if (!result.linked) throw new Error("The link was not created.");
-      return `${who} is linked to ${action.personKey}.`;
+      return `${who} is linked to ${action.personLabel}.`;
     }
     case "unlink":
       await revokeMemberLink(action.linkId);
       return `The link for ${who} was removed.`;
+    case "grant":
+      await grantBranchReviewer(action.member, action.branch.branch_key, action.reason);
+      return `${who} can now review ${branchName(action.branch)}.`;
+    case "revoke-grant":
+      await revokeBranchReviewer(action.grant.grant_id, action.reason);
+      return `${who} no longer reviews ${branchName(action.grant)}.`;
   }
 }
 
@@ -132,7 +184,10 @@ function restoreOpener() {
 }
 
 export function AccountsAdmin() {
-  const [filter, setFilter] = useState<MemberFilter>(EMPTY_FILTER);
+  // `draft` is what the controls show; `applied` is the query the loaded rows
+  // and `nextAfter` cursor belong to, so "Load more" never mixes queries.
+  const [draft, setDraft] = useState<MemberFilter>(EMPTY_FILTER);
+  const [applied, setApplied] = useState<MemberFilter>(EMPTY_FILTER);
   const [members, setMembers] = useState<FamilyMember[]>([]);
   const [nextAfter, setNextAfter] = useState<number | null>(null);
   const [linkage, setLinkage] = useState<Linkage>("available");
@@ -141,12 +196,25 @@ export function AccountsAdmin() {
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<FormStatusState>(null);
+  const [reviewer, setReviewer] = useState<Reviewer>({ branches: [], grants: [] });
+  const [reviewerError, setReviewerError] = useState<string | null>(null);
+
+  const loadReviewer = useCallback(async () => {
+    try {
+      const [branches, grants] = await Promise.all([listReviewerBranches(), listReviewerGrants()]);
+      setReviewer({ branches: branches.branches, grants: grants.filter((grant) => grant.active) });
+      setReviewerError(null);
+    } catch (error) {
+      setReviewerError(messageFor(error, "Branch reviewer grants could not be loaded."));
+    }
+  }, []);
 
   const load = useCallback(async (active: MemberFilter, after: number | null) => {
     setLoading(true);
     setLoadError(null);
     try {
       const page = await listFamilyMembers(active, after);
+      setApplied(active);
       setMembers((current) => (after ? [...current, ...page.members] : page.members));
       setNextAfter(page.next_after);
       setLinkage(page.linkage);
@@ -159,7 +227,8 @@ export function AccountsAdmin() {
 
   useEffect(() => {
     void load(EMPTY_FILTER, null);
-  }, [load]);
+    void loadReviewer();
+  }, [load, loadReviewer]);
 
   async function confirm() {
     if (!pending || busy) return;
@@ -167,7 +236,8 @@ export function AccountsAdmin() {
     const action = pending;
     try {
       setStatus({ kind: "ok", text: await run(action) });
-      if (action.kind !== "reset") await load(filter, null);
+      if (action.kind === "grant" || action.kind === "revoke-grant") await loadReviewer();
+      else if (action.kind !== "reset") await load(applied, null);
     } catch (error) {
       setStatus({ kind: "error", text: messageFor(error, "The request failed. Nothing was changed.") });
     } finally {
@@ -203,7 +273,7 @@ export function AccountsAdmin() {
         data-testid="fm-filters"
         onSubmit={(event) => {
           event.preventDefault();
-          void load(filter, null);
+          void load(draft, null);
         }}
       >
         <label className="fm-filter-field fm-filter-search">
@@ -211,16 +281,16 @@ export function AccountsAdmin() {
           <input
             type="search"
             placeholder="Name, email, or subject"
-            value={filter.q}
-            onChange={(event) => setFilter({ ...filter, q: event.target.value })}
+            value={draft.q}
+            onChange={(event) => setDraft({ ...draft, q: event.target.value })}
             data-testid="fm-search"
           />
         </label>
         <label className="fm-filter-field">
           <span>Status</span>
           <select
-            value={filter.status}
-            onChange={(event) => setFilter({ ...filter, status: event.target.value as MemberFilter["status"] })}
+            value={draft.status}
+            onChange={(event) => setDraft({ ...draft, status: event.target.value as MemberFilter["status"] })}
             data-testid="fm-status-filter"
           >
             <option value="">Any</option>
@@ -231,8 +301,8 @@ export function AccountsAdmin() {
         <label className="fm-filter-field">
           <span>Role</span>
           <select
-            value={filter.role}
-            onChange={(event) => setFilter({ ...filter, role: event.target.value as MemberFilter["role"] })}
+            value={draft.role}
+            onChange={(event) => setDraft({ ...draft, role: event.target.value as MemberFilter["role"] })}
             data-testid="fm-role-filter"
           >
             <option value="">Any</option>
@@ -248,6 +318,11 @@ export function AccountsAdmin() {
       {loadError ? (
         <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="fm-load-error">{loadError}</p>
       ) : null}
+      {reviewerError ? (
+        <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="fm-reviewer-error">
+          {reviewerError}
+        </p>
+      ) : null}
       {linkage === "unavailable" ? (
         <p className="state-panel state-panel-expired fm-state" data-testid="fm-linkage-unavailable">
           The genealogy store is unavailable, so linked-person status is not shown.
@@ -256,7 +331,13 @@ export function AccountsAdmin() {
 
       <ul className="sources fm-members" data-testid="fm-members">
         {members.map((member) => (
-          <MemberRow key={member.user_id} member={member} linkage={linkage} onAction={ask} />
+          <MemberRow
+            key={member.user_id}
+            member={member}
+            linkage={linkage}
+            reviewer={reviewer}
+            onAction={ask}
+          />
         ))}
       </ul>
       {!loading && members.length === 0 && !loadError ? (
@@ -264,7 +345,7 @@ export function AccountsAdmin() {
       ) : null}
       {loading ? <p className="state-panel state-panel-loading fm-state">Loading accounts…</p> : null}
       {nextAfter && !loading ? (
-        <button type="button" className="fm-more" onClick={() => void load(filter, nextAfter)} data-testid="fm-more">
+        <button type="button" className="fm-more" onClick={() => void load(applied, nextAfter)} data-testid="fm-more">
           Load more
         </button>
       ) : null}
@@ -367,16 +448,23 @@ function ConfirmDialog({
 function MemberRow({
   member,
   linkage,
+  reviewer,
   onAction,
 }: {
   member: FamilyMember;
   linkage: Linkage;
+  reviewer: Reviewer;
   onAction: (action: Pending) => void;
 }) {
   const [role, setRole] = useState<Role>("viewer");
-  const [personKey, setPersonKey] = useState("");
+  const [chosen, setChosen] = useState<NominationPerson | null>(null);
   const active = member.status === "active";
   const linked = member.linked_person;
+  const linkFormShown = !linked && linkage === "available" && active;
+  // The selector loses its selection when the form unmounts; drop ours with it.
+  useEffect(() => {
+    if (!linkFormShown) setChosen(null);
+  }, [linkFormShown]);
   return (
     <li className="fm-member" data-testid="fm-member" data-subject={member.subject}>
       <div className="fm-member-head">
@@ -401,23 +489,35 @@ function MemberRow({
       </div>
       <p className="meta fm-member-meta">
         <span>{member.email ?? "No email on file"}</span>
-        <span className="fm-member-scope">
-          {member.subject} @ {member.issuer}
-        </span>
       </p>
       <p className="meta fm-member-link" data-testid="fm-member-link">
-        {linked
-          ? `Linked to ${linked.person_key}${linked.username ? ` (${linked.username})` : ""}`
-          : linkage === "available"
-            ? "Not linked to a genealogy person"
-            : "Link status unavailable"}
+        {linked ? (
+          <>
+            <span>
+              Linked to <strong>{linked.display_name || linked.person_key}</strong>
+            </span>
+            <span className="hint fm-member-link-key">
+              <small>
+                {linked.person_key}
+                {linked.username ? ` (${linked.username})` : ""}
+              </small>
+            </span>
+          </>
+        ) : linkage === "available" ? (
+          "Not linked to a genealogy person"
+        ) : (
+          "Link status unavailable"
+        )}
       </p>
       <details className="fm-actions" data-testid="fm-actions">
         <summary>Actions</summary>
         <div className="fm-actions-body">
+          <p className="meta fm-member-scope" data-testid="fm-member-scope">
+            {member.subject} @ {member.issuer}
+          </p>
           <button
             type="button"
-            disabled={!active || !member.email}
+            disabled={!active}
             onClick={() => onAction({ kind: "reset", member })}
             data-testid="fm-reset"
           >
@@ -464,21 +564,34 @@ function MemberRow({
               className="fm-link-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                if (personKey.trim()) onAction({ kind: "link", member, personKey: personKey.trim() });
+                if (!chosen) return;
+                onAction({
+                  kind: "link",
+                  member,
+                  personKey: chosen.record_id,
+                  personLabel: chosen.person_label,
+                  branches: chosen.branches,
+                });
               }}
             >
-              <input
-                aria-label="Genealogy person key"
-                placeholder="Person key"
-                value={personKey}
-                onChange={(event) => setPersonKey(event.target.value)}
-                data-testid="fm-link-person"
+              <NominationPersonSelector
+                endpoint={ADMIN_PERSON_ENDPOINT}
+                onSelect={setChosen}
+                isDisabled={(person) => (person as AdminPerson).linked === true}
+                disabledText="Already linked"
+                idPrefix={`fm-link-${member.user_id}`}
               />
-              <button type="submit" disabled={!personKey.trim()} data-testid="fm-link">
+              <button type="submit" disabled={!chosen} data-testid="fm-link">
                 Link after review
               </button>
             </form>
           ) : null}
+          <BranchReviewerControls
+            member={member}
+            reviewer={reviewer}
+            canGrant={Boolean(linked) && active}
+            onAction={onAction}
+          />
           <button
             type="button"
             className="button-danger fm-deactivate"
@@ -491,5 +604,89 @@ function MemberRow({
         </div>
       </details>
     </li>
+  );
+}
+
+// Explicit branch review grants for one account. Every change needs a reason,
+// which the API records in the immutable grant history. Only a linked, active
+// account can gain a grant, but held grants stay revocable after an unlink or
+// deactivation, since relinking the same identity would reactivate them.
+function BranchReviewerControls({
+  member,
+  reviewer,
+  canGrant,
+  onAction,
+}: {
+  member: FamilyMember;
+  reviewer: Reviewer;
+  canGrant: boolean;
+  onAction: (action: Pending) => void;
+}) {
+  const [branchKey, setBranchKey] = useState("");
+  const [reason, setReason] = useState("");
+  const held = reviewer.grants.filter((grant) => grant.account_id === member.user_id);
+  const grantable = reviewer.branches.filter(
+    (branch) => !held.some((grant) => grant.branch_key === branch.branch_key),
+  );
+  const branch = grantable.find((option) => option.branch_key === branchKey);
+  const why = reason.trim();
+  if (!canGrant && held.length === 0) {
+    return null;
+  }
+  return (
+    <fieldset className="fm-branch-review" data-testid="fm-branch-review">
+      <legend>Branch reviewer</legend>
+      {held.length === 0 ? (
+        <p className="hint" data-testid="fm-branch-none">Reviews no branches.</p>
+      ) : (
+        <ul className="fm-branch-grants">
+          {held.map((grant) => (
+            <li key={grant.grant_id} data-testid="fm-branch-grant" data-branch={grant.branch_key}>
+              {branchName(grant)}{" "}
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={!why}
+                onClick={() => onAction({ kind: "revoke-grant", member, grant, reason: why })}
+                data-testid="fm-branch-revoke"
+              >
+                Revoke
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        aria-label="Reason for the branch review change"
+        placeholder="Reason (required)"
+        maxLength={1000}
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        data-testid="fm-branch-reason"
+      />
+      {canGrant ? (
+        <>
+          <select
+            aria-label="Branch to review"
+            value={branchKey}
+            onChange={(event) => setBranchKey(event.target.value)}
+            data-testid="fm-branch-select"
+          >
+            <option value="">Choose a branch</option>
+            {grantable.map((option) => (
+              <option key={option.branch_key} value={option.branch_key}>{branchName(option)}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!branch || !why}
+            onClick={() => branch && onAction({ kind: "grant", member, branch, reason: why })}
+            data-testid="fm-branch-grant-submit"
+          >
+            Grant branch review
+          </button>
+        </>
+      ) : null}
+    </fieldset>
   );
 }

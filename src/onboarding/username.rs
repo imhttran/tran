@@ -35,7 +35,19 @@ pub enum UsernameError {
     /// Only one token is present, so the name is ambiguous.
     #[error("single-token name is ambiguous")]
     AmbiguousSingleToken,
+    /// An override is empty or whitespace-only.
+    #[error("username override is empty")]
+    EmptyOverride,
+    /// An override contains a character the policy does not allow.
+    #[error("username override contains a disallowed character")]
+    InvalidOverrideCharacter,
+    /// An override is longer than [`MAX_OVERRIDE_CHARS`].
+    #[error("username override is too long")]
+    OverrideTooLong,
 }
+
+/// The longest admin-supplied username override, before any numeric suffix.
+pub const MAX_OVERRIDE_CHARS: usize = 32;
 
 /// Preserves the Unicode display name, trims surrounding whitespace, and
 /// collapses internal whitespace runs to one space.
@@ -110,6 +122,29 @@ pub fn candidate_username(parts: &NameParts) -> Result<String, UsernameError> {
     candidate.push_str(&initial(&parts.middle));
     candidate.push_str(given);
     Ok(key(&candidate))
+}
+
+/// Validates an admin-supplied username override and returns the stored form.
+///
+/// The override is folded with [`key`], exactly like a generated candidate, so
+/// `Nguyễn` becomes `nguyen`. The result must be ASCII letters and digits only:
+/// generated candidates never contain spaces or punctuation, and the stored
+/// username must equal its key.
+pub fn validate_override(input: &str) -> Result<String, UsernameError> {
+    let username = key(input);
+    if username.is_empty() {
+        return Err(UsernameError::EmptyOverride);
+    }
+    if !username
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+    {
+        return Err(UsernameError::InvalidOverrideCharacter);
+    }
+    if username.chars().count() > MAX_OVERRIDE_CHARS {
+        return Err(UsernameError::OverrideTooLong);
+    }
+    Ok(username)
 }
 
 /// Enforces case-insensitive uniqueness by appending the smallest deterministic
@@ -232,6 +267,45 @@ mod tests {
         assert_eq!(
             candidate_username(&parts),
             Err(UsernameError::AmbiguousSingleToken)
+        );
+    }
+
+    #[test]
+    fn validate_override_accepts_plain_name() {
+        assert_eq!(validate_override("nvan2").unwrap(), "nvan2");
+        assert_eq!(validate_override("  AnNguyen ").unwrap(), "annguyen");
+    }
+
+    #[test]
+    fn validate_override_normalizes_diacritics() {
+        assert_eq!(validate_override("Nguyễn").unwrap(), "nguyen");
+        assert_eq!(validate_override("Đức").unwrap(), "duc");
+    }
+
+    #[test]
+    fn validate_override_rejects_empty() {
+        assert_eq!(validate_override("   "), Err(UsernameError::EmptyOverride));
+        assert_eq!(validate_override(""), Err(UsernameError::EmptyOverride));
+    }
+
+    #[test]
+    fn validate_override_rejects_disallowed_characters() {
+        for input in ["bad name", "bad!", "a.b", "admin@x", "名前"] {
+            assert_eq!(
+                validate_override(input),
+                Err(UsernameError::InvalidOverrideCharacter),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_override_rejects_long_input() {
+        let limit = "a".repeat(MAX_OVERRIDE_CHARS);
+        assert_eq!(validate_override(&limit).unwrap(), limit);
+        assert_eq!(
+            validate_override(&format!("{limit}a")),
+            Err(UsernameError::OverrideTooLong)
         );
     }
 

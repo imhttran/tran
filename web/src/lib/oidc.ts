@@ -46,7 +46,9 @@ export function oidcSettings(origin: string): OidcSettings | null {
 }
 
 export function oidcConfigured(): boolean {
-  return Boolean(trimmed(process.env.OIDC_ISSUER) && trimmed(process.env.OIDC_CLIENT_ID));
+  return Boolean(
+    trimmed(process.env.OIDC_ISSUER) && trimmed(process.env.OIDC_CLIENT_ID),
+  );
 }
 
 // Uses the actual request Host header so a redirect stays on the same host that
@@ -57,7 +59,8 @@ export function requestOrigin(headers: Headers, fallback: URL): string {
     return fallback.origin;
   }
   const forwarded = headers.get("x-forwarded-proto");
-  const protocol = forwarded === "https" || fallback.protocol === "https:" ? "https" : "http";
+  const protocol =
+    forwarded === "https" || fallback.protocol === "https:" ? "https" : "http";
   return `${protocol}://${host}`;
 }
 
@@ -73,6 +76,18 @@ export function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Accepts only a same-origin absolute path as a post-sign-in destination. A
+// scheme, a protocol-relative URL, or a backslash would let an invitation link
+// bounce the browser to another host, so anything else falls back to the home
+// page.
+export function safeReturnPath(value: string | null | undefined): string {
+  if (!value) return "/";
+  if (!value.startsWith("/")) return "/";
+  if (value.startsWith("//") || value.startsWith("/\\")) return "/";
+  if (value.includes("\\") || value.includes("://")) return "/";
+  return value;
 }
 
 export type IdTokenClaims = {

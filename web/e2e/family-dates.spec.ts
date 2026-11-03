@@ -140,7 +140,7 @@ test("a verified lifespan appears on the tree card and in the popup", async ({ p
 
 test("a family profile shows reviewed dates with their precision", async ({ page }) => {
   await stubSession(page);
-  await page.route("**/api/family/persons/**", (route) =>
+  await page.route("**/api/family/persons/*/profile", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -174,7 +174,7 @@ test("a family profile shows reviewed dates with their precision", async ({ page
 
 test("a profile without verified dates shows no dates section", async ({ page }) => {
   await stubSession(page);
-  await page.route("**/api/family/persons/**", (route) =>
+  await page.route("**/api/family/persons/*/profile", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",

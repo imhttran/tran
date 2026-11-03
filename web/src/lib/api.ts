@@ -271,6 +271,11 @@ export type BulkClassification =
 
 export type BulkPreviewRow = {
   person_key: string;
+  display_name: string;
+  // The verified contact. The server sends only a masked address; the full
+  // address never leaves the server. An older payload may omit the field, so
+  // the page treats a missing value as `none`.
+  contact?: { type: "email"; masked: string } | { type: "none" };
   classification: BulkClassification;
   reasons: string[];
   proposed_username: string | null;
@@ -315,6 +320,7 @@ export type BulkPrepare = {
 
 export type BulkBatchItem = {
   person_key: string;
+  display_name: string;
   status: string;
   reason: string | null;
   delivery_status: string;
@@ -363,6 +369,10 @@ export function bulkPreview(body: {
 export function bulkPrepare(body: {
   person_keys: string[];
   confirmed_count: number;
+  // USX-106 username overrides. Each key must also appear in `person_keys`; the
+  // server rejects the whole request if a key is not selected. The value is the
+  // override username. Omit the field entirely when no username changed.
+  usernames?: Record<string, string>;
 }): Promise<BulkPrepare> {
   return request<BulkPrepare>("/api/admin/family-members/bulk/prepare", {
     method: "POST",
@@ -466,6 +476,28 @@ export type ProfileResponse = {
   };
   media?: ProfileMediaAsset[];
 };
+
+/**
+ * Fields whose newest revision was rejected or sent back for changes: the
+ * member's to-do list. An older decision a later revision superseded is not
+ * counted. Revision ids only grow, so the highest id is the newest revision.
+ */
+export function decisionsNeedingAction(revisions: {
+  pending: ProfileRevision[];
+  history: ProfileRevision[];
+}): ProfileRevision[] {
+  const newest = new Map<string, ProfileRevision>();
+  for (const revision of [...revisions.history, ...revisions.pending]) {
+    const seen = newest.get(revision.field_key);
+    if (!seen || revision.revision_id > seen.revision_id) {
+      newest.set(revision.field_key, revision);
+    }
+  }
+  return [...newest.values()].filter(
+    (revision) =>
+      revision.status === "rejected" || revision.status === "needs_changes",
+  );
+}
 
 export function getProfile(): Promise<ProfileResponse> {
   return request<ProfileResponse>("/api/profile");
@@ -965,6 +997,7 @@ export type FamilyMember = {
   linked_person: {
     link_id: number;
     person_key: string;
+    display_name: string;
     username: string | null;
   } | null;
 };
@@ -1703,6 +1736,244 @@ export function getFamilyProfile(
   );
 }
 
+/// PIR-005: the server-authorized invitation state for one person.
+///
+/// Every field is already safe to render: the contact is masked and the blockers
+/// carry a plain-language message. The panel must not derive an address or a
+/// token from this response.
+export type ProfileInvitationBlocker = {
+  code: string;
+  message: string;
+};
+
+export type ProfileInvitationStateResponse = {
+  ok: true;
+  person_key: string;
+  /// Why the family-admin rule allowed this caller: `system_admin`,
+  /// `family_head_branch`, or `self_link`.
+  authorization: string;
+  /// `eligible_for_invite`, `needs_review`, `not_eligible`, `invited`, ...
+  eligibility: string;
+  invitation: {
+    pending: boolean;
+    invitation_id: number | null;
+    expires_at: string | null;
+    /// `not_sent`, `pending`, `queued`, `sent`, `failed`, `expired`,
+    /// `accepted`, or `revoked`.
+    delivery_state: string;
+  };
+  linked_account: boolean;
+  proposed_username: string | null;
+  masked_contact: string | null;
+  blockers: ProfileInvitationBlocker[];
+};
+
+/// The review payload returned by `prepare`. It never carries an address.
+export type ProfileInvitationPrepareResponse = {
+  ok: true;
+  person_key: string;
+  masked_contact: string;
+  proposed_username: string | null;
+  access: string;
+  invitation_id: number;
+  invitation_reused: boolean;
+  invitation_created: boolean;
+};
+
+/// The recorded invitation lifecycle and delivery attempt for one person.
+export type ProfileInvitationStatusResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number | null;
+  invitation_status: string | null;
+  delivery_state: string;
+  delivery_provider: string | null;
+  last_delivery_error: string | null;
+  delivery_attempts: number;
+  expires_at: string | null;
+  accepted_at: string | null;
+};
+
+export type ProfileInvitationSendResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number;
+  delivery_state: string;
+  provider: string | null;
+  /// True only when the mail provider confirmed the message was sent.
+  delivered: boolean;
+  masked_contact: string;
+};
+
+export type ProfileInvitationRevokeResponse = {
+  ok: true;
+  person_key: string;
+  invitation_id: number | null;
+  delivery_state: string;
+  revoked: boolean;
+  reason: string | null;
+};
+
+export function getProfileInvitationState(
+  personKey: string,
+): Promise<ProfileInvitationStateResponse> {
+  return request<ProfileInvitationStateResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation`,
+    { cache: "no-store" },
+  );
+}
+
+export function getProfileInvitationStatus(
+  personKey: string,
+): Promise<ProfileInvitationStatusResponse> {
+  return request<ProfileInvitationStatusResponse>(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/status`,
+    { cache: "no-store" },
+  );
+}
+
+/// Saves the draft contact. The server stores it privately and sends nothing.
+export function saveProfileInvitationContact(
+  personKey: string,
+  email: string,
+): Promise<{
+  ok: true;
+  person_key: string;
+  masked_contact: string;
+  sent: false;
+}> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+  );
+}
+
+/// Builds the review payload. It reuses a pending invitation and never sends.
+export function prepareProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationPrepareResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/prepare`,
+    { method: "POST" },
+  );
+}
+
+/// Sends only after an explicit operator action.
+export function sendProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationSendResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/send`,
+    { method: "POST" },
+  );
+}
+
+/// Resends by revoking the previous link first.
+export function resendProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationSendResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/resend`,
+    { method: "POST" },
+  );
+}
+
+export function revokeProfileInvitation(
+  personKey: string,
+): Promise<ProfileInvitationRevokeResponse> {
+  return request(
+    `/api/family/persons/${encodeURIComponent(personKey)}/invitation/revoke`,
+    { method: "POST" },
+  );
+}
+
+/// PIR-008: pending reviewed-link requests for an administrator.
+export type LinkRequestView = {
+  request_id: number;
+  invitation_id: number;
+  person_key: string;
+  display_name: string;
+  account_id: number;
+  requested_at: string;
+};
+
+export function listLinkRequests(): Promise<{
+  ok: true;
+  requests: LinkRequestView[];
+}> {
+  return request("/api/admin/family-members/link-requests", {
+    cache: "no-store",
+  });
+}
+
+export function decideLinkRequest(
+  requestId: number,
+  decision: "approve" | "reject",
+): Promise<{
+  ok: true;
+  request_id: number;
+  person_key: string;
+  linked: boolean;
+  already_decided: boolean;
+}> {
+  return request(
+    `/api/admin/family-members/link-requests/${requestId}/decision`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    },
+  );
+}
+
+/// PIR-006: the welcome view of an invitation link. Public: the link is the
+/// credential, and the response carries only the intended person and state.
+export type InvitationPreviewResponse = {
+  ok: true;
+  person_key: string;
+  display_name: string;
+  /// `pending`, `expired`, `revoked`, or `accepted`.
+  state: string;
+  /// True when the person already has an account link.
+  person_linked: boolean;
+  /// `none`, `pending`, `approved`, or `rejected`.
+  request_state: string;
+};
+
+export type InvitationActivationResponse = {
+  ok: true;
+  person_key: string;
+  display_name: string;
+  state: string;
+  /// `linked` when the account is linked, `pending_review` when an
+  /// administrator still has to review the link request.
+  link_state: string;
+};
+
+export function previewInvitation(
+  token: string,
+): Promise<InvitationPreviewResponse> {
+  return request<InvitationPreviewResponse>(
+    `/api/invitations/${encodeURIComponent(token)}`,
+    { cache: "no-store" },
+  );
+}
+
+/// Accepts the invitation for the signed-in account. The server never replaces
+/// an existing link and never grants a role.
+export function acceptInvitation(
+  token: string,
+): Promise<InvitationActivationResponse> {
+  return request<InvitationActivationResponse>(
+    `/api/invitations/${encodeURIComponent(token)}/accept`,
+    { method: "POST" },
+  );
+}
+
 /// Fetches the published archive history for one person. Used by the family-tree
 /// dialog when it opens; a failure must replace, never preserve, prior content.
 export function getFamilyHistory(
@@ -1797,4 +2068,62 @@ export function decidePhotographLink(
       body: JSON.stringify({ decision }),
     },
   );
+}
+
+// --- Admin > Family Members: branch reviewer grants (USR-005A) ---------------
+
+export type ReviewerBranch = {
+  family_branch_id: number;
+  branch_key: string;
+  branch_label: string | null;
+};
+
+export type ReviewerGrant = ReviewerBranch & {
+  grant_id: number;
+  account_id: number;
+  active: boolean;
+  granted_reason: string | null;
+};
+
+export function listReviewerBranches(): Promise<{
+  ok: true;
+  branches: ReviewerBranch[];
+}> {
+  return request("/api/admin/branch-reviewers/branches", { cache: "no-store" });
+}
+
+// Reads every grant page; the API caps a page at 100 rows.
+export async function listReviewerGrants(): Promise<ReviewerGrant[]> {
+  const grants: ReviewerGrant[] = [];
+  let cursor: number | null = null;
+  do {
+    const page: { grants: ReviewerGrant[]; grants_next_cursor: number | null } =
+      await request(
+        `/api/admin/branch-reviewers?limit=100${cursor ? `&grant_cursor=${cursor}` : ""}`,
+        { cache: "no-store" },
+      );
+    grants.push(...page.grants);
+    cursor = page.grants_next_cursor;
+  } while (cursor);
+  return grants;
+}
+
+export function grantBranchReviewer(
+  member: AccountRef,
+  branchKey: string,
+  reason: string,
+): Promise<{ ok: true }> {
+  return postJson("/api/admin/branch-reviewers", {
+    issuer: member.issuer,
+    subject: member.subject,
+    branch_keys: [branchKey],
+    reason,
+  });
+}
+
+export function revokeBranchReviewer(
+  grantId: number,
+  reason: string,
+): Promise<{ ok: true }> {
+  return postJson(`/api/admin/branch-reviewers/${grantId}/revoke`, { reason });
 }

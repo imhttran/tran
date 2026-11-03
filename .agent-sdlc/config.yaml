@@ -1,0 +1,238 @@
+# SOP project configuration.
+#
+# This file describes policy, never mutable task state, and never secrets.
+# Agent credentials come from the environment (for example SOP_LLAMACPP_API_KEY).
+version: 1
+project:
+  name: "tran"
+  integration_branch: main
+agent:
+  # tool | command
+  # tool: the tool-enabled coding agent that edits the repository through
+  # controlled tools. command: the legacy externally-invoked command agent
+  # (for example scripts/agents/sop-agent.sh).
+  #
+  # harness: tool with provider: ollama is the stabilized native Agent Harness
+  # path: SOP owns the workflow, and this harness performs the controlled
+  # model/tool execution. A controller (for example sop-controller) delegates to
+  # SOP through this path instead of running its own model tool loop.
+  harness: tool
+  # command | ollama | llamacpp | mlx | openai_compatible
+  provider: ollama
+  # model names the model for the selected provider; the provider's env var
+  # (for example SOP_OLLAMA_MODEL) or SOP_AGENT_MODEL overrides it. The model is
+  # an operator-supplied model id, not a harness identity: DeepSeek is a model
+  # served by the Ollama provider, not the harness itself.
+  model: deepseek-v4.1-flash:cloud
+validation:
+  # Deterministic verification commands, run in order (build, then test, then
+  # lint) and stopping at the first failure. A task that changes the repository
+  # cannot pass without configured validation, so keep this block for any
+  # project SOP implements in. For this Rust/Cargo project the checks mirror
+  # the Makefile's rust-check targets.
+  # SOP always runs build, then test, then lint, and stops at the first failure.
+  # The fast checks sit under build so a format or lint error fails in the first
+  # minute instead of after the long database test suite.
+  build:
+    - cargo fmt --check
+    - cargo build --locked
+    - cargo clippy --locked --all-targets -- -D warnings
+  test:
+    # test-db.sh points the suite at the disposable *_test databases derived
+    # from .env and refuses any other database (same as `make test`).
+    - ./scripts/test-db.sh exec -- cargo test --locked
+  # PostgreSQL/pgvector integration category. This uses the disposable local
+  # genealogy test database only; it never targets the RAG database.
+  integration:
+    - ./scripts/test-db.sh exec -- cargo test --locked --test genealogy_schema -- --nocapture
+review:
+  # self | open-code-review
+  engine: self
+  delegation: false
+quality:
+  require_tests: true
+  max_fix_cycles: 3
+  fail_on:
+    - critical
+    - high
+  # JEV is SOP's optional read-only engineering-analysis capability.
+  # JEV analyzes; SOP decides; IMPLEMENT/FIX changes code.
+  # It is DISABLED by default and only runs when explicitly enabled here.
+  # Existing configurations without this block keep working unchanged, and
+  # enabling or disabling JEV needs no state deletion or recreation.
+  jev:
+    enabled: false
+    # review is the only implemented mode (read-only analysis).
+    mode: review
+    # fail_on names the JEV severities that block; omit it to reuse the
+    # quality.fail_on severities above.
+    fail_on:
+      - critical
+      - high
+# The early-JEV decision layer is a SEPARATE, independent capability from
+# quality.jev above: it runs the JEV analyzer earlier in the pipeline (task
+# triage before implementation and pre-execution analysis after precheck).
+# It is DISABLED by default, and enabling it does NOT require enabling
+# quality.jev. Existing configurations without this block keep working
+# unchanged. The early layer reuses the existing JEV analyzer/provider
+# resolution; no separate provider is configured here.
+early_jev:
+  enabled: false
+  # review is the only implemented mode (read-only analysis).
+  mode: review
+  # gates selects which early checkpoints run. Both default OFF and each
+  # requires enabled: true above; enabling the layer alone runs neither.
+  gates:
+    task_triage: false
+    pre_execution: false
+  # fail_on names the early-JEV severities that escalate to a human boundary;
+  # omit it to reuse the quality.fail_on severities above.
+  fail_on:
+    - critical
+    - high
+human:
+  approval_before_commit: true
+  # designated_approvers names the identities authorized to grant a criterion-scoped
+  # waiver of an unmet required deliverable/check (SOP-HARD-04). Empty by default: no
+  # one is designated, so every waiver fails closed. A waiver record carries the
+  # approver, reason, timestamp, and append-only audit evidence; it is never silently
+  # applied. See docs/reference/OUTCOME-RECOVERY-WAIVER.md.
+  #
+  # designated_approvers:
+  #   - operator
+autonomy:
+  # low | balanced | high
+  #
+  # Human approval is required because of RISK or unresolved HUMAN INTENT, never
+  # merely because automation failed. balanced (the default) automates the
+  # recoveries SOP already trusts: transient retries, productive continuations,
+  # deterministic fixes, and bounded infrastructure recovery. It keeps human
+  # approval for authority boundaries, ambiguity, and plan-semantic changes.
+  #
+  # For local agentic-sop dogfooding, set level: high: everything safe and
+  # deterministic is handled automatically, and a bounded automation exhaustion
+  # becomes a terminal state rather than a human decision.
+  level: balanced
+  # Optional explicit overrides of the level's built-in settings. An omitted value
+  # keeps the level's setting, so leave these commented unless you need to pin one.
+  #   auto_retry: true
+  #   auto_continue: true
+  #   auto_fix: true
+  #   auto_reconcile_safe_changes: true
+  #   max_continuations: 4
+# Optional model routing. Selects the model by class (small | medium | large)
+# from the layers: --model-class flag > SOP_MODEL_* environment (which a .env
+# file may supply) > this block > built-in defaults. The layer is disabled
+# unless this block or a SOP_MODEL_* variable is set, so an existing project is
+# unchanged. See docs/reference/CONFIGURATION.md.
+#
+# models:
+#   default_class: medium
+#   fallback_class: medium
+#   allow_cloud_fallback_for_local: false
+#   small:
+#     provider: ollama
+#     name: qwen3:4b
+#     locality: local
+#     # Local-first availability fallback: used only when the local runtime is
+#     # healthy but cannot serve the local primary. The class stays SMALL; this
+#     # is NOT quality escalation (SMALL -> MEDIUM -> LARGE).
+#     fallback:
+#       provider: ollama
+#       name: nemotron-3-nano:30b-cloud
+#       locality: cloud
+#   medium:
+#     provider: ollama
+#     name: nemotron-3-super:cloud
+#     locality: cloud
+#   large:
+#     provider: ollama
+#     name: deepseek-v4.1-flash:cloud
+#     locality: cloud
+
+# Optional provider/runtime inspection endpoints. Each provider keeps its own
+# independent setting; the environment (for example
+# SOP_OPENAI_COMPATIBLE_BASE_URL) overrides the configured value, and a built-in
+# default fills the rest.
+#
+# providers:
+#   ollama:
+#     endpoint: http://127.0.0.1:11434
+#   llamacpp:
+#     endpoint: http://127.0.0.1:8080
+#   mlx:
+#     endpoint: http://127.0.0.1:8000
+#   openai_compatible:
+#     endpoint: http://127.0.0.1:8000
+
+# The lifecycle verdict gate (SOP-HARD-01) is an operator-enabled flag. It is
+# OFF by default, so the local lifecycle (the LOCAL_DONE transition) is
+# unchanged. When ON, a PARTIAL verdict caused by an unmet required
+# deliverable/check does not yield LOCAL_DONE unless a valid waiver from a
+# designated approver exists. See docs/reference/LIFECYCLE-VERDICT-GATE.md.
+#
+# lifecycle:
+#   verdict_gate: false
+
+# Human-facing response output. The default shape of the status and report
+# commands is concise; set responses: detailed to make the fuller summary the
+# default. The --detailed flag always overrides this for one invocation. A
+# concise response still retains failed checks, unresolved questions, required
+# evidence, approval requests, and any waiver, and machine-readable output is
+# unaffected.
+output:
+  # concise | detailed
+  responses: concise
+workflow:
+  # local | pull-request
+  mode: local
+advisory_retrieval:
+  enabled: true
+  # SOP requires absolute paths here. These are the Mac paths; on another
+  # machine set SOP_ADVISORY_RETRIEVAL_INDEX and SOP_ADVISORY_RETRIEVAL_OUTCOMES
+  # in that machine's .env to override them.
+  index_path: /Users/imhttran/agentic-workspace/projects/tran/.agent-sdlc/memory/index.db
+  outcomes_dir: /Users/imhttran/agentic-workspace/projects/tran/.agent-sdlc/memory/outcomes
+  allowed_corpora:
+    - failure
+    - outcome
+  timeout_ms: 2000
+  capture_timeout_ms: 5000
+  max_results: 5
+  token_budget: 2000
+cargo:
+  # Allow plan-declared cargo acceptance checks (for example `cargo test
+  # --locked`) to execute. This permission is narrow: it only admits the
+  # classifier's supported cargo forms and does not change routing or the
+  # validation gate.
+  acceptance_check: true
+notifications:
+  # Slack destination is resolved from SOP_NOTIFY_WEBHOOK_URL in .env; no
+  # credential is written to this configuration file.
+  channel: webhook
+  webhook:
+    payload: slack
+  retry:
+    max_attempts: 3
+    base_delay_ms: 500
+    max_delay_ms: 30000
+    request_timeout_seconds: 10
+
+# Security scanner adapters. On/off and mode come from SOP_SECURITY_* in .env.
+# Listing adapters replaces the defaults, so both are named here.
+security:
+  # Keep build output, worktrees, dependencies and local data out of the scan.
+  # SOP walks the workspace before Semgrep starts and does not read .gitignore.
+  exclude:
+    - target
+    - .worktrees
+    - node_modules
+    - web/.next
+    - web/.next-build
+    - .claude
+    - .run
+    - data
+  adapters:
+    - id: semgrep
+      rules: .semgrep/rules.yaml
+    - id: gitleaks

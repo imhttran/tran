@@ -338,11 +338,32 @@ pub fn reject_manifest_path(root: &Path, manifest: &Path) -> Result<(), String> 
 }
 
 fn absolutize(path: &Path) -> Result<PathBuf, String> {
-    if path.is_absolute() {
-        Ok(normalize(path))
+    let lexical = if path.is_absolute() {
+        normalize(path)
     } else {
         let cwd = std::env::current_dir().map_err(|err| format!("cwd: {err}"))?;
-        Ok(normalize(&cwd.join(path)))
+        normalize(&cwd.join(path))
+    };
+    Ok(resolve_existing_prefix(&lexical))
+}
+
+/// Resolves symlinks in the longest existing prefix of `path` and re-appends
+/// the rest, so two spellings of one directory (macOS `/var` and
+/// `/private/var`) compare equal even when the file itself does not exist yet.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(real) = fs::canonicalize(base) {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                base = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
