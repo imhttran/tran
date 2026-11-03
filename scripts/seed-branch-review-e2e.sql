@@ -75,7 +75,11 @@ INSERT INTO person (person_key, display_name) VALUES
     ('e2e-branch-owner', 'Synthetic Linked Reviewer Person'),
     ('e2e-branch-off', 'Synthetic Offboarding Reviewer Person'),
     ('e2e-branch-family-member', 'Synthetic Family Profile Member'),
-    ('e2e-branch-restrictable', 'Synthetic Restrictable Member')
+    ('e2e-branch-restrictable', 'Synthetic Restrictable Member'),
+    ('e2e-branch-grantee', 'Synthetic Recorded Branch Grantee'),
+    ('e2e-branch-unverified', 'Synthetic Unverified Branch Person'),
+    ('e2e-branch-conflicting', 'Synthetic Conflicting Branch Person'),
+    ('e2e-branch-missing', 'Synthetic Missing Branch Person')
 ON CONFLICT (person_key) DO UPDATE SET display_name = EXCLUDED.display_name;
 
 -- Verified branch claims for the people the branch review suite reviews. The
@@ -85,7 +89,8 @@ WITH branch_claims (person_key, branch_key) AS (
     VALUES ('e2e-branch-subject', 'branch-1'),
            ('e2e-branch-other', 'branch-2'),
            ('e2e-branch-owner', 'branch-1'),
-           ('e2e-branch-off', 'branch-1')
+           ('e2e-branch-off', 'branch-1'),
+           ('e2e-branch-grantee', 'branch-2')
 )
 INSERT INTO assertion
     (person_id, assertion_kind, assertion_key, value_text, review_status)
@@ -137,7 +142,28 @@ UPDATE assertion a
   FROM person p
  WHERE p.person_id = a.person_id
    AND p.person_key LIKE 'e2e-branch-%'
+   AND p.person_key NOT IN (
+       'e2e-branch-unverified',
+       'e2e-branch-conflicting',
+       'e2e-branch-missing'
+   )
    AND a.assertion_kind = 'branch_claim';
+
+-- BD-002 state fixtures. One recorded-but-unverified claim and two disagreeing
+-- recorded claims. These stay unverified on purpose, so the projection reports
+-- the honest state instead of inferring a branch. A person with no claim at all
+-- (`e2e-branch-missing`) needs no assertion row.
+INSERT INTO assertion
+    (person_id, assertion_kind, assertion_key, value_text, review_status)
+SELECT p.person_id, 'branch_claim', seed.assertion_key, seed.value_text, 'unverified'
+  FROM person p
+  JOIN (
+      VALUES ('e2e-branch-unverified', 'branch', 'branch-1'),
+             ('e2e-branch-conflicting', 'branch-a', 'branch-1'),
+             ('e2e-branch-conflicting', 'branch-b', 'branch-2')
+  ) AS seed(person_key, assertion_key, value_text)
+    ON seed.person_key = p.person_key
+ON CONFLICT (person_id, assertion_kind, assertion_key) DO NOTHING;
 
 -- One approved owner-private profile value for the person under review. The
 -- guard only accepts an approved value that matches an approved revision, so
@@ -339,6 +365,33 @@ INSERT INTO onboarding_person_account_link
 SELECT p.person_id, :restrict_account_id, 'e2e-seed', :'restrict_fingerprint'
   FROM person p
  WHERE p.person_key = 'e2e-branch-restrictable';
+
+-- BD-004/BD-006: a dedicated recorded-branch grantee. The identity account has
+-- no email, so a valid grant must still succeed, and its one verified claim is
+-- the only branch the grant may cover.
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :grantee_account_id, 'e2e-seed', :'grantee_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-grantee';
+
+-- Dedicated reviewed links for the rejection paths: unverified, conflicting,
+-- and missing membership. Each account has no email.
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :unverified_account_id, 'e2e-seed', :'unverified_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-unverified';
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :conflicting_account_id, 'e2e-seed', :'conflicting_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-conflicting';
+INSERT INTO onboarding_person_account_link
+    (person_id, account_id, linked_by, identity_fingerprint)
+SELECT p.person_id, :missing_account_id, 'e2e-seed', :'missing_fingerprint'
+  FROM person p
+ WHERE p.person_key = 'e2e-branch-missing';
 
 COMMIT;
 

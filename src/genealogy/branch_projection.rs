@@ -13,7 +13,7 @@
 //! The load functions take [`postgres::GenericClient`] so a transaction can call
 //! the projection inside an authorization-sensitive write.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use postgres::GenericClient;
 use serde::Serialize;
@@ -297,6 +297,65 @@ pub fn project_for_person_id(
     let raw = load_raw_for_person_id(client, person_id)?;
     let catalog = load_catalog(client)?;
     Ok(classify(&raw, &catalog))
+}
+
+/// Projects many people by `person_id` with one claims query and one catalog
+/// read, so a page of directory rows never issues a query per row.
+///
+/// Every requested id appears in the result; an id with no current claim is
+/// `missing` with an empty claim list.
+pub fn project_by_person_ids(
+    client: &mut impl GenericClient,
+    person_ids: &[i64],
+) -> Result<HashMap<i64, BranchProjection>, GenealogyError> {
+    if person_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let catalog = load_catalog(client)?;
+    let sql = format!(
+        "SELECT a.person_id, a.assertion_kind, a.value_text, a.review_status \
+           FROM assertion a \
+          WHERE a.person_id = ANY($1) \
+            AND a.assertion_kind IN ('branch_claim', 'branch') \
+            AND a.value_text IS NOT NULL \
+            AND btrim(a.value_text) <> '' \
+            AND ({CURRENT_ASSERTION}) \
+          ORDER BY a.person_id, a.assertion_id"
+    );
+    let rows = client
+        .query(&sql, &[&person_ids])
+        .map_err(GenealogyError::Query)?;
+    let mut grouped: HashMap<i64, Vec<(String, String, String)>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry(row.get(0))
+            .or_default()
+            .push((row.get(1), row.get(2), row.get(3)));
+    }
+    Ok(person_ids
+        .iter()
+        .map(|person_id| {
+            let raw = grouped.remove(person_id).unwrap_or_default();
+            (*person_id, classify(&raw, &catalog))
+        })
+        .collect())
+}
+
+/// Maps person keys to ids for the keys that exist. Read-only.
+pub fn person_ids_for_keys(
+    client: &mut impl GenericClient,
+    person_keys: &[String],
+) -> Result<HashMap<String, i64>, GenealogyError> {
+    if person_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = client
+        .query(
+            "SELECT person_key, person_id FROM person WHERE person_key = ANY($1)",
+            &[&person_keys],
+        )
+        .map_err(GenealogyError::Query)?;
+    Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
 }
 
 /// Projects many people by `person_key`, keyed by the requested key.

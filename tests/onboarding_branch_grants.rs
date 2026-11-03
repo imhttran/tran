@@ -8,8 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
 use rag_foundation::onboarding::{
-    active_branch_grants, grant_branches, has_active_branch_grant, list_branches,
-    read_grant_snapshot, revoke_grant, BranchGrantError, IdentityAccount,
+    active_branch_grants, active_grants_for_accounts, grant_branches, grant_recorded_branch,
+    has_active_branch_grant, list_branches, read_grant_snapshot, revoke_grant, BranchGrantError,
+    IdentityAccount,
 };
 
 const MIGRATIONS: [&str; 27] = [
@@ -107,13 +108,74 @@ impl TestDb {
     }
 
     fn person(&mut self, label: &str) -> i64 {
+        self.person_named(label).0
+    }
+
+    fn person_named(&mut self, label: &str) -> (i64, String) {
         let key = format!("{}-person-{label}", self.prefix);
-        self.genealogy
+        let id = self
+            .genealogy
             .query_one(
                 "INSERT INTO person (person_key, display_name) VALUES ($1, $2) RETURNING person_id",
                 &[&key, &format!("Synthetic Grant Person {label}")],
             )
             .expect("insert person")
+            .get(0);
+        (id, key)
+    }
+
+    /// Inserts one recorded branch claim with evidence, then optionally verifies
+    /// it the way the review workflow does.
+    fn claim(&mut self, person_id: i64, assertion_key: &str, value_text: &str, verified: bool) {
+        let assertion_id: i64 = self
+            .genealogy
+            .query_one(
+                "INSERT INTO assertion
+                     (person_id, assertion_kind, assertion_key, value_text, review_status)
+                 VALUES ($1, 'branch_claim', $2, $3, 'unverified')
+                 RETURNING assertion_id",
+                &[&person_id, &assertion_key, &value_text],
+            )
+            .expect("insert claim")
+            .get(0);
+        self.genealogy
+            .execute(
+                "INSERT INTO assertion_evidence (assertion_id, document_ref, page)
+                 VALUES ($1, 'synthetic/recorded-branch.md', 1)",
+                &[&assertion_id],
+            )
+            .expect("insert claim evidence");
+        if verified {
+            self.genealogy
+                .execute(
+                    "UPDATE assertion
+                        SET review_status = 'verified', reviewed_by = 'synthetic-reviewer',
+                            reviewed_at = now()
+                      WHERE assertion_id = $1",
+                    &[&assertion_id],
+                )
+                .expect("verify claim");
+        }
+    }
+
+    fn event_count(&mut self, account_id: i64) -> i64 {
+        self.genealogy
+            .query_one(
+                "SELECT count(*) FROM onboarding_branch_reviewer_grant_event
+                  WHERE account_id = $1",
+                &[&account_id],
+            )
+            .expect("event count")
+            .get(0)
+    }
+
+    fn grant_count(&mut self, account_id: i64) -> i64 {
+        self.genealogy
+            .query_one(
+                "SELECT count(*) FROM onboarding_branch_reviewer_grant WHERE account_id = $1",
+                &[&account_id],
+            )
+            .expect("grant count")
             .get(0)
     }
 
@@ -636,4 +698,177 @@ fn grant_listing_is_bounded_and_cursor_paginated() {
         first.grants[0].grant_id, second.grants[0].grant_id,
         "pages must not repeat a grant"
     );
+}
+
+#[test]
+fn recorded_branch_grant_requires_one_verified_membership() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let branch_a = db.branch("recorded-a");
+    let branch_b = db.branch("recorded-b");
+
+    // No claim at all.
+    let empty = db.account("recorded-empty");
+    let (empty_person, empty_key) = db.person_named("recorded-empty");
+    db.link(&empty, empty_person);
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &empty,
+            &empty_key,
+            "admin",
+            "recorded branch",
+        ),
+        Err(BranchGrantError::MembershipMissing)
+    );
+
+    // Recorded, but not verified: resolved keys are ignored for authorization.
+    let unverified = db.account("recorded-unverified");
+    let (unverified_person, unverified_key) = db.person_named("recorded-unverified");
+    db.claim(unverified_person, "claim-a", &branch_a, false);
+    db.link(&unverified, unverified_person);
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &unverified,
+            &unverified_key,
+            "admin",
+            "recorded branch",
+        ),
+        Err(BranchGrantError::MembershipUnverified)
+    );
+
+    // Two distinct recorded branches disagree, even when only one is verified.
+    let conflicting = db.account("recorded-conflicting");
+    let (conflicting_person, conflicting_key) = db.person_named("recorded-conflicting");
+    db.claim(conflicting_person, "claim-a", &branch_a, true);
+    db.claim(conflicting_person, "claim-b", &branch_b, false);
+    db.link(&conflicting, conflicting_person);
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &conflicting,
+            &conflicting_key,
+            "admin",
+            "recorded branch",
+        ),
+        Err(BranchGrantError::MembershipConflicting)
+    );
+
+    assert_eq!(db.grant_count(empty.account_id), 0);
+    assert_eq!(db.event_count(empty.account_id), 0);
+    assert_eq!(db.grant_count(unverified.account_id), 0);
+    assert_eq!(db.event_count(unverified.account_id), 0);
+    assert_eq!(db.grant_count(conflicting.account_id), 0);
+    assert_eq!(db.event_count(conflicting.account_id), 0);
+}
+
+#[test]
+fn recorded_branch_grant_writes_exactly_the_verified_branch() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("recorded-ok");
+    let (person, person_key) = db.person_named("recorded-ok");
+    let branch_a = db.branch("recorded-ok-a");
+    let branch_b = db.branch("recorded-ok-b");
+    // Two verified claims naming the same branch by key and by label stay one
+    // verified branch, not a conflict.
+    db.claim(person, "claim-key", &branch_a, true);
+    let label: String = db
+        .genealogy
+        .query_one(
+            "SELECT branch_label FROM family_branch WHERE branch_key = $1",
+            &[&branch_a],
+        )
+        .expect("branch label")
+        .get(0);
+    db.claim(person, "claim-label", &label, true);
+    db.link(&account, person);
+
+    let grant = grant_recorded_branch(
+        &mut db.genealogy,
+        &account,
+        &person_key,
+        "admin-fingerprint",
+        "recorded branch appointment",
+    )
+    .expect("recorded branch grant");
+    assert_eq!(grant.branch_key, branch_a);
+    assert!(grant.active && grant.usable);
+    assert_eq!(
+        grant.identity_fingerprint.as_deref(),
+        Some(account.identity_fingerprint.as_str())
+    );
+    assert!(has_active_branch_grant(&mut db.genealogy, &account, &branch_a).expect("branch a"));
+    assert!(!has_active_branch_grant(&mut db.genealogy, &account, &branch_b).expect("branch b"));
+
+    let batch = active_grants_for_accounts(&mut db.genealogy, &[account.account_id])
+        .expect("batched active grants");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].branch_key, branch_a);
+
+    let events = read_grant_snapshot(&mut db.genealogy, Some(account.account_id), None, None, 100)
+        .expect("snapshot")
+        .events;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "granted");
+    assert_eq!(events[0].actor, "admin-fingerprint");
+    assert_eq!(
+        events[0].reason.as_deref(),
+        Some("recorded branch appointment")
+    );
+
+    // A second attempt is a stable conflict, not a duplicate row or event.
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &account,
+            &person_key,
+            "admin-fingerprint",
+            "again",
+        ),
+        Err(BranchGrantError::AlreadyActive(branch_a.clone()))
+    );
+    assert_eq!(db.grant_count(account.account_id), 1);
+    assert_eq!(db.event_count(account.account_id), 1);
+
+    // A person key that is not the reviewed link is rejected before any write.
+    let (other_person, other_key) = db.person_named("recorded-other");
+    db.claim(other_person, "claim-other", &branch_b, true);
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &account,
+            &other_key,
+            "admin-fingerprint",
+            "wrong person",
+        ),
+        Err(BranchGrantError::PersonLinkMismatch)
+    );
+    assert_eq!(db.event_count(account.account_id), 1);
+}
+
+#[test]
+fn recorded_branch_grant_requires_a_reviewed_link() {
+    let Some(mut db) = TestDb::new() else {
+        return;
+    };
+    let account = db.account("recorded-unlinked");
+    let (person, person_key) = db.person_named("recorded-unlinked");
+    let branch = db.branch("recorded-unlinked");
+    db.claim(person, "claim", &branch, true);
+    assert_eq!(
+        grant_recorded_branch(
+            &mut db.genealogy,
+            &account,
+            &person_key,
+            "admin",
+            "recorded branch",
+        ),
+        Err(BranchGrantError::Unlinked)
+    );
+    assert_eq!(db.grant_count(account.account_id), 0);
+    assert_eq!(db.event_count(account.account_id), 0);
 }

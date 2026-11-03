@@ -46,9 +46,9 @@ pub use batch::{
     BatchStatusItem, ItemStatus, CHUNK_SIZE,
 };
 pub use branch_review::{
-    active_branch_grants, grant_branches, has_active_branch_grant, list_branches,
-    read_grant_snapshot, revoke_grant, BranchGrantError, BranchGrantEvent, BranchReviewerGrant,
-    BranchSummary, GRANT_REASON_MAX_CHARS,
+    active_branch_grants, active_grants_for_accounts, grant_branches, grant_recorded_branch,
+    has_active_branch_grant, list_branches, read_grant_snapshot, revoke_grant, BranchGrantError,
+    BranchGrantEvent, BranchReviewerGrant, BranchSummary, GRANT_REASON_MAX_CHARS,
 };
 pub use candidate::{
     classify, load_name_parts, mask_email, name_parts, preview_candidates, reclassify_person,

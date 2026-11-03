@@ -34,8 +34,10 @@ All routes require `Operation::BranchReviewerAdmin` (system administrator).
 | Route                                                | Purpose                                                                    |
 | ---------------------------------------------------- | -------------------------------------------------------------------------- |
 | `GET /api/admin/branch-reviewers/branches`           | List grantable branch keys and labels.                                     |
-| `GET /api/admin/branch-reviewers?account_id=`        | List current/historical grants and events, optionally for one account.     |
+| `GET /api/admin/branch-reviewers?account_id=`        | List current/historical grants and events with person and account context. |
 | `POST /api/admin/branch-reviewers`                   | Grant one or more branches to a verified, active, reviewed-linked account. |
+| `POST /api/admin/branch-reviewers/grants`            | Grant the one verified branch recorded on the reviewed person.             |
+| `GET /api/admin/branch-reviewers/persons?q=`         | Search people with account, contact, branch, and eligibility details.      |
 | `POST /api/admin/branch-reviewers/{grant_id}/revoke` | Revoke one active grant with a required reason.                            |
 
 Grant request:
@@ -49,15 +51,31 @@ Grant request:
 }
 ```
 
+Recorded-branch grant request. The administrator names the reviewed person; the
+server resolves the single verified recorded branch and never accepts a branch
+choice:
+
+```json
+{
+  "issuer": "https://issuer.example",
+  "subject": "opaque-subject",
+  "person_key": "opaque-person-key",
+  "reason": "Approved by family council"
+}
+```
+
 Revoke request:
 
 ```json
 { "reason": "Reviewer term ended" }
 ```
 
-The response never returns a raw OIDC subject, token, email, or credential. It
-returns the opaque account id, identity fingerprint, branch key/label, actor
-fingerprint, timestamps, reason, `active`, and `usable`.
+The grant response never returns a token or credential. The admin grant list and
+person search are the only responses that return the account's recorded email:
+it sits in an admin-only `contact` block labelled source `identity_account` and
+verification `not_recorded`, and the archive records no phone, so `phone` is
+`null` with source `not_recorded`. No member-facing endpoint, log, or error body
+carries those contact values.
 
 ## Authorization rules
 
@@ -73,6 +91,24 @@ fingerprint, timestamps, reason, `active`, and `usable`.
   non-blank, or none is written.
 - A branch reviewer does not gain any administrator capability. Admin APIs still
   require the administrator role.
+
+### Recorded-branch grants
+
+- The supplied `person_key` must name the person the reviewed link points at;
+  otherwise the request is `409 person_link_mismatch`.
+- The branch is taken from the person's own current `branch_claim`/`branch`
+  assertions. A name, relationship, appointment, role, or missing field never
+  supplies membership.
+- Only one current verified claim that resolves to one `family_branch` may
+  authorize the grant. Rejections are `409 branch_membership_missing`,
+  `409 branch_membership_unverified`, and `409 branch_membership_conflicting`,
+  and they write nothing.
+- The projection, link lock, grant row, and append-only event are written in one
+  transaction; a second grant for the same branch is `409 branch_grant_exists`.
+- A missing email or phone never blocks a valid grant.
+- `GET /api/admin/branch-reviewers/persons?q=` reports one eligibility value:
+  `eligible`, `missing_link`, `missing_branch`, `unverified_branch`,
+  `conflicting_branch`, or `already_granted`.
 
 ## Database
 
@@ -90,10 +126,18 @@ No grant is created by the migration, and no existing grant is deleted.
 `tests/onboarding_branch_grants.rs` covers multi-branch grants, branch scope,
 duplicate rejection, revoke/regrant history, unlinked and fingerprint-mismatch
 accounts, account replacement, legacy fingerprint-less rows, concurrent grants,
-and append-only event enforcement.
+append-only event enforcement, and the recorded-branch grant: missing,
+unverified, and conflicting membership are rejected without a write, one
+verified branch is granted and scoped, and a mismatched person is rejected.
 
 The browser harness seeds `branch-1`–`branch-3` and resets synthetic grants in
-the disposable E2E database only.
+the disposable E2E database only. It also seeds linked synthetic people for the
+missing, unverified, verified, and conflicting states, an account without an
+email, and one recorded-branch grantee. `web/e2e/branch-account-details.spec.ts`
+covers the admin-only contact fields, the four states, a valid grant without an
+email, duplicate rejection, the rejection codes, and the admin console's grant
+and revocation flows. `web/e2e/branch-details.spec.ts` covers the four states in
+the family tree and the family profile.
 
 ## Branch-scoped shared-fact review (USR-005B)
 

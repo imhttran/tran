@@ -20,6 +20,19 @@ type Grant = {
   granted_reason: string | null;
   revoked_by: string | null;
   revoke_reason: string | null;
+  person?: {
+    person_id: number;
+    person_key: string;
+    display_name: string;
+  } | null;
+  account?: {
+    user_id: number;
+    subject: string;
+    email: string | null;
+  } | null;
+  contact?: {
+    phone: { value: null; source: string; verification: string };
+  } | null;
 };
 
 function auth(token: string) {
@@ -60,14 +73,22 @@ test.describe.serial("branch reviewer grants", () => {
     const keys = (branches.body.branches as { branch_key: string }[]).map(
       (branch) => branch.branch_key,
     );
-    expect(keys).toEqual(expect.arrayContaining(["branch-1", "branch-2", "branch-3"]));
+    expect(keys).toEqual(
+      expect.arrayContaining(["branch-1", "branch-2", "branch-3"]),
+    );
 
-    const granted = await api(request, ADMIN, "POST", "/api/admin/branch-reviewers", {
-      issuer: ISSUER,
-      subject: "e2e-approver",
-      branch_keys: ["branch-1", "branch-2"],
-      reason: "Synthetic reviewer appointment",
-    });
+    const granted = await api(
+      request,
+      ADMIN,
+      "POST",
+      "/api/admin/branch-reviewers",
+      {
+        issuer: ISSUER,
+        subject: "e2e-approver",
+        branch_keys: ["branch-1", "branch-2"],
+        reason: "Synthetic reviewer appointment",
+      },
+    );
     expect(granted.status, JSON.stringify(granted.body)).toBe(200);
     const grants = granted.body.grants as Grant[];
     expect(grants).toHaveLength(2);
@@ -87,8 +108,18 @@ test.describe.serial("branch reviewer grants", () => {
         (event) => event.event === "granted",
       ).length,
     ).toBe(2);
-    expect(JSON.stringify(listed.body)).not.toContain(ISSUER);
-    expect(JSON.stringify(listed.body)).not.toContain("e2e-approver");
+    // BD-003: the admin grant list resolves the exact person and account for
+    // each grant. The fixture account has no email, and a phone is never
+    // recorded or labelled verified.
+    const context = (listed.body.grants as Grant[])[0];
+    expect(context.person?.person_key).toBe("e2e-profile-approver");
+    expect(context.account?.subject).toBe("e2e-approver");
+    expect(context.account?.email).toBeNull();
+    expect(context.contact?.phone).toEqual({
+      value: null,
+      source: "not_recorded",
+      verification: "not_recorded",
+    });
 
     const duplicate = await api(
       request,
@@ -175,7 +206,9 @@ test.describe.serial("branch reviewer grants", () => {
     expect(regranted.body.grants[0].usable).toBe(true);
   });
 
-  test("non-admin and unlinked accounts cannot receive grants", async ({ request }) => {
+  test("non-admin and unlinked accounts cannot receive grants", async ({
+    request,
+  }) => {
     const nonAdmin = await api(
       request,
       VIEWER,
