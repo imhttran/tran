@@ -7,6 +7,8 @@ import type {
   WheelEvent as ReactWheelEvent,
 } from "react";
 
+import { BranchSection } from "@/components/BranchSection";
+import type { BranchBlock } from "@/lib/api";
 import { DenialView } from "@/components/DenialView";
 import { EvidenceBadge, EvidenceList } from "@/components/EvidenceBadge";
 import { ExperienceShell } from "@/components/ExperienceShell";
@@ -167,6 +169,8 @@ type PersonDetail = {
   record_id: string;
   person_label: string | null;
   assertions: PersonAssertion[];
+  // Additive shared-genealogy branch membership; absent on an older server.
+  branches?: BranchBlock;
 };
 type View = { x: number; y: number; width: number; height: number };
 type Denial = { kind: "denied" | "no_access"; reason: string };
@@ -1728,6 +1732,14 @@ function FamilyTree() {
                         </ul>
                       )}
                     </section>
+                    {detail?.branches ? (
+                      <div className="family-popup-section">
+                        <BranchSection
+                          branches={detail.branches}
+                          testIdPrefix="family-popup"
+                        />
+                      </div>
+                    ) : null}
                     <section
                       className="family-popup-section"
                       data-testid="family-popup-sources"

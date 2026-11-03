@@ -4472,6 +4472,77 @@ footer.page-footer {
     }
 }
 
+/* BD-002 — recorded branch section shared by the family-tree person details
+   and the family profile. State is always written in words; the class names
+   only reinforce it, so colour is never the sole signal. */
+.branch-section {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+.branch-section-heading {
+    font-size: 14px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    margin: 14px 0 0;
+    color: var(--fg);
+}
+.branch-state {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    border-left: 3px solid var(--line-strong);
+    padding: 4px 10px;
+    background: var(--surface);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    overflow-wrap: anywhere;
+}
+.branch-state-verified {
+    border-left-color: var(--ok);
+}
+.branch-state-unverified {
+    border-left-color: var(--warn);
+}
+.branch-state-conflicting {
+    border-left-color: var(--err);
+}
+.branch-state-missing {
+    border-left-color: var(--line-strong);
+    color: var(--muted);
+}
+.branch-claims {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+}
+.branch-claim {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.branch-claim-value {
+    font-weight: 600;
+}
+.branch-claim-status {
+    color: var(--muted);
+}
+.branch-resolved {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.branch-resolved-label {
+    font-weight: 700;
+}
+.branch-resolved-key code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+}
+
 /* Nomination search preserves focus on the combobox during keyboard selection. */
 .person-selector { min-width: 0; }
 .person-selector [role="listbox"] { list-style: none; padding: 0; max-height: 20rem; overflow-y: auto; }

@@ -40,8 +40,8 @@ use crate::document_lifecycle::{
 use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::{
-    appointments, authority, branch_review, document_extraction, narrative, person_search,
-    photograph_review, photograph_store::PhotographStore, query as genealogy_query,
+    appointments, authority, branch_projection, branch_review, document_extraction, narrative,
+    person_search, photograph_review, photograph_store::PhotographStore, query as genealogy_query,
     resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
@@ -2965,6 +2965,24 @@ fn assertion_date_json(date: &Option<genealogy_query::AssertionDate>) -> serde_j
     }
 }
 
+/// The additive shared-genealogy branch block for the person and family-profile
+/// reads. It carries only the deterministic projection: no account identity,
+/// contact value, or owner-private profile field.
+fn branches_json(projection: &branch_projection::BranchProjection) -> serde_json::Value {
+    serde_json::json!({
+        "state": projection.state.as_str(),
+        "verified_branch_key": projection.verified_branch_key,
+        "claims": projection.claims.iter().map(|claim| serde_json::json!({
+            "assertion_kind": claim.assertion_kind,
+            "value_text": claim.value_text,
+            "review_status": claim.review_status,
+            "verified": claim.verified,
+            "branch_key": claim.branch_key,
+            "branch_label": claim.branch_label,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// One verified lifespan date on a tree person, or `null`.
 fn tree_date_json(date: &Option<genealogy_tree::TreeDate>) -> serde_json::Value {
     match date {
@@ -3418,11 +3436,16 @@ async fn family_profile(
             &person_key,
         )
         .map_err(family_profile_error)?;
-        Ok((profile, archive_photographs))
+        // The branch block is a shared-genealogy membership fact. It is read
+        // only after the profile and archive reads passed the membership and
+        // publication checks, so an unauthorized person never reaches it.
+        let branches = branch_projection::project(&mut genealogy, &person_key)
+            .map_err(|_| family_profile_unavailable())?;
+        Ok((profile, archive_photographs, branches))
     })
     .await;
     match result {
-        Ok(Ok((profile, archive_photographs))) => {
+        Ok(Ok((profile, archive_photographs, branches))) => {
             let state_label = if profile.fields.is_empty()
                 && profile.media.is_empty()
                 && profile.dates.is_empty()
@@ -3457,6 +3480,9 @@ async fn family_profile(
                     "precision": date.precision,
                     "qualifier": date.qualifier,
                 })).collect::<Vec<_>>(),
+                // Shared-genealogy branch membership only. No account identity,
+                // contact value, or owner-private profile field is included.
+                "branches": branches_json(&branches),
                 // Approved archive history, separate from the member's own
                 // profile fields. Pending, rejected, admin-only, restricted, and
                 // superseded passages are excluded server-side.
@@ -5233,11 +5259,26 @@ async fn genealogy_person(
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_genealogy(&config)?;
-        genealogy_query::lookup_person(&mut client, &key).map_err(|err| err.to_string())
+        let person =
+            genealogy_query::lookup_person(&mut client, &key).map_err(|err| err.to_string())?;
+        let Some(person) = person else {
+            return Ok::<
+                Option<(
+                    genealogy_query::PersonDetail,
+                    branch_projection::BranchProjection,
+                )>,
+                String,
+            >(None);
+        };
+        // The projection runs only after the person is found, so an unknown
+        // person keeps the existing 404 and no branch work runs.
+        let branches =
+            branch_projection::project(&mut client, &key).map_err(|err| err.to_string())?;
+        Ok(Some((person, branches)))
     })
     .await;
     match result {
-        Ok(Ok(Some(person))) => {
+        Ok(Ok(Some((person, branches)))) => {
             let assertions: Vec<serde_json::Value> = person
                 .assertions
                 .iter()
@@ -5258,6 +5299,7 @@ async fn genealogy_person(
                 "record_id": person.person_key,
                 "person_label": person.display_name,
                 "assertions": assertions,
+                "branches": branches_json(&branches),
             }))
             .into_response()
         }

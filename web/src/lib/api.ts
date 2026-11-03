@@ -1629,6 +1629,26 @@ export type PhotographReviewChangeResponse = {
   operation?: string;
 };
 
+// Shared-genealogy branch membership for one person. The block is additive and
+// may be absent on an older server payload, so every consumer must treat it as
+// optional.
+export type BranchState = "missing" | "unverified" | "verified" | "conflicting";
+
+export type BranchClaim = {
+  assertion_kind: string;
+  value_text: string | null;
+  review_status: string;
+  verified: boolean;
+  branch_key: string | null;
+  branch_label: string | null;
+};
+
+export type BranchBlock = {
+  state: BranchState;
+  verified_branch_key: string | null;
+  claims: BranchClaim[];
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
@@ -1644,6 +1664,9 @@ export type FamilyProfileResponse = {
   /// `media`, which is owner-uploaded profile media. Absent on an older server
   /// payload, so the view treats it as an empty list.
   archive_photographs?: FamilyArchivePhotographView[];
+  /// Shared-genealogy branch membership only. Absent on an older server
+  /// payload, so the view omits the section entirely.
+  branches?: BranchBlock;
 };
 
 /// The person-scoped history response used by the family-tree dialog. It carries

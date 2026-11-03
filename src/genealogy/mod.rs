@@ -6,6 +6,7 @@
 
 pub mod appointments;
 pub mod authority;
+pub mod branch_projection;
 pub mod branch_review;
 pub mod current;
 pub mod dates;
