@@ -252,9 +252,11 @@ security:
   # Reviewed suppressions. Entries stay visible in scan evidence and only
   # stop matching findings from blocking once an owner has approved them.
   baseline: .agent-sdlc/security-baseline.json
-  # The OSV offline cache is not provisioned, so the OSV adapter stays
-  # unsupported instead of fetching a database during a scan. Set
-  # osv_database_path only after the cache exists.
+  # After `make security-osv-db` provisions the offline OSV cache, uncomment
+  # this path and the osv-scanner adapter below. A scan never fetches a
+  # database; OSV records acquisition time, so it can reach a PASS verdict
+  # where cargo-audit's --no-fetch path cannot.
+  # osv_database_path: .agent-sdlc/osv-db
   adapters:
     - id: semgrep
       rules: .semgrep/rules.yaml
@@ -268,3 +270,12 @@ security:
       protocol: builtin
       command: [cargo, audit]
       version: "0.22.2"
+    # Offline OSV coverage for Rust. Enable after `make security-osv-db` and
+    # remove the cargo-audit adapter above; explicitly selecting both would run
+    # overlapping dependency coverage.
+    # - id: osv-scanner
+    #   category: dependencies
+    #   protocol: builtin
+    #   command: [osv-scanner]
+    #   version: "2.7.0"
+    #   languages: [rust]

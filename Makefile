@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-schema test test-db-up validate fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e genealogy-migrate genealogy-import app-restart app-update admin-setup
+.PHONY: db-up db-down db-schema test test-db-up validate fmt-json ingest ask eval rust-build rust-test rust-fmt rust-clippy rust-acceptance-evidence rust-acceptance-final-layout rust-acceptance-clean-checkout rust-acceptance-k3 rust-acceptance-ingest-md-text rust-acceptance-live-rag rust-acceptance-api-contract rust-acceptance-functional transition-evidence rust-check check web-check-env web-install web-start web-stop web-status web-typecheck web-build web-check web-e2e genealogy-migrate genealogy-import app-restart app-update admin-setup security-osv-db
 # Convenience targets for the Rust-only ingest/query workflow.
 #
 #   make db-up        start PostgreSQL and apply the schema
@@ -189,3 +189,8 @@ web-e2e:
 # Everything: the Rust checks and the web checks.
 check: rust-check web-check
 
+# ---- Security scans (SOP) ------------------------------------------------------
+# Provision the offline OSV cache a SOP security scan reads. This is the only
+# networked step; scans never download or update a database.
+security-osv-db:
+	./scripts/security/fetch-osv-databases.sh
