@@ -48,6 +48,78 @@
       "reason": "Placeholder token constant in a browser test whose header states no real invitation exists.",
       "owner": "Tom Tran",
       "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:12b113ee0e0bcf496367b40918e117d56e35564348d48c8e737cfecda6921c8b",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:c6f6e9a5d5bec11dbfe1fbb80f5b32be0f8aa865f68d83c00f4630c36e3797dc",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/api_contract/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:685ef7faba99526b89d85055f873d26d52caf5aea3e0276f6dfc767ca60e25b3",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/bilingual_parity/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:abbfe0ae96bf8bf7b8198dba26259c7d11a699459e44549b4804cd3dd54828b9",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/e2e/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:60b29bdefcdd198a2c29317f6c13cd8bbcf8705d6c3a0806d6c1f99a940ce74d",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/eval_parity/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:4c1d23c6c336bd2c24409fa2e22fc624da6e2eca8c4533dd4132b79100159b24",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/ingest_cli/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:77034748d5fac479795c6bf4c145e23c6627f263616077f379b862d0a55ad320",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/ingest_md_text/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:0e4bf8ecfab3104445d27d486ab6e2da50502068ec660c71e93058355eb98dd0",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/k3_parity/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "osv-scanner:234e93f19f61a2b583bf47f2f1bd9ea7517e462e1b7b081a04975b9690cbf6c2",
+      "rule_id": "RUSTSEC-2026-0192",
+      "path": "acceptance/retrieval_cli/Cargo.lock",
+      "reason": "Unmaintained crate with no fixed release. ttf-parser 0.25.1 is reached only through lopdf 0.42.0's PDF parsing path; review when lopdf replaces or updates the font parser.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
     }
   ]
 }
