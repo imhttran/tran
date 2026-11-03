@@ -985,6 +985,19 @@ export function getBranchPersonEvidence(
 
 export type MemberStatus = "active" | "deactivated";
 
+// Admin-only contact facts. The identity schema has no verification flag, and
+// the archive records no phone, so neither is ever labelled verified.
+export type AdminContactValue = {
+  value: string | null;
+  source: "identity_account" | "not_recorded";
+  verification: "not_recorded";
+};
+
+export type AdminContact = {
+  email: AdminContactValue;
+  phone: AdminContactValue;
+};
+
 export type FamilyMember = {
   user_id: number;
   issuer: string;
@@ -996,10 +1009,17 @@ export type FamilyMember = {
   created_at: string;
   linked_person: {
     link_id: number;
+    person_id: number;
     person_key: string;
     display_name: string;
     username: string | null;
   } | null;
+  /// Admin-only contact block: the recorded identity email and no phone.
+  contact: AdminContact;
+  /// The linked person's recorded branch projection, when linked.
+  branches: BranchBlock | null;
+  /// Active branch grants held by this account, regardless of link state.
+  grants: ReviewerGrant[];
 };
 
 export type FamilyMembersPage = {
@@ -1662,6 +1682,26 @@ export type PhotographReviewChangeResponse = {
   operation?: string;
 };
 
+// Shared-genealogy branch membership for one person. The block is additive and
+// may be absent on an older server payload, so every consumer must treat it as
+// optional.
+export type BranchState = "missing" | "unverified" | "verified" | "conflicting";
+
+export type BranchClaim = {
+  assertion_kind: string;
+  value_text: string | null;
+  review_status: string;
+  verified: boolean;
+  branch_key: string | null;
+  branch_label: string | null;
+};
+
+export type BranchBlock = {
+  state: BranchState;
+  verified_branch_key: string | null;
+  claims: BranchClaim[];
+};
+
 export type FamilyProfileResponse = {
   ok: true;
   state: "published" | "empty";
@@ -1677,6 +1717,9 @@ export type FamilyProfileResponse = {
   /// `media`, which is owner-uploaded profile media. Absent on an older server
   /// payload, so the view treats it as an empty list.
   archive_photographs?: FamilyArchivePhotographView[];
+  /// Shared-genealogy branch membership only. Absent on an older server
+  /// payload, so the view omits the section entirely.
+  branches?: BranchBlock;
 };
 
 /// The person-scoped history response used by the family-tree dialog. It carries
@@ -2058,8 +2101,39 @@ export type ReviewerBranch = {
 export type ReviewerGrant = ReviewerBranch & {
   grant_id: number;
   account_id: number;
-  active: boolean;
+  identity_fingerprint: string | null;
+  granted_by: string;
   granted_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revoke_reason: string | null;
+  active: boolean;
+  usable: boolean;
+  /// Resolved context, present on the admin grant list. `null` means the
+  /// person or account no longer exists; it is never guessed.
+  person?: ReviewerPersonSummary | null;
+  account?: ReviewerAccountSummary | null;
+  contact?: AdminContact | null;
+};
+
+export type ReviewerPersonSummary = {
+  link_id: number;
+  person_id: number;
+  person_key: string;
+  display_name: string;
+  username: string | null;
+};
+
+export type ReviewerAccountSummary = {
+  user_id: number;
+  issuer: string;
+  subject: string;
+  email: string | null;
+  display_name: string | null;
+  /// The reserved genealogy username behind the reviewed link.
+  username?: string | null;
 };
 
 export function listReviewerBranches(): Promise<{
@@ -2103,4 +2177,53 @@ export function revokeBranchReviewer(
   reason: string,
 ): Promise<{ ok: true }> {
   return postJson(`/api/admin/branch-reviewers/${grantId}/revoke`, { reason });
+}
+
+// --- Admin > Family Members: recorded-branch grant console ------------------
+
+export type BranchGrantEligibility =
+  | "eligible"
+  | "missing_link"
+  | "missing_branch"
+  | "unverified_branch"
+  | "conflicting_branch"
+  | "already_granted";
+
+export type BranchGrantPerson = {
+  person: {
+    person_id: number | null;
+    person_key: string;
+    display_name: string;
+  };
+  branches: BranchBlock;
+  account: ReviewerAccountSummary | null;
+  contact: AdminContact | null;
+  active_grant: ReviewerGrant | null;
+  eligibility: BranchGrantEligibility;
+};
+
+// Searches the authorized person index. The API caps the page at 20.
+export function searchBranchGrantPeople(
+  q: string,
+  limit = 10,
+): Promise<{ ok: true; people: BranchGrantPerson[] }> {
+  const params = new URLSearchParams({ q: q.trim(), limit: String(limit) });
+  return request(`/api/admin/branch-reviewers/persons?${params}`, {
+    cache: "no-store",
+  });
+}
+
+// Grants the single recorded, verified branch of the reviewed link. The server
+// resolves the branch; the client never picks one.
+export function grantRecordedBranch(
+  member: AccountRef,
+  personKey: string,
+  reason: string,
+): Promise<{ ok: true; grant: ReviewerGrant }> {
+  return postJson("/api/admin/branch-reviewers/grants", {
+    issuer: member.issuer,
+    subject: member.subject,
+    person_key: personKey,
+    reason,
+  });
 }

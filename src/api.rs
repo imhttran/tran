@@ -12,6 +12,7 @@
 //! multipart staging, database access, embeddings, or model calls. There is no
 //! configuration flag that disables enforcement.
 
+use std::collections::HashMap;
 use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,8 +42,8 @@ use crate::document_processing;
 use crate::embedding::OllamaEmbedder;
 use crate::genealogy::eligibility::ReasonCode;
 use crate::genealogy::{
-    appointments, authority, branch_review, document_extraction, narrative, person_search,
-    photograph_review, photograph_store::PhotographStore, query as genealogy_query,
+    appointments, authority, branch_projection, branch_review, document_extraction, narrative,
+    person_search, photograph_review, photograph_store::PhotographStore, query as genealogy_query,
     resolve_genealogy_dsn, tree as genealogy_tree, GenealogyError,
 };
 use crate::identity::{self, Decision, Operation, Role, VerifiedIdentity};
@@ -359,6 +360,14 @@ impl AppState {
             .route(
                 "/api/admin/branch-reviewers/branches",
                 get(branch_reviewer_branches),
+            )
+            .route(
+                "/api/admin/branch-reviewers/grants",
+                post(grant_recorded_branch_admin),
+            )
+            .route(
+                "/api/admin/branch-reviewers/persons",
+                get(branch_grant_persons),
             )
             .route(
                 "/api/admin/branch-reviewers/{id}/revoke",
@@ -1401,26 +1410,55 @@ async fn list_branch_reviewers(
         );
     }
     let config = state.config.clone();
+    let store = state.store.clone();
     let account_id = query.account_id;
     let grant_cursor = query.grant_cursor;
     let event_cursor = query.event_cursor;
     let result = tokio::task::spawn_blocking(move || {
         let mut genealogy = open_genealogy_response(&config)?;
-        onboarding::read_grant_snapshot(
+        let snapshot = onboarding::read_grant_snapshot(
             &mut genealogy,
             account_id,
             grant_cursor,
             event_cursor,
             limit,
         )
-        .map_err(branch_grant_error)
+        .map_err(branch_grant_error)?;
+        let mut ids: Vec<i64> = snapshot
+            .grants
+            .iter()
+            .map(|grant| grant.account_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let links =
+            admin_members::linked_people(&mut genealogy, &ids).map_err(genealogy_unavailable)?;
+        let mut identity = store.pooled_connection().map_err(|err| {
+            eprintln!("api: identity store unavailable: {err}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_store_unavailable",
+                "the identity store is unavailable",
+            )
+        })?;
+        let accounts =
+            admin_members::accounts_by_ids(&mut identity, &ids).map_err(genealogy_unavailable)?;
+        Ok::<_, Response>((snapshot, links, accounts))
     })
     .await;
     match result {
-        Ok(Ok(snapshot)) => Json(serde_json::json!({
+        Ok(Ok((snapshot, links, accounts))) => Json(serde_json::json!({
             "ok": true,
             "limit": snapshot.limit,
-            "grants": snapshot.grants.iter().map(grant_json).collect::<Vec<_>>(),
+            "grants": snapshot
+                .grants
+                .iter()
+                .map(|grant| grant_context_json(
+                    grant,
+                    links.get(&grant.account_id),
+                    accounts.get(&grant.account_id),
+                ))
+                .collect::<Vec<_>>(),
             "events": snapshot.events.iter().map(grant_event_json).collect::<Vec<_>>(),
             "grants_next_cursor": snapshot.grants_next_cursor,
             "events_next_cursor": snapshot.events_next_cursor,
@@ -1535,6 +1573,219 @@ async fn revoke_branch_reviewer(
     }
 }
 
+#[derive(Deserialize)]
+struct RecordedBranchGrantRequest {
+    issuer: String,
+    subject: String,
+    person_key: String,
+    reason: String,
+}
+
+/// Grants the single recorded, verified branch of a reviewed link.
+///
+/// The person key must name the linked person; the branch is resolved from that
+/// person's own verified claims inside the grant transaction. The administrator
+/// never picks a branch from a list here.
+#[allow(clippy::result_large_err)]
+async fn grant_recorded_branch_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RecordedBranchGrantRequest>,
+) -> Response {
+    let identity = match authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let issuer = request.issuer.trim().to_string();
+    let subject = request.subject.trim().to_string();
+    let person_key = request.person_key.trim().to_string();
+    if issuer.is_empty() || subject.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_identity",
+            "issuer and subject are required",
+        );
+    }
+    if person_key.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_person_key",
+            "person_key is required",
+        );
+    }
+    if !valid_grant_reason(&request.reason) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_branch_reason",
+            "a non-empty reason of at most 1000 characters is required",
+        );
+    }
+    let config = state.config.clone();
+    let actor = onboarding::identity_fingerprint(identity.issuer(), identity.subject());
+    let reason = request.reason;
+    let result = tokio::task::spawn_blocking(move || {
+        let account = resolve_profile_account(&config, &issuer, &subject)?;
+        let mut genealogy = open_genealogy_response(&config)?;
+        onboarding::grant_recorded_branch(&mut genealogy, &account, &person_key, &actor, &reason)
+            .map_err(branch_grant_error)
+    })
+    .await;
+    match result {
+        Ok(Ok(grant)) => Json(serde_json::json!({
+            "ok": true,
+            "grant": grant_json(&grant),
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: recorded branch grant task failed: {err}");
+            branch_admin_unavailable("the branch reviewer grant failed")
+        }
+    }
+}
+
+/// Searches people for the recorded-branch grant console. Every result names
+/// the exact person, the reviewed account (or null), the recorded branch, the
+/// active grant for the resolved branch (or null), and one eligibility value.
+#[allow(clippy::result_large_err)]
+async fn branch_grant_persons(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NarrativePersonQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers, Operation::BranchReviewerAdmin) {
+        return response;
+    }
+    let (term, limit) = match validate_person_search(&query) {
+        Ok(PersonSearchQuery::Empty) => {
+            return Json(serde_json::json!({ "ok": true, "people": [] })).into_response()
+        }
+        Ok(PersonSearchQuery::Search { term, limit }) => (term, limit),
+        Err(PersonSearchQueryError::TooLong) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_branch_person_search",
+                "q must be at most 200 characters",
+            )
+        }
+        Err(PersonSearchQueryError::LimitOutOfRange) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_branch_person_limit",
+                "limit must be between 1 and 20",
+            )
+        }
+    };
+    let config = state.config.clone();
+    let store = state.store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut genealogy = open_genealogy_response(&config)?;
+        let people = narrative::search_review_people(&mut genealogy, &term, limit)
+            .map_err(narrative_review_error)?;
+        let keys: Vec<String> = people
+            .iter()
+            .map(|person| person.person_key.clone())
+            .collect();
+        let person_ids = branch_projection::person_ids_for_keys(&mut genealogy, &keys)
+            .map_err(|err| genealogy_unavailable(err.to_string()))?;
+        let mut ids: Vec<i64> = person_ids.values().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let projections = branch_projection::project_by_person_ids(&mut genealogy, &ids)
+            .map_err(|err| genealogy_unavailable(err.to_string()))?;
+        let linked = admin_members::linked_accounts_by_person_keys(&mut genealogy, &keys)
+            .map_err(genealogy_unavailable)?;
+        let mut account_ids: Vec<i64> = linked.values().map(|account| account.account_id).collect();
+        account_ids.sort_unstable();
+        account_ids.dedup();
+        let mut identity = store.pooled_connection().map_err(|err| {
+            eprintln!("api: identity store unavailable: {err}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "identity_store_unavailable",
+                "the identity store is unavailable",
+            )
+        })?;
+        let accounts = admin_members::accounts_by_ids(&mut identity, &account_ids)
+            .map_err(genealogy_unavailable)?;
+        let grants = onboarding::active_grants_for_accounts(&mut genealogy, &account_ids)
+            .map_err(branch_grant_error)?;
+
+        let rows = people
+            .into_iter()
+            .map(|person| {
+                // A link whose account row no longer exists is reported as no
+                // link and a null account; it is never guessed.
+                let link = linked.get(&person.person_key);
+                let account_id = link
+                    .map(|link| link.account_id)
+                    .filter(|id| accounts.contains_key(id));
+                let account = account_id.and_then(|id| accounts.get(&id));
+                let username = link.and_then(|link| link.username.as_deref());
+                let missing = branch_projection::BranchProjection {
+                    state: branch_projection::BranchState::Missing,
+                    verified_branch_key: None,
+                    claims: Vec::new(),
+                };
+                let projection = person_ids
+                    .get(&person.person_key)
+                    .and_then(|id| projections.get(id))
+                    .unwrap_or(&missing);
+                let active_grant = match (account_id, projection.verified_branch_key.as_deref()) {
+                    (Some(id), Some(key)) => grants.iter().find(|grant| {
+                        grant.account_id == id && grant.branch_key == key && grant.usable
+                    }),
+                    _ => None,
+                };
+                let eligibility = match (account_id, projection.state) {
+                    (None, _) => "missing_link",
+                    (Some(_), branch_projection::BranchState::Missing) => "missing_branch",
+                    (Some(_), branch_projection::BranchState::Unverified) => "unverified_branch",
+                    (Some(_), branch_projection::BranchState::Conflicting) => "conflicting_branch",
+                    (Some(_), branch_projection::BranchState::Verified)
+                        if active_grant.is_some() =>
+                    {
+                        "already_granted"
+                    }
+                    (Some(_), branch_projection::BranchState::Verified) => "eligible",
+                };
+                serde_json::json!({
+                    "person": {
+                        "person_id": person_ids.get(&person.person_key),
+                        "person_key": person.person_key,
+                        "display_name": person.display_name,
+                    },
+                    "branches": projection,
+                    "account": account
+                        .map(|account| account_json(account, username))
+                        .unwrap_or(serde_json::Value::Null),
+                    "contact": account
+                        .map(|account| contact_json(account.email.as_deref()))
+                        .unwrap_or(serde_json::Value::Null),
+                    "active_grant": active_grant
+                        .map(grant_json)
+                        .unwrap_or(serde_json::Value::Null),
+                    "eligibility": eligibility,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok::<_, Response>(rows)
+    })
+    .await;
+    match result {
+        Ok(Ok(people)) => Json(serde_json::json!({
+            "ok": true,
+            "people": people,
+        }))
+        .into_response(),
+        Ok(Err(response)) => response,
+        Err(err) => {
+            eprintln!("api: branch grant person search task failed: {err}");
+            branch_admin_unavailable("the branch grant person search failed")
+        }
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn valid_grant_reason(reason: &str) -> bool {
     let reason = reason.trim();
@@ -1562,6 +1813,26 @@ fn branch_grant_error(err: onboarding::BranchGrantError) -> Response {
             StatusCode::CONFLICT,
             "branch_grant_exists",
             "an active grant already exists for this account and branch",
+        ),
+        onboarding::BranchGrantError::PersonLinkMismatch => error(
+            StatusCode::CONFLICT,
+            "person_link_mismatch",
+            "the supplied person does not match the reviewed link",
+        ),
+        onboarding::BranchGrantError::MembershipMissing => error(
+            StatusCode::CONFLICT,
+            "branch_membership_missing",
+            "the person has no recorded branch",
+        ),
+        onboarding::BranchGrantError::MembershipUnverified => error(
+            StatusCode::CONFLICT,
+            "branch_membership_unverified",
+            "the recorded branch is not verified",
+        ),
+        onboarding::BranchGrantError::MembershipConflicting => error(
+            StatusCode::CONFLICT,
+            "branch_membership_conflicting",
+            "the recorded branches conflict",
         ),
         onboarding::BranchGrantError::NotActive(_) => error(
             StatusCode::CONFLICT,
@@ -1613,6 +1884,64 @@ fn grant_json(grant: &onboarding::BranchReviewerGrant) -> serde_json::Value {
         "active": grant.active,
         "usable": grant.usable,
     })
+}
+
+fn account_json(
+    account: &admin_members::AccountSummary,
+    username: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "user_id": account.user_id,
+        "issuer": account.issuer,
+        "subject": account.subject,
+        "email": account.email,
+        "display_name": account.display_name,
+        "username": username,
+    })
+}
+
+/// The admin-only contact block. The identity schema records an address but has
+/// no verification flag, and the archive records no phone, so neither is ever
+/// presented as verified and a phone is never inferred.
+fn contact_json(email: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "email": {
+            "value": email,
+            "source": "identity_account",
+            "verification": "not_recorded",
+        },
+        "phone": {
+            "value": serde_json::Value::Null,
+            "source": "not_recorded",
+            "verification": "not_recorded",
+        },
+    })
+}
+
+/// One grant plus its resolved person, account, and contact context. A missing
+/// person or account stays `null` instead of being guessed.
+fn grant_context_json(
+    grant: &onboarding::BranchReviewerGrant,
+    person: Option<&admin_members::LinkedPerson>,
+    account: Option<&admin_members::AccountSummary>,
+) -> serde_json::Value {
+    let mut value = grant_json(grant);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("person".to_string(), serde_json::json!(person));
+        object.insert(
+            "account".to_string(),
+            account
+                .map(|account| account_json(account, person.and_then(|p| p.username.as_deref())))
+                .unwrap_or(serde_json::Value::Null),
+        );
+        object.insert(
+            "contact".to_string(),
+            account
+                .map(|account| contact_json(account.email.as_deref()))
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    value
 }
 
 fn grant_event_json(event: &onboarding::BranchGrantEvent) -> serde_json::Value {
@@ -3086,6 +3415,24 @@ fn assertion_date_json(date: &Option<genealogy_query::AssertionDate>) -> serde_j
     }
 }
 
+/// The additive shared-genealogy branch block for the person and family-profile
+/// reads. It carries only the deterministic projection: no account identity,
+/// contact value, or owner-private profile field.
+fn branches_json(projection: &branch_projection::BranchProjection) -> serde_json::Value {
+    serde_json::json!({
+        "state": projection.state.as_str(),
+        "verified_branch_key": projection.verified_branch_key,
+        "claims": projection.claims.iter().map(|claim| serde_json::json!({
+            "assertion_kind": claim.assertion_kind,
+            "value_text": claim.value_text,
+            "review_status": claim.review_status,
+            "verified": claim.verified,
+            "branch_key": claim.branch_key,
+            "branch_label": claim.branch_label,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// One verified lifespan date on a tree person, or `null`.
 fn tree_date_json(date: &Option<genealogy_tree::TreeDate>) -> serde_json::Value {
     match date {
@@ -3539,11 +3886,16 @@ async fn family_profile(
             &person_key,
         )
         .map_err(family_profile_error)?;
-        Ok((profile, archive_photographs))
+        // The branch block is a shared-genealogy membership fact. It is read
+        // only after the profile and archive reads passed the membership and
+        // publication checks, so an unauthorized person never reaches it.
+        let branches = branch_projection::project(&mut genealogy, &person_key)
+            .map_err(|_| family_profile_unavailable())?;
+        Ok((profile, archive_photographs, branches))
     })
     .await;
     match result {
-        Ok(Ok((profile, archive_photographs))) => {
+        Ok(Ok((profile, archive_photographs, branches))) => {
             let state_label = if profile.fields.is_empty()
                 && profile.media.is_empty()
                 && profile.dates.is_empty()
@@ -3578,6 +3930,9 @@ async fn family_profile(
                     "precision": date.precision,
                     "qualifier": date.qualifier,
                 })).collect::<Vec<_>>(),
+                // Shared-genealogy branch membership only. No account identity,
+                // contact value, or owner-private profile field is included.
+                "branches": branches_json(&branches),
                 // Approved archive history, separate from the member's own
                 // profile fields. Pending, rejected, admin-only, restricted, and
                 // superseded passages are excluded server-side.
@@ -6218,11 +6573,26 @@ async fn genealogy_person(
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut client = open_genealogy(&config)?;
-        genealogy_query::lookup_person(&mut client, &key).map_err(|err| err.to_string())
+        let person =
+            genealogy_query::lookup_person(&mut client, &key).map_err(|err| err.to_string())?;
+        let Some(person) = person else {
+            return Ok::<
+                Option<(
+                    genealogy_query::PersonDetail,
+                    branch_projection::BranchProjection,
+                )>,
+                String,
+            >(None);
+        };
+        // The projection runs only after the person is found, so an unknown
+        // person keeps the existing 404 and no branch work runs.
+        let branches =
+            branch_projection::project(&mut client, &key).map_err(|err| err.to_string())?;
+        Ok(Some((person, branches)))
     })
     .await;
     match result {
-        Ok(Ok(Some(person))) => {
+        Ok(Ok(Some((person, branches)))) => {
             let assertions: Vec<serde_json::Value> = person
                 .assertions
                 .iter()
@@ -6243,6 +6613,7 @@ async fn genealogy_person(
                 "record_id": person.person_key,
                 "person_label": person.display_name,
                 "assertions": assertions,
+                "branches": branches_json(&branches),
             }))
             .into_response()
         }
@@ -7295,7 +7666,22 @@ struct FamilyMemberBody {
     #[serde(flatten)]
     member: admin_members::Member,
     linked_person: Option<admin_members::LinkedPerson>,
+    /// Admin-only contact block: the recorded identity email and no phone.
+    contact: serde_json::Value,
+    /// The linked person's recorded branch projection, when linked.
+    branches: Option<branch_projection::BranchProjection>,
+    /// Active branch grants held by this account, regardless of link state.
+    grants: Vec<serde_json::Value>,
 }
+
+/// Batch-loaded directory context: linked people, branch projections, and
+/// active grants, plus whether the genealogy store answered.
+type MemberDirectoryExtras = (
+    HashMap<i64, admin_members::LinkedPerson>,
+    HashMap<i64, branch_projection::BranchProjection>,
+    HashMap<i64, Vec<serde_json::Value>>,
+    &'static str,
+);
 
 /// Validates the directory query. Unknown status or role names are rejected,
 /// never ignored.
@@ -7352,25 +7738,64 @@ async fn family_members(
         let mut client = store.pooled_connection().map_err(|err| err.to_string())?;
         let (members, next) = admin_members::list_members(&mut client, &filter)?;
         let ids: Vec<i64> = members.iter().map(|member| member.user_id).collect();
-        let links = open_genealogy(&config)
-            .and_then(|mut genealogy| admin_members::linked_people(&mut genealogy, &ids));
-        Ok::<_, String>((members, next, links))
+        let extras = match open_genealogy(&config) {
+            Ok(mut genealogy) => {
+                let links = admin_members::linked_people(&mut genealogy, &ids)?;
+                let person_ids: Vec<i64> = links.values().map(|link| link.person_id).collect();
+                let projections =
+                    branch_projection::project_by_person_ids(&mut genealogy, &person_ids)
+                        .map_err(|err| err.to_string())?;
+                let grants = onboarding::active_grants_for_accounts(&mut genealogy, &ids)
+                    .map_err(|err| err.to_string())?;
+                Ok((links, projections, grants))
+            }
+            Err(message) => Err(message),
+        };
+        Ok::<_, String>((members, next, extras))
     })
     .await;
     match result {
-        Ok(Ok((members, next, links))) => {
-            let (mut links, linkage) = match links {
-                Ok(links) => (links, "available"),
+        Ok(Ok((members, next, extras))) => {
+            let (mut links, mut projections, mut grants_by_account, linkage):
+                MemberDirectoryExtras = match extras {
+                Ok((links, projections, grants)) => {
+                    let mut grouped: HashMap<i64, Vec<serde_json::Value>> = HashMap::new();
+                    for grant in grants {
+                        grouped
+                            .entry(grant.account_id)
+                            .or_default()
+                            .push(grant_json(&grant));
+                    }
+                    (links, projections, grouped, "available")
+                }
                 Err(message) => {
                     eprintln!("api: member linkage unavailable: {message}");
-                    (Default::default(), "unavailable")
+                    (
+                        HashMap::new(),
+                        HashMap::new(),
+                        HashMap::new(),
+                        "unavailable",
+                    )
                 }
             };
             let members: Vec<FamilyMemberBody> = members
                 .into_iter()
-                .map(|member| FamilyMemberBody {
-                    linked_person: links.remove(&member.user_id),
-                    member,
+                .map(|member| {
+                    let link = links.remove(&member.user_id);
+                    let branches = link
+                        .as_ref()
+                        .and_then(|link| projections.remove(&link.person_id));
+                    let grants = grants_by_account
+                        .remove(&member.user_id)
+                        .unwrap_or_default();
+                    let contact = contact_json(member.email.as_deref());
+                    FamilyMemberBody {
+                        member,
+                        linked_person: link,
+                        contact,
+                        branches,
+                        grants,
+                    }
                 })
                 .collect();
             Json(serde_json::json!({

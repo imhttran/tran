@@ -4666,6 +4666,77 @@ footer.page-footer {
     }
 }
 
+/* BD-002 — recorded branch section shared by the family-tree person details
+   and the family profile. State is always written in words; the class names
+   only reinforce it, so colour is never the sole signal. */
+.branch-section {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+.branch-section-heading {
+    font-size: 14px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    margin: 14px 0 0;
+    color: var(--fg);
+}
+.branch-state {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    border-left: 3px solid var(--line-strong);
+    padding: 4px 10px;
+    background: var(--surface);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    overflow-wrap: anywhere;
+}
+.branch-state-verified {
+    border-left-color: var(--ok);
+}
+.branch-state-unverified {
+    border-left-color: var(--warn);
+}
+.branch-state-conflicting {
+    border-left-color: var(--err);
+}
+.branch-state-missing {
+    border-left-color: var(--line-strong);
+    color: var(--muted);
+}
+.branch-claims {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+}
+.branch-claim {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.branch-claim-value {
+    font-weight: 600;
+}
+.branch-claim-status {
+    color: var(--muted);
+}
+.branch-resolved {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+.branch-resolved-label {
+    font-weight: 700;
+}
+.branch-resolved-key code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+}
+
 /* Nomination search preserves focus on the combobox during keyboard selection. */
 .person-selector {
     min-width: 0;
@@ -4684,4 +4755,145 @@ footer.page-footer {
 .person-selector [role="option"][aria-selected="true"] {
     outline: 2px solid currentColor;
     outline-offset: -2px;
+}
+
+/* BD-005 — administrator recorded-branch grant console. The state and the
+   eligibility reason are always written in words; these classes only reinforce
+   them, so colour is never the only signal. */
+.branch-grant-admin {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+}
+.branch-grant-search {
+    max-width: 100%;
+}
+.branch-grant-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+.branch-grant-result {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    background: var(--card);
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+.branch-grant-result-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    justify-content: space-between;
+    min-width: 0;
+}
+.branch-grant-result-head .hint {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.branch-grant-facts {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+.branch-grant-facts > div {
+    display: grid;
+    grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+}
+.branch-grant-facts dt {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.branch-grant-facts dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.branch-grant-eligibility {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--fg);
+    border-left: 3px solid var(--line-strong);
+    padding: 4px 10px;
+    background: var(--surface);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    overflow-wrap: anywhere;
+}
+.branch-grant-eligibility-eligible {
+    border-left-color: var(--ok);
+}
+.branch-grant-eligibility-already_granted {
+    border-left-color: var(--line-strong);
+}
+.branch-grant-eligibility-missing_link,
+.branch-grant-eligibility-missing_branch {
+    border-left-color: var(--warn);
+}
+.branch-grant-eligibility-unverified_branch {
+    border-left-color: var(--warn);
+}
+.branch-grant-eligibility-conflicting_branch {
+    border-left-color: var(--err);
+}
+.branch-grant-result > button {
+    justify-self: start;
+    min-height: 44px;
+}
+.branch-grant-list {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+.branch-grant-list h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.branch-grant-table {
+    width: 100%;
+}
+.branch-grant-table th,
+.branch-grant-table td {
+    overflow-wrap: anywhere;
+}
+.branch-grant-dialog {
+    display: grid;
+    gap: 10px;
+    max-width: min(560px, 100%);
+}
+.branch-grant-dialog p {
+    margin: 0;
+}
+.branch-grant-reason {
+    display: grid;
+    gap: 4px;
+}
+.branch-grant-reason textarea {
+    width: 100%;
+    min-height: 88px;
+    resize: vertical;
+}
+@media (max-width: 560px) {
+    .branch-grant-result {
+        padding: 12px;
+    }
+    .branch-grant-facts > div {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+    .branch-grant-result > button {
+        width: 100%;
+    }
 }

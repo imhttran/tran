@@ -161,26 +161,10 @@ pub fn search_nomination_people(
     limit: i64,
 ) -> Result<Vec<NominationPerson>, GenealogyError> {
     let people = narrative::search_review_people(client, query, limit)?;
-    let current = super::current::CURRENT_ASSERTION;
-    let sql = format!(
-        "SELECT DISTINCT COALESCE(b.branch_label, a.value_text) AS label \
-           FROM assertion a \
-           JOIN person p ON p.person_id = a.person_id \
-           LEFT JOIN family_branch b ON b.branch_key = a.value_text \
-          WHERE p.person_key = $1 \
-            AND a.assertion_kind = 'branch_claim' \
-            AND a.review_status = 'verified' \
-            AND ({current}) \
-          ORDER BY label"
-    );
     let mut out = Vec::with_capacity(people.len());
     for person in people {
-        let branches: Vec<String> = client
-            .query(&sql, &[&person.person_key])
-            .map_err(GenealogyError::Query)?
-            .iter()
-            .filter_map(|row| row.get::<_, Option<String>>(0))
-            .collect();
+        let branches =
+            super::branch_projection::verified_branch_labels(client, &person.person_key)?;
         out.push(NominationPerson {
             person_key: person.person_key,
             display_name: person.display_name,

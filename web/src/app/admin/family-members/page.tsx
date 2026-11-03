@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AccountsAdmin } from "@/components/AccountsAdmin";
+import { BranchGrantAdmin } from "@/components/BranchGrantAdmin";
 import { DenialView } from "@/components/DenialView";
 import { ExperienceShell } from "@/components/ExperienceShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -791,6 +792,7 @@ function BulkOnboardContent({ role }: { role: Role | null }) {
         ) : null}
 
         <AccountsAdmin />
+        <BranchGrantAdmin />
       </div>
     </>
   );

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FormStatus } from "@/components/FormStatus";
 import type { FormStatusState } from "@/components/FormStatus";
+import { BranchSection } from "@/components/BranchSection";
 import { NominationPersonSelector } from "@/components/NominationPersonSelector";
 import type { NominationPerson } from "@/components/NominationPersonSelector";
 import {
@@ -14,12 +15,12 @@ import {
   linkMember,
   listFamilyMembers,
   listReviewerBranches,
-  listReviewerGrants,
   requestPasswordReset,
   revokeBranchReviewer,
   revokeMemberLink,
 } from "@/lib/api";
 import type {
+  AdminContactValue,
   FamilyMember,
   FamilyMembersPage,
   MemberFilter,
@@ -51,11 +52,22 @@ type Pending =
       branches: string[];
     }
   | { kind: "unlink"; member: FamilyMember; linkId: number }
-  | { kind: "grant"; member: FamilyMember; branch: ReviewerBranch; reason: string }
-  | { kind: "revoke-grant"; member: FamilyMember; grant: ReviewerGrant; reason: string };
+  | {
+      kind: "grant";
+      member: FamilyMember;
+      branch: ReviewerBranch;
+      reason: string;
+    }
+  | {
+      kind: "revoke-grant";
+      member: FamilyMember;
+      grant: ReviewerGrant;
+      reason: string;
+    };
 
-// Grantable branches and the active grants, keyed by identity account id.
-type Reviewer = { branches: ReviewerBranch[]; grants: ReviewerGrant[] };
+// Grantable branches, keyed by branch key. Active grants per account come from
+// the directory rows themselves, so the page never asks for them twice.
+type Reviewer = { branches: ReviewerBranch[] };
 
 function branchName(branch: ReviewerBranch): string {
   return branch.branch_label || branch.branch_key;
@@ -68,21 +80,31 @@ const ADMIN_PERSON_ENDPOINT = "/api/admin/family-members/people";
 // Safe, human messages for the API's stable error codes.
 const ERROR_MESSAGES: Record<string, string> = {
   reset_not_configured:
-    "Password reset is not configured for this identity provider. No email was sent. The member can use the provider's own \"Forgot password?\" link.",
-  reset_failed: "The identity provider did not accept the reset request. No email was sent. Try again later.",
-  reset_throttled: "A reset was already requested for this account recently. Wait before trying again.",
+    'Password reset is not configured for this identity provider. No email was sent. The member can use the provider\'s own "Forgot password?" link.',
+  reset_failed:
+    "The identity provider did not accept the reset request. No email was sent. Try again later.",
+  reset_throttled:
+    "A reset was already requested for this account recently. Wait before trying again.",
   account_deactivated: "This account is deactivated.",
   last_admin: "Refusing to remove the last active administrator.",
-  csrf_failed: "Your session's security token is missing or stale. Reload the page and try again.",
+  csrf_failed:
+    "Your session's security token is missing or stale. Reload the page and try again.",
   unknown_person: "No genealogy person has that key.",
   identity_not_registered: "That account is not registered with this issuer.",
   identity_deactivated: "That account is deactivated and cannot be linked.",
-  identity_ambiguous: "That subject exists under more than one issuer; it cannot be linked.",
+  identity_ambiguous:
+    "That subject exists under more than one issuer; it cannot be linked.",
   already_linked: "That person or account already has an active link.",
-  account_not_linked: "Link this account to its genealogy person before granting branch review.",
+  account_not_linked:
+    "Link this account to its genealogy person before granting branch review.",
   branch_grant_exists: "This account already reviews that branch.",
   branch_grant_not_active: "That grant was already revoked.",
   invalid_branch_reason: "Give a reason of at most 1000 characters.",
+  person_link_mismatch:
+    "That person is not the account's reviewed link. Nothing was granted.",
+  branch_membership_missing: "This person has no recorded branch.",
+  branch_membership_unverified: "The recorded branch is not verified.",
+  branch_membership_conflicting: "The recorded branches disagree.",
 };
 
 function messageFor(error: unknown, fallback: string): string {
@@ -97,6 +119,16 @@ function label(member: FamilyMember): string {
   return member.display_name || member.email || member.subject;
 }
 
+function contactSourceLabel(value: AdminContactValue): string {
+  return value.source === "identity_account"
+    ? "identity account"
+    : "not recorded";
+}
+
+function contactValueLabel(value: AdminContactValue): string {
+  return value.value ?? "not recorded";
+}
+
 function confirmText(pending: Pending): string {
   const who = label(pending.member);
   switch (pending.kind) {
@@ -105,7 +137,9 @@ function confirmText(pending: Pending): string {
     case "deactivate":
       return `Deactivate ${who}? They lose access immediately; their identity and audit history are kept.`;
     case "role":
-      return pending.revoke ? `Remove the ${pending.role} role from ${who}?` : `Grant the ${pending.role} role to ${who}?`;
+      return pending.revoke
+        ? `Remove the ${pending.role} role from ${who}?`
+        : `Grant the ${pending.role} role to ${who}?`;
     case "link":
       return `Confirm you reviewed the identity proof and link ${who} to ${pending.personLabel}${
         pending.branches.length ? ` (${pending.branches.join(", ")})` : ""
@@ -150,7 +184,9 @@ async function run(action: Pending): Promise<string> {
       return `${who} was deactivated.`;
     case "role":
       await changeMemberRole(action.member, action.role, action.revoke);
-      return action.revoke ? `Removed ${action.role} from ${who}.` : `Granted ${action.role} to ${who}.`;
+      return action.revoke
+        ? `Removed ${action.role} from ${who}.`
+        : `Granted ${action.role} to ${who}.`;
     case "link": {
       const result = await linkMember(action.member, action.personKey);
       if (!result.linked) throw new Error("The link was not created.");
@@ -160,7 +196,11 @@ async function run(action: Pending): Promise<string> {
       await revokeMemberLink(action.linkId);
       return `The link for ${who} was removed.`;
     case "grant":
-      await grantBranchReviewer(action.member, action.branch.branch_key, action.reason);
+      await grantBranchReviewer(
+        action.member,
+        action.branch.branch_key,
+        action.reason,
+      );
       return `${who} can now review ${branchName(action.branch)}.`;
     case "revoke-grant":
       await revokeBranchReviewer(action.grant.grant_id, action.reason);
@@ -196,34 +236,43 @@ export function AccountsAdmin() {
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<FormStatusState>(null);
-  const [reviewer, setReviewer] = useState<Reviewer>({ branches: [], grants: [] });
+  const [reviewer, setReviewer] = useState<Reviewer>({ branches: [] });
   const [reviewerError, setReviewerError] = useState<string | null>(null);
 
   const loadReviewer = useCallback(async () => {
     try {
-      const [branches, grants] = await Promise.all([listReviewerBranches(), listReviewerGrants()]);
-      setReviewer({ branches: branches.branches, grants: grants.filter((grant) => grant.active) });
+      const branches = await listReviewerBranches();
+      setReviewer({ branches: branches.branches });
       setReviewerError(null);
     } catch (error) {
-      setReviewerError(messageFor(error, "Branch reviewer grants could not be loaded."));
+      setReviewerError(
+        messageFor(error, "Branch reviewer grants could not be loaded."),
+      );
     }
   }, []);
 
-  const load = useCallback(async (active: MemberFilter, after: number | null) => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const page = await listFamilyMembers(active, after);
-      setApplied(active);
-      setMembers((current) => (after ? [...current, ...page.members] : page.members));
-      setNextAfter(page.next_after);
-      setLinkage(page.linkage);
-    } catch (error) {
-      setLoadError(messageFor(error, "The member directory could not be loaded."));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (active: MemberFilter, after: number | null) => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const page = await listFamilyMembers(active, after);
+        setApplied(active);
+        setMembers((current) =>
+          after ? [...current, ...page.members] : page.members,
+        );
+        setNextAfter(page.next_after);
+        setLinkage(page.linkage);
+      } catch (error) {
+        setLoadError(
+          messageFor(error, "The member directory could not be loaded."),
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void load(EMPTY_FILTER, null);
@@ -236,10 +285,14 @@ export function AccountsAdmin() {
     const action = pending;
     try {
       setStatus({ kind: "ok", text: await run(action) });
-      if (action.kind === "grant" || action.kind === "revoke-grant") await loadReviewer();
-      else if (action.kind !== "reset") await load(applied, null);
+      // Every action except a reset changes account data, and grant changes
+      // change the row's own branch grants, so reload the directory.
+      if (action.kind !== "reset") await load(applied, null);
     } catch (error) {
-      setStatus({ kind: "error", text: messageFor(error, "The request failed. Nothing was changed.") });
+      setStatus({
+        kind: "error",
+        text: messageFor(error, "The request failed. Nothing was changed."),
+      });
     } finally {
       setBusy(false);
       setPending(null);
@@ -290,7 +343,12 @@ export function AccountsAdmin() {
           <span>Status</span>
           <select
             value={draft.status}
-            onChange={(event) => setDraft({ ...draft, status: event.target.value as MemberFilter["status"] })}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                status: event.target.value as MemberFilter["status"],
+              })
+            }
             data-testid="fm-status-filter"
           >
             <option value="">Any</option>
@@ -302,30 +360,57 @@ export function AccountsAdmin() {
           <span>Role</span>
           <select
             value={draft.role}
-            onChange={(event) => setDraft({ ...draft, role: event.target.value as MemberFilter["role"] })}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                role: event.target.value as MemberFilter["role"],
+              })
+            }
             data-testid="fm-role-filter"
           >
             <option value="">Any</option>
             {ROLES.map((role) => (
-              <option key={role} value={role}>{role}</option>
+              <option key={role} value={role}>
+                {role}
+              </option>
             ))}
           </select>
         </label>
-        <button type="submit" className="fm-filter-apply" data-testid="fm-apply-filters">Apply</button>
+        <button
+          type="submit"
+          className="fm-filter-apply"
+          data-testid="fm-apply-filters"
+        >
+          Apply
+        </button>
       </form>
 
       <FormStatus status={status} />
       {loadError ? (
-        <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="fm-load-error">{loadError}</p>
+        <p
+          className="state-panel state-panel-unavailable fm-state"
+          role="alert"
+          data-testid="fm-load-error"
+        >
+          {loadError}
+        </p>
       ) : null}
       {reviewerError ? (
-        <p className="state-panel state-panel-unavailable fm-state" role="alert" data-testid="fm-reviewer-error">
+        <p
+          className="state-panel state-panel-unavailable fm-state"
+          role="alert"
+          data-testid="fm-reviewer-error"
+        >
           {reviewerError}
         </p>
       ) : null}
       {linkage === "unavailable" ? (
-        <p className="state-panel state-panel-expired fm-state" data-testid="fm-linkage-unavailable">
-          The genealogy store is unavailable, so linked-person status is not shown.
+        <p
+          className="state-panel state-panel-expired fm-state"
+          data-testid="fm-linkage-unavailable"
+        >
+          The genealogy store is unavailable, so linked-person status is not
+          shown.
         </p>
       ) : null}
 
@@ -341,11 +426,25 @@ export function AccountsAdmin() {
         ))}
       </ul>
       {!loading && members.length === 0 && !loadError ? (
-        <p className="state-panel state-panel-empty fm-state" data-testid="fm-empty">No accounts match these filters.</p>
+        <p
+          className="state-panel state-panel-empty fm-state"
+          data-testid="fm-empty"
+        >
+          No accounts match these filters.
+        </p>
       ) : null}
-      {loading ? <p className="state-panel state-panel-loading fm-state">Loading accounts…</p> : null}
+      {loading ? (
+        <p className="state-panel state-panel-loading fm-state">
+          Loading accounts…
+        </p>
+      ) : null}
       {nextAfter && !loading ? (
-        <button type="button" className="fm-more" onClick={() => void load(applied, nextAfter)} data-testid="fm-more">
+        <button
+          type="button"
+          className="fm-more"
+          onClick={() => void load(applied, nextAfter)}
+          data-testid="fm-more"
+        >
           Load more
         </button>
       ) : null}
@@ -466,7 +565,11 @@ function MemberRow({
     if (!linkFormShown) setChosen(null);
   }, [linkFormShown]);
   return (
-    <li className="fm-member" data-testid="fm-member" data-subject={member.subject}>
+    <li
+      className="fm-member"
+      data-testid="fm-member"
+      data-subject={member.subject}
+    >
       <div className="fm-member-head">
         <strong className="fm-member-name">{label(member)}</strong>
         <div className="fm-member-chips">
@@ -487,18 +590,34 @@ function MemberRow({
           ))}
         </div>
       </div>
-      <p className="meta fm-member-meta">
-        <span>{member.email ?? "No email on file"}</span>
+      <p className="meta fm-member-meta" data-testid="fm-member-contact">
+        <span data-testid="fm-member-email">
+          Email: {contactValueLabel(member.contact.email)}{" "}
+          <small>
+            (source: {contactSourceLabel(member.contact.email)}, verification:
+            not recorded)
+          </small>
+        </span>
+        <span data-testid="fm-member-phone">
+          Phone: {contactValueLabel(member.contact.phone)}{" "}
+          <small>(source: not recorded)</small>
+        </span>
+      </p>
+      <p className="meta fm-member-account" data-testid="fm-member-account">
+        <span>
+          Account <strong>user_id {member.user_id}</strong>
+        </span>
       </p>
       <p className="meta fm-member-link" data-testid="fm-member-link">
         {linked ? (
           <>
             <span>
-              Linked to <strong>{linked.display_name || linked.person_key}</strong>
+              Linked to{" "}
+              <strong>{linked.display_name || linked.person_key}</strong>
             </span>
             <span className="hint fm-member-link-key">
               <small>
-                {linked.person_key}
+                {linked.person_key} · person_id {linked.person_id}
                 {linked.username ? ` (${linked.username})` : ""}
               </small>
             </span>
@@ -509,6 +628,14 @@ function MemberRow({
           "Link status unavailable"
         )}
       </p>
+      {member.branches ? (
+        <div className="fm-member-branch" data-testid="fm-member-branch">
+          <BranchSection
+            branches={member.branches}
+            testIdPrefix={`fm-member-${member.user_id}`}
+          />
+        </div>
+      ) : null}
       <details className="fm-actions" data-testid="fm-actions">
         <summary>Actions</summary>
         <div className="fm-actions-body">
@@ -531,13 +658,17 @@ function MemberRow({
               data-testid="fm-role-select"
             >
               {ROLES.map((option) => (
-                <option key={option} value={option}>{option}</option>
+                <option key={option} value={option}>
+                  {option}
+                </option>
               ))}
             </select>
             <button
               type="button"
               disabled={!active || member.roles.includes(role)}
-              onClick={() => onAction({ kind: "role", member, role, revoke: false })}
+              onClick={() =>
+                onAction({ kind: "role", member, role, revoke: false })
+              }
               data-testid="fm-grant-role"
             >
               Grant role
@@ -545,7 +676,9 @@ function MemberRow({
             <button
               type="button"
               disabled={!active || !member.roles.includes(role)}
-              onClick={() => onAction({ kind: "role", member, role, revoke: true })}
+              onClick={() =>
+                onAction({ kind: "role", member, role, revoke: true })
+              }
               data-testid="fm-revoke-role"
             >
               Remove role
@@ -554,7 +687,9 @@ function MemberRow({
           {linked ? (
             <button
               type="button"
-              onClick={() => onAction({ kind: "unlink", member, linkId: linked.link_id })}
+              onClick={() =>
+                onAction({ kind: "unlink", member, linkId: linked.link_id })
+              }
               data-testid="fm-unlink"
             >
               Remove person link
@@ -624,7 +759,7 @@ function BranchReviewerControls({
 }) {
   const [branchKey, setBranchKey] = useState("");
   const [reason, setReason] = useState("");
-  const held = reviewer.grants.filter((grant) => grant.account_id === member.user_id);
+  const held = member.grants;
   const grantable = reviewer.branches.filter(
     (branch) => !held.some((grant) => grant.branch_key === branch.branch_key),
   );
@@ -637,17 +772,25 @@ function BranchReviewerControls({
     <fieldset className="fm-branch-review" data-testid="fm-branch-review">
       <legend>Branch reviewer</legend>
       {held.length === 0 ? (
-        <p className="hint" data-testid="fm-branch-none">Reviews no branches.</p>
+        <p className="hint" data-testid="fm-branch-none">
+          Reviews no branches.
+        </p>
       ) : (
         <ul className="fm-branch-grants">
           {held.map((grant) => (
-            <li key={grant.grant_id} data-testid="fm-branch-grant" data-branch={grant.branch_key}>
+            <li
+              key={grant.grant_id}
+              data-testid="fm-branch-grant"
+              data-branch={grant.branch_key}
+            >
               {branchName(grant)}{" "}
               <button
                 type="button"
                 className="button-secondary"
                 disabled={!why}
-                onClick={() => onAction({ kind: "revoke-grant", member, grant, reason: why })}
+                onClick={() =>
+                  onAction({ kind: "revoke-grant", member, grant, reason: why })
+                }
                 data-testid="fm-branch-revoke"
               >
                 Revoke
@@ -674,13 +817,17 @@ function BranchReviewerControls({
           >
             <option value="">Choose a branch</option>
             {grantable.map((option) => (
-              <option key={option.branch_key} value={option.branch_key}>{branchName(option)}</option>
+              <option key={option.branch_key} value={option.branch_key}>
+                {branchName(option)}
+              </option>
             ))}
           </select>
           <button
             type="button"
             disabled={!branch || !why}
-            onClick={() => branch && onAction({ kind: "grant", member, branch, reason: why })}
+            onClick={() =>
+              branch && onAction({ kind: "grant", member, branch, reason: why })
+            }
             data-testid="fm-branch-grant-submit"
           >
             Grant branch review

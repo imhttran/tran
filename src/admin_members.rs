@@ -162,9 +162,23 @@ pub fn list_members(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LinkedPerson {
     pub link_id: i64,
+    pub person_id: i64,
     pub person_key: String,
     pub display_name: String,
     pub username: Option<String>,
+}
+
+/// An admin-only read of one identity account, keyed by its account id.
+///
+/// `email` is the identity account's recorded address. The identity schema has
+/// no verification flag, so callers must label it as recorded, never verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSummary {
+    pub user_id: i64,
+    pub issuer: String,
+    pub subject: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
 }
 
 /// Reads the active person link and reserved username for each account id.
@@ -178,7 +192,7 @@ pub fn linked_people(
     }
     let rows = genealogy
         .query(
-            "SELECT l.account_id, p.person_key, p.display_name, r.username, l.link_id
+            "SELECT l.account_id, p.person_key, p.display_name, r.username, l.link_id, p.person_id
                FROM onboarding_person_account_link l
                JOIN person p ON p.person_id = l.person_id
                LEFT JOIN onboarding_username_reservation r
@@ -194,9 +208,84 @@ pub fn linked_people(
                 row.get(0),
                 LinkedPerson {
                     link_id: row.get(4),
+                    person_id: row.get(5),
                     person_key: row.get(1),
                     display_name: row.get(2),
                     username: row.get(3),
+                },
+            )
+        })
+        .collect())
+}
+
+/// The account and reserved username behind one person link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedAccount {
+    pub account_id: i64,
+    pub username: Option<String>,
+}
+
+/// Reads the active linked account for each person key.
+/// Read-only; keys without a link are absent from the map.
+pub fn linked_accounts_by_person_keys(
+    genealogy: &mut postgres::Client,
+    person_keys: &[String],
+) -> Result<HashMap<String, LinkedAccount>, String> {
+    if person_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = genealogy
+        .query(
+            "SELECT p.person_key, l.account_id, r.username
+               FROM onboarding_person_account_link l
+               JOIN person p ON p.person_id = l.person_id
+               LEFT JOIN onboarding_username_reservation r
+                      ON r.person_id = l.person_id AND r.status <> 'released'
+              WHERE p.person_key = ANY($1)",
+            &[&person_keys],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get(0),
+                LinkedAccount {
+                    account_id: row.get(1),
+                    username: row.get(2),
+                },
+            )
+        })
+        .collect())
+}
+
+/// Reads the identity accounts for a set of account ids.
+/// Read-only; unknown ids are absent from the map.
+pub fn accounts_by_ids(
+    client: &mut postgres::Client,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, AccountSummary>, String> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = client
+        .query(
+            "SELECT id, issuer, subject, email, display_name
+               FROM users WHERE id = ANY($1)",
+            &[&account_ids],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get(0),
+                AccountSummary {
+                    user_id: row.get(0),
+                    issuer: row.get(1),
+                    subject: row.get(2),
+                    email: row.get(3),
+                    display_name: row.get(4),
                 },
             )
         })

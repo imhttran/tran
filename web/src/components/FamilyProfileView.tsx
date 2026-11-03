@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { BranchSection } from "@/components/BranchSection";
 import { DenialView } from "@/components/DenialView";
 import { PageHeader } from "@/components/PageHeader";
 import { PageTitle } from "@/components/PageTitle";
@@ -428,6 +429,15 @@ export function FamilyProfileView({ personKey }: { personKey: string }) {
                 ))}
               </dl>
             </section>
+          ) : null}
+
+          {profile.branches ? (
+            <div className="profile-section" data-testid="family-profile-branch-wrap">
+              <BranchSection
+                branches={profile.branches}
+                testIdPrefix="family-profile"
+              />
+            </div>
           ) : null}
 
           {history.length > 0 ? (

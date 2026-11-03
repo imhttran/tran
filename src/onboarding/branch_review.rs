@@ -72,6 +72,14 @@ pub enum BranchGrantError {
     Unlinked,
     #[error("an active grant already exists for branch {0}")]
     AlreadyActive(String),
+    #[error("the supplied person does not match the reviewed link")]
+    PersonLinkMismatch,
+    #[error("the person has no recorded branch")]
+    MembershipMissing,
+    #[error("the recorded branch is not verified")]
+    MembershipUnverified,
+    #[error("the recorded branches conflict")]
+    MembershipConflicting,
     #[error("no active grant exists for branch {0}")]
     NotActive(String),
     #[error("unknown branch reviewer grant")]
@@ -246,6 +254,85 @@ pub fn grant_branches(
     }
     tx.commit()?;
     Ok(grants)
+}
+
+/// Grants the single recorded, verified branch of a reviewed link.
+///
+/// The supplied `person_key` must name the person the reviewed link points at;
+/// membership is never inferred from a name or any other field. The branch
+/// projection runs inside the same transaction as the link lock and the grant
+/// write, so a concurrent claim change cannot authorize a stale branch.
+pub fn grant_recorded_branch(
+    client: &mut Client,
+    account: &IdentityAccount,
+    person_key: &str,
+    actor: &str,
+    reason: &str,
+) -> Result<BranchReviewerGrant, BranchGrantError> {
+    let actor = clean_actor(actor)?;
+    let reason = clean_reason(reason)?;
+    let person_key = person_key.trim();
+    if person_key.is_empty() {
+        return Err(BranchGrantError::PersonLinkMismatch);
+    }
+
+    let mut tx = client.transaction()?;
+    let person_id = lock_reviewed_link(&mut tx, account)?;
+    let linked_key: String = tx
+        .query_one(
+            "SELECT person_key FROM person WHERE person_id = $1",
+            &[&person_id],
+        )?
+        .get(0);
+    if linked_key != person_key {
+        return Err(BranchGrantError::PersonLinkMismatch);
+    }
+
+    let projection = crate::genealogy::branch_projection::project_for_person_id(&mut tx, person_id)
+        .map_err(|err| BranchGrantError::Database(err.to_string()))?;
+    let branch_key = match projection.state {
+        crate::genealogy::branch_projection::BranchState::Missing => {
+            return Err(BranchGrantError::MembershipMissing)
+        }
+        crate::genealogy::branch_projection::BranchState::Unverified => {
+            return Err(BranchGrantError::MembershipUnverified)
+        }
+        crate::genealogy::branch_projection::BranchState::Conflicting => {
+            return Err(BranchGrantError::MembershipConflicting)
+        }
+        crate::genealogy::branch_projection::BranchState::Verified => projection
+            .verified_branch_key
+            .ok_or(BranchGrantError::MembershipUnverified)?,
+    };
+
+    let branch = branch_by_key(&mut tx, &branch_key)?;
+    grant_one(&mut tx, account, &branch, &actor, &reason)?;
+    let grant = load_grant(&mut tx, account.account_id, branch.family_branch_id)?;
+    tx.commit()?;
+    Ok(grant)
+}
+
+/// Returns every active grant for a set of accounts in one query.
+///
+/// The admin directory and the eligibility search need the same answer for a
+/// page of accounts; neither may issue a query per row.
+pub fn active_grants_for_accounts(
+    client: &mut Client,
+    account_ids: &[i64],
+) -> Result<Vec<BranchReviewerGrant>, BranchGrantError> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT {GRANT_COLUMNS} \
+           FROM onboarding_branch_reviewer_grant g \
+           JOIN family_branch b ON b.family_branch_id = g.family_branch_id \
+          WHERE g.account_id = ANY($1) \
+            AND g.revoked_at IS NULL \
+          ORDER BY g.account_id, b.branch_key"
+    );
+    let rows = client.query(&sql, &[&account_ids])?;
+    rows.into_iter().map(row_to_grant).collect()
 }
 
 /// Revokes one active grant and appends an immutable revocation event.
