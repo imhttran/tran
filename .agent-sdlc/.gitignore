@@ -1,0 +1,5 @@
+# SOP writes mutable state, run evidence, and provisioned databases here.
+# Only config.yaml is versioned in this directory.
+*
+!.gitignore
+!security-baseline.json

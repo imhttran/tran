@@ -232,7 +232,39 @@ security:
     - .claude
     - .run
     - data
+    # Local-only environment files (.env is gitignored); never scan or stage
+    # them, so a real credential cannot reach scan evidence.
+    - .env
+    - .env.*
+  # Local RustSec advisory database for cargo-audit (Rust dependency
+  # advisories). The checkout is operator-provisioned; a scan only reads it and
+  # never fetches or updates it. Point this at a RustSec checkout on each
+  # machine (cargo-audit's default location is ~/.cargo/advisory-db).
+  #
+  # Known limitation: the adapter always passes --no-fetch, and cargo-audit only
+  # fills database.last-updated when it loads the database through its fetch
+  # path. With --no-fetch that field is null, so SOP treats the database as
+  # stale and reports INDETERMINATE under stale_advisory_database: deny even
+  # when the checkout is current. Dependency advisories are still evaluated;
+  # only the verdict stays non-PASS until this is fixed in the SOP adapter or
+  # replaced by a provisioned OSV cache.
+  advisory_database_path: /Users/imhttran/.cargo/advisory-db
+  # Reviewed suppressions. Entries stay visible in scan evidence and only
+  # stop matching findings from blocking once an owner has approved them.
+  baseline: .agent-sdlc/security-baseline.json
+  # The OSV offline cache is not provisioned, so the OSV adapter stays
+  # unsupported instead of fetching a database during a scan. Set
+  # osv_database_path only after the cache exists.
   adapters:
     - id: semgrep
       rules: .semgrep/rules.yaml
     - id: gitleaks
+    # Rust dependency advisories. The version is pinned exactly: the adapter
+    # verifies `cargo audit --version` before scanning and fails closed on a
+    # missing or mismatched pin. The database comes from
+    # security.advisory_database_path and is never fetched during a scan.
+    - id: cargo-audit
+      category: dependencies
+      protocol: builtin
+      command: [cargo, audit]
+      version: "0.22.2"

@@ -1,11 +1,16 @@
-# Rust Semgrep rules for SOP security scans (copied from agentic-sop testdata; extend as needed).
+# Semgrep rules for SOP security scans (extended from agentic-sop testdata).
 #
 # Scope is deliberately small: each rule is a precise syntactic signal for a
-# concrete, reviewable weakness. This is NOT comprehensive Rust security
-# coverage, and a clean result only means these checks found nothing.
+# concrete, reviewable weakness. This is NOT comprehensive security coverage,
+# and a clean result only means these checks found nothing.
 #
-# Every rule declares `languages: [rust]`, so a Go-only ruleset can never be
-# applied to Rust source and these rules can never be applied to Go source.
+# Rust and TypeScript/JavaScript rules share one file so the configured rules
+# path stays authoritative. Every rule names its languages, so a Rust rule can
+# never be applied to TypeScript source, or the reverse.
+#
+# SOP's language-coverage guard tracks only Go and Rust. The TypeScript rules
+# run and report findings, but SOP does not claim TypeScript SAST coverage for
+# the Next.js app in web/.
 rules:
   - id: sop-rust-tls-verification-disabled
     languages: [rust]
@@ -51,3 +56,51 @@ rules:
       category: security
       confidence: LOW
     pattern: unsafe { ... }
+
+  # TypeScript/JavaScript rules for the Next.js app in web/.
+  - id: sop-ts-dangerous-html-injection
+    languages: [javascript, typescript]
+    message: >-
+      React's dangerouslySetInnerHTML bypasses JSX escaping, so unsanitized
+      content becomes working markup. Render text normally, or sanitize the
+      value with a reviewed HTML sanitizer before injecting it.
+    severity: WARNING
+    metadata:
+      category: security
+      confidence: MEDIUM
+      cwe: ["CWE-79"]
+    pattern-either:
+      - pattern: <$EL dangerouslySetInnerHTML={...} />
+      - pattern: <$EL dangerouslySetInnerHTML={...}></$EL>
+
+  - id: sop-ts-innerhtml-assignment
+    languages: [javascript, typescript]
+    message: >-
+      Assigning to innerHTML or outerHTML inserts raw markup and bypasses
+      escaping. Prefer textContent for text, or sanitize the value with a
+      reviewed HTML sanitizer.
+    severity: WARNING
+    metadata:
+      category: security
+      confidence: LOW
+      cwe: ["CWE-79"]
+    pattern-either:
+      - pattern: $EL.innerHTML = $VALUE
+      - pattern: $EL.outerHTML = $VALUE
+
+  - id: sop-ts-dynamic-code-execution
+    languages: [javascript, typescript]
+    message: >-
+      eval, the Function constructor, and string-argument timers execute
+      arbitrary code from a string. Replace them with a data-driven dispatch or
+      an explicit parser.
+    severity: ERROR
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-95"]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)

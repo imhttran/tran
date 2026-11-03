@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "fingerprint": "gitleaks:5a54485357235b3701f01aa1daa47c20f78cea9df1f67691ec12ca1acbb36f44",
+      "rule_id": "generic-api-key",
+      "path": "docs/guides/review-console.md",
+      "reason": "Documentation prose containing the word 'access'; no credential is present.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "gitleaks:cd639ec5e397afe1c7ef76bb413180cac3653d5eff0a5527069b53aa989365e2",
+      "rule_id": "generic-api-key",
+      "path": "scripts/seed-genealogy-e2e.sql",
+      "reason": "SQL person_key column compared to a synthetic e2e fixture identifier; not a credential.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "gitleaks:5f4e9ad950c22d05be8c09fecd0f90e67f4a890224dae881d348826cf9c8e30f",
+      "rule_id": "generic-api-key",
+      "path": "scripts/web-e2e.sh",
+      "reason": "SQL passage_key comparison against a synthetic e2e fixture key; not a credential.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "gitleaks:b87e91f745d9ceade27406990a6313710e19be07bcec25e7715bf29fc041dd65",
+      "rule_id": "generic-api-key",
+      "path": "scripts/seed-branch-review-e2e.sql",
+      "reason": "SQL passage_key comparison against a synthetic e2e fixture key; not a credential.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "gitleaks:d53a2e5491dc48c4a9d005428033c169d9704b025ac7863d00c59032e2e5226c",
+      "rule_id": "generic-api-key",
+      "path": "src/onboarding/delivery.rs",
+      "reason": "Placeholder token constant in a unit test for activation-link path segments; not a credential.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    },
+    {
+      "fingerprint": "gitleaks:6cde2e765d67848aadd5315a2a4c3bfee8af668d67f0b2c30df4e00f20e2d88f",
+      "rule_id": "generic-api-key",
+      "path": "web/e2e/activation.spec.ts",
+      "reason": "Placeholder token constant in a browser test whose header states no real invitation exists.",
+      "owner": "Tom Tran",
+      "expires_at": "2027-01-31T00:00:00Z"
+    }
+  ]
+}
