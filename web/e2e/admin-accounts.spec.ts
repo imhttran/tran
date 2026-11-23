@@ -83,7 +83,10 @@ test.describe.serial("admin accounts", () => {
     await signIn(page);
     const row = await openMember(page);
     await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
+    // The raw identity is kept out of the card and shown only in the Actions drawer.
+    await expect(row.getByTestId("fm-member-scope")).toBeHidden();
     await openActions(row);
+    await expect(row.getByTestId("fm-actions").getByTestId("fm-member-scope")).toHaveText(/^e2e-member @ \S+/);
     await expect(row.getByTestId("fm-link")).toBeDisabled();
     await row.getByTestId("hof-record-select").fill("synthetic e2e person");
     await expect(row.getByTestId("fm-link")).toBeDisabled();
@@ -103,6 +106,46 @@ test.describe.serial("admin accounts", () => {
     await openActions(row);
     await expect(row.getByTestId("hof-record-select")).toHaveValue("");
     await expect(row.getByTestId("fm-link")).toBeDisabled();
+  });
+
+  test("the link picker finds an accented name, blocks a linked person, and names the choice", async ({ page }) => {
+    // The e2e genealogy seed has no accented or already-linked person, so the
+    // search response is stubbed. Accent folding on the server is covered by
+    // the Rust admin_members tests; this checks what the picker does with it.
+    const queries: string[] = [];
+    await page.route("**/api/admin/family-members/people?*", (route) => {
+      queries.push(new URL(route.request().url()).searchParams.get("q") ?? "");
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          people: [
+            { record_id: "synthetic-linked-person", person_label: "Synthetic Linked Person", birth: null, branches: [], linked: true },
+            { record_id: "synthetic-accent-person", person_label: "Synthetic Trần Bảo Lộc", birth: "1990", branches: ["Synthetic Branch"], linked: false },
+          ],
+        }),
+      });
+    });
+    await signIn(page);
+    const row = await openMember(page);
+    await openActions(row);
+    await row.getByTestId("hof-record-select").fill("synthetic tran bao loc");
+    await expect.poll(() => queries.at(-1)).toBe("synthetic tran bao loc");
+
+    const linked = row.getByRole("option", { name: /Synthetic Linked Person/ });
+    await expect(linked).toHaveAttribute("aria-disabled", "true");
+    await expect(linked).toContainText("Already linked");
+    // Force past Playwright's own disabled check: the selector must ignore the click.
+    await linked.click({ force: true });
+    await expect(row.getByTestId("fm-link")).toBeDisabled();
+
+    await row.getByRole("option", { name: /Synthetic Trần Bảo Lộc/ }).click();
+    await row.getByTestId("fm-link").click();
+    await expect(page.getByTestId("fm-confirm")).toContainText("Synthetic Trần Bảo Lộc (Synthetic Branch)");
+    // Cancel: the stubbed person does not exist in the real genealogy database.
+    await page.getByTestId("fm-confirm-cancel").click();
+    await expect(row.getByTestId("fm-member-link")).toHaveText("Not linked to a genealogy person");
   });
 
   test("admin grants a role, cancels, then deactivates", async ({ page }) => {

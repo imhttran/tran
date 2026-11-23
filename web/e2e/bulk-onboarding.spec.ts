@@ -685,4 +685,146 @@ test.describe("stubbed preview filters", () => {
       );
     }
   });
+
+  test("an edited username is sent on prepare and shown in the batch status", async ({
+    page,
+  }) => {
+    const EDITED_KEY = "synthetic-bulk-eligible_for_invite-1";
+    const UNSELECTED_KEY = "synthetic-bulk-eligible_for_invite-2";
+    const REJECTED_KEY = ACCENTED_KEY;
+    const rowsByKey = new Map(FIXED_ROWS.map((row) => [row.person_key, row]));
+    const prepareBodies: Array<{
+      person_keys: string[];
+      usernames?: Record<string, string>;
+    }> = [];
+
+    // The stub stands in for the server: it keeps a valid override, and fails
+    // only the row whose override has a disallowed character.
+    await page.route(
+      "**/api/admin/family-members/bulk/prepare",
+      (route: Route) => {
+        prepareBodies.push(route.request().postDataJSON());
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            batch_id: prepareBodies.length,
+            batch_key: `synthetic-batch-${prepareBodies.length}`,
+            created: true,
+            prepared: 0,
+            skipped: 0,
+            needs_review: 0,
+            failed: 0,
+            items: [],
+          }),
+        });
+      },
+    );
+    await page.route(
+      "**/api/admin/family-members/bulk/batches/*",
+      (route: Route) => {
+        const body = prepareBodies.at(-1)!;
+        const items = body.person_keys.map((key) => {
+          const username =
+            body.usernames?.[key] ?? rowsByKey.get(key)!.proposed_username;
+          const rejected = !/^[a-z0-9_]+$/.test(username ?? "");
+          return {
+            person_key: key,
+            display_name: rowsByKey.get(key)!.display_name,
+            status: rejected ? "failed" : "prepared",
+            reason: rejected ? "username_policy" : null,
+            delivery_status: "not_sent",
+            provider: null,
+            attempts: 0,
+            username: rejected ? null : username,
+            invitation_status: null,
+            has_verified_contact: false,
+          };
+        });
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            batch_id: prepareBodies.length,
+            status: "completed",
+            confirmed_count: items.length,
+            created_by: "synthetic-admin",
+            created_at: "2026-01-01T00:00:00Z",
+            completed_at: "2026-01-01T00:00:00Z",
+            items,
+          }),
+        });
+      },
+    );
+    await openStubbedPreview(page);
+    const select = (key: string) =>
+      previewRow(page, key)
+        .locator('td[data-label="Select"] input[type="checkbox"]')
+        .check();
+    const statusRow = (key: string) =>
+      page
+        .getByTestId("bulk-status-table")
+        .locator("tbody tr")
+        .filter({ hasText: key });
+
+    // An unedited prepare sends no override at all.
+    await select(EDITED_KEY);
+    await page.getByTestId("bulk-prepare").click();
+    await expect(page.getByTestId("bulk-prepare-changed")).toHaveText(
+      "All usernames use the proposal.",
+    );
+    await page.getByTestId("bulk-prepare-confirm-button").click();
+    await expect(statusRow(EDITED_KEY)).toContainText(
+      "synthetic_bulk_eligible_for_invite_1",
+    );
+    expect(prepareBodies[0]).not.toHaveProperty("usernames");
+
+    // Edit two selected rows and one unselected row; only the selected edits go.
+    await page
+      .getByLabel("Username for Synthetic eligible_for_invite 1", {
+        exact: true,
+      })
+      .fill("edited_synthetic_name");
+    await page
+      .getByLabel("Username for Synthetic eligible_for_invite 2", {
+        exact: true,
+      })
+      .fill("unsent_synthetic_name");
+    await select(REJECTED_KEY);
+    await page
+      .getByLabel(`Username for ${ACCENTED_DISPLAY_NAME}`, { exact: true })
+      .fill("not allowed!");
+    await page.getByTestId("bulk-prepare").click();
+    await expect(page.getByTestId("bulk-prepare-changed")).toHaveText(
+      "2 usernames were changed from the proposal.",
+    );
+    await page.getByTestId("bulk-prepare-confirm-button").click();
+    await expect(statusRow(EDITED_KEY)).toContainText("edited_synthetic_name");
+    expect(prepareBodies[1].usernames).toEqual({
+      [EDITED_KEY]: "edited_synthetic_name",
+      [REJECTED_KEY]: "not allowed!",
+    });
+    expect(prepareBodies[1].person_keys).not.toContain(UNSELECTED_KEY);
+
+    // The status table leads with the name and keeps the key as secondary text.
+    const edited = statusRow(EDITED_KEY);
+    await expect(edited.locator(".fm-person-name")).toHaveText(
+      "Synthetic eligible_for_invite 1",
+    );
+    await expect(edited.locator(".fm-person-key")).toHaveText(EDITED_KEY);
+    await expect(edited.locator('td[data-label="Username"]')).toHaveText(
+      "edited_synthetic_name",
+    );
+
+    // The rejected override fails only its own row, with the server's reason.
+    const rejected = statusRow(REJECTED_KEY);
+    await expect(
+      rejected.locator('td[data-label="Preparation"]'),
+    ).toContainText("failed");
+    await expect(
+      rejected.locator('td[data-label="Preparation"]'),
+    ).toContainText("username_policy");
+  });
 });
