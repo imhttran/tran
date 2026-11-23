@@ -19,8 +19,13 @@ BEGIN
     DELETE FROM head_of_family_appointment;
     DELETE FROM head_of_family_nomination;
     DELETE FROM person WHERE person_key = 'synthetic-e2e-person';
+    DELETE FROM person WHERE person_key = 'synthetic-invitee';
     DELETE FROM person WHERE person_key LIKE 'synthetic-spouse-%';
     DELETE FROM source_document WHERE relative_path = 'synthetic/e2e.pdf';
+
+    -- Unlinked person for the shareable invitation link suite.
+    INSERT INTO person (person_key, display_name)
+        VALUES ('synthetic-invitee', 'Synthetic Invitee');
 
     INSERT INTO person (person_key, display_name)
         VALUES ('synthetic-e2e-person', 'Synthetic E2E Person')
