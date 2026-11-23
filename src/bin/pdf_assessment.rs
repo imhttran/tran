@@ -26,7 +26,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rag_foundation::pdf_assessment::{assess_source, reject_report_path, render_markdown};
+use rag_foundation::inventory::reject_manifest_path;
+use rag_foundation::pdf_assessment::{assess_source, render_markdown};
 
 const DEFAULT_SOURCE_ROOT: &str = "docs/tran";
 const PDF_RELATIVE_PATH: &str = "Family Genealogy.pdf";
@@ -54,7 +55,7 @@ fn main() -> ExitCode {
 }
 
 fn run(root: &Path, report_path: &Path) -> Result<ExitCode, String> {
-    reject_report_path(root, report_path)?;
+    reject_manifest_path(root, report_path)?;
 
     let report = assess_source(root, PDF_RELATIVE_PATH, TRANSCRIPTION_RELATIVE_PATH)?;
     let markdown = render_markdown(&report);

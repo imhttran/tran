@@ -18,8 +18,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::inventory::{build_record, sha256_hex, SourceRecord};
-use crate::loader::pdf::{load_pdf, PdfError, PdfExtraction};
+use crate::inventory::{build_record, SourceRecord};
+use crate::loader::pdf::{PdfError, PdfExtraction};
 
 /// The prefix that a transcription page marker uses in the Markdown source.
 const TRANSCRIPTION_PAGE_PREFIX: &str = "Trang PDF ";
@@ -98,64 +98,79 @@ impl PdfAssessment {
     }
 }
 
+/// A `## Trang PDF ...` heading in document order.
+enum Marker {
+    /// Resolves to a single positive page number.
+    Page(u32),
+    /// Starts with the prefix but does not resolve to one page; keeps the text.
+    Ambiguous(String),
+}
+
 /// Scans a transcription Markdown for `Trang PDF <n>` page markers.
 ///
-/// A marker is a level-2 heading line that starts with `## Trang PDF` and
-/// carries a positive integer. A line that starts the same prefix but does not
-/// resolve to a single integer is recorded as ambiguous; the page number it
-/// might refer to cannot be trusted.
-fn parse_page_markers(markdown: &str) -> (BTreeMap<u32, String>, Vec<String>) {
-    let mut markers: BTreeMap<u32, String> = BTreeMap::new();
-    let mut ambiguous: Vec<String> = Vec::new();
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        let body = match trimmed.strip_prefix("## ") {
-            Some(rest) => rest.trim(),
-            None => continue,
-        };
-        let Some(suffix) = body.strip_prefix(TRANSCRIPTION_PAGE_PREFIX) else {
-            continue;
-        };
-        let token = suffix.trim();
-        match token.parse::<u32>() {
-            Ok(page) if page > 0 => {
-                markers.insert(page, format!("{TRANSCRIPTION_PAGE_PREFIX}{page}"));
-            }
-            _ => ambiguous.push(body.to_string()),
-        }
-    }
-    (markers, ambiguous)
+/// A marker is a level-2 heading line that starts with `## Trang PDF`. One that
+/// carries a positive integer names that page; any other is ambiguous.
+fn parse_page_markers(markdown: &str) -> Vec<Marker> {
+    markdown
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("## "))
+        .map(str::trim)
+        .filter_map(|body| {
+            let token = body.strip_prefix(TRANSCRIPTION_PAGE_PREFIX)?.trim();
+            Some(match token.parse::<u32>() {
+                Ok(page) if page > 0 => Marker::Page(page),
+                _ => Marker::Ambiguous(body.to_string()),
+            })
+        })
+        .collect()
 }
 
 /// Builds the transcription coverage for every page in `1..=page_count`.
+///
+/// An ambiguous marker can only refer to a page between its neighbouring clean
+/// markers, so only uncovered pages in that range become `uncertain`; pages
+/// outside every such range stay `unmapped`.
 pub fn transcription_coverage(
     markdown: &str,
     file: &str,
     page_count: u32,
 ) -> Vec<TranscriptionCoverage> {
-    let (markers, ambiguous) = parse_page_markers(markdown);
-    (1..=page_count)
-        .map(|page| match markers.get(&page) {
-            Some(reference) => TranscriptionCoverage::Covered {
-                file: file.to_string(),
-                reference: reference.clone(),
-            },
-            None => {
-                // Any ambiguous marker makes coverage for a page uncertain when
-                // the ambiguous text could refer to that page. To stay
-                // conservative we treat a page as uncertain when an ambiguous
-                // marker exists and no clean marker covers it.
-                if let Some(reference) = ambiguous.first() {
-                    TranscriptionCoverage::Uncertain {
-                        file: file.to_string(),
-                        reference: reference.clone(),
-                    }
-                } else {
-                    TranscriptionCoverage::Unmapped
-                }
+    let markers = parse_page_markers(markdown);
+    let mut coverage = vec![TranscriptionCoverage::Unmapped; page_count as usize];
+    for (i, marker) in markers.iter().enumerate() {
+        let Marker::Ambiguous(reference) = marker else {
+            continue;
+        };
+        let clean = |m: &Marker| match m {
+            Marker::Page(page) => Some(*page),
+            Marker::Ambiguous(_) => None,
+        };
+        let lower = markers[..i].iter().rev().find_map(clean).unwrap_or(0);
+        let upper = markers[i + 1..]
+            .iter()
+            .find_map(clean)
+            .unwrap_or(page_count + 1);
+        for page in lower.saturating_add(1)..upper.min(page_count + 1) {
+            let slot = &mut coverage[page as usize - 1];
+            if slot.is_unmapped() {
+                *slot = TranscriptionCoverage::Uncertain {
+                    file: file.to_string(),
+                    reference: reference.clone(),
+                };
             }
-        })
-        .collect()
+        }
+    }
+    for marker in &markers {
+        if let Marker::Page(page) = marker {
+            if let Some(slot) = coverage.get_mut(*page as usize - 1) {
+                *slot = TranscriptionCoverage::Covered {
+                    file: file.to_string(),
+                    reference: format!("{TRANSCRIPTION_PAGE_PREFIX}{page}"),
+                };
+            }
+        }
+    }
+    coverage
 }
 
 /// Builds an assessment from a parsed extraction and a total page count.
@@ -358,32 +373,6 @@ fn status_label(status: TextLayerStatus) -> &'static str {
     }
 }
 
-/// Rejects a report path that collides with a source file or a frozen tree.
-/// Thin wrapper over [`crate::inventory::reject_manifest_path`].
-pub fn reject_report_path(root: &Path, report: &Path) -> Result<(), String> {
-    crate::inventory::reject_manifest_path(root, report)
-}
-
-/// Computes a SHA-256 of a file's bytes; helper for before/after checks.
-pub fn file_sha256(path: &Path) -> Result<String, String> {
-    let bytes =
-        std::fs::read(path).map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-    Ok(sha256_hex(&bytes))
-}
-
-/// Loads a PDF from `path` and returns its page count from the manifest logic.
-/// Kept for parity with the loader so callers can cross-check page counts.
-pub fn loader_page_count(path: impl AsRef<Path>) -> Result<u32, PdfError> {
-    let extraction = load_pdf(path)?;
-    Ok(extraction
-        .sections
-        .iter()
-        .filter_map(|section| section.page)
-        .chain(extraction.incomplete_pages.iter().copied())
-        .max()
-        .unwrap_or(0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +488,18 @@ mod tests {
             coverage[1],
             TranscriptionCoverage::Uncertain { .. }
         ));
+    }
+
+    #[test]
+    fn ambiguous_marker_only_affects_pages_between_neighbours() {
+        let md = "## Trang PDF 1\n## Trang PDF 2a\n## Trang PDF 3\n## Trang PDF 6\n";
+        let coverage = transcription_coverage(md, "t.md", 6);
+        assert!(matches!(
+            coverage[1],
+            TranscriptionCoverage::Uncertain { .. }
+        ));
+        assert_eq!(coverage[3], TranscriptionCoverage::Unmapped);
+        assert_eq!(coverage[4], TranscriptionCoverage::Unmapped);
     }
 
     #[test]
